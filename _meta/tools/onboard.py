@@ -43,6 +43,8 @@ MARK_CLOSE = "<!-- /space:personal-instruction -->"
 FEEDS = ("mail", "calendar", "chat", "calls", "documents", "tracker")
 PROFILE_CASE = {"brain": "company", "personal": "person", "project": "project", "channel": "person"}
 SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", "personal", "academic", "_scratch"}
+# Where a space mounts other spaces: a new space mounts them itself, it never copies them.
+MOUNT_DIRS = ("brain", "mounts")
 # Never copied from the space a new one is made from: its fixture, its settings and the company's
 # own test questions (they name real facts).
 SKIP_PATHS = ("_meta/tests/fixture", ".github/template-marker", "_meta/state/feed", "AGENTS.md",
@@ -213,6 +215,8 @@ def copy_template(src, dst) -> bool:
         rel = path.relative_to(src)
         posix = rel.as_posix()
         if path.is_dir() or any(p in SKIP_DIRS for p in rel.parts):
+            continue
+        if rel.parts[0] in MOUNT_DIRS:  # another space's checkout: never copied as files
             continue
         if any(posix == s or posix.startswith(s + "/") for s in SKIP_PATHS):
             continue

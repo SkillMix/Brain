@@ -114,15 +114,22 @@ def test_fixture_company_offline_builds_six_valid_spaces(lantern):
 
 def test_check_twice_is_identical_and_changes_nothing(lantern):
     target, _ = lantern
-    before = tree_hashes(target)
+
+    def content(root):  # the check's one write: the owner steps it lists on Needs you
+        return {k: v for k, v in tree_hashes(root).items()
+                if not k.endswith("_inbound/needs-you/onboard-owner.yaml")}
+
+    before = content(target)
     first = onboard.check(target / "brain")
+    after_first = tree_hashes(target)
     second = onboard.check(target / "brain")
     assert [s.row() for s in first] == [s.row() for s in second]
     assert any(s.name.startswith("space.yaml") and s.done for s in first)
-    assert tree_hashes(target) == before
+    assert tree_hashes(target) == after_first
+    assert content(target) == before
     ada = onboard.check(target / "ada")
     assert any("mount brain" in s.name and s.done for s in ada)
-    assert tree_hashes(target) == before
+    assert content(target) == before
 
 
 def test_detect_cases(tmp_path):
@@ -396,3 +403,16 @@ def test_an_invitation_carries_the_crew_projects_and_the_colleague_onboards_offl
     assert space.profile == "personal" and space.owner == "Ben Liu"
     assert {m["name"] for m in space.mounts} == {"brain", "harbor"} and space.mount_root("harbor") is not None
     assert errors(ws) == []
+
+
+def test_copy_template_never_copies_mounted_spaces(tmp_path):
+    src = make_space(tmp_path / "live", profile="project")
+    for rel in ("brain/space.yaml", "brain/knowledge/secret.md", "mounts/other/space.yaml"):
+        (src / rel).parent.mkdir(parents=True, exist_ok=True)
+        (src / rel).write_text("mounted\n", encoding="utf-8")
+    (src / "_meta" / "tools").mkdir(parents=True, exist_ok=True)
+    (src / "_meta" / "tools" / "x.py").write_text("print(1)\n", encoding="utf-8")
+    dst = tmp_path / "new"
+    assert onboard.copy_template(src, dst)
+    assert (dst / "_meta" / "tools" / "x.py").exists()
+    assert not (dst / "brain").exists() and not (dst / "mounts").exists()
