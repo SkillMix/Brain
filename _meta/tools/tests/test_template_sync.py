@@ -74,3 +74,34 @@ def test_caches_in_the_template_tree_are_not_machinery(tmp_path):
 def test_help_prints_usage_and_touches_nothing(capsys):
     assert template_sync.main(["--help"]) == 0
     assert "template-version.yaml" in capsys.readouterr().out
+
+
+def test_a_space_without_provenance_keeps_its_own_readme_and_gets_no_licence(tmp_path):
+    tpl = make_template(tmp_path / "tpl")
+    (tpl / "README.md").write_text("# The template\n", encoding="utf-8")
+    (tpl / "LICENSE").write_text("Template licence\n", encoding="utf-8")
+    space = make_space(tmp_path / "scheduler", profile="project")
+    (space / "README.md").write_text("# Scheduler app\n", encoding="utf-8")
+    report = template_sync.run(space, source=str(tpl))
+    assert (space / "README.md").read_text(encoding="utf-8") == "# Scheduler app\n"
+    assert not (space / "LICENSE").exists()
+    assert "README.md" not in report.updated and "LICENSE" not in report.added
+    prov = yaml.safe_load((space / "_meta" / "state" / "template-version.yaml").read_text(encoding="utf-8"))
+    assert "README.md" not in prov["files"] and "LICENSE" not in prov["files"]
+
+
+def test_a_readme_received_from_the_template_still_follows_it(tmp_path):
+    tpl = make_template(tmp_path / "tpl")
+    (tpl / "README.md").write_text("# v1\n", encoding="utf-8")
+    space = make_space(tmp_path / "ada")
+    (space / "README.md").unlink(missing_ok=True)
+    template_sync.run(space, source=str(tpl))
+    prov_path = space / "_meta" / "state" / "template-version.yaml"
+    prov = yaml.safe_load(prov_path.read_text(encoding="utf-8"))
+    prov["files"]["README.md"] = template_sync.sha1(tpl / "README.md")
+    prov_path.write_text(yaml.safe_dump(prov), encoding="utf-8")
+    (space / "README.md").write_text("# v1\n", encoding="utf-8")
+    (tpl / "README.md").write_text("# v2\n", encoding="utf-8")
+    report = template_sync.run(space, source=str(tpl))
+    assert "README.md" in report.updated
+    assert (space / "README.md").read_text(encoding="utf-8") == "# v2\n"
