@@ -220,3 +220,17 @@ def test_cli_apply_reads_a_verdicts_file_with_bare_yes_and_no(tmp_path, monkeypa
     assert json.loads((root / "_meta/state/check-verdicts.jsonl").read_text().splitlines()[-1])["verdict"] == "no"
     assert sign.main([str(root), "read-back", "p-00000101"]) == 0
     assert "not found" in capsys.readouterr().out
+
+
+def test_a_question_a_routine_wrote_takes_a_verdict_without_a_page(tmp_path):
+    root = make_space(tmp_path / "ada")
+    base = root / "_inbound" / "needs-you"
+    base.mkdir(parents=True, exist_ok=True)
+    (base / "owner.yaml").write_text(yaml.safe_dump({"items": [
+        {"id": "name-it", "kind": "question", "text": "Name it?"},
+        {"id": "later-one", "kind": "question", "text": "Later?"}]}), encoding="utf-8")
+    report = sign.apply(root, {"name-it": "yes", "later-one": ["later", "another time"]},
+                        by="Ada Okafor", now=NOW)
+    assert report.verdicts_recorded == 1 and report.deferred == ["later-one"]
+    log = (root / "log.md").read_text(encoding="utf-8")
+    assert "yes name-it by Ada Okafor" in log

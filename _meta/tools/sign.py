@@ -254,6 +254,8 @@ def _queue_item(root, space, entry: Found, item_id, verb, note, by, now, report:
 
 
 def _question(root, space, entry: Found, item_id, verb, note, by, now, report: ApplyReport):
+    if entry.path is None:  # a question a routine wrote into Needs you: it has no page
+        return _routine_item(root, space, entry, item_id, verb, note, by, now, report)
     fm, body, path = dict(entry.fm), entry.body, entry.path
     if verb == "later":
         fm["deadline"] = pages.iso(now + space.scale(24))
