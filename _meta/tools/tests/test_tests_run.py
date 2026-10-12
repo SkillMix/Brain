@@ -229,3 +229,12 @@ def test_cli_exit_codes(tmp_path):
     write_page(harbor, "knowledge/projects/harbor/rates.md", title="Rates",
                body="day rate 950\n")
     assert tests_run.main([str(ada), "leaks", "--root", f"harbor={harbor}"]) == 1
+
+
+def test_leak_needles_match_whole_words_only():
+    assert tests_run.carries("Ask Ben's team", "Ben")
+    assert tests_run.carries("ben_notes.md and more", "ben")
+    assert tests_run.carries("their DAY RATE is", "day rate")
+    assert not tests_run.carries("the page beneath the fold", "Ben")
+    assert not tests_run.carries("id p-12950ab3", "950")
+    assert not tests_run.carries("anything", "  ")
