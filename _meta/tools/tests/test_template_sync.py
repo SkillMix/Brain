@@ -69,3 +69,8 @@ def test_caches_in_the_template_tree_are_not_machinery(tmp_path):
     assert not (space / "_meta" / "tools" / ".pytest_cache").exists()
     assert not (space / "_meta" / "tools" / "__pycache__").exists()
     assert not (space / "_meta" / "tools" / "stray.pyc").exists()
+
+
+def test_help_prints_usage_and_touches_nothing(capsys):
+    assert template_sync.main(["--help"]) == 0
+    assert "template-version.yaml" in capsys.readouterr().out

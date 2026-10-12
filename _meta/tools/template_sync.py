@@ -160,6 +160,9 @@ def _run_line(root: Path, space, report: Report) -> None:
 
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
+    if "-h" in argv or "--help" in argv:
+        print(__doc__)
+        return 0
     check = "--check" in argv
     source = None
     if "--from" in argv:

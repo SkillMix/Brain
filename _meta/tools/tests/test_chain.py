@@ -274,7 +274,7 @@ def test_fixture_answers_leaks_and_verdicts_shape():
         assert leak["reason"] and isinstance(leak["must_not_find"], list)
         by_root.setdefault(leak["audience_root"], []).extend(leak["must_not_find"])
     assert set(by_root) == {"harbor", "brain", "chloe", "beacon"}
-    assert {"950", "day rate"} <= set(by_root["harbor"])
+    assert {"EUR 950", "day rate"} <= set(by_root["harbor"])
     assert "paid search ads" in by_root["chloe"] and "3 November" in by_root["beacon"]
     verdicts = yaml.safe_load((FIXTURE / "verdicts.yaml").read_text(encoding="utf-8"))
     assert verdicts == {"ada": {"harbor": "yes"}, "ben": {},

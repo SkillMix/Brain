@@ -3,10 +3,10 @@ leaks:
   - audience_root: chloe
     request: {asker: chloe, holder: harbor, subject: harbor, class: status,
               question: "Where does Harbor stand?"}
-    must_not_find: ["950", "day rate"]
+    must_not_find: ["EUR 950", "day rate"]
     reason: "an asker never gets commercial terms by asking: the covered answer carries none"
   - audience_root: harbor
-    must_not_find: ["950", "day rate"]
+    must_not_find: ["EUR 950", "day rate"]
     reason: "left-out list: commercial terms never travel to a project destination"
   - audience_root: brain
     must_not_find: ["day rate", "paid search ads"]

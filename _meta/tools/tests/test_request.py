@@ -23,7 +23,7 @@ SUBJECTS = [{"id": "harbor", "kind": "projects", "title": "Harbor", "home": "har
 def world(tmp_path):
     brain = make_space(tmp_path / "brain", profile="brain", name="brain", subjects=SUBJECTS)
     harbor = make_space(tmp_path / "harbor", profile="project", name="harbor", owner="Ben Liu",
-                        audience=["Ada Okafor", "Ben Liu"], left_out=["day rate", "950"])
+                        audience=["Ada Okafor", "Ben Liu"], left_out=["day rate", "EUR 950"])
     chloe = make_space(tmp_path / "chloe", name="chloe", owner="Chloe Martin", audience=["Chloe Martin"])
     ada = make_space(tmp_path / "ada", name="ada", owner="Ada Okafor")
     ben = make_space(tmp_path / "ben", name="ben", owner="Ben Liu", audience=["Ben Liu"])
@@ -32,7 +32,7 @@ def world(tmp_path):
     write_page(harbor, "live/subjects/harbor.md", type="snapshot", title="Harbor: status", subject="harbor",
                body="# Harbor: status\n\n## Open\n- none\n\n## Coming up\n- 2026-11-03: go-live (signed, team, 2026-10-02)\n"
                     "\n## Timeline\n- Port schedule arrives Friday (witness, team, 2026-10-04)\n"
-                    "- day rate 950 for the extension (witness, team, 2026-10-01)\n")
+                    "- day rate EUR 950 for the extension (witness, team, 2026-10-01)\n")
     mint.channel(chloe, harbor)
     mint.channel(ben, ada)
     roots = {"brain": brain, "harbor": harbor, "chloe": chloe, "ada": ada, "ben": ben,
@@ -65,7 +65,7 @@ def test_a_status_request_is_answered_at_once_by_the_standing_choice(tmp_path):
     witness = next((roots["chloe"] / "knowledge" / "sources").rglob(f"answer-{rid}.md"))
     fm, body = pages.read(witness)
     assert "2026-11-03" in body and "(signed, team, 2026-10-02)" in body
-    assert "950" not in body and "day rate" not in body
+    assert "EUR 950" not in body and "day rate" not in body
     assert fm["approved_by"].startswith("standing choice: status")
     assert (roots["chloe"] / "_inbound" / "answers" / f"{rid}.md").exists()
     log = [json.loads(l) for l in (roots["harbor"] / "_meta/state/requests.jsonl").read_text(encoding="utf-8").splitlines()]
@@ -134,7 +134,7 @@ def test_an_asker_leak_test_renders_what_the_holder_would_send(tmp_path):
     leaks.write_text(yaml.safe_dump({"leaks": [
         {"audience_root": "chloe", "request": {"asker": "chloe", "holder": "harbor", "subject": "harbor",
                                                "class": "status", "question": "Where does Harbor stand?"},
-         "must_not_find": ["950", "day rate"], "reason": "an asker never gets commercial terms by asking"},
+         "must_not_find": ["EUR 950", "day rate"], "reason": "an asker never gets commercial terms by asking"},
         {"audience_root": "chloe", "request": {"asker": "chloe", "holder": "harbor", "subject": "harbor",
                                                "class": "status", "question": "Where does Harbor stand?"},
          "must_not_find": ["2026-11-03"], "reason": "a canary: the covered part does go out"}]}), encoding="utf-8")

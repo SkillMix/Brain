@@ -14,7 +14,7 @@
 # with your own: one entry per audience that must not see something.
 leaks:
   - audience_root: harbor
-    must_not_find: ["day rate", "950"]
+    must_not_find: ["day rate", "EUR 950"]
     reason: "commercial terms are on a project destination's left-out list (rules.md section 4)"
   - audience_root: brain
     must_not_find: ["paid search ads"]

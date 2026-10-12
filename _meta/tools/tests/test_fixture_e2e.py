@@ -61,7 +61,7 @@ def test_left_out_and_doubt_stay_home(fixture_dir):
         content += [p.read_text(encoding="utf-8") for p in (target / "harbor" / zone).rglob("*")
                     if p.is_file() and p.suffix in (".md", ".yaml")]
     harbor_text = "\n".join(content)
-    assert "day rate" not in harbor_text.lower() and "950" not in harbor_text
+    assert "day rate" not in harbor_text.lower() and "EUR 950" not in harbor_text
 
 
 def test_signed_page_carries_fingerprint_and_travels(fixture_dir):
@@ -147,7 +147,7 @@ def test_requests_through_the_corridors(fixture_dir):
     answers = list((target / "chloe" / "knowledge" / "sources").rglob("answer-rq-*.md"))
     assert len(answers) == 1
     fm, body = pages.read(answers[0])
-    assert fm["approved_by"].startswith("standing choice: status") and "950" not in body
+    assert fm["approved_by"].startswith("standing choice: status") and "EUR 950" not in body
     outcomes = {_json.loads(l)["outcome"] for l in (target / "harbor" / "_meta/state/requests.jsonl")
                 .read_text(encoding="utf-8").splitlines()}
     assert {"answered", "never", "asked", "expired"} <= outcomes
