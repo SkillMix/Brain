@@ -31,6 +31,9 @@ MACHINERY = ("_meta/tools", "_meta/templates", "_meta/migrations", "_meta/tests/
 NEVER = (".github/CODEOWNERS", ".github/template-marker", "_meta/tests/fixture",
          "_meta/tests/forbidden-names.sha256")
 PROVENANCE = Path("_meta") / "state" / "template-version.yaml"
+# A space's own files unless it received them from the template: a swapped project keeps its
+# README and its licence, and never gets the template's (the swap never adds them either).
+OWN_UNLESS_RECEIVED = ("LICENSE", "README.md")
 # Local caches a test run leaves in the template's working tree are not machinery.
 CACHE_DIRS = {"__pycache__", ".pytest_cache"}
 
@@ -110,6 +113,8 @@ def run(root, source: str | None = None, check: bool = False) -> Report:
         report.commit = commit
         new_received = {}
         for rel in machinery_files(tpl):
+            if rel in OWN_UNLESS_RECEIVED and rel not in received:
+                continue
             src, dst = tpl / rel, root / rel
             tpl_hash = sha1(src)
             new_received[rel] = tpl_hash
