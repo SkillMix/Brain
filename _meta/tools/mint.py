@@ -1,0 +1,280 @@
+"""mint: a desk seed becomes a project space (shape 1).
+
+    python _meta/tools/mint.py [root] --seed PATH --name NAME --crew a b
+                               [--offline] [--org ORG] [--home DIR] [--dry-run]
+
+The seed is `work/<kind>/<subject>/<effort>/` in a personal space. Mint creates the project
+space from the template (online: a new private repository in the organization, cloned
+under `--home` or ~/.spaces; offline: a sibling directory), fills its `space.yaml` with
+profile project and the crew as audience, copies the seed's pages in as drafts under
+`knowledge/<kind>/<subject>/`, sets the subject's `home` in this space's registry and
+proposes the platform team on Needs you. Re-runnable: the receipt
+`_meta/state/mint-<name>.yaml` records the phases, and nothing is written twice.
+"""
+from __future__ import annotations
+
+import argparse
+import shutil
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import onboard  # noqa: E402
+import pages  # noqa: E402
+import registry  # noqa: E402
+import spaceyaml  # noqa: E402
+
+
+def run_cmd(argv, dry_run=False, cwd=None):
+    """Mint's door to the outside: the same one onboard uses, monkeypatched separately."""
+    return onboard.run_cmd(argv, dry_run=dry_run, cwd=cwd)
+
+
+def seed_parts(seed) -> tuple:
+    parts = [p for p in Path(seed).as_posix().strip("/").split("/") if p]
+    if len(parts) < 3 or parts[0] != "work":
+        raise ValueError("the seed is a desk folder: work/<kind>/<subject>/<effort>/")
+    return parts[1], parts[2]
+
+
+def draft_page(src: Path, dst: Path, now) -> None:
+    """Copy a seed page as a draft: frontmatter added when missing, signature dropped."""
+    fm, body = pages.read(src)
+    new = {"id": fm.get("id") or pages.new_id(), "type": fm.get("type") or "entity",
+           "title": fm.get("title") or onboard.humanize(src.stem), "status": "draft",
+           "generated": pages.generated("mint", now)}
+    for key, value in fm.items():
+        if key not in new and key not in pages.SIGNATURE_FIELDS and key != "signed_in":
+            new[key] = value
+    pages.write(dst, new, body)
+
+
+# ----- corridors: the channel profile between two spaces -----------------------------------
+def channel_name(a: str, b: str) -> str:
+    return "channel-" + "-".join(sorted([onboard.slugify(a), onboard.slugify(b)]))
+
+
+def _add_mount(root: Path, name: str, repo, path: str) -> bool:
+    space = spaceyaml.load(root)
+    if any(m.get("name") == name for m in space.mounts):
+        return False
+    space.data["mounts"] = space.mounts + [{"name": name, "repo": repo, "path": path, "branch": "main"}]
+    spaceyaml.save(space)
+    return True
+
+
+def _skeleton_file(path: Path) -> bool:
+    """A file the template's skeleton ships: a placeholder, never anyone's content."""
+    if path.name in (".gitkeep", "index.md"):
+        return True
+    if path.suffix != ".md":
+        return False
+    try:
+        fm, _ = pages.read(path)
+    except Exception:
+        return False
+    gen = fm.get("generated") if isinstance(fm.get("generated"), dict) else {}
+    return gen.get("by") == "onboard" and not fm.get("subject")
+
+
+def strip_skeleton(dst: Path, profile: str) -> list:
+    """Drop the folders a profile forbids when they hold only the template's skeleton."""
+    removed = []
+    for entry in spaceyaml.PROFILE_TABLE[profile]["forbidden"]:
+        folder = Path(dst) / entry
+        files = [p for p in folder.rglob("*") if p.is_file()] if folder.is_dir() else []
+        if folder.is_dir() and all(_skeleton_file(p) for p in files):
+            shutil.rmtree(folder)
+            removed.append(entry)
+    return removed
+
+
+def channel(root, other_root, online=False, org=None, home=None, dry_run=False,
+            name: str | None = None) -> onboard.Report:
+    """A corridor between this space and another: a `channel` space read by those two only,
+    mounted read-only by both. Offline (and for two checkouts on this machine) both mounts are
+    written; a space this machine cannot write gets an owner item with the exact mount line."""
+    root, other_root = Path(root).resolve(), Path(other_root).resolve()
+    a, b = spaceyaml.load(root), spaceyaml.load(other_root)
+    name = onboard.slugify(name) if name else channel_name(a.name, b.name)
+    report = onboard.Report(case="channel")
+    dst, repo = onboard.create_space(report, root, name, name, not online, org, home,
+                                     onboard.template_repo(root), dry_run)
+    if dst is None:
+        return report
+    audience = sorted({str(x) for s in (a, b) for x in (s.audience if isinstance(s.audience, list) else [s.owner])})
+    mount = next((m for m in a.mounts if m.get("name") == "brain"), {})
+    brain_path = mount.get("path") or "brain"
+    if not online and a.mount_root("brain") is not None:
+        brain_path = os.path.relpath(a.mount_root("brain"), dst).replace("\\", "/")
+    values = onboard.space_values(a.data, name, a.owner, a.owner_email, audience, None, mount.get("repo"),
+                                  brain_path)
+    # the copy brought the skeleton's generated indexes along; a corridor has no knowledge,
+    # live, desk or outbox, so the freshly copied, content-free folders go before the fill
+    strip_skeleton(dst, "channel")
+    onboard.setup_space(report, dst, "channel", values, [])
+    data = spaceyaml.load(dst)
+    data.data["between"] = sorted([a.name, b.name])
+    for key in ("left_out",):
+        data.data[key] = sorted(set(a.left_out) | set(b.left_out))
+    spaceyaml.save(data)
+    onboard.finish_space(report, dst)
+    if online:  # the corridor's fill lands before anyone pins it
+        onboard.platform_settings(report, dst, repo, org, dry_run)
+        onboard.commit_fill(report, dst, True, dry_run)
+    url = f"https://github.com/{repo}" if online and repo else repo
+    for space_root in (root, other_root):
+        rel = os.path.relpath(dst, space_root).replace("\\", "/") if not online else f"mounts/{name}"
+        added = _add_mount(space_root, name, url, rel)
+        if online and url and not (space_root / rel / "space.yaml").exists():
+            # the setup verb adds the read-only window; the sync script lands it with the rest
+            run_cmd(["git", "submodule", "add", "-b", "main", url, rel], dry_run, cwd=space_root)
+        report.add(f"mount {name} in {space_root.name}", True, f"grep -c {name} {space_root / 'space.yaml'}",
+                   "added" if added else "already there")
+    report.spaces[name] = dst
+    return report
+
+
+def link_items(name: str) -> tuple:
+    """The chat channel and tracker project named like the space, and the two items that
+    propose creating them (the adapters confirm on the next sweep)."""
+    match = {"channel": f"#{name}", "tracker": name.upper()}
+    items = [{"id": f"mint-{name}-channel", "kind": "question",
+              "text": f"link or create the chat channel #{name} for {name}",
+              "recommendation": "yes", "default": "records from that channel do not attach to the project",
+              "deadline": None, "depends": 1, "payload": f"_meta/state/mint-{name}.yaml", "fingerprint": "",
+              "check": f"a sweep record carries channel #{name}"},
+             {"id": f"mint-{name}-tracker", "kind": "question",
+              "text": f"link or create the tracker project {name.upper()} for {name}",
+              "recommendation": "yes", "default": "tracker records do not attach to the project",
+              "deadline": None, "depends": 1, "payload": f"_meta/state/mint-{name}.yaml", "fingerprint": "",
+              "check": f"a sweep record carries tracker {name.upper()}"}]
+    return match, items
+
+
+def run(root, seed, name, crew, online, org=None, home=None, dry_run=False,
+        parent: str | None = None) -> onboard.Report:
+    root = Path(root).resolve()
+    name = onboard.slugify(name)
+    crew = [str(c) for c in crew or []]
+    space = spaceyaml.load(root)
+    now = space.now()
+    kind, subject = seed_parts(seed)
+    seed_dir = root / Path(seed)
+    report = onboard.Report(case="project")
+    receipt_path = root / "_meta" / "state" / f"mint-{name}.yaml"
+    phases = dict((onboard.read_yaml(receipt_path, {}) or {}).get("phases") or {})
+    offline = not online
+    org = org or (onboard.git_remote(root) or "/").split("/")[0] or None
+
+    def receipt():
+        onboard.write_yaml(receipt_path, {"name": name, "seed": str(seed), "crew": crew, "at": pages.iso(now),
+                                          "space": phases.get("create"), "phases": phases,
+                                          "steps": [s.row() for s in report.steps]})
+
+    dst, repo = onboard.create_space(report, root, name, name, offline, org, home,
+                                     onboard.template_repo(root), dry_run)
+    if dst is None:
+        receipt()
+        return report
+    phases["create"] = str(dst)
+    mount = next((m for m in space.mounts if m.get("name") == "brain"), {})
+    brain_path = mount.get("path") or "brain"
+    if offline and not Path(brain_path).is_absolute() and space.mount_root("brain") is not None:
+        brain_path = os.path.relpath(space.mount_root("brain"), dst).replace("\\", "/")
+    # A sub-team's parent is its division: it mounts every ancestor flat (the brain and the
+    # division), and its releases still go to each subject's home.
+    extra_mounts = []
+    if parent and parent != "brain":
+        pmount = next((m for m in space.mounts if m.get("name") == parent), None)
+        if pmount is not None:
+            proot = space.mount_root(parent)
+            ppath = os.path.relpath(proot, dst).replace("\\", "/") if offline and proot else f"mounts/{parent}"
+            extra_mounts.append({"name": parent, "repo": pmount.get("repo"), "path": ppath, "branch": "main"})
+    values = onboard.space_values(space.data, name, space.owner, space.owner_email, crew,
+                                  parent or space.parent or "brain", mount.get("repo"), brain_path,
+                                  mounts=extra_mounts or None)
+    onboard.setup_space(report, dst, "project", values, [])
+    phases["fill"] = True
+    target = dst / "knowledge" / kind / subject
+    copied = 0
+    for src in sorted(seed_dir.rglob("*.md")) if seed_dir.is_dir() else []:
+        out = target / src.relative_to(seed_dir)
+        if not out.exists():
+            draft_page(src, out, now)
+            copied += 1
+    report.add("copy seed", seed_dir.is_dir(), f"ls {target}",
+               f"{copied} pages drafted" if seed_dir.is_dir() else f"seed {seed} not found")
+    phases["copy"] = phases.get("copy", 0) + copied if isinstance(phases.get("copy"), int) else copied
+    reg = registry.Registry(root, space)
+    local, items = reg.subjects.get(subject), []
+    match, link = link_items(name)
+    items += link
+    if local is not None:
+        local.home = name
+        for key, value in match.items():
+            local.match.setdefault(key, value)
+        reg.save()
+        result = f"home: {name} set on {subject}"
+    elif reg.get(subject) is not None:
+        result = f"{subject} lives in an ancestor's registry; its owner sets home: {name}"
+        items.append({"id": f"mint-{name}-home", "kind": "question",
+                      "text": f"set home: {name} on {subject} in the parent's registry",
+                      "recommendation": "yes", "default": "the subject's conclusions keep landing in the parent",
+                      "deadline": None, "depends": 2, "payload": f"_meta/state/mint-{name}.yaml", "fingerprint": ""})
+    else:
+        reg.add({"id": subject, "kind": kind, "title": onboard.humanize(subject), "home": name,
+                 "match": match}, by="mint", now=now)
+        reg.save()
+        result = f"{subject} added with home: {name}"
+    report.add("registry home", True, f"python _meta/tools/registry.py . find {subject}", result)
+    phases["registry"] = result
+    items.append({"id": f"mint-{name}-team", "kind": "question",
+                  "text": f"create team {name}-crew with {', '.join(crew) or 'nobody yet'}",
+                  "recommendation": "yes", "default": "the crew is added by hand later", "deadline": None,
+                  "depends": 1, "payload": f"_meta/state/mint-{name}.yaml", "fingerprint": ""})
+    needs = root / "_inbound" / "needs-you" / "mint.yaml"
+    existing = (onboard.read_yaml(needs, {}) or {}).get("items") or []
+    ids = {i["id"] for i in items}
+    onboard.write_yaml(needs, {"items": [i for i in existing if i.get("id") not in ids] + items})
+    report.add(f"platform team {name}-crew", False, f"gh api orgs/{org or '<org>'}/teams/{name}-crew",
+               "proposed on Needs you; the owner creates it", needs_owner=True)
+    phases["needs_you"] = True
+    if online:
+        onboard.commit_fill(report, dst, True, dry_run)
+    onboard.finish_space(report, dst)
+    report.spaces[name] = dst
+    receipt()
+    return report
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("root", nargs="?", default=".")
+    ap.add_argument("--channel", metavar="OTHER_ROOT",
+                    help="make the corridor between this space and another (both mount it)")
+    ap.add_argument("--seed")
+    ap.add_argument("--name")
+    ap.add_argument("--parent", help="the parent space (a division) for a sub-team")
+    ap.add_argument("--crew", nargs="*", default=[])
+    ap.add_argument("--offline", action="store_true")
+    ap.add_argument("--org")
+    ap.add_argument("--home")
+    ap.add_argument("--dry-run", action="store_true")
+    args = ap.parse_args(argv)
+    if args.channel:
+        report = channel(args.root, args.channel, online=not args.offline, org=args.org, home=args.home,
+                         dry_run=args.dry_run, name=args.name)
+        onboard.print_steps(report.steps)
+        return 1 if report.failed() else 0
+    if not args.seed or not args.name:
+        ap.error("give --seed and --name, or --channel")
+    report = run(args.root, args.seed, args.name, args.crew, not args.offline, org=args.org,
+                 home=args.home, dry_run=args.dry_run, parent=args.parent)
+    onboard.print_steps(report.steps)
+    return 1 if report.failed() else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

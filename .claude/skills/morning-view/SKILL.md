@@ -1,0 +1,70 @@
+---
+name: morning-view
+description: Run morning_view.py to render the person's Needs you page and the counts-only mail payload, then send that payload unchanged with your mail connector from the person's own mailbox to themselves and record the message id. Use as the last step of the daily chain, or when the person asks for their morning view.
+---
+
+# morning-view: the one mail, counts only
+
+The tool renders and infers nothing; you send exactly what it rendered. This is the one
+send in the system, and it is the person's own mail to themselves.
+
+## When
+
+- Scheduled: last step of the daily chain (after status and release), once per 24 hours;
+  every windowed item is listed exactly once before it leaves.
+- On request: "show my morning view" (render; send only when the person asks for a resend).
+
+## Run
+
+`python _meta/tools/morning_view.py <root> --person "<name>" [--shadow]`
+
+Then send: read `_meta/state/morning-payload.json` (`to`, `subject`, `htmlBody`, `body`)
+and send it with your mail connector from the person's own mailbox to `to` (their
+`owner_email` in `space.yaml`), subject and both bodies as rendered. Read the sent message
+back (fetch it by id, or search the sent folder for the subject) and record its id.
+
+## What the tool already did
+
+Wrote `live/needs-you.md` (the full list: deadline first, then how much depends on it,
+about seven shown, the rest counted); stamped every queue item leaving within the next 24
+hours `listed: true` with the date, which is what lets release ship it tomorrow; wrote the
+notice and rendered the payload: counts with plain labels, the health line, `[shadow]` in
+the subject when asked; never a title, name, date or path from the items counted.
+
+## Judgment left to you
+
+None on content. Your steps: at most one briefing per day: run `python
+_meta/tools/morning_view.py <root> sent-today` first; exit 0 means a briefing already went
+today (whichever routine recorded it), so skip the send and say so. Send always, quiet or
+not, because a missing briefing means the routine broke; on a failed send, try once more,
+then record the failure and leave the page standing. Record the send with the tool, never by
+hand: `python _meta/tools/morning_view.py <root> record-send --id <message id> [--cost <n>]`,
+or `record-send --failed "<reason>"`.
+
+## Never
+
+- Never add, remove or reword anything in the payload; never attach an item's text.
+- Never send to anyone but `to`; never a chat self-message (it does not notify).
+- Never move, edit, release or hold an item this view lists; never write `stable`.
+- Never run git.
+
+## Scheduled invocation
+
+```
+Run the morning view for the space at <root> as <person> (daily chain, after release).
+1. Read <root>/AGENTS.md and <root>/rules.md, then <root>/.claude/skills/morning-view/SKILL.md
+   and follow it exactly: run `python _meta/tools/morning_view.py <root> --person "<person>"`
+   (add --shadow when space.yaml says mode: shadow).
+2. Run `python _meta/tools/morning_view.py <root> sent-today`; exit 0 means skip the send.
+   Otherwise send _meta/state/morning-payload.json exactly as rendered with the mail
+   connector, from <person>'s own mailbox to its `to` address, read the sent message back
+   and run `python _meta/tools/morning_view.py <root> record-send --id <message id>`. One
+   briefing per day; send even when the list is empty.
+3. Commit nothing. Report: sent or not, the message id, the counts the subject line shows.
+```
+
+## Behaviour scenarios
+
+`_meta/tests/behaviour/morning-view.yaml`: a leaving item is stamped `listed: true`; the
+payload exists and carries no item title; `--shadow` prefixes the subject; writes only under
+`live/`, `_outbound/queue/` (the stamp) and `_meta/state/`; the tool sends nothing.

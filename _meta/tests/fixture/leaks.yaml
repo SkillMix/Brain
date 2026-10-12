@@ -1,0 +1,19 @@
+# The fixture company's leak tests: what each audience must never be able to read.
+leaks:
+  - audience_root: chloe
+    request: {asker: chloe, holder: harbor, subject: harbor, class: status,
+              question: "Where does Harbor stand?"}
+    must_not_find: ["950", "day rate"]
+    reason: "an asker never gets commercial terms by asking: the covered answer carries none"
+  - audience_root: harbor
+    must_not_find: ["950", "day rate"]
+    reason: "left-out list: commercial terms never travel to a project destination"
+  - audience_root: brain
+    must_not_find: ["day rate", "paid search ads"]
+    reason: "stays in the owner's space: a left-out term, and a message with no identifiers"
+  - audience_root: chloe
+    must_not_find: ["paid search ads"]
+    reason: "another person's message never reaches a colleague's space"
+  - audience_root: beacon
+    must_not_find: ["3 November"]
+    reason: "other client: a Harbor fact never reaches the Beacon project"

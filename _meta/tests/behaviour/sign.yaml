@@ -1,0 +1,64 @@
+# Only a person signs (rules.md section 1, hard rule 3). A routine actor asking `apply`
+# to sign a candidate is refused before anything is touched: exit 1, the candidate stays
+# a draft where it was, and nothing but state and the log may change.
+name: sign refuses a routine actor and writes nothing
+command:
+  - python
+  - _meta/tools/sign.py
+  - "{root}"
+  - apply
+  - --by
+  - "routine:test"
+  - --verdicts
+  - "{root}/_meta/state/scenario-verdicts.yaml"
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1440
+      name: ada
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience: [Ada Okafor]
+      parent: brain
+    work/.gitkeep: ""
+    journal/.gitkeep: ""
+    outbox/.gitkeep: ""
+    _meta/subjects.yaml:
+      subjects:
+        - id: harbor
+          kind: projects
+          title: Harbor
+          state: active
+          owner: Ada Okafor
+          home: harbor
+          match: {label: Harbor, channel: "#harbor"}
+    _meta/state/scenario-verdicts.yaml: "harbor: yes\n"
+    _inbound/candidates/harbor.md: |
+      ---
+      id: p-0000c001
+      type: entity
+      title: Harbor
+      status: draft
+      generated: {by: distill, at: "2026-10-05T09:00:00Z"}
+      subject: harbor
+      evidence: [m-scenario-1]
+      ---
+      # Harbor
+
+      Extension for the client. Go-live moves to 3 November.
+
+      ## New evidence
+
+      - 2026-10-02 the client moved the go-live to 3 November
+env: {SPACE_NOW: "2026-10-05T09:00:00Z"}
+expect:
+  exit: 1
+  writes_only_under: []
+  never_contains:
+    "_inbound/**": ["status: stable"]
+    "knowledge/**": ["status: stable"]
+  must_exist: ["_inbound/candidates/harbor.md"]
+  must_not_exist: ["knowledge/projects/**/*.md"]

@@ -1,0 +1,29 @@
+# The sync script is the one tool that runs git. The scenario copy has no .git, so a dry
+# run must recognise that it is not in a repository, skip (exit 2) and touch nothing:
+# nothing is staged, committed or written outside its own state.
+name: sync outside a repository skips and changes nothing
+command: [python, _meta/tools/sync.py, --root, "{root}", --dry-run]
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1440
+      name: ada
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience: [Ada Okafor]
+      parent: brain
+    work/.gitkeep: ""
+    journal/.gitkeep: ""
+    outbox/.gitkeep: ""
+    personal/private-note.md: "A private note that is never staged.\n"
+    work/projects/harbor/kickoff/notes.md: "Weekly check-in on Tuesdays.\n"
+env: {SPACE_NOW: "2026-10-05T09:00:00Z"}
+expect:
+  exit: 2
+  writes_only_under: []
+  never_contains:
+    "_meta/state/**": ["private-note"]
+  must_exist: ["personal/private-note.md", "work/projects/harbor/kickoff/notes.md"]

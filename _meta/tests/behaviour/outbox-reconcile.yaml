@@ -1,0 +1,38 @@
+# Outbox reconcile files a fired draft and never sends: writes only under outbox/, its own
+# state and log.md.
+name: outbox reconcile files a sent draft, never sends
+command: [python, _meta/tools/outbox_reconcile.py, "{root}"]
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1
+      name: ada
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience: [Ada Okafor]
+      parent: brain
+    work/.gitkeep: ""
+    journal/.gitkeep: ""
+    outbox/proposal.md: |
+      ---
+      id: p-0000e001
+      type: source
+      title: Pilot proposal
+      status: draft
+      generated: {by: agent, at: "2026-10-05T08:00:00Z"}
+      to: [lead@northgate.example]
+      ---
+      Dear lead, the proposal.
+    _meta/state/feed/mail.jsonl: |
+      {"id": "m-sent-1", "kind": "mail", "at": "2026-10-05T10:00:00Z", "from": "ada@lantern.example", "to": ["lead@northgate.example"], "subject": "Pilot proposal", "text": "sent"}
+env: {SPACE_NOW: "2026-10-05T12:00:00Z"}
+expect:
+  exit: 0
+  writes_only_under: [outbox/]
+  must_exist: ["outbox/sent/proposal.md"]
+  must_not_exist: ["outbox/proposal.md"]
+  never_contains:
+    "outbox/**": ["status: stable"]

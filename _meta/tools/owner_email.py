@@ -1,0 +1,308 @@
+"""Render a short owner notice into a ready-to-send HTML email (shape 1).
+
+A routine writes a small JSON notice; this module checks it for plain language and
+fills `_meta/templates/email.html`, so no agent composes email HTML by hand. Nothing
+here sends: the payload is what the agent hands to its mail connector. The recipient
+is `owner_email` in the space's `space.yaml`; `--to` overrides it.
+
+    python owner_email.py check  NOTICE.json
+    python owner_email.py render NOTICE.json [--root R] [--to ADDR] [--out PAYLOAD.json]
+                                             [--preview PAGE.html] [--date YYYY-MM-DD]
+
+`render` prints (or writes) the send arguments {"to": [...], "subject": ..., "htmlBody":
+..., "body": ...}. Exit code 2 means the notice failed the check; the errors say what
+to rewrite.
+
+A notice: {"kind": security|action|fyi|briefing, "sender": <routine>, "title", "summary",
+"steps": [...], "stats": [{"count", "label", "hint"}], "link": {"label", "url"},
+"reassure", "also": [{"title", "text"}], "allow_terms": [...]}.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import html
+import json
+import re
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import spaceyaml  # noqa: E402
+
+HERE = Path(__file__).resolve().parent
+TEMPLATE = HERE.parent / "templates" / "email.html"
+
+KINDS = {
+    #          badge text        accent     badge background
+    "security": ("Security check", "#b91c1c", "#fee2e2"),
+    "action":   ("Action needed",  "#b45309", "#fef3c7"),
+    "fyi":      ("For your info",  "#1d4ed8", "#dbeafe"),
+    "briefing": ("Morning briefing", "#047857", "#d1fae5"),
+}
+
+# Which routine sent it, in words a reader outside the machinery understands.
+SENDERS = {
+    "morning-view": "daily briefing",
+    "sweep": "evidence check",
+    "check": "consistency check",
+    "status": "status refresh",
+    "release": "release check",
+    "sync": "sync check",
+}
+
+LIMITS = {"title": 70, "summary": 280, "step": 200, "steps": 5, "reassure": 220,
+          "also": 2, "also_text": 240, "stats": 6, "words": 200}
+
+# Words of the machinery a reader will not know -> what to say instead.
+JARGON = {
+    r"brain": "the company knowledge base",
+    r"candidates?": "notes waiting for your sign-off",
+    r"witness(?:ed)?": "a saved note",
+    r"watermarks?": "leave it out",
+    r"sweeps?": "check",
+    r"distill(?:ed)?": "summarise",
+    r"routines?": "scheduled check",
+    r"outbox": "drafts waiting for you to send",
+    r"promot(?:e|ed|ion)": "approve",
+    r"charter": "your privacy rules",
+    r"frontmatter": "leave it out",
+    r"jsonl": "leave it out",
+    r"fingerprints?": "leave it out",
+    r"mounts?": "leave it out",
+    r"librarian": "the upkeep check",
+}
+JARGON_RE = [(re.compile(rf"\b{pat}\b", re.I), fix) for pat, fix in JARGON.items()]
+PATH_RE = re.compile(r"(?:\b(?:_inbound|_outbound|_meta|_scratch|knowledge|live|journal|work|outbox|"
+                     r"brain|mounts|identity)/|\b[\w-]+\.(?:md|json|jsonl|yaml|yml|py)\b)", re.I)
+URL_RE = re.compile(r"https?://|www\.", re.I)
+SECRET_RE = re.compile(r"\b(?:sk|pk|rk|ghp|gho|xox[abpr])[-_][A-Za-z0-9_-]{8,}|[A-Za-z0-9+/_=-]{32,}")
+DASH_RE = re.compile("[—–]")
+
+
+class NoticeError(ValueError):
+    def __init__(self, problems: list):
+        super().__init__("\n".join(problems))
+        self.problems = problems
+
+
+def _texts(notice: dict) -> list:
+    """Every reader-facing string with a label for error messages."""
+    out = [("title", notice.get("title", "")), ("summary", notice.get("summary", ""))]
+    out += [(f"steps[{i}]", s) for i, s in enumerate(notice.get("steps", []))]
+    for i, s in enumerate(notice.get("stats", [])):
+        out += [(f"stats[{i}].label", s.get("label", "")), (f"stats[{i}].hint", s.get("hint", ""))]
+    if notice.get("reassure"):
+        out.append(("reassure", notice["reassure"]))
+    for i, a in enumerate(notice.get("also", [])):
+        out += [(f"also[{i}].title", a.get("title", "")), (f"also[{i}].text", a.get("text", ""))]
+    if notice.get("link"):
+        out.append(("link.label", notice["link"].get("label", "")))
+    return out
+
+
+def check(notice: dict) -> list:
+    """Return every problem; an empty list means the notice may be sent."""
+    problems: list = []
+    kind = notice.get("kind")
+    if kind not in KINDS:
+        problems.append(f"kind must be one of {sorted(KINDS)}")
+    for field in ("title", "summary"):
+        if not str(notice.get(field, "")).strip():
+            problems.append(f"{field} is required")
+    if kind == "briefing" and not (notice.get("stats") or notice.get("reassure") or notice.get("also")):
+        problems.append("a briefing needs stats, or a reassure or also line on an all-quiet day")
+    if kind in ("security", "action") and not notice.get("steps"):
+        problems.append(f"a {kind} notice needs steps: what exactly should the reader do?")
+
+    def over(label, value, limit):
+        if len(value) > limit:
+            problems.append(f"{label} is {len(value)} characters; keep it under {limit}")
+
+    over("title", notice.get("title", ""), LIMITS["title"])
+    over("summary", notice.get("summary", ""), LIMITS["summary"])
+    over("reassure", notice.get("reassure", ""), LIMITS["reassure"])
+    if len(notice.get("steps", [])) > LIMITS["steps"]:
+        problems.append(f"at most {LIMITS['steps']} steps; move the rest to a follow-up")
+    for i, s in enumerate(notice.get("steps", [])):
+        over(f"steps[{i}]", s, LIMITS["step"])
+    if len(notice.get("also", [])) > LIMITS["also"]:
+        problems.append(f"at most {LIMITS['also']} 'also' items")
+    for i, a in enumerate(notice.get("also", [])):
+        over(f"also[{i}].text", a.get("text", ""), LIMITS["also_text"])
+    if len(notice.get("stats", [])) > LIMITS["stats"]:
+        problems.append(f"at most {LIMITS['stats']} stats")
+    link = notice.get("link")
+    if link and not re.match(r"https://", link.get("url", "")):
+        problems.append("link.url must be an https:// address")
+
+    allowed = {t.lower() for t in notice.get("allow_terms", [])}
+    words = 0
+    for label, text in _texts(notice):
+        text = str(text)
+        words += len(text.split())
+        if DASH_RE.search(text):
+            problems.append(f"{label}: no em or en dashes; use a comma or a full stop")
+        if URL_RE.search(text):
+            problems.append(f"{label}: put links in the link field, not in the text")
+        if PATH_RE.search(text):
+            problems.append(f"{label}: no file paths or internal references ({PATH_RE.search(text).group(0)!r})")
+        if SECRET_RE.search(text):
+            problems.append(f"{label}: looks like a key, token or ID string; never put secrets or long codes in a notice")
+        for rx, fix in JARGON_RE:
+            m = rx.search(text)
+            if m and m.group(0).lower() not in allowed:
+                problems.append(f"{label}: '{m.group(0)}' is machinery jargon; say '{fix}' instead")
+    if words > LIMITS["words"]:
+        problems.append(f"{words} words in total; keep the whole notice under {LIMITS['words']}")
+    return problems
+
+
+def _inline(text: str) -> str:
+    """Escape, then allow **bold** as the only markup."""
+    return re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", html.escape(str(text)))
+
+
+def _plain(text: str) -> str:
+    return str(text).replace("**", "")
+
+
+def _section(heading: str, inner: str) -> str:
+    return ('<tr><td style="padding:18px 28px 4px;">'
+            f'<h2 style="margin:0 0 10px;font-size:13px;letter-spacing:.4px;text-transform:uppercase;color:#6b7280;">{heading}</h2>'
+            f"{inner}</td></tr>")
+
+
+def _blocks(notice: dict, accent: str) -> str:
+    parts = []
+    if notice.get("stats"):
+        rows = "".join(
+            '<tr><td valign="top" style="width:52px;padding:6px 0;">'
+            f'<div style="width:40px;height:40px;border-radius:10px;background:#f3f4f6;color:{accent};'
+            f'font-size:20px;font-weight:700;line-height:40px;text-align:center;">{int(s["count"])}</div></td>'
+            f'<td valign="top" style="padding:6px 0;font-size:15px;line-height:1.45;"><strong>{_inline(s["label"])}</strong>'
+            + (f'<br><span style="color:#6b7280;font-size:13px;">{_inline(s["hint"])}</span>' if s.get("hint") else "")
+            + "</td></tr>"
+            for s in notice["stats"])
+        parts.append(_section("Today", f'<table role="presentation" cellpadding="0" cellspacing="0" width="100%">{rows}</table>'))
+    if notice.get("steps"):
+        rows = "".join(
+            '<tr><td valign="top" style="width:34px;padding:5px 0;">'
+            f'<div style="width:24px;height:24px;border-radius:50%;background:{accent};color:#fff;font-size:13px;'
+            f'font-weight:700;line-height:24px;text-align:center;">{i}</div></td>'
+            f'<td valign="top" style="padding:7px 0;font-size:15px;line-height:1.5;">{_inline(s)}</td></tr>'
+            for i, s in enumerate(notice["steps"], 1))
+        parts.append(_section("What to do", f'<table role="presentation" cellpadding="0" cellspacing="0" width="100%">{rows}</table>'))
+    if notice.get("link"):
+        parts.append('<tr><td style="padding:10px 28px 4px;">'
+                     f'<a href="{html.escape(notice["link"]["url"], quote=True)}" style="display:inline-block;padding:10px 18px;'
+                     f'border-radius:8px;background:{accent};color:#ffffff;text-decoration:none;font-size:14px;font-weight:600;">'
+                     f'{_inline(notice["link"]["label"])}</a></td></tr>')
+    if notice.get("reassure"):
+        parts.append('<tr><td style="padding:16px 28px 4px;"><div style="padding:12px 14px;border-radius:8px;'
+                     'background:#f0fdf4;border-left:4px solid #16a34a;font-size:14px;line-height:1.5;color:#14532d;">'
+                     f'{_inline(notice["reassure"])}</div></td></tr>')
+    if notice.get("also"):
+        inner = "".join(f'<p style="margin:0 0 10px;font-size:14px;line-height:1.5;color:#374151;">'
+                        f'<strong>{_inline(a["title"])}</strong> {_inline(a["text"])}</p>' for a in notice["also"])
+        parts.append(_section("Also worth knowing", inner))
+    return "".join(parts)
+
+
+def _footer(notice: dict, today: str) -> str:
+    who = SENDERS.get(notice.get("sender", ""), "space assistant")
+    return f"Sent automatically by your space's assistant ({who}) on {today}. You don't need to reply."
+
+
+def render(notice: dict, to: list, today: str | None = None) -> dict:
+    """The send payload for a notice that passes the check; NoticeError otherwise."""
+    problems = check(notice)
+    if problems:
+        raise NoticeError(problems)
+    today = today or dt.date.today().isoformat()
+    badge, accent, badge_bg = KINDS[notice["kind"]]
+    subject = f"{badge}: {_plain(notice['title'])}"
+    fills = {
+        "subject": html.escape(subject), "preheader": html.escape(_plain(notice["summary"])),
+        # Stops the inbox preview line from running on into the badge and title.
+        "preheader_pad": "&#847;&nbsp;" * 100,
+        "accent": accent, "badge_bg": badge_bg, "badge": badge,
+        "title": _inline(notice["title"]), "summary": _inline(notice["summary"]),
+        "blocks": _blocks(notice, accent), "footer": html.escape(_footer(notice, today)),
+    }
+    page = re.sub(r"@@(\w+)@@", lambda m: fills[m.group(1)], TEMPLATE.read_text(encoding="utf-8"))
+
+    text = [_plain(notice["title"]).upper(), "", _plain(notice["summary"])]
+    if notice.get("stats"):
+        text += ["", "TODAY"] + [f"  {int(s['count'])}  {_plain(s['label'])}" + (f" ({_plain(s['hint'])})" if s.get("hint") else "")
+                                 for s in notice["stats"]]
+    if notice.get("steps"):
+        text += ["", "WHAT TO DO"] + [f"  {i}. {_plain(s)}" for i, s in enumerate(notice["steps"], 1)]
+    if notice.get("link"):
+        text += ["", f"{_plain(notice['link']['label'])}: {notice['link']['url']}"]
+    if notice.get("reassure"):
+        text += ["", _plain(notice["reassure"])]
+    if notice.get("also"):
+        text += ["", "ALSO WORTH KNOWING"] + [f"  {_plain(a['title'])} {_plain(a['text'])}" for a in notice["also"]]
+    text += ["", "--", _footer(notice, today)]
+    return {"to": list(to), "subject": subject, "htmlBody": page, "body": "\n".join(text)}
+
+
+def find_root(start=None) -> Path | None:
+    """The nearest space root (holding space.yaml) at or above `start`, else this tool's own."""
+    start = Path(start or Path.cwd()).resolve()
+    for base in [start, *start.parents, *HERE.parents]:
+        if (base / "space.yaml").is_file():
+            return base
+    return None
+
+
+def recipient(root=None) -> list:
+    """[owner_email] from the space's space.yaml; SystemExit with a plain reason when unset."""
+    found = find_root(root)
+    if found is None:
+        raise SystemExit("no recipient: no space.yaml found; pass --to or run inside a space")
+    email = spaceyaml.load(found).owner_email.strip()
+    if not email or "@" not in email or "{{" in email:
+        raise SystemExit(f"no recipient: set owner_email in {found / 'space.yaml'} (onboard fills it) or pass --to")
+    return [email]
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("command", choices=["check", "render"])
+    ap.add_argument("notice", help="notice JSON file, or - for stdin")
+    ap.add_argument("--root", help="the space whose owner_email is the recipient (default: the nearest space.yaml)")
+    ap.add_argument("--to", action="append", help="recipient; overrides owner_email")
+    ap.add_argument("--out", help="write the send payload JSON here instead of stdout")
+    ap.add_argument("--preview", help="also write the HTML page here to look at")
+    ap.add_argument("--date", help="footer date (default: today)")
+    args = ap.parse_args(argv)
+
+    raw = sys.stdin.read() if args.notice == "-" else Path(args.notice).read_text(encoding="utf-8")
+    notice = json.loads(raw)
+    if args.command == "check":
+        problems = check(notice)
+        for p in problems:
+            print(f"- {p}", file=sys.stderr)
+        print("ok" if not problems else f"{len(problems)} problem(s)")
+        return 2 if problems else 0
+    try:
+        payload = render(notice, args.to or recipient(args.root), args.date)
+    except NoticeError as e:
+        for p in e.problems:
+            print(f"- {p}", file=sys.stderr)
+        return 2
+    if args.preview:
+        Path(args.preview).write_text(payload["htmlBody"], encoding="utf-8", newline="\n")
+    out = json.dumps(payload, ensure_ascii=False)
+    if args.out:
+        Path(args.out).write_text(out, encoding="utf-8", newline="\n")
+        print(f"wrote {args.out}: {payload['subject']}")
+    else:
+        print(out)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,56 @@
+# The one settings file of a space (shape 1). `onboard` fills it; agents read it.
+# Every other setting in this repository is derived from this file or from rules.md.
+shape: 1
+profile: template          # onboard sets one of: brain | project | personal | channel
+mode: live                 # live | shadow | fixture. time_scale is accepted only for shadow and fixture.
+name: ""
+owner: ""                  # the one named human owner of this space
+owner_email: ""            # where the morning email goes
+audience: []               # everyone | [names]. The brain is read by everyone.
+parent: null               # the parent space (its name); null for the brain
+
+# The company's vocabulary of kinds under knowledge/. Declared once, in the brain;
+# every other space inherits it through its brain mount. decisions and sources are fixed.
+kinds: [clients, projects, people, domains, topics]
+
+# The badge: what an agent may do from this space, per action class.
+# Levels: propose (a person acts) | after_window (happens after the window, can be pulled back) | at_once.
+# Floors from rules.md: send_outward and spend never rise above propose.
+authority:
+  edit_inside: at_once
+  write_knowledge: propose
+  release: after_window
+  write_outside_system: at_once
+  send_outward: propose
+  spend: propose
+
+# Who acts here. Every action above propose records whom it acted for and by which path.
+agents:
+  - {name: routines, acts_for: owner}
+
+models: [any]              # which model providers may read this space; the permission profile enforces it
+budget: {tokens_per_day: 100000000000}   # declared, not enforced; the health line shows the cost
+window_hours: 24           # the release window; 24 is the floor
+
+# A standing choice sends one kind of record to one destination at once.
+standing_choices: []       # [{destination: <space name>, kind: mail|call|message|event|document}]
+
+# What never travels to this space, whatever the release class (whole-word terms).
+left_out: [price, prices, pricing, fee, fees, commercial terms, day rate, hourly rate, margin,
+           salary, pay, employment, immigration, visa, password, credential, credentials,
+           access link, api key, client data, attachment, attachments, transcript, transcripts]
+
+# What never leaves this space (whole-word terms). The charter explains these in words.
+never_leaves: [equity, settlement, termination, legal position, medical, salary]
+
+# Paths whose pull requests wait for the owner instead of merging on green.
+protected: [identity/, rules.md, space.yaml, .claude/, _meta/tools/, .github/]
+
+# Connected systems and who can already read their records (owner | crew | everyone | [names]).
+sources: []                # [{name: mail, adapter: gmail, audience: owner}]
+
+# Read-only, pinned windows on other spaces. The brain is mounted at ./brain.
+mounts: []                 # [{name: brain, repo: https://..., branch: main, path: brain}]
+
+# Cadences (UTC cron). The chain is driven by dependency, not by these clocks alone.
+routines: {sweep: "0 1,10,16 * * *", daily: "0 11 * * *"}

@@ -1,0 +1,35 @@
+# Settings of this space (shape 1): a channel, the corridor between two spaces that people
+# never open. Only _inbound/ and _outbound/ exist here.
+shape: 1
+profile: channel
+mode: {mode}
+name: {name}
+owner: {owner}
+owner_email: {owner_email}
+audience: {audience}
+parent: {parent}
+
+authority:
+  edit_inside: at_once
+  write_knowledge: propose
+  release: after_window
+  write_outside_system: at_once
+  send_outward: propose
+  spend: propose
+
+agents:
+  - name: routines
+    acts_for: owner
+
+models: [any]
+budget:
+  tokens_per_day: 100000000000
+window_hours: 24
+
+standing_choices: {standing_choices}
+left_out: {left_out}
+never_leaves: {never_leaves}
+protected: {protected}
+sources: []
+mounts: {mounts}
+{extra}

@@ -1,0 +1,66 @@
+# The morning view renders Needs you and stamps the leaving queue items as listed. It
+# infers nothing, signs nothing and sends nothing: no write outside live/, the queue, the
+# outbox and its own state (the notice and the mail payload).
+name: morning view renders and lists, never signs or sends
+command: [python, _meta/tools/morning_view.py, "{root}", --person, "Ada Okafor"]
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1440
+      name: ada
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience: [Ada Okafor]
+      parent: brain
+    work/.gitkeep: ""
+    journal/.gitkeep: ""
+    outbox/.gitkeep: ""
+    _meta/subjects.yaml:
+      subjects:
+        - id: harbor
+          kind: projects
+          title: Harbor
+          state: active
+          owner: Ada Okafor
+          home: harbor
+          match: {label: Harbor, channel: "#harbor"}
+    _outbound/queue/q-scenario-1.md: |
+      ---
+      id: p-0000b001
+      type: source
+      title: Harbor go-live moves to 3 November
+      status: draft
+      generated: {by: sweep, at: "2026-10-05T08:00:00Z"}
+      class: window
+      destination: harbor
+      stage_after: "2026-10-05T09:00:30Z"
+      listed: false
+      subject: harbor
+      evidence: m-scenario-1
+      ---
+      From the client: after the board meeting the go-live moves to 3 November.
+    _inbound/candidates/harbor.md: |
+      ---
+      id: p-0000c001
+      type: entity
+      title: Harbor
+      status: draft
+      generated: {by: distill, at: "2026-10-05T09:00:00Z"}
+      subject: harbor
+      evidence: [m-scenario-1]
+      ---
+      # Harbor
+
+      Go-live moves to 3 November.
+env: {SPACE_NOW: "2026-10-05T09:00:00Z"}
+expect:
+  exit: 0
+  writes_only_under: [live/, _outbound/queue/, outbox/]
+  never_contains:
+    "live/**": ["status: stable"]
+    "_outbound/**": ["status: stable"]
+    "_inbound/**": ["status: stable"]
+  must_exist: ["live/needs-you.md"]

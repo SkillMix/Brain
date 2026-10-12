@@ -1,0 +1,62 @@
+# The onboarding interview. Asked in order; every question has a default; typing `skip`
+# leaves the default in place and puts the question on Needs you for later.
+# Defaults starting with `$` are computed: $folder (the repository's folder name),
+# $user (the signed-in user), $org (the organization of the git remote),
+# $never_leaves (the template's never-leaves terms).
+questions:
+  - key: company
+    ask: What is the company called?
+    default: $folder
+    applies_to: [company]
+    kind: text
+  - key: owner
+    ask: Who is the top owner, the one person who signs for the company?
+    default: $user
+    applies_to: [company]
+    kind: text
+  - key: owner_email
+    ask: Which email address should the morning briefing go to?
+    default: ""
+    applies_to: [company]
+    kind: text
+  - key: domains
+    ask: "Which domains does the company have, and who owns each? (comma-separated; `name: owner`, the owner defaults to the top owner)"
+    default: sales, delivery, operations
+    applies_to: [company]
+    kind: list
+  - key: never_leaves
+    ask: Which terms mark what must never leave this space? (whole words; the defaults are shown)
+    default: $never_leaves
+    applies_to: [company, person]
+    kind: list
+  - key: name
+    ask: What is your name?
+    default: $user
+    applies_to: [person]
+    kind: text
+  - key: email
+    ask: Which email address should your morning briefing go to?
+    default: ""
+    applies_to: [person]
+    kind: text
+  - key: parent
+    ask: Which space is the parent of your workspace?
+    default: brain
+    applies_to: [person]
+    kind: text
+  - key: feeds
+    ask: "Which feeds should be connected, each with who may already read it? (none, or e.g. `mail: owner, chat: crew`)"
+    default: none
+    applies_to: [company, person, project]
+    kind: choice
+    choices: [mail, calendar, chat, calls, documents, tracker]
+  - key: schedule
+    ask: How often should the sync script run, in minutes?
+    default: 15
+    applies_to: [company, person, project]
+    kind: text
+  - key: org
+    ask: Which organization on the platform holds the repositories?
+    default: $org
+    applies_to: [company, person, project]
+    kind: text

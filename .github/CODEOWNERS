@@ -1,0 +1,12 @@
+# Protected paths (space.yaml `protected:`, rules.md section 8). Pull requests touching
+# these wait for the space owner's one click; everything else lands on green.
+# `onboard` replaces @OWNER-LOGIN with the owner's GitHub login and keeps this list in
+# step with space.yaml. The template repository itself lands every pull request on
+# green (docs/decisions.md), so there this file only documents the instance rule.
+
+/identity/      @OWNER-LOGIN
+/rules.md       @OWNER-LOGIN
+/space.yaml     @OWNER-LOGIN
+/.claude/       @OWNER-LOGIN
+/_meta/tools/   @OWNER-LOGIN
+/.github/       @OWNER-LOGIN

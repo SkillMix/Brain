@@ -1,0 +1,21 @@
+# Leak tests: what an audience must never be able to read, as data.
+#
+# audience_root: a root name the runner maps (--root name=path), a mount name, or a path
+#                relative to this space. One that resolves nowhere is skipped with a note,
+#                never counted as a pass.
+# must_not_find: substrings (matched without regard to case) that may not appear in any
+#                content file under that root. Not read: .git/, the machinery (_meta/tools/,
+#                _meta/tests/, _meta/templates/, .claude/, .github/, docs/), the files that
+#                name the terms (space.yaml, rules.md, AGENTS.md), the two logs under
+#                _meta/state/, and the private, gitignored zones.
+# reason:        one line a reader understands without the yaml.
+#
+# The two below are examples from the fixture company (_meta/tests/fixture/). Replace them
+# with your own: one entry per audience that must not see something.
+leaks:
+  - audience_root: harbor
+    must_not_find: ["day rate", "950"]
+    reason: "commercial terms are on a project destination's left-out list (rules.md section 4)"
+  - audience_root: brain
+    must_not_find: ["paid search ads"]
+    reason: "a message with no identifiers stays in the owner's space"

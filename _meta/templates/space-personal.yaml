@@ -1,0 +1,40 @@
+# Settings of this space (shape 1): a personal workspace. Written by onboard; agents read it.
+# Kinds are not declared here: they come from the brain through the mount below.
+shape: 1
+profile: personal
+mode: {mode}
+name: {name}
+owner: {owner}
+owner_email: {owner_email}
+audience: {audience}
+parent: {parent}
+
+# The badge: what an agent may do from this space, per action class.
+authority:
+  edit_inside: at_once
+  write_knowledge: propose
+  release: after_window
+  write_outside_system: at_once
+  send_outward: propose
+  spend: propose
+
+agents:
+  - name: routines
+    acts_for: owner
+
+models: [any]
+budget:
+  tokens_per_day: 100000000000
+window_hours: 24
+
+standing_choices: {standing_choices}
+left_out: {left_out}
+never_leaves: {never_leaves}
+protected: {protected}
+sources: {sources}
+# Read-only, pinned windows: the brain and the projects this person works on.
+mounts: {mounts}
+routines:
+  sweep: "0 1,10,16 * * *"
+  daily: "0 11 * * *"
+{extra}

@@ -1,0 +1,38 @@
+# The fixture company's answer tests. Each runs in the asker's space (onboard --fixture
+# maps ada, ben and chloe to their workspaces).
+questions:
+  - question: "When does Harbor go live?"
+    subject: harbor
+    expect: ["3 November"]
+    asker: ada
+    via: both
+    # The client's mail is attached to harbor by its label and reaches Ada's own pages at
+    # once (her standing choice); after her yes the signed page carries the date.
+  - question: "What did the clinic confirm?"
+    subject: beacon
+    expect: ["2026-11-10"]
+    asker: ben
+    via: both
+    # Passes only after the window and Chloe's listing: the mail leaves Chloe's space to
+    # beacon after one window and one morning view, never before.
+  - question: "What is going on with Beacon?"
+    subject: beacon
+    kind: status
+    expect: ["BEACON-12 closed"]
+    asker: ben
+    via: both
+    # A status question: the tracker record reaches Ben's status page for beacon by its label.
+  - question: "What did we decide about pilots?"
+    subject: sales
+    kind: decision
+    expect: ["one quarter"]
+    asker: chloe
+    via: both
+    # A decision question: Chloe signs the decision on day 2; the decisions index finds it.
+  - question: "What does the prospect want?"
+    subject: sales
+    expect: ["Q1 pilot"]
+    asker: chloe
+    via: both
+    # The prospect mail carries no identifier, so it stays home as evidence for the sales
+    # domain; Chloe's yes signs it.

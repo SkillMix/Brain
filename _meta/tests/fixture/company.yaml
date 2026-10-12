@@ -1,0 +1,43 @@
+# The fixture company. Every name here is invented. `onboard --fixture <dir>` builds a brain
+# and three workspaces from this file, copies the feeds under feed/ into each person's space
+# (mail records to _meta/state/feed/mail.jsonl, calls to calls.jsonl, by record kind), runs
+# the chains on a fast clock, applies verdicts.yaml after day two, then runs answers.yaml
+# and leaks.yaml across the spaces.
+company: Lantern Works
+top_owner: {name: Ada Okafor, slug: ada, email: ada@lantern.example}
+people:
+  - {name: Ada Okafor, slug: ada, email: ada@lantern.example, parent: brain, domain: null}
+  - {name: Ben Liu, slug: ben, email: ben@lantern.example, parent: brain, domain: delivery}
+  - {name: Chloe Martin, slug: chloe, email: chloe@lantern.example, parent: brain, domain: sales}
+domains:
+  - {id: sales, owner: Chloe Martin}
+  - {id: delivery, owner: Ben Liu}
+clients:
+  - {id: tidewater-ferries, title: Tidewater Ferries}
+  - {id: alder-clinic, title: Alder Clinic}
+projects:
+  - id: harbor
+    client: tidewater-ferries
+    crew: [ada, ben]
+    match: {label: Harbor, channel: "#harbor", repo: lantern/harbor-site}
+  - id: beacon
+    client: alder-clinic
+    crew: [ben, chloe]
+    match: {label: Beacon}
+# Registry-only subjects: harbor-site shares harbor's repository (the librarian proposes a
+# merge); three onboarding topics share a theme with no umbrella (it proposes one).
+subjects:
+  - {id: harbor-site, kind: projects, title: Harbor site, match: {repo: lantern/harbor-site}}
+  - {id: welcome-pack, kind: topics, title: Welcome pack, theme: onboarding}
+  - {id: first-week, kind: topics, title: First week, theme: onboarding}
+  - {id: buddy-system, kind: topics, title: Buddy system, theme: onboarding}
+  - {id: hiring-plan, kind: topics, title: Hiring plan, home: ada}
+# Corridors (channel spaces) between two spaces each, for requests and their answers.
+channels:
+  - [chloe, harbor]
+  - [ben, ada]
+standing_choices:
+  ada: [{destination: harbor, kind: mail}]
+never_leaves: default
+time_scale: 1440
+mode: fixture

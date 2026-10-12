@@ -1,0 +1,55 @@
+# Arms GitHub auto-merge on every pull request the gate calls auto-mergeable, so it
+# lands when `checks` passes. A pull request touching protected paths is left alone:
+# it appears on the owner's Needs you list with a one-click merge (rules.md section 8).
+# Requires "allow auto-merge" in the repository settings; onboard switches it on. The merge
+# method follows the repository: a merge commit where allowed, else squash, else rebase.
+name: auto-merge
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  arm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch the base branch
+        run: git fetch --no-recurse-submodules origin "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install pyyaml
+
+      - name: Classify the pull request
+        id: gate
+        run: |
+          set +e
+          python _meta/tools/gate.py "origin/${{ github.base_ref }}" . | tee gate.txt
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -eq 0 ] && grep -q "GATE: auto-mergeable" gate.txt; then
+            echo "class=auto-mergeable" >> "$GITHUB_OUTPUT"
+          else
+            echo "class=protected" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Arm auto-merge
+        if: steps.gate.outputs.class == 'auto-mergeable'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --merge "$PR_URL" || gh pr merge --auto --squash "$PR_URL" || gh pr merge --auto --rebase "$PR_URL"
+
+      - name: Leave it for the owner
+        if: steps.gate.outputs.class != 'auto-mergeable'
+        run: 'echo "protected paths: waits for the owner"'

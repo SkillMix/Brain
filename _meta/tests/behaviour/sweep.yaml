@@ -1,0 +1,40 @@
+# The sweep over one mail record: a witness page and, for a subject whose home is
+# elsewhere, a queue item or signal. Never a signature, never a write outside those zones.
+name: sweep writes witness pages and queue items only, never a signature
+command: [python, _meta/tools/sweep.py, "{root}"]
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1440
+      name: ada
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience: [Ada Okafor]
+      parent: brain
+      standing_choices: [{destination: harbor, kind: mail}]
+      sources: [{name: mail, adapter: files, audience: owner}]
+    work/.gitkeep: ""
+    journal/.gitkeep: ""
+    outbox/.gitkeep: ""
+    _meta/subjects.yaml:
+      subjects:
+        - id: harbor
+          kind: projects
+          title: Harbor
+          state: active
+          owner: Ada Okafor
+          home: harbor
+          match: {label: Harbor, channel: "#harbor"}
+    _meta/state/feed/mail.jsonl: |
+      {"id": "m-scenario-1", "source": "mail", "kind": "mail", "at": "2026-10-02T09:15:00Z", "from": "ops@tidewater.example", "to": ["ada@lantern.example"], "subject": "Harbor go-live moves to 3 November", "text": "After the board meeting the Harbor go-live moves to 3 November. The crew keeps the current plan otherwise.", "identifiers": {"thread": "thr-harbor-golive", "channel": null, "labels": ["Harbor"], "repo": null, "tracker": null, "calendar": null}, "attachments": [], "audience": "owner"}
+env: {SPACE_NOW: "2026-10-05T09:00:00Z"}
+expect:
+  exit: 0
+  writes_only_under: [knowledge/sources/, _outbound/]
+  never_contains:
+    "knowledge/sources/**": ["status: stable"]
+    "_outbound/**": ["status: stable"]
+  must_exist: ["knowledge/sources/2026/10/*.md"]

@@ -1,0 +1,65 @@
+# The checker: a signed page and a newer witness page give different values for the same
+# labelled number, so one check item lands under _inbound/checks/ as a pre-answered
+# question; the weekly review batch may join it as one review candidate. The checker
+# edits no page and signs nothing.
+name: check writes check items only and edits no page
+command: [python, _meta/tools/check.py, "{root}"]
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1440
+      name: ada
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience: [Ada Okafor]
+      parent: brain
+    work/.gitkeep: ""
+    journal/.gitkeep: ""
+    outbox/.gitkeep: ""
+    _meta/subjects.yaml:
+      subjects:
+        - id: harbor
+          kind: projects
+          title: Harbor
+          state: active
+          owner: Ada Okafor
+          home: harbor
+          match: {label: Harbor, channel: "#harbor"}
+    knowledge/projects/harbor/terms.md: |
+      ---
+      id: p-0000d001
+      type: entity
+      title: Harbor extension terms
+      status: stable
+      generated: {by: distill, at: "2026-09-20T09:00:00Z"}
+      signed_by: Ada Okafor
+      signed_at: "2026-09-21T09:00:00Z"
+      signed_in: ada
+      fingerprint: 8cd4750767a9cb5f5a9e6fe13446ba9de86338bc4b6c8bf685cc68ec738f1164
+      subject: harbor
+      ---
+      The extension carries a discount: 15% for the first year.
+    knowledge/sources/2026/10/m-scenario-3.md: |
+      ---
+      id: p-0000a003
+      type: source
+      title: Harbor extension, revised terms
+      status: draft
+      generated: {by: sweep, at: "2026-10-04T10:00:00Z"}
+      subject: harbor
+      source: mail
+      record: m-scenario-3
+      at: "2026-10-04T09:15:00Z"
+      audience: owner
+      ---
+      Revised for the extension: discount: 20% for the first year, as agreed on the call.
+env: {SPACE_NOW: "2026-10-05T09:00:00Z"}
+expect:
+  exit: 0
+  writes_only_under: [_inbound/checks/, _inbound/candidates/review-]
+  never_contains:
+    "_inbound/**": ["status: stable"]
+  must_exist: ["_inbound/checks/*.md", "knowledge/projects/harbor/terms.md"]

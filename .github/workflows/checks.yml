@@ -1,0 +1,100 @@
+# The required check. The platform merges a pull request when this is green; protected
+# paths wait for the owner's click instead (auto-merge.yml, rules.md section 8).
+name: checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    env:
+      GIT_TERMINAL_PROMPT: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Mounts are submodules read with a read-only token. Without the token the
+      # checks run without them; validate treats an absent mount as a warning.
+      - name: Check out mounts
+        if: hashFiles('.gitmodules') != ''
+        env:
+          # An organization secret reaches organization repositories; a workspace in a person's
+          # own account needs the same token as a repository secret (onboard lists it).
+          TOKEN: ${{ secrets.BRAIN_READ_TOKEN || secrets.MOUNT_READ_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
+            git submodule update --init --recursive || echo "mounts unavailable; continuing without them"
+          else
+            echo "no mount token (BRAIN_READ_TOKEN or MOUNT_READ_TOKEN); continuing without mounts"
+          fi
+
+      - name: Fetch the base branch
+        if: github.event_name == 'pull_request'
+        run: git fetch --no-recurse-submodules origin "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install pyyaml pytest
+
+      - name: Unit tests
+        env:
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_TERMINAL_PROMPT: "0"
+        run: python -m pytest _meta/tools/tests -q
+
+      - name: Validate the space
+        run: python _meta/tools/validate.py .
+
+      - name: Validate as the template
+        if: hashFiles('.github/template-marker') != ''
+        run: python _meta/tools/validate.py . --template
+
+      - name: Gate (protected paths and signatures)
+        if: github.event_name == 'pull_request'
+        run: python _meta/tools/gate.py origin/${{ github.base_ref || 'main' }} .
+
+      - name: Secrets scan on what changed
+        if: github.event_name == 'pull_request'
+        run: python _meta/tools/scan.py --changed-since origin/${{ github.base_ref || 'main' }}
+
+      - name: Tests as data
+        if: hashFiles('_meta/tests/answers.yaml') != '' && hashFiles('_meta/tools/tests_run.py') != ''
+        run: python _meta/tools/tests_run.py .
+
+      - name: Behaviour scenarios
+        if: hashFiles('_meta/tools/behaviour.py') != ''
+        run: python _meta/tools/behaviour.py . --all
+
+  # The template proves itself on the fixture company. Steps are gated because a job
+  # condition cannot see the checkout; in an instance this job passes doing nothing.
+  fixture:
+    runs-on: ubuntu-latest
+    env:
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_TERMINAL_PROMPT: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        if: hashFiles('.github/template-marker') != '' && hashFiles('_meta/tools/onboard.py') != ''
+        with:
+          python-version: "3.12"
+
+      - if: hashFiles('.github/template-marker') != '' && hashFiles('_meta/tools/onboard.py') != ''
+        run: pip install pyyaml pytest
+
+      - name: Build and run the fixture
+        if: hashFiles('.github/template-marker') != '' && hashFiles('_meta/tools/onboard.py') != ''
+        run: python _meta/tools/onboard.py --fixture "$RUNNER_TEMP/fixture"

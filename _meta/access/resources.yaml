@@ -1,0 +1,5 @@
+# Connected systems, each with the audience that can already read its records.
+# - name: mail
+#   adapter: gmail
+#   audience: owner        # owner | crew | everyone | [names]
+resources: []

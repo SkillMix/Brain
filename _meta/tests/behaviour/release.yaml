@@ -1,0 +1,70 @@
+# A windowed queue item whose morning view never ran (listed: false) must not leave,
+# even though its stage_after has passed. The offline destination stays empty and the
+# item's text reaches nothing under it.
+name: release ships nothing that was not listed
+command:
+  - python
+  - _meta/tools/release.py
+  - "{root}"
+  - ship
+  - --offline
+  - "harbor={root}/_scratch/dest-harbor"
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1440
+      name: ada
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience: [Ada Okafor]
+      parent: brain
+    work/.gitkeep: ""
+    journal/.gitkeep: ""
+    outbox/.gitkeep: ""
+    _meta/subjects.yaml:
+      subjects:
+        - id: harbor
+          kind: projects
+          title: Harbor
+          state: active
+          owner: Ada Okafor
+          home: harbor
+          match: {label: Harbor, channel: "#harbor"}
+    _outbound/queue/q-scenario-1.md: |
+      ---
+      id: p-0000b001
+      type: source
+      title: Harbor go-live moves to 3 November
+      status: draft
+      generated: {by: sweep, at: "2026-10-02T10:00:00Z"}
+      class: window
+      destination: harbor
+      stage_after: "2026-10-03T10:00:00Z"
+      listed: false
+      subject: harbor
+      evidence: m-scenario-1
+      ---
+      From the client: after the board meeting the go-live moves to 3 November.
+    _scratch/dest-harbor/space.yaml:
+      shape: 1
+      profile: project
+      mode: fixture
+      time_scale: 1440
+      name: harbor
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience: [Ada Okafor, Ben Liu]
+      parent: brain
+    _scratch/dest-harbor/_meta/subjects.yaml: "subjects: []\n"
+    _scratch/dest-harbor/_inbound/candidates/.gitkeep: ""
+env: {SPACE_NOW: "2026-10-05T09:00:00Z"}
+expect:
+  exit: 0
+  writes_only_under: [_outbound/]
+  never_contains:
+    "_scratch/dest-harbor/**": ["go-live moves"]
+    "_outbound/**": ["status: stable"]
+  must_not_exist: ["_scratch/dest-harbor/_inbound/candidates/*.md"]

@@ -1,0 +1,64 @@
+# Distill over one active subject with new evidence: one candidate under
+# _inbound/candidates/, always a draft. Nothing lands in knowledge/ by this route.
+name: distill proposes one draft candidate per subject and signs nothing
+command: [python, _meta/tools/distill.py, "{root}"]
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1440
+      name: ada
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience: [Ada Okafor]
+      parent: brain
+    work/.gitkeep: ""
+    journal/.gitkeep: ""
+    outbox/.gitkeep: ""
+    _meta/subjects.yaml:
+      subjects:
+        - id: harbor
+          kind: projects
+          title: Harbor
+          state: active
+          owner: Ada Okafor
+          home: harbor
+          match: {label: Harbor, channel: "#harbor"}
+    knowledge/sources/2026/10/m-scenario-1.md: |
+      ---
+      id: p-0000a001
+      type: source
+      title: Harbor go-live moves to 3 November
+      status: draft
+      generated: {by: sweep, at: "2026-10-02T10:00:00Z"}
+      subject: harbor
+      source: mail
+      record: m-scenario-1
+      at: "2026-10-02T09:15:00Z"
+      audience: owner
+      ---
+      From the client: after the board meeting the Harbor go-live moves to 3 November.
+    knowledge/sources/2026/10/k-scenario-2.md: |
+      ---
+      id: p-0000a002
+      type: source
+      title: Harbor kickoff
+      status: draft
+      generated: {by: sweep, at: "2026-10-02T15:00:00Z"}
+      subject: harbor
+      source: calls
+      record: k-scenario-2
+      at: "2026-10-02T14:00:00Z"
+      audience: crew
+      ---
+      Kickoff for the Harbor extension: weekly check-in on Tuesdays; Ben owns the data migration.
+env: {SPACE_NOW: "2026-10-05T09:00:00Z"}
+expect:
+  exit: 0
+  writes_only_under: [_inbound/candidates/]
+  never_contains:
+    "_inbound/**": ["status: stable"]
+    "knowledge/**": ["status: stable"]
+  must_exist: ["_inbound/candidates/*.md"]

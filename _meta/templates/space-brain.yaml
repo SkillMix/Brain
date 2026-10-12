@@ -1,0 +1,43 @@
+# Settings of this space (shape 1): the brain. Written by onboard from the interview; agents read it.
+# Lists in flow style are filled in; edit by hand only what the owner decides.
+shape: 1
+profile: brain
+mode: {mode}
+name: {name}
+owner: {owner}
+owner_email: {owner_email}
+audience: everyone
+parent: null
+
+# The company's vocabulary of kinds under knowledge/. Declared here once; every other
+# space inherits it through its brain mount. decisions and sources are fixed.
+kinds: {kinds}
+
+# The badge: what an agent may do from this space, per action class.
+authority:
+  edit_inside: at_once
+  write_knowledge: propose
+  release: after_window
+  write_outside_system: at_once
+  send_outward: propose
+  spend: propose
+
+agents:
+  - name: routines
+    acts_for: owner
+
+models: [any]
+budget:
+  tokens_per_day: 100000000000
+window_hours: 24
+
+standing_choices: {standing_choices}
+left_out: {left_out}
+never_leaves: {never_leaves}
+protected: {protected}
+sources: {sources}
+mounts: []
+routines:
+  sweep: "0 1,10,16 * * *"
+  daily: "0 11 * * *"
+{extra}

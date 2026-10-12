@@ -1,0 +1,27 @@
+# Answer tests: the questions this space must be able to answer, as data.
+#
+# Each question names the subject it is about, the facts the answer must contain (substrings,
+# matched without regard to case), who asks, and how the answer is found:
+#   via: walk    the subject's folder under its kind (knowledge/<kind>/<subject>/), its status
+#                page (live/subjects/<subject>.md) and the pages its hub links by id
+#   via: search  every page under knowledge/, live/ and work/, plus the mounts' knowledge/ and live/
+#   via: both    passes when either does
+# A question runs in the asker's space: here when the asker is this space's name, its owner
+# or its directory name (or `owner`/`anyone`); elsewhere when the runner maps the asker to a
+# root (--root name=path); otherwise it is skipped with a note. Every run appends one line to
+# _meta/state/tests.jsonl. The daily chain runs this file when it exists.
+#
+# The two below are examples in the fixture company's words (_meta/tests/fixture/). Their
+# asker is `example`, a name no space has, so they are skipped until you make them yours:
+# put your own name as the asker and write about thirty real questions per space.
+questions:
+  - question: "When does Harbor go live?"
+    subject: harbor
+    expect: ["3 November"]
+    asker: example
+    via: both
+  - question: "What does the prospect want?"
+    subject: sales
+    expect: ["Q1 pilot"]
+    asker: example
+    via: both

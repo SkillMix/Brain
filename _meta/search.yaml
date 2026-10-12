@@ -1,0 +1,10 @@
+# The engine file (vision section 11): plain search unless a measured gain says otherwise.
+# `search.py <root> query <text>` answers from it; the validator refuses an extra turned on
+# without a `measured` entry. An index is disposable: rebuilt from git, one per audience.
+engine: none              # none | index | <adapter>
+version: null             # the adapter's pinned version, when one runs
+sources: [knowledge, live]
+freshness_hours: 24
+link_step: off
+atoms: off
+measured: []              # [{feature: link_step, gain: 0.05, at: 2026-10-01}]

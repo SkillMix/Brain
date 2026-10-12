@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python _meta/tools/*)",
+      "Bash(python -m pytest*)",
+      "Bash(gh pr view*)",
+      "Bash(gh pr list*)",
+      "Bash(git status*)",
+      "Bash(git log*)",
+      "Bash(git diff*)",
+      "Bash(git show*)",
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep"
+    ],
+    "deny": [
+      "Bash(git commit*)",
+      "Bash(git push*)",
+      "Bash(git merge*)",
+      "Bash(git rebase*)",
+      "Bash(git reset*)",
+      "Bash(git checkout*)",
+      "Bash(gh pr merge*)",
+      "Bash(rm -rf*)",
+      "Bash(curl*)"
+    ]
+  }
+}

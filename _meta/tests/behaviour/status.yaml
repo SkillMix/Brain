@@ -1,0 +1,54 @@
+# The librarian: a new desk folder registers its subject, every stateful subject gets a
+# status page and a hub, the indexes are rewritten. Status pages are never signed.
+name: status writes live pages, hubs and indexes, and never a signature
+command: [python, _meta/tools/status.py, "{root}"]
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1440
+      name: ada
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience: [Ada Okafor]
+      parent: brain
+    work/.gitkeep: ""
+    journal/.gitkeep: ""
+    outbox/.gitkeep: ""
+    _meta/subjects.yaml:
+      subjects:
+        - id: harbor
+          kind: projects
+          title: Harbor
+          state: active
+          owner: Ada Okafor
+          home: harbor
+          match: {label: Harbor, channel: "#harbor"}
+    knowledge/sources/2026/10/m-scenario-1.md: |
+      ---
+      id: p-0000a001
+      type: source
+      title: Harbor go-live moves to 3 November
+      status: draft
+      generated: {by: sweep, at: "2026-10-02T10:00:00Z"}
+      subject: harbor
+      source: mail
+      record: m-scenario-1
+      at: "2026-10-02T09:15:00Z"
+      audience: owner
+      ---
+      From the client: after the board meeting the Harbor go-live moves to 3 November.
+    work/projects/harbor/kickoff/notes.md: |
+      # Kickoff notes
+
+      Weekly check-in on Tuesdays. Ben owns the data migration.
+env: {SPACE_NOW: "2026-10-05T09:00:00Z"}
+expect:
+  exit: 0
+  writes_only_under: [live/, knowledge/, index.md, _meta/subjects.yaml, AGENTS.md]
+  never_contains:
+    "live/**": ["status: stable"]
+    "knowledge/**/index.md": ["status: stable"]
+  must_exist: ["live/subjects/harbor.md", "knowledge/projects/harbor/index.md"]

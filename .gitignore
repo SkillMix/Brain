@@ -1,0 +1,13 @@
+# Private zones: never tracked, never staged by the sync script, in every profile.
+personal/
+academic/
+_scratch/
+
+# Local caches
+_meta/state/feed/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Harness scratch
+.claude/settings.local.json
