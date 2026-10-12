@@ -105,9 +105,17 @@ def routine_items(root: Path) -> list:
     if not base.is_dir():
         return out
     for path in sorted(base.glob("*.yaml")):
+        rel = path.relative_to(root).as_posix()
         try:
             data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        except yaml.YAMLError:
+        except yaml.YAMLError as exc:
+            # never drop a routine's items silently: the broken file itself needs a person
+            mark = getattr(exc, "problem_mark", None)
+            where = f" (line {mark.line + 1})" if mark else ""
+            out.append(Item(id=f"unreadable-{path.stem}", kind="request",
+                            text=f"{rel} cannot be read{where}: its items are missing from this list",
+                            recommendation="fix the file; the items come back on the next run",
+                            payload=rel))
             continue
         rows = data.get("items") if isinstance(data, dict) else data
         for raw in rows or []:
@@ -118,7 +126,7 @@ def routine_items(root: Path) -> list:
                             recommendation=_text(raw.get("recommendation"), ""),
                             default=_text(raw.get("default"), ""), deadline=_when(raw.get("deadline")),
                             depends=_int(raw.get("depends")),
-                            payload=_text(raw.get("payload"), path.relative_to(root).as_posix()),
+                            payload=_text(raw.get("payload"), rel),
                             fingerprint=_text(raw.get("fingerprint"), ""), check=_text(raw.get("check"), ""),
                             for_=_text(raw.get("for"), "")))
     return out

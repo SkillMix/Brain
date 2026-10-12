@@ -164,3 +164,21 @@ def test_one_list_per_person_shows_items_routed_to_them_in_mounted_spaces(tmp_pa
     assert routed.text.startswith("[brain]") and routed.payload.startswith("brain:")
     text = needs_you.render(ada, now=NOW, items=items)
     assert "Read-back: the verdict is in samples.jsonl" in text
+
+
+def test_an_unreadable_items_file_is_itself_an_item(tmp_path):
+    root = make_space(tmp_path / "s")
+    base = root / "_inbound" / "needs-you"
+    base.mkdir(parents=True, exist_ok=True)
+    (base / "broken.yaml").write_text("""items:
+- id: a
+  text: 'it's broken'
+""", encoding="utf-8")
+    (base / "fine.yaml").write_text("""items:
+- id: b
+  text: fine
+""", encoding="utf-8")
+    items = {i.id: i for i in needs_you.routine_items(root)}
+    assert "b" in items
+    assert items["unreadable-broken"].payload == "_inbound/needs-you/broken.yaml"
+    assert "line 3" in items["unreadable-broken"].text
