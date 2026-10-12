@@ -25,6 +25,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -84,6 +85,15 @@ def _rel(root: Path, path: Path, prefix: str = "") -> str:
     except ValueError:
         rel = path.as_posix()
     return f"{prefix}:{rel}" if prefix else rel
+
+
+def carries(text: str, needle) -> bool:
+    """A leak needle found as a whole word or phrase, ignoring case: a name never matches
+    inside another word ("Ben" is not in "beneath"), a number never inside a longer one."""
+    key = str(needle).strip().lower()
+    if not key:
+        return False
+    return re.search(r"(?<![^\W_])" + re.escape(key) + r"(?![^\W_])", text.lower()) is not None
 
 
 def _found(texts: dict, expect: list) -> tuple[list, list]:
@@ -459,8 +469,7 @@ def leaks(root, roots: dict | None = None, path=None, now: dt.datetime | None = 
             text = _read(file, strict=True)
             if text is None:
                 continue
-            low = text.lower()
-            found = [n for n in needles if n.lower() in low]
+            found = [n for n in needles if carries(text, n)]
             if found:
                 hits.append({"file": _rel(target, file, target.name), "found": found})
         detail = {"audience_root": name, "root": str(target), "reason": str(leak.get("reason") or ""),
@@ -492,7 +501,7 @@ def _request_leak(root: Path, space, leak: dict, needles: list, roots: dict, now
     choice = rq.choice_for(hspace, req["from"], asker.profile if asker else "", str(req.get("class")))
     lines, _ = rq.render(holder, req, now, asker.left_out if asker else None)
     sent = "\n".join(lines) if choice == "at_once" else ""
-    found = [n for n in needles if n.lower() in sent.lower()]
+    found = [n for n in needles if carries(sent, n)]
     return {"audience_root": str(leak.get("audience_root")), "root": str(holder),
             "reason": str(leak.get("reason") or ""), "must_not_find": needles, "ok": not found,
             "hits": [{"file": f"request to {req.get('holder')}", "found": found}] if found else [],

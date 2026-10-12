@@ -33,7 +33,9 @@ import spaceyaml  # noqa: E402
 import validate  # noqa: E402
 
 ARCHIVE = ("wiki", "live", "_meta", ".claude", "index.md", "AGENTS.md", "CLAUDE.md", "SETUP.md", "SKILL.md",
-           "okf.yaml", "_tasks.md", "memory", "_release")
+           "okf.yaml", "_tasks.md", "memory", "_release",
+           # the old layer's own workflow pins the old brain mount and fails once the layer moves
+           ".github/workflows/project-knowledge.yml")
 NEVER_ADD = ("LICENSE", "README.md", ".github/CODEOWNERS")
 ARCHIVE_NOTE = ("# Archive\n\nThe project's knowledge layer and machinery as they were before the swap "
                 "(read-only evidence for the cold start). Nothing here is maintained; the live layer "
