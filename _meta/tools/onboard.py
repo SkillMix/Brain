@@ -1091,6 +1091,7 @@ def check(root) -> list:
         name = mount.get("name", "")
         steps.append(Step(f"mount {name} resolves", space.mount_root(name) is not None,
                           f"test -f {mount.get('path') or name}/space.yaml", str(space.mount_root(name) or "absent")))
+    steps.extend(crew_mount_steps(space))
     if state.get("user_instructions") and state.get("workspace"):
         ui = Path(state["user_instructions"])
         steps.append(Step("personal instruction installed", instruction_present(ui, state["workspace"]),
@@ -1129,6 +1130,34 @@ def check(root) -> list:
     return steps
 
 
+def crew_mount_steps(space) -> list:
+    """A workspace mounts every project space its owner is crew on: a subject in the brain's
+    registry with a `home` of its own and a `match.repo`, whose owner (inherited, else the
+    brain's owner) is the workspace's owner or whose `audience` names them. One row each."""
+    broot = space.mount_root("brain") if space.profile == "personal" and space.owner else None
+    if broot is None:
+        return []
+    import mint
+    try:
+        brain = spaceyaml.load(broot)
+    except Exception:  # a brain that does not load fails its own validation, not this row
+        return []
+    reg = registry.Registry(broot, brain)
+    steps = []
+    for subject in reg.all():
+        url, home = registry.repo_url(subject.match.get("repo")), subject.home
+        if not url or not home or home in ("brain", brain.name, space.name) or subject.state == "archived":
+            continue
+        audience = subject.extra.get("audience") or []
+        crew = [reg.owner_of(subject.id)] + (audience if isinstance(audience, list) else [audience])
+        if space.owner not in crew:
+            continue
+        mounted = any(m.get("name") == home or registry.same_repo(m.get("repo"), url) for m in space.mounts)
+        steps.append(Step(f"crew project {home} mounted", mounted, f"grep -c {home} {space.root / 'space.yaml'}",
+                          "in space.yaml mounts" if mounted else f"not mounted: run `{mint.mount_line(home, url)}`"))
+    return steps
+
+
 def readback(check: str):
     """Run an owner step's read-back: True when it passes, False when it fails, None when the
     command is not one this function knows (the step then stays on the owner's list)."""
@@ -1157,7 +1186,8 @@ def print_steps(steps) -> None:
     width = max([len(s.name) for s in steps] + [4])
     for s in steps:
         mark = "owner" if s.needs_owner else ("ok" if s.done else "FAIL")
-        print(f"{mark:5} {s.name:<{width}}  {s.result[:70]}")
+        # a row that is not done shows its whole result: it often names the fix
+        print(f"{mark:5} {s.name:<{width}}  {s.result[:70] if mark == 'ok' else s.result}")
         if s.needs_owner or not s.done:
             print(f"      check: {s.check}")
 

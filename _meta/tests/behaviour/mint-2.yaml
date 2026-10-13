@@ -1,4 +1,5 @@
-# Minting moves the subject's home, not its id; the seed stays on the desk.
+# Minting moves the subject's home, not its id; the seed stays on the desk, and the minting
+# workspace (crew) mounts the new space.
 name: minting a desk seed moves the subject's home, never its pages here
 command:
 - python
@@ -59,5 +60,6 @@ expect:
   writes_only_under:
   - _meta/subjects.yaml
   - _inbound/needs-you/
+  - space.yaml
   must_exist:
   - work/projects/lighthouse/kickoff/brief.md

@@ -2,14 +2,18 @@
 
     python _meta/tools/mint.py [root] --seed PATH --name NAME --crew a b
                                [--offline] [--org ORG] [--home DIR] [--dry-run]
+    python _meta/tools/mint.py [root] --mount NAME URL      mount another space read-only
 
 The seed is `work/<kind>/<subject>/<effort>/` in a personal space. Mint creates the project
 space from the template (online: a new private repository in the organization, cloned
 under `--home` or ~/.spaces; offline: a sibling directory), fills its `space.yaml` with
 profile project and the crew as audience, copies the seed's pages in as drafts under
 `knowledge/<kind>/<subject>/`, sets the subject's `home` in this space's registry and
-proposes the platform team on Needs you. Re-runnable: the receipt
-`_meta/state/mint-<name>.yaml` records the phases, and nothing is written twice.
+proposes the platform team on Needs you. Every crew member's workspace checked out on this
+machine mounts the new space; one checked out elsewhere gets a Needs-you item in the brain
+with the mount line (`--mount`, the fix `onboard --check` names when a mount is missing).
+Re-runnable: the receipt `_meta/state/mint-<name>.yaml` records the phases, and nothing is
+written twice.
 """
 from __future__ import annotations
 
@@ -62,6 +66,101 @@ def _add_mount(root: Path, name: str, repo, path: str) -> bool:
     space.data["mounts"] = space.mounts + [{"name": name, "repo": repo, "path": path, "branch": "main"}]
     spaceyaml.save(space)
     return True
+
+
+def mount_space(root, name: str, url, path: str | None = None, online: bool = True,
+                dry_run: bool = False) -> bool:
+    """Mount another space read-only: its row in space.yaml and, online, the setup verb
+    `git submodule add -b main <url> mounts/<name>`; the sync script lands both. True when the
+    row is new."""
+    root = Path(root).resolve()
+    path = path or f"mounts/{name}"
+    added = _add_mount(root, name, url, path)
+    if online and url and not (root / path / "space.yaml").exists():
+        run_cmd(["git", "submodule", "add", "-b", "main", url, path], dry_run, cwd=root)
+    return added
+
+
+def mount_line(name: str, url) -> str:
+    """The one command that mounts a space, run in the workspace that should read it."""
+    return f"python _meta/tools/mint.py . --mount {name} {url or '<repository url>'}"
+
+
+# ----- crew mounts: every crew member's workspace mounts the project -----------------------
+CREW_MOUNTS = Path("_inbound") / "needs-you" / "crew-mounts.yaml"
+
+
+def local_spaces(*near, home=None, online=True) -> list:
+    """The spaces checked out on this machine: every checkout beside the given ones and, online,
+    every checkout under the spaces home (~/.spaces). A mount is never one: it sits inside a space."""
+    places = [Path(p).resolve().parent for p in near]
+    if online:
+        places.append(Path(home) if home else Path.home() / ".spaces")
+    found, seen = [], set()
+    for place in dict.fromkeys(places):
+        for child in sorted(place.iterdir()) if place.is_dir() else []:
+            if child.resolve() in seen or not (child / "space.yaml").is_file():
+                continue
+            seen.add(child.resolve())
+            try:
+                found.append(spaceyaml.load(child))
+            except Exception:
+                continue
+    return found
+
+
+def crew_of(space: spaceyaml.Space) -> list:
+    audience = space.audience if isinstance(space.audience, list) else []
+    return list(dict.fromkeys([str(a) for a in audience] + ([space.owner] if space.owner else [])))
+
+
+def mount_in_crew(report, project_root, name: str, url, crew, near=(), home=None, online=True,
+                  dry_run=False) -> None:
+    """Mount a project space in the workspace of each crew member checked out on this machine.
+    A crew member whose workspace is elsewhere gets one Needs-you item in the brain, routed to
+    them (`for`), holding the exact mount line."""
+    project_root = Path(project_root).resolve()
+    spaces = local_spaces(project_root, *near, home=home, online=online)
+    workspaces = {}
+    for space in spaces:
+        if space.profile == "personal" and space.owner:
+            workspaces.setdefault(space.owner, space.root)
+    elsewhere = []
+    for person in dict.fromkeys(str(c) for c in crew or []):
+        ws = workspaces.get(person)
+        if ws is None:
+            elsewhere.append(person)
+            continue
+        path = f"mounts/{name}" if online else os.path.relpath(project_root, ws).replace("\\", "/")
+        added = mount_space(ws, name, url, path, online, dry_run)
+        report.add(f"mount {name} in {Path(ws).name}", True, f"grep -c {name} {Path(ws) / 'space.yaml'}",
+                   "added" if added else "already there")
+    if not elsewhere:
+        return
+    # the brain checkout on this machine: the project's own brain mount when it points outside
+    # the project (offline), else a checked-out brain of the same name; never a mount
+    broot = spaceyaml.load(project_root).mount_root("brain")
+    brain = broot if broot is not None and not Path(broot).resolve().is_relative_to(project_root) else None
+    if brain is None:
+        bname = spaceyaml.load(broot).name if broot is not None else None
+        brain = next((s.root for s in spaces if s.profile == "brain" and bname in (None, s.name)), None)
+    who = ", ".join(elsewhere)
+    if brain is None:
+        report.add(f"mount {name} for {who}", False, f"test -f mounts/{name}/space.yaml",
+                   f"no brain checkout on this machine: each runs `{mount_line(name, url)}` in their workspace",
+                   needs_owner=True)
+        return
+    target = Path(brain) / CREW_MOUNTS
+    items = [{"id": f"mount-{name}-{onboard.slugify(person)}", "kind": "question", "for": person,
+              "text": f"Mount {name} in your workspace (you are crew on it): run `{mount_line(name, url)}` there",
+              "recommendation": "yes", "default": f"your workspace does not read {name}", "deadline": None,
+              "depends": 1, "fingerprint": "", "check": f"test -f mounts/{name}/space.yaml"}
+             for person in elsewhere]
+    ids = {i["id"] for i in items}
+    existing = (onboard.read_yaml(target, {}) or {}).get("items") or []
+    onboard.write_yaml(target, {"items": [i for i in existing if i.get("id") not in ids] + items})
+    report.add(f"mount {name} for {who}", True, f"grep -c mount-{name} {target}",
+               "not on this machine: a Needs-you item each in the brain, with the mount line")
 
 
 def _skeleton_file(path: Path) -> bool:
@@ -126,10 +225,7 @@ def channel(root, other_root, online=False, org=None, home=None, dry_run=False,
     url = f"https://github.com/{repo}" if online and repo else repo
     for space_root in (root, other_root):
         rel = os.path.relpath(dst, space_root).replace("\\", "/") if not online else f"mounts/{name}"
-        added = _add_mount(space_root, name, url, rel)
-        if online and url and not (space_root / rel / "space.yaml").exists():
-            # the setup verb adds the read-only window; the sync script lands it with the rest
-            run_cmd(["git", "submodule", "add", "-b", "main", url, rel], dry_run, cwd=space_root)
+        added = mount_space(space_root, name, url, rel, online, dry_run)
         report.add(f"mount {name} in {space_root.name}", True, f"grep -c {name} {space_root / 'space.yaml'}",
                    "added" if added else "already there")
     report.spaces[name] = dst
@@ -289,6 +385,9 @@ def run(root, seed, name, crew, online, org=None, home=None, dry_run=False,
     phases["needs_you"] = True
     if online:
         onboard.commit_fill(report, dst, True, dry_run)
+    # the fill has landed: every crew member's workspace mounts the project, read-only
+    mount_in_crew(report, dst, name, f"https://github.com/{repo}" if online and repo else None,
+                  crew_of(spaceyaml.load(dst)), near=(root,), home=home, online=online, dry_run=dry_run)
     onboard.finish_space(report, dst)
     report.spaces[name] = dst
     receipt()
@@ -300,6 +399,8 @@ def main(argv=None) -> int:
     ap.add_argument("root", nargs="?", default=".")
     ap.add_argument("--channel", metavar="OTHER_ROOT",
                     help="make the corridor between this space and another (both mount it)")
+    ap.add_argument("--mount", nargs=2, metavar=("NAME", "URL"),
+                    help="mount another space read-only at mounts/NAME (a crew project, a corridor)")
     ap.add_argument("--seed")
     ap.add_argument("--name")
     ap.add_argument("--parent", help="the parent space (a division) for a sub-team")
@@ -311,6 +412,11 @@ def main(argv=None) -> int:
     ap.add_argument("--home")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
+    if args.mount:
+        name, url = args.mount
+        added = mount_space(args.root, name, url, online=not args.offline, dry_run=args.dry_run)
+        print(f"{name}: {'mounted at' if added else 'already mounted at'} mounts/{name}")
+        return 0
     if args.channel:
         report = channel(args.root, args.channel, online=not args.offline, org=args.org, home=args.home,
                          dry_run=args.dry_run, name=args.name)
