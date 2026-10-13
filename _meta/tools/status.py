@@ -66,6 +66,7 @@ class Evidence:
     ptype: str = ""
     status: str = ""
     arrived: dt.datetime | None = None   # when this space saw it (generated.at), for dormancy
+    direction: str = ""         # for an open item: we owe | waiting on them | internal
 
     def line(self) -> str:
         return f"- {self.title} ({self.tier}, {self.scope}, {self.at:%Y-%m-%d})"
@@ -199,17 +200,32 @@ def collect(root: Path, space, reg, now) -> dict:
     found: dict = {}
 
     def add(sid, tier, scope_, title, at, rel="", pid="", text="", section="timeline", ptype="",
-            status="", arrived=None):
+            status="", arrived=None, direction=""):
         found.setdefault(sid, []).append(Evidence(sid, tier, scope_, title, at, rel, pid, text,
-                                                  section, ptype, status, arrived))
+                                                  section, ptype, status, arrived, direction))
 
+    own = _domain(space.owner_email)
+    threads: dict = {}
     for path, fm, body in _read_pages(root / "knowledge" / "sources"):
         at = _stamp(fm, "at")
-        targets = [str(fm["subject"])] if fm.get("subject") else []
-        targets += [str(m) for m in (fm.get("mentions") or []) if isinstance(fm.get("mentions"), list)]
-        for sid in dict.fromkeys(t for t in targets if t in known and at is not None):
-            add(sid, "witness", scope, str(fm.get("title") or path.stem), at,
-                path.relative_to(root).as_posix(), str(fm.get("id") or ""), body, arrived=_stamp(fm))
+        sid = str(fm.get("subject") or "")
+        # evidence attaches by identifier only: a page that merely mentions a subject stays out
+        if sid not in known or at is None:
+            continue
+        rel, pid, title = path.relative_to(root).as_posix(), str(fm.get("id") or ""), str(fm.get("title") or path.stem)
+        tier = "system" if _is_system(fm, space) else "witness"
+        state = str(fm.get("state") or "").lower()
+        if fm.get("issue") and state in DONE_STATES:
+            add(sid, tier, scope, title, at, rel, pid, body, "closed", arrived=_stamp(fm))
+            continue
+        add(sid, tier, scope, title, at, rel, pid, body, arrived=_stamp(fm))
+        key = (sid, _thread_of(fm, title))
+        if key not in threads or at > threads[key][0]:
+            threads[key] = (at, tier, title, rel, pid, body, _direction(fm, own))
+    open_since = now - space.scale(OPEN_DAYS * 24)
+    for (sid, _), (at, tier, title, rel, pid, body, direction) in threads.items():
+        if direction and at >= open_since:
+            add(sid, tier, scope, title, at, rel, pid, body, "open", direction=direction)
     for path, fm, body in _read_pages(root / "_inbound" / "candidates"):
         sid, at = str(fm.get("subject") or ""), _stamp(fm)
         if sid not in known or at is None:
@@ -251,6 +267,63 @@ def _see_also(root: Path) -> dict:
 
 
 # ----- renderers --------------------------------------------------------------
+OPEN_DAYS = 14
+DONE_STATES = {"done", "closed", "completed", "canceled", "cancelled", "duplicate", "merged"}
+DIRECTIONS = ("we owe", "waiting on them", "internal")
+
+
+def _domain(address) -> str:
+    text = str(address or "").strip().lower()
+    text = text.split("<")[-1].rstrip(">").strip() if "<" in text else text
+    return text.split("@")[1] if "@" in text else ""
+
+
+def _is_system(fm: dict, space) -> bool:
+    """System-tier evidence: the tracker, merged code, and mail this space's person sent."""
+    if fm.get("issue") or str(fm.get("source") or "") in ("tracker", "code", "repo", "repository"):
+        return True
+    own = _domain(space.owner_email)
+    return fm.get("kind") == "mail" and bool(own) and \
+        str(fm.get("from") or "").strip().lower().split("<")[-1].rstrip(">").strip() == space.owner_email.strip().lower()
+
+
+def _thread_of(fm: dict, title: str) -> str:
+    ident = fm.get("identifiers") or {}
+    if isinstance(ident, dict) and ident.get("thread"):
+        return str(ident["thread"])
+    if fm.get("issue"):
+        return f"issue:{fm['issue']}"
+    return re.sub(r"^(\s*(re|fwd?|aw|wg)\s*:\s*)+", "", title.strip().lower())
+
+
+def _direction(fm: dict, own: str) -> str:
+    """Who holds the next move on a thread, from its last record."""
+    if fm.get("issue"):
+        return "internal"
+    if fm.get("kind") not in ("mail", "message") or not own:
+        return ""
+    sender = _domain(fm.get("from"))
+    if not sender:
+        return ""
+    if sender != own:
+        return "we owe"
+    others = [_domain(t) for t in (fm.get("to") or [])]
+    return "waiting on them" if any(d and d != own for d in others) else "internal"
+
+
+def _open_text(evs: list) -> str:
+    """Open items by direction, then what waits for a signature."""
+    parts = []
+    for direction in DIRECTIONS:
+        lines = _newest(e for e in evs if e.section == "open" and e.direction == direction)
+        if lines:
+            parts.append(f"### {direction[0].upper()}{direction[1:]}\n\n" + _lines(lines))
+    pending = _newest(e for e in evs if e.section == "open" and not e.direction)
+    if pending:
+        parts.append("### Waiting for a signature\n\n" + _lines(pending))
+    return "\n\n".join(parts) or "- none"
+
+
 def _render_status(space, subject, evs: list, now, template: str) -> str:
     cut, today = now - space.scale(CLOSED_HOURS), f"{now:%Y-%m-%d}"
     coming: dict = {}
@@ -264,7 +337,7 @@ def _render_status(space, subject, evs: list, now, template: str) -> str:
                 coming.setdefault((day, e.title), f"- {day}: {e.title} ({e.tier}, {e.scope}, {e.at:%Y-%m-%d})")
     return template.format(
         title=f"{subject.title}: status", subject=subject.id,
-        open=_lines(_newest(e for e in evs if e.section == "open")),
+        open=_open_text(evs),
         closed=_lines(_newest(e for e in evs if e.section == "closed" and e.at >= cut)),
         timeline=_lines(_newest(e for e in evs if e.section == "timeline")[:TIMELINE_LINES]),
         coming="\n".join(coming[k] for k in sorted(coming)) or "- none")
@@ -725,6 +798,34 @@ def moved_signals(root: Path, space, now) -> dict:
     return out
 
 
+def _projects_page(root: Path, space, reg, moved: dict, now) -> str:
+    """The brain's roll-up of every project, generated from each home: its state, owner and
+    home from the registry, the last signal and the last landing. Nothing is kept by hand."""
+    landed: dict = {}
+    for row in _jsonl(root / "_meta" / "state" / "landed.jsonl"):
+        sid = str(row.get("subject") or "")
+        try:
+            at = pages.parse_iso(row.get("at"))
+        except (TypeError, ValueError):
+            continue
+        if sid and (sid not in landed or at > landed[sid]):
+            landed[sid] = at
+    lines = []
+    for s in sorted((s for s in reg.all() if s.kind == "projects" and s.state != "archived"),
+                    key=lambda s: s.title.lower()):
+        bits = [f"{s.state}", f"owner {reg.owner_of(s.id) or space.owner}", f"home {reg.home_of(s.id) or space.name}"]
+        if s.id in moved:
+            bits.append(f"last signal {moved[s.id][0]:%Y-%m-%d} from {moved[s.id][1]}")
+        if s.id in landed:
+            bits.append(f"last landing {landed[s.id]:%Y-%m-%d}")
+        lines.append(f"- {s.title} (`{s.id}`): " + "; ".join(bits))
+    fm = _snapshot_fm(root, "live/projects.md", "Projects", now)
+    body = ("# Projects\n\nOne line per project, generated from the registry and what each home "
+            "sent: signals and landings. Status lives at each project's home.\n\n"
+            + "\n".join(lines or ["- No projects yet."]) + "\n")
+    return pages.render(fm, body)
+
+
 def unreachable_sources(root: Path) -> list:
     """The sources the newest agent sweep step could not reach (`notes.unreachable`)."""
     latest = None
@@ -889,6 +990,8 @@ def run(root, now=None, check: bool = False) -> StatusReport:
         by_kind.setdefault(subject.kind, ([], []))[1].append(subject)
     for kind, (own, inherited) in by_kind.items():
         outputs[f"knowledge/{kind}/index.md"] = _render_kind_index(kind, own, inherited, status_ids)
+    if space.profile == "brain":
+        outputs["live/projects.md"] = _projects_page(root, space, reg, moved, now)
     outputs["index.md"] = splice(_current(root / "index.md") or DEFAULT_INDEX, SUBJECTS_MARKERS,
                                  _subjects_block(by_kind, status_ids))
     outputs["knowledge/index.md"] = splice(_current(root / "knowledge" / "index.md") or DEFAULT_KNOWLEDGE,

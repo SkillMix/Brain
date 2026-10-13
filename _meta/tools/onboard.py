@@ -856,6 +856,9 @@ def run(root, answers, offline=False, org=None, dry_run=False, home=None, user_i
             d["owner"] = names.get(d["owner"], d["owner"])
         write_identity(root, company, top["name"], domains,
                        parse_list(answers.get("never_leaves"), spaceyaml.DEFAULTS["never_leaves"]), now)
+        skipped = list(skipped) + [{"key": "identity", "ask": (
+            f"The identity of {company} is drafted (identity/charter.md and the spine): read it and "
+            "sign it, or say what to change"), "default": "sign it when it reads right"}]
         fill_registry(report, root, answers, top["name"], name, now)
         report.spaces[name] = root
         report.spaces.setdefault("brain", root)

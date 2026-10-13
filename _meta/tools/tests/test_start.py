@@ -98,6 +98,7 @@ def test_one_sentence_starts_a_company_with_its_owners_workspace(tmp_path, monke
     # defaults the person may change later return on the brain's Needs-you list
     skipped = yaml.safe_load((brain / "_inbound" / "needs-you" / "onboard.yaml").read_text(encoding="utf-8"))
     assert any("domains" in str(i) for i in skipped["items"])
+    assert any(i["id"] == "onboard-identity" for i in skipped["items"])   # the identity draft, to sign
 
 
 def test_identity_drops_a_no_reply_address(monkeypatch):
