@@ -3,6 +3,8 @@ import hashlib
 from pathlib import Path
 
 import pytest
+import subprocess
+
 import yaml
 
 import onboard
@@ -438,3 +440,22 @@ def test_the_workspace_is_allowed_once_and_offboard_takes_it_back(tmp_path):
     assert onboard.disallow_directory(settings, ws) is True
     assert not onboard.directory_allowed(settings, ws)
     assert json.loads(settings.read_text(encoding="utf-8"))["permissions"]["additionalDirectories"] == ["D:/other"]
+
+
+@pytest.mark.skipif(not hasattr(__import__("os"), "add_dll_directory"), reason="Windows task scheduler only")
+def test_a_long_task_command_runs_a_short_wrapper(tmp_path, monkeypatch):
+    calls = []
+
+    def fake(argv, dry_run=False, cwd=None):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+    monkeypatch.setattr(onboard, "run_cmd", fake)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    root = tmp_path / ("x" * 45) / ("y" * 45) / "ada"
+    root.mkdir(parents=True)
+    report = onboard.Report(case="person")
+    record = onboard.register_sync(report, root, "ada", 15, offline=False, dry_run=False)
+    tr = record["create"][record["create"].index("/TR") + 1]
+    assert len(tr) <= 261 and tr.endswith('space-sync-ada.cmd"')
+    wrapper = tmp_path / "local" / "spaces" / "space-sync-ada.cmd"
+    assert str(root) in wrapper.read_text(encoding="utf-8") and record["root"] == str(root)
