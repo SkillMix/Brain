@@ -81,8 +81,12 @@ sweep, the first status and the tests; every step recorded as `{step, done, chec
 - A shadow space going live: `onboard.py --go-live --answers <file>` (the file's `mounts:`
   maps each mount name to its live repository).
 - A project that already has a repository: `python _meta/tools/swap.py <checkout> --name
-  <space name> --owner <name> --crew <names> --brain <url> --online`, then `onboard.py
-  <checkout> --go-live`. The sync script lands the result.
+  <space name> --owner <name> --crew <names> --brain <url> --online`; once that has landed,
+  `swap.py <checkout> --go-live` runs onboard's go-live and mounts the project in every crew
+  workspace (one elsewhere gets a Needs-you item in the brain with the mount line). The sync
+  script lands the result.
+- A workspace missing a crew project's mount (`onboard --check` fails the row): `python
+  _meta/tools/mint.py . --mount <name> <url>`, the line the row names.
 - To watch it work before connecting anything real: `onboard.py --fixture <dir>` runs the
   fixture company end to end, offline.
 - Without an agent: `python _meta/tools/onboard.py` in a fresh copy runs the interview on the

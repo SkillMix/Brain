@@ -81,6 +81,25 @@ class Subject:
         return [n for n in [self.title, self.id] + list(self.aliases) if n]
 
 
+def repo_url(value) -> str | None:
+    """A `match.repo` (or a mount's repo) as an https URL: `owner/name`, `github.com/owner/name`
+    and `git@github.com:owner/name.git` become `https://github.com/owner/name`; any other URL or
+    a local path is kept as given."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    short = re.match(r"^(?:git@github\.com:|(?:https?://)?github\.com/)?([A-Za-z0-9][\w-]*/[\w.-]+?)(?:\.git)?/?$", text)
+    return f"https://github.com/{short.group(1)}" if short else text
+
+
+def same_repo(a, b) -> bool:
+    """Two repository references name the same repository (case, `.git` and `/` aside)."""
+    def key(value):
+        url = repo_url(value)
+        return url.lower().rstrip("/").removesuffix(".git") if url else None
+    return key(a) is not None and key(a) == key(b)
+
+
 def _word_in(text: str, needle: str) -> bool:
     if len(needle) < 3:
         return False

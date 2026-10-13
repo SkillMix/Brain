@@ -26,6 +26,8 @@ import datetime as dt
 import json
 import os
 import re
+import shutil
+import stat
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -103,7 +105,9 @@ def checkout_of(destination: str) -> Path | None:
 
 def _mount_repo(space: spaceyaml.Space, destination: str) -> str | None:
     """The repository behind a destination: the mount of that name, else the mount whose space
-    is named so (the brain is mounted as `brain` but releases are addressed to its name)."""
+    is named so (the brain is mounted as `brain` but releases are addressed to its name), else
+    the `match.repo` of the registry subject whose home it is, so a missing mount alone never
+    leaves a release stuck."""
     for mount in space.mounts:
         if mount.get("name") == destination and mount.get("repo"):
             return str(mount["repo"])
@@ -116,12 +120,28 @@ def _mount_repo(space: spaceyaml.Space, destination: str) -> str | None:
                 return str(mount["repo"])
         except Exception:
             continue
-    return None
+    try:
+        subjects = registry_mod.Registry(space.root, space).everywhere()
+    except Exception:
+        return None
+    return next((registry_mod.repo_url(s.match["repo"]) for s in subjects
+                 if s.home == destination and s.match.get("repo")), None)
+
+
+def _discard(path: Path) -> None:
+    """Remove a clone this run made seconds earlier (git keeps some files read-only)."""
+    for item in path.rglob("*"):
+        try:
+            os.chmod(item, stat.S_IWRITE | stat.S_IREAD)
+        except OSError:
+            pass
+    shutil.rmtree(path, ignore_errors=True)
 
 
 def ensure_checkout(space: spaceyaml.Space, destination: str) -> Path | None:
-    """The destination's online checkout, cloned on first use from the repository its mount names.
-    No mount, no repository or a failed clone: None, and the items stay queued as unreachable."""
+    """The destination's online checkout, cloned on first use from the repository its mount (or
+    its registry subject) names. No repository, a failed clone or a clone that is not the space
+    so named: None, and the items stay queued as unreachable."""
     found = checkout_of(destination)
     if found is not None:
         return found
@@ -134,6 +154,13 @@ def ensure_checkout(space: spaceyaml.Space, destination: str) -> Path | None:
         subprocess.run(["git", "clone", "--quiet", "--no-recurse-submodules", str(repo), str(target)],
                        check=True, capture_output=True, text=True)
     except (subprocess.CalledProcessError, OSError):
+        return None
+    try:
+        is_space = spaceyaml.load(target).name == destination
+    except Exception:
+        is_space = False
+    if not is_space:  # a code repository, or another space: never published into
+        _discard(target)
         return None
     return target if (target / ".git").exists() else None
 
