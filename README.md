@@ -1,4 +1,4 @@
-# space-template
+# Company brain template
 
 A **space** is a git repository that holds knowledge any agent can read and write under
 one set of rules: a settings file (`space.yaml`), pages with permanent ids, a registry of
@@ -7,44 +7,60 @@ everyone reads, one workspace per person, one space per project with its crew as
 This template is every profile of that tree in one repository; `onboard` turns a copy of it
 into the profile it needs, and the shape is written down in `docs/shape-1.md`.
 
-## Start a company
+## Start in one sentence
 
-1. Create a private repository from this template ("Use this template" on the host, or
-   `gh repo create <org>/<name> --template <owner>/space-template --private --clone`).
-2. In the clone: `pip install pyyaml`, then `python _meta/tools/onboard.py`.
-3. Answer the questions. Every one has a default; press Enter to take it, type `skip` to
-   decide later (the question returns on your Needs-you list). The company name, the top
-   owner, the domains and their owners, what must never leave, which feeds to connect
-   (none is fine), how often to sync.
+Open Claude Code (the desktop app's Code tab, or the CLI) in any folder and say one sentence:
 
-What the agent does from there: fills `space.yaml` as the brain, drafts the charter and
-the spine as pages for you to sign, registers the domains as subjects with their owners,
-creates your personal workspace from the same template with the brain mounted, installs
-one instruction at user level so every session journals in your workspace, arms auto-merge
-and the required check on the host, registers the sync task with the OS scheduler, and runs
-the validator and the first status pass. Every step is recorded in
-`_meta/state/onboard.yaml` with the command that proves it took.
+- **A company with no brain yet:** "Set up our company brain from
+  https://github.com/OWNER/REPOSITORY" (this repository's address).
+- **Joining a company:** the sentence from your invitation, for example "Onboard me to Acme:
+  https://github.com/OWNER/REPOSITORY with my invitation acme/brain:ada".
 
-What only you can do: sign in to your own mail, calendar and chat when you connect a feed,
-and give the organization-level grants on the host. The tool lists these with their read-back
-checks; run `python _meta/tools/onboard.py --check` afterwards and it tells you what is
-still missing without changing anything.
+That is all. The agent copies this template and runs `_meta/tools/start.py`, which does every
+step itself: it reads who you are from git and your host account, finds your invitation,
+creates your repositories from this template, clones them, fills `space.yaml`, mounts the
+brain and the projects you are crew on, installs one instruction at user level so every
+session in any repository journals in your workspace, allows your workspace for the harness,
+registers the sync task, arms auto-merge and the required check, runs the first sweep, the
+status pass and the tests, and renders your two routines for the agent to schedule. Every
+question has a default; the ones you may want to change come back on your Needs-you list.
 
-The morning email comes from the daily routine (`morning-view`): it renders
-`live/needs-you.md` and a short briefing addressed to `owner_email` in `space.yaml`, counts
-only, sent from your own mail account. Nothing is signed by an agent; you sign with `sign`.
+What only you can do: sign in to GitHub once (`gh auth login`) if you never did, and sign in
+to your own mail, calendar and chat when you connect them. The tool lists each with the check
+that proves it. Your first morning briefing arrives the next day.
 
-Nothing has to be connected to start. A files-only brain and workspace work on day one;
-each connector is one adapter, switched on later from the Needs-you list.
+### For agents
 
-## Join as a colleague
+When a person asks to be set up, onboarded or to start, and names this repository:
 
-Create your own repository from the template and point it at the company's brain:
+1. Clone it anywhere temporary: `gh repo clone OWNER/REPOSITORY <temporary folder>`.
+2. Run `python <temporary folder>/_meta/tools/start.py`, adding `--invitation <brain>:<slug>`
+   when the person gave an invitation, `--company "<name>"` when they named their company, and
+   `--feeds <list>` naming the connectors your session has (mail, calendar, chat, calls,
+   tracker, documents). Ask nothing else: every other answer has a default.
+3. If it reports "run `gh auth login`", ask the person to run it once, then run step 2 again.
+4. Schedule the two routines it rendered under `_meta/state/routines/` in the new workspace
+   with your harness's scheduled tasks, each at its `schedule`. Without scheduled tasks, say
+   so: the sync task still lands everything, and the routines can be run by hand.
+5. Tell the person in three lines where their workspace is, what is still theirs (the
+   `yours:` lines) and that their morning briefing starts tomorrow.
 
-    python _meta/tools/onboard.py --brain https://github.com/<org>/<brain>
+Run again, `start.py` changes nothing that is right: it adopts the repositories it made.
 
-Your repository becomes a personal workspace with the brain mounted read-only; kinds, rules
-and identity come from there. About fifteen minutes, mostly the sign-ins.
+### Without an agent
+
+Create a repository from this template, clone it, `pip install pyyaml`, then run
+`python _meta/tools/onboard.py` and answer the questions (press Enter for each default, type
+`skip` to decide later). `python _meta/tools/onboard.py --check` tells you what is missing
+without changing anything.
+
+## Invite a colleague
+
+In the brain: `python _meta/tools/onboard.py . --invite <slug>` (or ask your agent "invite
+<name>"). It writes the colleague's invitation (their name, the brain, the projects they are
+crew on) and puts one item on your Needs-you list with the sentence to send them. They say it
+in Claude Code on their own machine; their agent does the rest in about fifteen minutes,
+mostly their sign-ins. Nothing is done for them.
 
 ## Start a project from a desk seed
 

@@ -46,16 +46,17 @@ def test_never_list_and_kinds(tmp_path):
         assert f"`{kind}`" in text
 
 
-def test_needs_you_fallback_and_personal_instruction(tmp_path):
+def test_session_start_and_capture_follow_the_profile(tmp_path):
     root = make_space(tmp_path / "ada")
-    fallback = agents_md.render(root)
-    assert "Needs you" in fallback
     (root / "_meta" / "templates").mkdir(parents=True, exist_ok=True)
     (root / "_meta" / "templates" / "personal-instruction.md").write_text(
-        "Show Needs you first, seven lines at most.\n", encoding="utf-8")
+        "Your workspace is `{workspace_path}`.\n", encoding="utf-8")
     text = agents_md.render(root)
-    assert "Show Needs you first, seven lines at most." in text
-    assert text != fallback
+    assert "Needs you" in text and "daily note" in text
+    assert "{workspace_path}" not in text  # the user-level template is never copied in
+    project = make_space(tmp_path / "harbor", profile="project")
+    other = agents_md.render(project)
+    assert "Nothing is written to a daily note here" in other and "journal" not in other.lower()
 
 
 def test_check_detects_stale_and_write_is_lf(tmp_path):

@@ -382,3 +382,11 @@ def test_a_steered_question_is_proposed_as_a_probe_question(tmp_path):
     assert added and added[0]["expect"] == ["Ben Liu", "delivery"] and added[0]["subject"] == "harbor"
     items = yaml.safe_load((root / "_inbound" / "needs-you" / "librarian.yaml").read_text(encoding="utf-8"))
     assert not [i for i in items["items"] if i["id"] == pid]
+
+
+def test_status_rewrites_a_stale_agents_file(tmp_path):
+    import agents_md
+    root = make_space(tmp_path / "ada")
+    (root / "AGENTS.md").write_text("stale", encoding="utf-8")
+    status.run(root, now=NOW)
+    assert agents_md.check(root)

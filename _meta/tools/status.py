@@ -893,7 +893,20 @@ def run(root, now=None, check: bool = False) -> StatusReport:
             reg.save()
     if not check:
         ids.build(root)
+        _refresh_agents_md(root, report)
     return report
+
+
+def _refresh_agents_md(root: Path, report) -> None:
+    """The generated contract follows space.yaml and the template: rewrite it when stale (the
+    status routine is the one writer of structure)."""
+    try:
+        import agents_md
+        if (root / "space.yaml").exists() and not agents_md.check(root):
+            agents_md.write(root)
+            report.changed.append("AGENTS.md")
+    except Exception:  # a broken template must not stop the status pass
+        pass
 
 
 def main(argv=None) -> int:

@@ -100,13 +100,25 @@ def _template(root: Path) -> str:
     raise FileNotFoundError(f"no {TEMPLATE_NAME} under {root} or {TEMPLATES}")
 
 
-def _needs_you(root: Path) -> str:
-    path = root / "_meta" / "templates" / INSTRUCTION_NAME
-    if path.is_file():
-        text = path.read_text(encoding="utf-8").strip()
-        if text:
-            return text
-    return NEEDS_YOU_FALLBACK
+CAPTURE = {
+    "personal": (
+        "Capture is always on here: append durable context to today's daily note "
+        "`journal/<yyyy>/<mm>/<yyyy>-<mm>-<dd>.md`. Any answer that took more than one lookup is "
+        "captured with its sources and appended to the question log `_meta/questions.log`. "
+        "Never put company knowledge in the harness's own memory; pointers and preferences only."),
+    "other": (
+        "Nothing is written to a daily note here: what a session learns is kept in the person's "
+        "own workspace, through the instruction their onboarding installed."),
+}
+
+
+def _needs_you(root: Path, profile: str = "") -> str:
+    """What a session does first and how it captures, for this space's profile. The user-level
+    personal instruction (`_meta/templates/personal-instruction.md`) is installed by onboard
+    with the person's workspace path; it is never copied in here."""
+    capture = CAPTURE["personal" if profile == "personal" else "other"]
+    return (NEEDS_YOU_FALLBACK + "\n\n" + capture + "\n\nNever commit, push or merge: the sync script "
+            "lands files.")
 
 
 def render(root) -> str:
@@ -119,7 +131,7 @@ def render(root) -> str:
     kinds += [f"- `{kind}` (fixed)" for kind in spaceyaml.FIXED_KINDS]
     text = _template(root).format(
         name=space.name, profile=profile, owner=space.owner or "unset",
-        zones="\n".join(zones), never=NEVER, needs_you=_needs_you(root), kinds="\n".join(kinds))
+        zones="\n".join(zones), never=NEVER, needs_you=_needs_you(root, profile), kinds="\n".join(kinds))
     return text.replace("\r\n", "\n").rstrip("\n") + "\n"
 
 
