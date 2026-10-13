@@ -532,6 +532,59 @@ def instruction_present(path, workspace) -> bool:
     return MARK_OPEN in text and Path(workspace).resolve().as_posix() in text
 
 
+def allow_directory(settings_path, workspace) -> bool:
+    """Add the workspace to the harness's allowed directories in its user-level settings, so a
+    session in any repository may read and journal there. Returns True when it changed."""
+    import json
+    path, folder = Path(settings_path), Path(workspace).resolve().as_posix()
+    data = {}
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8") or "{}")
+        except ValueError:
+            return False  # a settings file we cannot read is the person's; never overwrite it
+    perms = data.setdefault("permissions", {})
+    dirs = perms.setdefault("additionalDirectories", [])
+    if folder in [Path(d).as_posix() for d in dirs]:
+        return False
+    dirs.append(folder)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8", newline="\n")
+    return True
+
+
+def disallow_directory(settings_path, workspace) -> bool:
+    """Offboard's mirror of allow_directory: drop the workspace, keep every other entry."""
+    import json
+    path = Path(settings_path)
+    if not path.exists():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8") or "{}")
+    except ValueError:
+        return False
+    dirs = (data.get("permissions") or {}).get("additionalDirectories") or []
+    keep = [d for d in dirs if Path(d).as_posix() != Path(workspace).resolve().as_posix()]
+    if keep == dirs:
+        return False
+    data["permissions"]["additionalDirectories"] = keep
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8", newline="\n")
+    return True
+
+
+def directory_allowed(settings_path, workspace) -> bool:
+    import json
+    path = Path(settings_path)
+    if not path.exists():
+        return False
+    try:
+        dirs = (json.loads(path.read_text(encoding="utf-8") or "{}").get("permissions") or {}).get(
+            "additionalDirectories") or []
+    except ValueError:
+        return False
+    return Path(workspace).resolve().as_posix() in [Path(d).as_posix() for d in dirs]
+
+
 def default_user_instructions(root, offline, home) -> Path:
     if offline:
         return (Path(home) if home else Path(root).resolve().parent) / ".claude" / "CLAUDE.md"
@@ -635,6 +688,9 @@ def finish_space(report, dst) -> None:
     dst = Path(dst)
     _lazy(report, f"AGENTS.md {dst.name}", "agents_md", lambda m: m.write(dst), "python _meta/tools/agents_md.py --check")
     _lazy(report, f"ids {dst.name}", "ids", lambda m: m.build(dst), "test -f _meta/state/ids.yaml")
+    if spaceyaml.load(dst).mode != "fixture":  # the fixture sweeps on its own clock
+        _lazy(report, f"first sweep {dst.name}", "sweep", lambda m: m.run(dst),
+              "test -f _meta/state/runs.jsonl")
     _lazy(report, f"status {dst.name}", "status", lambda m: m.run(dst), "test -f live/health.md")
     errs = [e for e in validate.validate(dst) if not e.startswith("warning:")]
     report.add(f"validate {dst.name}", not errs, f"python _meta/tools/validate.py {dst}",
@@ -856,6 +912,11 @@ def run(root, answers, offline=False, org=None, dry_run=False, home=None, user_i
         changed = install_instruction(ui, workspace)
         report.add("personal instruction", instruction_present(ui, workspace),
                    f"grep -c 'space:personal-instruction' {ui}", f"{'installed' if changed else 'present'}: {ui}")
+        settings = Path(ui).parent / "settings.json"
+        allowed = allow_directory(settings, workspace)
+        report.add("workspace allowed", directory_allowed(settings, workspace),
+                   f"grep -c additionalDirectories {settings}",
+                   f"{'added' if allowed else 'present'}: sessions in any repository may journal there")
     tasks = {str(p): register_sync(report, p, spaceyaml.load(p).name, minutes, offline, dry_run)
              for p in dict.fromkeys(report.spaces.values())}
     if not offline:
@@ -913,19 +974,25 @@ def invite(root, slug: str, org: str | None = None, workspace_org: str | None = 
         if other.profile == "project" and isinstance(other.audience, list) and person.title in other.audience:
             other_repo = git_remote(path)
             crew.append({"name": other.name, "repo": f"https://github.com/{other_repo}" if other_repo else None})
+    template = (read_yaml(root / "_meta" / "state" / "template-version.yaml", {}) or {}).get("repo") \
+        or template_repo(root) or "<template>"
+    company = space.data.get("company") or humanize(space.name)
+    say = (f"Onboard me to {company}: https://github.com/{template} with my invitation "
+           f"{repo or '<brain>'}:{slug}")
     answers = {"name": person.title, "slug": slug, "email": person.extra.get("email") or "",
                "parent": space.name if space.profile != "brain" else "brain",
                "brain": f"https://github.com/{repo}" if repo else "", "feeds": "none", "schedule": 15,
-               "org": org, "workspace_org": workspace_org or org, "crew_projects": crew}
+               "org": org, "workspace_org": workspace_org or org, "crew_projects": crew, "say": say}
     target = root / "_meta" / "state" / "invitations" / f"{slug}.yaml"
     write_yaml(target, answers)
     items_path = root / "_inbound" / "needs-you" / "invitations.yaml"
     items = [i for i in (read_yaml(items_path, {}) or {}).get("items") or [] if i.get("id") != f"invite-{slug}"]
     workspace = f"{workspace_org or org}/{slug}-workspace" if (workspace_org or org) else f"<org>/{slug}-workspace"
     items.append({"id": f"invite-{slug}", "kind": "question",
-                  "text": (f"Invite {person.title}: give them the template and the answers in "
-                           f"{target.relative_to(root).as_posix()}; on their own machine they run "
-                           f"`python _meta/tools/onboard.py --answers <that file>` (about fifteen minutes)"),
+                  "text": (f"Invite {person.title}: send them this one sentence to say in Claude Code "
+                           f"on their own machine: \"{say}\". Their agent does the rest (about fifteen "
+                           f"minutes, mostly their sign-ins); the answers are in "
+                           f"{target.relative_to(root).as_posix()}"),
                   "recommendation": "yes, on their first day", "default": "they work without a workspace for now "
                   "(rules.md section 10)", "depends": 1, "check": f"gh repo view {workspace}"})
     write_yaml(items_path, {"items": items})

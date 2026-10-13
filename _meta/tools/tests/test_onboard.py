@@ -416,3 +416,21 @@ def test_copy_template_never_copies_mounted_spaces(tmp_path):
     assert onboard.copy_template(src, dst)
     assert (dst / "_meta" / "tools" / "x.py").exists()
     assert not (dst / "brain").exists() and not (dst / "mounts").exists()
+
+
+def test_the_workspace_is_allowed_once_and_offboard_takes_it_back(tmp_path):
+    import json
+    settings = tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps({"permissions": {"additionalDirectories": ["D:/other"]}, "x": 1}),
+                        encoding="utf-8")
+    ws = tmp_path / "ada"
+    ws.mkdir()
+    assert onboard.allow_directory(settings, ws) is True
+    assert onboard.allow_directory(settings, ws) is False   # once
+    assert onboard.directory_allowed(settings, ws)
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    assert data["x"] == 1 and "D:/other" in data["permissions"]["additionalDirectories"]
+    assert onboard.disallow_directory(settings, ws) is True
+    assert not onboard.directory_allowed(settings, ws)
+    assert json.loads(settings.read_text(encoding="utf-8"))["permissions"]["additionalDirectories"] == ["D:/other"]

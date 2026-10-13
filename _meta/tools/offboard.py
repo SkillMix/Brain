@@ -90,6 +90,11 @@ def run(root, online, dry_run=False) -> onboard.Report:
                    f"grep -c 'space:personal-instruction' {ui}", str(ui))
     else:
         report.add("personal instruction removed", True, f"test ! -f {ui}", "no user-level file")
+    if ui is not None:
+        settings = ui.parent / "settings.json"
+        onboard.disallow_directory(settings, root)
+        report.add("workspace no longer allowed", not onboard.directory_allowed(settings, root),
+                   f"grep -c additionalDirectories {settings}", str(settings))
     repo = state.get("repo") or onboard.git_remote(root)
     if online and repo:
         res = run_cmd(["gh", "repo", "archive", repo, "-y"], dry_run)

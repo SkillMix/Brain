@@ -1,61 +1,85 @@
 ---
 name: onboard
-description: Set up a space from a fresh copy of the template, or check one that exists, with onboard.py - one conversation with defaults; the agent does every step but the grants only the owner can give, each with a read-back check. Use when someone says "set up my workspace" or "set up our brain", or asks whether a space is set up.
+description: One sentence sets a person or a company up - "onboard me", "set me up", "get started", "join <company>", "set up our company brain", an invitation sentence ("Onboard me to X - <link> with my invitation <brain>:<slug>"), "invite <colleague>", "schedule my routines", or "is this set up?". Runs start.py (fresh setup), onboard.py --invite, or onboard.py --check; the agent does every step but the sign-ins only the person can give.
 ---
 
-# onboard: one verb, one conversation
+# onboard: one sentence, then the agent does everything
 
-The tool detects what it is setting up: no brain yet, a company; a brain exists, a person; a
-desk seed, a project (that is `mint`). Every question has a default; a skipped one returns
-on Needs you.
+The person says one sentence. You do every step; you ask nothing that has a default. Every
+default they may want to change returns on their Needs-you list, so a question now is never
+needed to finish.
 
-## When
+## "Onboard me", "set me up", "get started", an invitation sentence
 
-- A repository just created from the template ("set up my workspace", "set up our brain").
-- Any time, to check: `--check` re-runs the read-back checks; its one repair is that an
-  onboarding root forgets spaces that were offboarded.
-- A shadow space going live: `--go-live --answers <file>` (the file's `mounts:` maps each
-  mount name to its live repository) sets `mode: live`, drops `time_scale`, repoints the
-  mounts, rewrites the onboard state for this checkout, re-registers the sync task and
-  re-applies the platform settings; a live space is left unchanged.
-- To watch it work before connecting anything real: `--fixture <dir>` runs the fixture
-  company end to end, offline.
+1. Find the template: the link in the sentence, else this repository when it has no
+   `AGENTS.md` (a fresh copy), else the `repo` in `_meta/state/template-version.yaml` of the
+   person's workspace. Clone it anywhere temporary when you are not already in a copy:
+   `gh repo clone <owner>/<repo> <temporary folder>`.
+2. Read the sentence for: an invitation (`<brain>:<slug>`, or "my invitation is <slug> in
+   <brain>"), a brain without an invitation ("join the Acme brain at acme/brain"), or a
+   company name with no brain ("set up our company brain", "for Acme").
+3. Name the connectors this session has, as feeds: mail, calendar, chat, calls, tracker,
+   documents (a mail connector is `mail`, a meeting recorder is `calls`). None is fine.
+4. Run, from the template copy:
+   `python _meta/tools/start.py [--invitation <brain>:<slug> | --brain <brain>]
+   [--company "<name>"] [--feeds <list>] --json`
+5. If the result names `signed in to the host` as yours, ask the person to run
+   `gh auth login` once (in Claude Code: `! gh auth login`), then run step 4 again.
+6. Schedule the routines in the result (`routines`: name, `schedule` as cron, `prompt_file`)
+   with your harness's scheduled tasks, one task each, the prompt file's text as the task's
+   prompt. Without scheduled tasks, say so in one line; the sync task still lands everything.
+7. Answer in at most four lines: where the workspace is; what is still theirs (the `yours`
+   rows, each with its check); that the morning briefing starts tomorrow; that "what needs
+   me" shows their list any time.
 
-## Run
+Run again on the same person, `start.py` adopts what it made and repairs what is missing.
+A failed row names its fix; do that fix, never a different workaround.
 
-`python _meta/tools/onboard.py [--answers FILE] [--brain URL] [--seed PATH] [--offline]
-[--org ORG] [--check] [--go-live] [--fixture DIR]`
+## "Invite <colleague>"
 
-Run it once without flags to see the interview; ask the person each question in plain words
-with its default, accept "skip", write the answers to a YAML file and run again with
-`--answers <file>`.
+In the brain (the person's mounted brain, or the brain checkout): find the colleague's slug
+in the registry (`people`), then `python _meta/tools/onboard.py <brain> --invite <slug>`. It
+writes the invitation and one Needs-you item whose text holds the sentence to send. Show the
+person that sentence and where to send it; you never send it yourself. When the colleague is
+not in the registry yet, add them as a `people` subject first (the status routine lands it).
 
-## What the tool already did
+## "Schedule my routines"
 
-Filled `space.yaml` (profile, name, owner, owner_email, audience, parent, kinds for a
-brain, never-leaves defaults); for a company, drafted `identity/charter.md`, registered the
-domains as umbrella subjects with their owners and created the top owner's workspace with
-the brain mounted; wrote `_meta/access/resources.yaml` for the chosen connectors (none
-required); installed the personal instruction at user level for the harness; registered the
-sync task with the OS scheduler every 15 minutes; armed the repository settings (auto-merge,
-the required check); rebuilt `AGENTS.md` and `ids.yaml`; ran validate, the first status and
-the tests; recorded every step as `{step, done, check, result}`.
+The rendered prompts are in `<workspace>/_meta/state/routines/`; schedule each as in step 6
+above. Read-back: the next day's run lines in `_meta/state/runs.jsonl` carry `sweep-chain`
+and `daily-chain`.
 
-## Colleagues and other projects (phase 5)
+## "Is this set up?"
 
-- Invite a colleague, in the brain: `python _meta/tools/onboard.py <brain> --invite <slug>`
-  writes `_meta/state/invitations/<slug>.yaml` (their name, the brain, the projects they are
-  crew on) and one Needs-you item for the owner with its read-back. The owner hands the file
-  over; on the colleague's own machine onboard runs with `--answers <file>`, asks the rest
-  (their email, their feeds), mounts the brain and every crew project, installs their
-  personal instruction and registers their sync task. Nothing is done for them.
+`python _meta/tools/onboard.py <space> --check`: it changes nothing that is right, re-runs
+every read-back, writes each owner step still failing to `_inbound/needs-you/onboard-owner.yaml`,
+and names the fix for the rest. Show only the failing rows.
+
+## What the tools already did
+
+`start.py` reads who the person is (git, then the host account; a no-reply address is never
+the briefing address), finds the invitation (by slug, else by the person's name, login or
+email), creates the repository from the template (the person's own account when the
+organization does not allow it), clones it under `~/spaces/`, and runs onboard there:
+`space.yaml` filled for the profile; the brain and every crew project mounted read-only; for a
+company the charter drafted, the domains registered as umbrella subjects and the owner's
+workspace created; `_meta/access/resources.yaml` for the chosen feeds; the personal instruction
+at user level and the workspace as an allowed directory for the harness; the sync task every
+15 minutes; auto-merge and the required check on the host; `AGENTS.md`, `ids.yaml`, the first
+sweep, the first status and the tests; every step recorded as `{step, done, check, result}` in
+`_meta/state/onboard.yaml`.
+
+## Other cases
+
+- A shadow space going live: `onboard.py --go-live --answers <file>` (the file's `mounts:`
+  maps each mount name to its live repository).
 - A project that already has a repository: `python _meta/tools/swap.py <checkout> --name
-  <space name> --owner <name> --crew <names> --brain <url> --online` keeps its code and
-  history, moves today's layer under `_archive/`, adds the shape-1 layer without touching
-  its own files, and fills `space.yaml`; then `onboard --go-live` for its platform settings
-  and sync task. The sync script lands the result.
-- Every owner step `--check` cannot do itself sits on Needs you
-  (`_inbound/needs-you/onboard-owner.yaml`) with its read-back until the read-back passes.
+  <space name> --owner <name> --crew <names> --brain <url> --online`, then `onboard.py
+  <checkout> --go-live`. The sync script lands the result.
+- To watch it work before connecting anything real: `onboard.py --fixture <dir>` runs the
+  fixture company end to end, offline.
+- Without an agent: `python _meta/tools/onboard.py` in a fresh copy runs the interview on the
+  terminal (Enter takes a default, `skip` decides later).
 
 ## A company with history: research first, then the archives
 
@@ -73,21 +97,22 @@ After a company's onboarding, before anyone signs anything:
 
 ## Judgment left to you
 
-Run the interview as a conversation; never guess an answer. When the tool lists steps that
-need the owner's identity (signing in to their own mail, calendar and chat through the
-connector; organization-level grants on the repository host), hand them over one at a time
-with the read-back check that proves each took, then run `--check`. A repeated `--check`
-that still fails names what to fix, not what to ask again. Run line: `{"routine":
-"onboard", "at": "<ISO UTC>", "space": "<name>", "cost_tokens": <n>, "notes": {"step":
-"agent", "case": "<company|person|project|check>"}}`.
+Read the sentence generously: any wording that asks to be set up, joined or started is this
+skill. Never guess an answer that has no default; the tools have one for everything they need.
+When a step needs the person's identity (signing in to their own mail, calendar and chat
+through the connector; organization-level grants on the host), hand it over once with the
+read-back that proves it took. Run line: `{"routine": "onboard", "at": "<ISO UTC>", "space":
+"<name>", "cost_tokens": <n>, "notes": {"step": "agent", "case": "<start|invite|check>"}}`.
 
 ## Never
 
 - Never ask for, type or store a password, token or key: the person signs in in their own
   browser and the connector holds the grant (hard rule 1).
+- Never send the invitation sentence yourself: the person sends it.
 - Never leave `profile: template` in an instance; never set it anywhere but the template.
 - Never write `stable`: the charter and spine stay drafts until the owner signs them.
-- Never widen the badge beyond the template defaults; never run git.
+- Never widen the badge beyond the template defaults; never run git yourself (the tools'
+  first push to an empty repository is the setup, then the sync script lands everything).
 
 ## Scheduled invocation
 
@@ -99,6 +124,6 @@ that fail with their read-back check. Change nothing; commit nothing.
 
 ## Behaviour scenarios
 
-`_meta/tools/tests/test_onboard.py` (an offline company onboard creates a brain and
-workspaces that validate; `--check` twice changes nothing) and
-`_meta/tools/tests/test_fixture_e2e.py` (the fixture company end to end).
+`_meta/tools/tests/test_start.py` (one sentence sets a person up from an invitation, offline;
+a company with its owner's workspace; a missing invitation stops before anything is created),
+`_meta/tools/tests/test_onboard.py` and `_meta/tools/tests/test_fixture_e2e.py`.

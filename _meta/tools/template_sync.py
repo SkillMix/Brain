@@ -27,13 +27,15 @@ import spaceyaml  # noqa: E402
 MACHINERY = ("_meta/tools", "_meta/templates", "_meta/migrations", "_meta/tests/behaviour",
              "_meta/tests/README.md",
              ".claude/skills", ".claude/settings.json", ".github/workflows", "docs/shape-1.md",
-             "LICENSE", "README.md")
+             "LICENSE", "README.md", "CLAUDE.md")
 NEVER = (".github/CODEOWNERS", ".github/template-marker", "_meta/tests/fixture",
          "_meta/tests/forbidden-names.sha256")
 PROVENANCE = Path("_meta") / "state" / "template-version.yaml"
 # A space's own files unless it received them from the template: a swapped project keeps its
 # README and its licence, and never gets the template's (the swap never adds them either).
 OWN_UNLESS_RECEIVED = ("LICENSE", "README.md")
+# Added where missing, but a space's own version is never replaced unless it came from here.
+ADD_UNLESS_OWN = ("CLAUDE.md",)
 # Local caches a test run leaves in the template's working tree are not machinery.
 CACHE_DIRS = {"__pycache__", ".pytest_cache"}
 
@@ -127,6 +129,9 @@ def run(root, source: str | None = None, check: bool = False) -> Report:
             local_hash = sha1(dst)
             if local_hash == tpl_hash:
                 report.unchanged += 1
+                continue
+            if rel in ADD_UNLESS_OWN and rel not in received:
+                report.kept.append(rel)   # the space's own file, never received from here
                 continue
             if rel in received and received[rel] != local_hash:
                 report.kept.append(rel)   # this space changed it since it was received

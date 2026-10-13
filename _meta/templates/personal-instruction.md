@@ -13,5 +13,9 @@ one lookup is captured with its sources and appended to the question log
 
 Never commit, push or merge; the sync script lands files.
 
+The toolbox is in `{workspace_path}/.claude/skills/`. When the person asks in plain words, read
+the matching skill there and follow it: "what needs me" (sign), "invite <colleague>" and
+"schedule my routines" (onboard), "status of <subject>" (query), "ask <space> about ..." (request).
+
 Never put company knowledge in the harness's own memory; pointers and preferences only.
 <!-- /space:personal-instruction -->
