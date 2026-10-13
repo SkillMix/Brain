@@ -1,0 +1,71 @@
+# Setup on every system: the unit tests, the behaviour scenarios and an offline start from a
+# fixture invitation on Windows, macOS and Linux; on macOS and Linux the unit tests also run the
+# generated cron command under `env -i` with a stub `gh` on the registration PATH. Not a
+# required check (`checks` is). Runs when the setup tools change; in an instance the gate finds
+# no template marker and the matrix is skipped.
+name: platforms
+
+on:
+  pull_request:
+    paths:
+      - "_meta/tools/onboard.py"
+      - "_meta/tools/start.py"
+      - "_meta/tools/offboard.py"
+      - "_meta/tools/sync.py"
+      - "_meta/tools/tests/test_sync_task.py"
+      - "_meta/tools/tests/test_start.py"
+      - "_meta/templates/**"
+      - ".github/workflows/platforms.yml"
+  push:
+    branches: [main]
+    paths:
+      - "_meta/tools/onboard.py"
+      - "_meta/tools/start.py"
+      - "_meta/tools/offboard.py"
+      - "_meta/tools/sync.py"
+      - "_meta/tools/tests/test_sync_task.py"
+      - "_meta/tools/tests/test_start.py"
+      - "_meta/templates/**"
+      - ".github/workflows/platforms.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      template: ${{ steps.marker.outputs.template }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: marker
+        run: echo "template=$([ -f .github/template-marker ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+  platforms:
+    needs: gate
+    if: needs.gate.outputs.template == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      GIT_TERMINAL_PROMPT: "0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install pyyaml pytest
+
+      - name: Unit tests
+        run: python -m pytest _meta/tools/tests -q
+
+      - name: Behaviour scenarios
+        run: python _meta/tools/behaviour.py . --all
+
+      - name: Offline start from a fixture invitation, and the cron command under env -i
+        run: python -m pytest _meta/tools/tests/test_start.py _meta/tools/tests/test_sync_task.py -v -k "start_command or empty_environment"

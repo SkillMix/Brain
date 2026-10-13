@@ -8,37 +8,47 @@ ships the listed releases whose window has passed into their destinations' clone
 `~/.spaces/.release/` (cloned on first use). Nothing else runs git.
 
 Substitute `<name>` with `name` from `space.yaml` and `<root>` with the absolute path
-of the checkout. The scheduler's `python` must be the one with PyYAML installed; give
-the full interpreter path when in doubt.
+of the checkout. `<python>` is the interpreter that ran onboarding (the one with PyYAML; on a
+system that refuses `pip --user`, `~/.spaces/venv`).
 
 ## Windows (Task Scheduler)
 
-Register:
+`onboard` registers the task from XML (`schtasks /Create /F /TN "space-sync-<name>" /XML
+<file>`), because `schtasks /Create` alone cannot set what the task needs: it repeats every 15
+minutes, runs `%SystemRoot%\System32\conhost.exe --headless "<python>" "<root>\_meta\tools\sync.py"
+--root "<root>" --release-leg` (no console window), starts and keeps running on battery, and
+runs a start it missed while the machine slept as soon as it wakes.
 
-    schtasks /Create /SC MINUTE /MO 15 /TN "space-sync-<name>" /TR "python <root>\_meta\tools\sync.py --root <root>"
+Read-back (`onboard --check` does this and names what is missing):
 
-Add `/F` to replace an existing task of the same name on a re-run.
+    schtasks /Query /TN "space-sync-<name>" /XML
 
-Read-back (the task exists, is Ready, and shows the 15-minute cadence):
-
-    schtasks /Query /TN "space-sync-<name>" /V /FO LIST
+shows `<DisallowStartIfOnBatteries>false`, `<StopIfGoingOnBatteries>false`,
+`<StartWhenAvailable>true` and `conhost.exe`.
 
 Remove (offboard):
 
     schtasks /Delete /TN "space-sync-<name>" /F
 
-## Unix (cron)
+## macOS and Linux (cron)
 
-Register by appending to the owner's crontab (`crontab -e`, or piped in by onboard):
+One line in the owner's crontab, replaced by its marker on a re-run:
 
-    */15 * * * * cd <root> && python _meta/tools/sync.py --release-leg
+    */15 * * * * cd "<root>" && PATH="<PATH at registration>" "<python>" "<root>/_meta/tools/sync.py" --root "<root>" --release-leg >> "$HOME/.spaces/logs/space-sync-<name>.log" 2>&1  # space-sync-<name>
 
-Read-back (exactly one line for this root):
+The PATH is the one onboarding saw, so cron finds `gh` and `git` (Homebrew's `/opt/homebrew/bin`
+is not on cron's own). Output goes to the log, not to local mail. A run missed while the
+machine slept is simply the next one.
 
-    crontab -l | grep sync.py
+Read-back: `crontab -l | grep space-sync-<name>`. Remove (offboard): the line with the marker.
 
-Remove (offboard): drop the line again, for example
-`crontab -l | grep -v '<root>' | crontab -`.
+## Linux without cron (systemd user timer)
+
+`~/.config/systemd/user/space-sync-<name>.service` and `.timer` (`OnCalendar=*:0/15`,
+`Persistent=true`, so a start missed while asleep runs on waking), enabled with
+`systemctl --user enable --now space-sync-<name>.timer`. Read-back:
+`systemctl --user is-active space-sync-<name>.timer`. A user timer runs while the person is
+logged in; `loginctl enable-linger` keeps it running when they are not.
 
 ## What a healthy registration looks like
 

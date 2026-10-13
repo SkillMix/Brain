@@ -9,7 +9,13 @@ into the profile it needs, and the shape is written down in `docs/shape-1.md`.
 
 ## Start in one sentence
 
-Open Claude Code (the desktop app's Code tab, or the CLI) in any folder and say one sentence:
+You need git, GitHub's `gh` and Python 3.10 or newer. One command installs all three:
+
+- macOS: `brew install git gh python`
+- Debian or Ubuntu: `sudo apt install git gh python3 python3-venv`
+- Windows: `winget install Git.Git GitHub.cli Python.Python.3.12`
+
+Then open Claude Code (the desktop app's Code tab, or the CLI) in any folder and say one sentence:
 
 - **A company with no brain yet:** "Set up our company brain from
   https://github.com/OWNER/REPOSITORY" (this repository's address).
@@ -34,7 +40,7 @@ that proves it. Your first morning briefing arrives the next day.
 When a person asks to be set up, onboarded or to start, and names this repository:
 
 1. Clone it anywhere temporary: `gh repo clone OWNER/REPOSITORY <temporary folder>`.
-2. Run `python <temporary folder>/_meta/tools/start.py`, adding `--invitation <brain>:<slug>`
+2. Run `python <temporary folder>/_meta/tools/start.py` (`python3` where `python` is absent), adding `--invitation <brain>:<slug>`
    when the person gave an invitation, `--company "<name>"` when they named their company, and
    `--feeds <list>` naming the connectors your session has (mail, calendar, chat, calls,
    tracker, documents). Ask nothing else: every other answer has a default.

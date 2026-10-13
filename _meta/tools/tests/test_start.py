@@ -1,4 +1,8 @@
 """Start: one sentence in an agent session sets a person or a company up, offline here."""
+import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import yaml
@@ -136,6 +140,22 @@ def test_a_dry_run_prints_the_plan_and_stops_before_onboard(tmp_path, monkeypatc
     assert not (tmp_path / "home" / "ada-workspace").exists() and not (tmp_path / "CLAUDE.md").exists()
     # every outside call after the sign-in check was a dry run
     assert all(dry for argv, dry in calls if argv[:3] != ["gh", "auth", "status"])
+
+
+def test_the_start_command_onboards_offline_from_a_fixture_invitation(tmp_path):
+    """The command line as the person's agent runs it; CI runs it on Windows, macOS and Linux."""
+    tpl, brain = template_copy(tmp_path), brain_with_invitation(tmp_path)
+    home = tmp_path / "userhome"
+    env = dict(os.environ, HOME=str(home), USERPROFILE=str(home))
+    done = subprocess.run([sys.executable, str(tpl / "_meta" / "tools" / "start.py"), "--offline",
+                           "--invitation", f"{brain.as_posix()}:ada", "--home", str(tmp_path / "home"),
+                           "--user-instructions", str(tmp_path / "CLAUDE.md"), "--json"],
+                          capture_output=True, text=True, env=env, cwd=tpl)
+    assert done.returncode == 0, done.stdout + done.stderr
+    result = json.loads(done.stdout[done.stdout.index("{"):])
+    ws = Path(result["workspace"])
+    assert ws.parent == tmp_path / "home" and spaceyaml.load(ws).owner == "Ada Okafor"
+    assert result["failed"] == [] and len(result["routines"]) == 2 and errors(ws) == []
 
 
 def test_identity_drops_a_no_reply_address(monkeypatch):

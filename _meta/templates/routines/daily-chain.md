@@ -10,16 +10,16 @@ You run the daily chain for {person}'s workspace at {workspace}.
    `git -C {workspace} merge -q --ff-only origin/main` and
    `git -C {workspace} submodule update --init --remote`. If the fast-forward is refused
    because of local commits, leave it: the sync task owns landing.
-2. Run `python {workspace}/_meta/tools/chain.py daily {workspace} --person "{person}"`: once
+2. Run `{python} {workspace}/_meta/tools/chain.py daily {workspace} --person "{person}"`: once
    a week the guarded template sync, then status, requests, release, outbox reconcile, the
    morning view and the answer and leak tests. A failed step is labelled stale on the
    health line; do not repair it by hand.
 3. Follow `{workspace}/.claude/skills/morning-view/SKILL.md` for the send: when
-   `python {workspace}/_meta/tools/morning_view.py {workspace} sent-today` exits 0, a briefing
+   `{python} {workspace}/_meta/tools/morning_view.py {workspace} sent-today` exits 0, a briefing
    went out today already; skip the send. Otherwise send `_meta/state/morning-payload.json`
    exactly as rendered (its to, subject and body) with the mail connector from {person}'s own
    mailbox to that same address, then
-   `python {workspace}/_meta/tools/morning_view.py {workspace} record-send --id <message id>`.
+   `{python} {workspace}/_meta/tools/morning_view.py {workspace} record-send --id <message id>`.
    One briefing a day, sent even when the list is empty. Never send anything else to anyone.
 
 Commit nothing, push nothing, merge nothing: the sync task on this machine lands the files.

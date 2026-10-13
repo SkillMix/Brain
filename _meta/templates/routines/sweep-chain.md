@@ -17,12 +17,12 @@ You run the sweep chain for {person}'s workspace at {workspace}.
    (mail, calendar, chat, calls, tracker, documents: whichever are connected) into
    `_meta/state/feed/<source>.jsonl`, one JSON object per line in the record shape the skill
    gives.
-3. Run `python {workspace}/_meta/tools/chain.py sweep {workspace}` (sweep, distill, check).
+3. Run `{python} {workspace}/_meta/tools/chain.py sweep {workspace}` (sweep, distill, check).
    Then follow `.claude/skills/distill/SKILL.md` and `.claude/skills/check/SKILL.md` for the
    judgment only: improve each new candidate's body in plain language from its listed
    evidence only, and sharpen each check hit's recommendation. Never write `status: stable`;
    never edit a signed page; never read `personal/`, `academic/` or `_scratch/`.
-4. Follow `.claude/skills/tracker/SKILL.md`: create what `python {workspace}/_meta/tools/tracker.py
+4. Follow `.claude/skills/tracker/SKILL.md`: create what `{python} {workspace}/_meta/tools/tracker.py
    {workspace} pending` lists with the tracker connector, and record each.
 5. Append one run line to `_meta/state/runs.jsonl`: `{{"routine": "sweep-chain", "at": <ISO
    time>, "space": <name>, "cost_tokens": <your estimate>, "notes": {{"step": "agent",

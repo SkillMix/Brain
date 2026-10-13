@@ -9,6 +9,8 @@ The person says one sentence. You do every step; you ask nothing that has a defa
 default they may want to change returns on their Needs-you list, so a question now is never
 needed to finish.
 
+`python` in these steps means `python3` where `python` is absent (macOS, many Linux systems).
+
 ## "Onboard me", "set me up", "get started", an invitation sentence
 
 1. Find the template: the link in the sentence, else this repository when it has no

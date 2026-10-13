@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import importlib.util
 import json
 import os
 import re
@@ -35,13 +36,44 @@ import subprocess
 import sys
 from pathlib import Path
 
-try:  # the agent does every step: the one library the tools need is installed here
-    import yaml
-except ImportError:  # pragma: no cover - depends on the machine
-    subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "--user", "pyyaml"], check=False)
-    import site
-    sys.path.append(site.getusersitepackages())
-    import yaml
+VENV = Path.home() / ".spaces" / "venv"
+
+
+def venv_python(venv: Path) -> Path:
+    return Path(venv) / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+
+def ensure_yaml(argv, venv=VENV, run=subprocess.run, have=None) -> int | None:
+    """None when PyYAML imports here. Else the agent installs it: `pip --user` first; where the
+    system Python refuses that (PEP 668: Homebrew on macOS, Debian and Ubuntu), a venv at
+    ~/.spaces/venv, and start.py runs again with that interpreter, so the sync task uses it
+    too. Returns that run's exit code, or 1 with the one fix only the person can make."""
+    have = have or (lambda: importlib.util.find_spec("yaml") is not None)
+    if have():
+        return None
+    if run([sys.executable, "-m", "pip", "install", "--quiet", "--user", "pyyaml"]).returncode == 0:
+        import site
+        sys.path.append(site.getusersitepackages())
+        importlib.invalidate_caches()
+        if have():
+            return None
+    py = venv_python(venv)
+    if not py.exists() and run([sys.executable, "-m", "venv", str(venv)]).returncode != 0:
+        print("start: this Python cannot make a virtual environment; install that part once with "
+              "`sudo apt install python3-venv` (Debian, Ubuntu), then say the sentence again")
+        return 1
+    if run([str(py), "-m", "pip", "install", "--quiet", "pyyaml"]).returncode != 0:
+        print(f"start: PyYAML did not install into {venv}; check the network, then say the sentence again")
+        return 1
+    return run([str(py), str(Path(__file__).resolve()), *argv]).returncode
+
+
+if __name__ == "__main__":   # the agent does every step: the one library the tools need, first
+    _code = ensure_yaml(sys.argv[1:])
+    if _code is not None:
+        sys.exit(_code)
+
+import yaml  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import onboard  # noqa: E402
@@ -166,7 +198,8 @@ def render_routines(workspace: Path, person: str) -> list:
     out = []
     target = Path(workspace) / "_meta" / "state" / "routines"
     for src in sorted(ROUTINES.glob("*.md")):
-        text = src.read_text(encoding="utf-8").format(workspace=Path(workspace).as_posix(), person=person)
+        text = src.read_text(encoding="utf-8").format(workspace=Path(workspace).as_posix(), person=person,
+                                                      python=onboard.python_cmd())
         dst = target / src.name
         dst.parent.mkdir(parents=True, exist_ok=True)
         dst.write_text(text, encoding="utf-8", newline="\n")
