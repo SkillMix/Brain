@@ -31,17 +31,18 @@ def run_cmd(argv, dry_run=False, cwd=None):
     return onboard.run_cmd(argv, dry_run=dry_run, cwd=cwd)
 
 
-def remove_sync_task(report, root, state, task_name, dry_run) -> None:
+def remove_sync_task(report, root, state, task_name, dry_run, label="sync task removed") -> None:
+    """Remove one OS task onboard registered: the sync task, or a routine's (`label` names it)."""
     if onboard.SYSTEM == "Windows":
         present = run_cmd(["schtasks", "/Query", "/TN", task_name], dry_run)
         if not dry_run and present.returncode != 0:
-            report.add("sync task removed", True, f"schtasks /Query /TN {task_name}",
+            report.add(label, True, f"schtasks /Query /TN {task_name}",
                        "none registered (a minted project runs under its person's task)")
             return
         res = run_cmd(["schtasks", "/Delete", "/F", "/TN", task_name], dry_run)
         verify = run_cmd(["schtasks", "/Query", "/TN", task_name], dry_run)
         ok = res.returncode == 0 and (dry_run or verify.returncode != 0)
-        report.add("sync task removed", ok, f"schtasks /Query /TN {task_name}", res.stderr.strip()[:200] or task_name)
+        report.add(label, ok, f"schtasks /Query /TN {task_name}", res.stderr.strip()[:200] or task_name)
         return
     timer = Path.home() / ".config" / "systemd" / "user" / f"{task_name}.timer"
     if timer.exists():   # a Linux without cron got a systemd user timer instead
@@ -52,23 +53,23 @@ def remove_sync_task(report, root, state, task_name, dry_run) -> None:
         run_cmd(["systemctl", "--user", "daemon-reload"], dry_run)
         verify = run_cmd(["systemctl", "--user", "is-enabled", timer.name], dry_run)
         ok = dry_run or verify.returncode != 0
-        report.add("sync task removed", ok, f"systemctl --user is-enabled {timer.name}",
+        report.add(label, ok, f"systemctl --user is-enabled {timer.name}",
                    "timer disabled, its two unit files removed" if ok else "the timer is still enabled")
         return
     listed = run_cmd(["crontab", "-l"], dry_run)
     if listed.returncode == 127:
-        report.add("sync task removed", True, "crontab -l", "no cron on this machine: nothing was registered")
+        report.add(label, True, "crontab -l", "no cron on this machine: nothing was registered")
         return
     current = listed.stdout
-    keep = [l for l in current.splitlines() if not onboard.is_sync_line(l, task_name, root)]
+    keep = [l for l in current.splitlines() if not onboard.is_task_line(l, task_name, root)]
     if len(keep) != len(current.splitlines()):
         with tempfile.NamedTemporaryFile("w", suffix=".cron", delete=False, encoding="utf-8", newline="\n") as tmp:
             tmp.write("\n".join(keep) + ("\n" if keep else ""))
         run_cmd(["crontab", tmp.name], dry_run)
         os.unlink(tmp.name)
     verify = run_cmd(["crontab", "-l"], dry_run).stdout
-    ok = dry_run or not any(onboard.is_sync_line(l, task_name, root) for l in verify.splitlines())
-    report.add("sync task removed", ok, "crontab -l", "no sync line left" if ok else "a sync line remains")
+    ok = dry_run or not any(onboard.is_task_line(l, task_name, root) for l in verify.splitlines())
+    report.add(label, ok, "crontab -l", "no line left" if ok else "a line remains")
 
 
 def raw_records(root: Path) -> list:
@@ -106,6 +107,8 @@ def run(root, online, dry_run=False, forget_records: bool = False) -> onboard.Re
     task_name = (state.get("sync_task") or {}).get("name") or f"space-sync-{space.name}"
     if online:
         remove_sync_task(report, root, state, task_name, dry_run)
+        for routine in state.get("routine_tasks") or []:   # routines the OS ran, without a harness scheduler
+            remove_sync_task(report, root, state, routine["name"], dry_run, label=f"routine task {routine['name']} removed")
     else:
         report.add("sync task removed", True, f"schtasks /Query /TN {task_name}",
                    "offline: nothing was registered")

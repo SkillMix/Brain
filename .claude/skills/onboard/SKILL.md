@@ -16,20 +16,30 @@ needed to finish.
 1. Find the template: the link in the sentence, else this repository when it has no
    `AGENTS.md` (a fresh copy), else the `repo` in `_meta/state/template-version.yaml` of the
    person's workspace. Clone it anywhere temporary when you are not already in a copy:
-   `gh repo clone <owner>/<repo> <temporary folder>`.
+   `gh repo clone <owner>/<repo> <temporary folder>`. The template is private: without `gh`,
+   install it from https://cli.github.com (the official release); not signed in, ask the person
+   to run `! gh auth login --web --git-protocol https` once and finish in the browser.
 2. Read the sentence for: an invitation (`<brain>:<slug>`, or "my invitation is <slug> in
    <brain>"), a brain without an invitation ("join the Acme brain at acme/brain"), or a
    company name with no brain ("set up our company brain", "for Acme").
 3. Name the connectors this session has, as feeds: mail, calendar, chat, calls, tracker,
    documents (a mail connector is `mail`, a meeting recorder is `calls`). None is fine.
-4. Run, from the template copy:
-   `python _meta/tools/start.py [--invitation <brain>:<slug> | --brain <brain>]
-   [--company "<name>"] [--feeds <list>] --json`
-5. If the result names `signed in to the host` as yours, ask the person to run
-   `gh auth login` once (in Claude Code: `! gh auth login`), then run step 4 again.
+4. Run, from the template copy, the bootstrap script with start.py's arguments. It finds a
+   Python 3.10 or newer, or installs one under the person's home folder, then runs start.py:
+   `sh _meta/tools/bootstrap.sh [--invitation <brain>:<slug> | --brain <brain>]
+   [--company "<name>"] [--feeds <list>] --json` (on Windows
+   `powershell -NoProfile -ExecutionPolicy Bypass -File _meta\tools\bootstrap.ps1 ...`, which
+   leaves the machine's execution policy as it is).
+5. start.py runs the doctor first: it installs what needs no password (gh, on Windows git) from
+   official, pinned, checksummed releases and sets git up from the GitHub account. A
+   `doctor: <name>` row in `yours` is one sentence for the person with the exact command: say it
+   in one line (`! <command>` in Claude Code), wait, then run step 4 again. Never type a
+   password and never work around a row with a different fix. `--doctor` runs only this check.
 6. Schedule the routines in the result (`routines`: name, `schedule` as cron, `prompt_file`)
    with your harness's scheduled tasks, one task each, the prompt file's text as the task's
-   prompt. Without scheduled tasks, say so in one line; the sync task still lands everything.
+   prompt. Without scheduled tasks (Claude Code in a terminal), run
+   `python <workspace>/_meta/tools/onboard.py <workspace> --os-routines` instead: the OS
+   scheduler runs each routine at its times through `claude -p`.
 7. Answer in at most four lines: where the workspace is; what is still theirs (the `yours`
    rows, each with its check); that the morning briefing starts tomorrow; that "what needs
    me" shows their list any time.
@@ -55,8 +65,9 @@ feed file `_meta/state/feed/<feed>.jsonl` fills after the next sweep chain.
 ## "Schedule my routines"
 
 The rendered prompts are in `<workspace>/_meta/state/routines/`; schedule each as in step 6
-above. Read-back: the next day's run lines in `_meta/state/runs.jsonl` carry `sweep-chain`
-and `daily-chain`.
+above (`--os-routines` when the harness has no scheduled tasks). Read-back: the next day's run
+lines in `_meta/state/runs.jsonl` carry `sweep-chain` and `daily-chain`; `onboard --check`
+reads OS routine tasks back.
 
 ## "Is this set up?"
 
