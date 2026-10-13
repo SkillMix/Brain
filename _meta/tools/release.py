@@ -132,7 +132,8 @@ def _discard(path: Path) -> None:
     """Remove a clone this run made seconds earlier (git keeps some files read-only)."""
     for item in path.rglob("*"):
         try:
-            os.chmod(item, stat.S_IWRITE | stat.S_IREAD)
+            if item.is_file():  # a directory keeps its mode: without x it cannot be walked
+                os.chmod(item, item.stat().st_mode | stat.S_IWRITE)
         except OSError:
             pass
     shutil.rmtree(path, ignore_errors=True)
