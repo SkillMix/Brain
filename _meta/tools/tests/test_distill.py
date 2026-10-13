@@ -139,16 +139,13 @@ def test_existing_page_is_the_target_and_its_body_is_kept(tmp_path):
     assert "## New evidence" in body
 
 
-def test_mentions_count_as_evidence(tmp_path):
+def test_a_mention_alone_is_never_evidence(tmp_path):
     root = make_space(tmp_path / "ada", subjects=[
         {"id": "beacon", "kind": "projects", "title": "Beacon"}])
     witness(root, "rec-9", None, "Beacon and others were discussed.\n", NOW - D,
             mentions=["beacon"])
     report = distill.run(root, now=NOW)
-    assert report.candidates_written == 1
-    fm, _ = pages.read(candidates(root)[0])
-    assert fm["evidence"] == ["rec-9"]
-
+    assert report.candidates_written == 0   # evidence attaches by identifier only (vision section 7)
 
 def test_decision_witness_becomes_its_own_candidate(tmp_path):
     root = make_space(tmp_path / "ada", subjects=[

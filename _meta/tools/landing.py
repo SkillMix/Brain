@@ -361,6 +361,14 @@ def apply_sample(root, item: dict, verdict: dict, now: dt.datetime | None = None
                                         "by": verdict.get("by")}))
     for n in failed_numbers:
         row = picked[n - 1]
+        if str(row.get("id", "")).startswith("rq-"):
+            # a request answer this space sent at once: pause the standing choice that sent it
+            import release
+            for entry in _jsonl(root / "_meta" / "state" / "requests.jsonl"):
+                if entry.get("id") == row["id"] and str(entry.get("choice") or "").endswith(":at_once"):
+                    release.pause(root, f"request_choice:{entry.get('from')}:{entry.get('class')}", now,
+                                  "failed sample", row["id"], space)
+            continue
         if not row.get("from"):
             continue
         signal = {"id": pages.new_id(), "destination": row["from"], "at": pages.iso(now),
@@ -371,6 +379,54 @@ def apply_sample(root, item: dict, verdict: dict, now: dt.datetime | None = None
         target.write_text(yaml.safe_dump(signal, sort_keys=False), encoding="utf-8", newline="\n")
     recompute_trust(root, now=now)
     return failed
+
+
+def retract(root, page_id: str, by: str, why: str = "", now: dt.datetime | None = None) -> Path:
+    """The subject's owner (or the domain owner) withdraws a landed release at the home: the
+    page is deprecated with who and why, and a content-free signal tells the releaser, whose
+    path pauses as after a failed sample. Nothing is deleted."""
+    import ids
+    root = Path(root)
+    space = spaceyaml.load(root)
+    now = now or space.now()
+    if not str(by or "").strip():
+        raise ValueError("a retraction names the person who withdraws it")
+    rel = ids.table(root).get(page_id)
+    if rel is None:
+        raise KeyError(f"{page_id} is not a page here")
+    path = root / rel
+    fm, body = pages.read(path)
+    if not fm.get("landed_from") and not fm.get("released_from"):
+        raise ValueError(f"{page_id} did not arrive by a release; correct it like any page")
+    fm.update(status="deprecated", retracted_by=by, retracted_at=pages.iso(now), retracted_why=why or None)
+    pages.write(path, fm, body)
+    releaser = fm.get("landed_from") or fm.get("released_from")
+    _append(root / "log.md", f"- {pages.iso(now)} retracted {page_id} at home by {by}" + (f": {why}" if why else ""))
+    signal = {"id": pages.new_id(), "destination": releaser, "at": pages.iso(now), "kind": "sample_failed",
+              "item": page_id, "subject": fm.get("subject"),
+              "note": "withdrawn at the home by its owner; pause the path that let it through"}
+    target = root / SIGNALS_OUT / f"{signal['id']}.yaml"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(yaml.safe_dump(signal, sort_keys=False), encoding="utf-8", newline="\n")
+    return path
+
+
+def main(argv=None) -> int:
+    import argparse
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("root", nargs="?", default=".")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("land")
+    r = sub.add_parser("retract")
+    r.add_argument("id")
+    r.add_argument("--by", required=True)
+    r.add_argument("--why", default="")
+    args = ap.parse_args(argv)
+    if args.cmd == "retract":
+        print(retract(args.root, args.id, args.by, args.why))
+    else:
+        print(land(args.root))
+    return 0
 
 
 def recompute_trust(root, now: dt.datetime | None = None) -> list:
@@ -400,3 +456,7 @@ def recompute_trust(root, now: dt.datetime | None = None) -> list:
                                         "totals": {r: list(v) for r, v in sorted(totals.items())}},
                                        sort_keys=False), encoding="utf-8", newline="\n")
     return pending
+
+
+if __name__ == "__main__":
+    sys.exit(main())

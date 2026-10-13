@@ -338,6 +338,20 @@ def _verdicts(root: Path) -> dict:
     return status.verdicts(root)
 
 
+def _paused(root: Path, path: str, now, space) -> bool:
+    try:
+        import release
+        return release.is_paused(root, path, now)
+    except Exception:
+        return False
+
+
+def _log_line(root: Path, line: str) -> None:
+    log = Path(root) / "log.md"
+    with log.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(line.rstrip("\n") + "\n")
+
+
 def _ship_answer(root: Path, holder, rid: str, request: dict, lines: list, left: list, approved: str, now) -> Path:
     uncovered = ("\n\nNot covered, named and not sent: " + "; ".join(sorted(set(left)))) if left else ""
     body = (f"Answer to: {request.get('question')}\n\n" + ("\n".join(lines) or "- nothing covered") + uncovered + "\n")
@@ -385,8 +399,13 @@ def answer(root, now: dt.datetime | None = None, offline_roots: dict | None = No
                 continue
             lines, left = render(root, req, now, left_out)
             verdict = given.get(rid) or {}
+            choice_path = f"request_choice:{asker}:{cls}"
+            if choice == "at_once" and lines and _paused(root, choice_path, now, holder):
+                choice = "ask"   # a failed sample paused this standing choice: the holder answers by hand
             if choice == "at_once" and lines:
                 _ship_answer(root, holder, rid, req, lines, left, f"standing choice: {cls} for {asker}", now)
+                _log_line(root, f"- {pages.iso(now)} answered {rid} for {asker} at_once "
+                                f"(standing choice: {cls}; path {choice_path})")
                 _append(root / HOLDER_LOG, {"at": pages.iso(now), "id": rid, "from": asker, "class": cls,
                                             "asked_by": req.get("asked_by"), "outcome": "answered",
                                             "choice": f"{cls}:at_once"})

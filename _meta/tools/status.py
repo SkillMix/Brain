@@ -217,6 +217,7 @@ def collect(root: Path, space, reg, now) -> dict:
         state = str(fm.get("state") or "").lower()
         if fm.get("issue") and state in DONE_STATES:
             add(sid, tier, scope, title, at, rel, pid, body, "closed", arrived=_stamp(fm))
+            add(sid, tier, scope, title, at, rel, pid, body, arrived=_stamp(fm))   # and on the timeline
             continue
         add(sid, tier, scope, title, at, rel, pid, body, arrived=_stamp(fm))
         key = (sid, _thread_of(fm, title))
@@ -519,8 +520,8 @@ def _health_line(space, name: str, root, now) -> str:
         except (ValueError, TypeError):
             continue
     verdicts = _jsonl(root / "_meta" / "state" / "check-verdicts.jsonl")
-    real = sum(1 for v in verdicts if v.get("verdict") in ("yes", "edit", "retire"))
-    rate = f"{real / len(verdicts):.2f}" if verdicts else "n/a"
+    import check as check_mod  # one hit-rate formula for the health line and the checker
+    rate = f"{check_mod.real_share(verdicts):.2f}" if verdicts else "n/a"
     doubt = sum(1 for _, fm, _ in _read_pages(root / "_outbound" / "held") if fm.get("reason") == "doubt")
     return (f"- {name}: runs {runs} in 24h, cost {cost} tokens, checker hit rate {rate}, "
             f"held in doubt {doubt}, open questions {_count_md(root / '_inbound' / 'questions')}, "

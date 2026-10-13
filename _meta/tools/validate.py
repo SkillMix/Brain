@@ -129,6 +129,17 @@ def validate(root, template: bool = False) -> list:
         for entry in table["forbidden"]:
             if (root / entry).exists():
                 errs.append(f"profile {profile}: `{entry}/` does not belong in this profile")
+    # audience and parent: who reads this space, and which space it hangs under
+    if space.profile == "brain" and space.audience != "everyone":
+        errs.append("space.yaml: the brain's audience is `everyone`")
+    if space.profile == "personal" and isinstance(space.audience, list) and space.owner \
+            and space.owner not in space.audience:
+        errs.append("space.yaml: a personal workspace's audience names its owner")
+    if space.profile not in ("brain", spaceyaml.TEMPLATE_PROFILE, "", None) and space.parent:
+        names = {m.get("name") for m in space.mounts}
+        mounted = {spaceyaml.load(r).name for r in space.ancestor_roots()} if space.ancestor_roots() else set()
+        if space.parent not in names | mounted | {"brain"}:
+            errs.append(f"warning: parent `{space.parent}` is not mounted here; a space mounts every ancestor")
     # mounts present?
     for mount in space.mounts:
         if space.mount_root(mount.get("name", "")) is None:
@@ -146,6 +157,31 @@ def validate(root, template: bool = False) -> list:
             if child.is_dir() and child.name not in space.all_kinds:
                 message = f"{zone}/{child.name}/: not one of the kinds ({', '.join(space.all_kinds)})"
                 errs.append(message if kinds_known else f"warning: {message}; the brain mount is absent")
+    # windows: a per-page `review_every` is a number of days; a stable page past its window
+    # is named as a warning (the checker's weekly batch asks about it)
+    now = space.now()
+    for zone in ("knowledge",):
+        base = root / zone
+        for path in sorted(base.rglob("*.md")) if base.is_dir() else []:
+            if not pages.is_page_path(path) or path.name == "index.md":
+                continue
+            try:
+                pfm, _ = pages.read(path)
+            except Exception:
+                continue
+            every = pfm.get("review_every")
+            if every is not None and (isinstance(every, bool) or not isinstance(every, int) or every <= 0):
+                errs.append(f"{path.relative_to(root).as_posix()}: review_every is a whole number of days")
+                continue
+            if str(pfm.get("status")) != "stable":
+                continue
+            days = every or space.windows.get(str(pfm.get("type") or ""))
+            seen = pfm.get("verified_at") or pfm.get("signed_at")
+            try:
+                if days and seen and (now - pages.parse_iso(seen)).days > int(days):
+                    errs.append(f"warning: {path.relative_to(root).as_posix()}: past its {days}-day window")
+            except (TypeError, ValueError):
+                continue
     # pages
     seen_ids: dict = {}
     bodies: dict = {}

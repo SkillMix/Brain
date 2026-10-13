@@ -196,6 +196,15 @@ def run(root, seed, name, crew, online, org=None, home=None, dry_run=False,
                                   parent or space.parent or "brain", mount.get("repo"), brain_path,
                                   mounts=extra_mounts or None)
     onboard.setup_space(report, dst, "project", values, [])
+    if not offline:
+        # every ancestor mounted, flat: the brain and a sub-team's division, read-only
+        wanted = [{"name": "brain", "repo": mount.get("repo"), "path": "brain"}] + extra_mounts
+        for m in wanted:
+            if m.get("repo") and not (dst / m["path"] / "space.yaml").exists():
+                onboard.run_cmd(["git", "submodule", "add", "-b", "main", m["repo"], m["path"]], dry_run, cwd=dst)
+            report.add(f"mount {m['name']}", dry_run or (dst / m["path"] / "space.yaml").exists()
+                       or not m.get("repo"), f"test -f {dst / m['path'] / 'space.yaml'}",
+                       "mounted read-only" if m.get("repo") else "no repository known for this mount")
     phases["fill"] = True
     target = dst / "knowledge" / kind / subject
     copied = 0
@@ -213,6 +222,8 @@ def run(root, seed, name, crew, online, org=None, home=None, dry_run=False,
     items += link
     if local is not None:
         local.home = name
+        if local.kind != "projects" and "projects" in space.all_kinds:
+            local.kind = "projects"   # a won deal or a seed with a crew is a project now; the librarian moves its folders
         for key, value in match.items():
             local.match.setdefault(key, value)
         reg.save()

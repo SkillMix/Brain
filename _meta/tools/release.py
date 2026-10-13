@@ -577,6 +577,9 @@ def pull_back(root, item_id: str) -> Path:
     fm, body = pages.read(source)
     target = hold(root, fm, body, "pulled", "pulled back by the owner")
     source.unlink()
+    if fm.get("path") and not str(fm["path"]).startswith("approved:"):
+        space = spaceyaml.load(root)
+        pause(root, fm["path"], space.now(), "pulled back", item_id, space)
     return target
 
 

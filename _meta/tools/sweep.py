@@ -96,6 +96,7 @@ def read_feed(root: Path) -> list:
             except (TypeError, ValueError):
                 continue  # an unreadable timestamp never stalls the sweep
             record.setdefault("source", path.stem)
+            record["_feed"] = path.stem   # the declared source this file is (space.yaml sources)
             records.append(record)
     return records
 
@@ -193,6 +194,34 @@ def covers(audience, subject: registry.Subject, dest_space) -> bool:
 PRICING = ("pricing", "price list")
 
 
+def other_client(space: spaceyaml.Space, subject: registry.Subject, text: str) -> str | None:
+    """Another client named in a record bound for this subject's home (left out by default)."""
+    try:
+        reg = registry.Registry(space.root, space)
+        own = {subject.id} | {a.id for a in reg.ancestors_of(subject.id)}
+        clients = [c for c in reg.everywhere() if c.kind == "clients" and c.id not in own]
+    except Exception:
+        return None
+    if subject.kind != "projects" and not any(a.kind == "clients" for a in reg.ancestors_of(subject.id)):
+        return None
+    for client in clients:
+        for name in [client.title, *(client.aliases or [])]:
+            if name and release.first_term(text, [str(name)]):
+                return str(client.title)
+    return None
+
+
+def project_lines(record: dict, left_out: list, space: spaceyaml.Space, subject: registry.Subject) -> str | None:
+    """The record's lines without a left-out term or another client, or None when the title
+    carries one or nothing is left."""
+    if release.first_term(str(record.get("subject") or ""), left_out) or \
+            other_client(space, subject, str(record.get("subject") or "")):
+        return None
+    kept = [line for line in str(record.get("text") or "").splitlines()
+            if line.strip() and not release.first_term(line, left_out) and not other_client(space, subject, line)]
+    return "\n".join(kept) if kept else None
+
+
 def _address(value) -> str:
     text = str(value or "").strip().lower()
     return text.split("<")[-1].rstrip(">").strip() if "<" in text else text
@@ -229,9 +258,19 @@ def classify(space: spaceyaml.Space, record: dict, subject: registry.Subject, de
     term = release.first_term(text, space.never_leaves)
     if term:
         return Verdict(hold="never_leaves", why=f"never-leaves term `{term}` appears")
-    term = release.first_term(text, release.left_out_of(dest_space))
-    if term:
-        return Verdict(hold="left_out", why=f"left-out term `{term}` for {destination} appears")
+    left_out = release.left_out_of(dest_space)
+    term = release.first_term(text, left_out)
+    other = other_client(space, subject, text)
+    if term or other:
+        kept = project_lines(record, left_out, space, subject)
+        what = f"left-out term `{term}`" if term else f"another client ({other})"
+        if kept is None:
+            return Verdict(hold="left_out", why=f"{what} for {destination} appears")
+        verdict = classify(space, dict(record, text=kept), subject, destination, dest_space, audience, now)
+        if not verdict.hold:   # a passage that mixes them keeps only its project facts
+            verdict.extra = dict(verdict.extra or {}, trimmed_body=kept, trimmed=True)
+            verdict.why += f"; {what} left out, the rest travels"
+        return verdict
     kind = record.get("kind")
     if kind == "call":
         outside = outsiders(space, dest_space, record.get("participants") or [])
@@ -301,7 +340,11 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
             dest_cache[name] = release.destination_space(space, name)
         return dest_cache[name]
 
-    records = [r for r in read_feed(root) if watermark is None or pages.parse_iso(r["at"]) > watermark]
+    declared = {str(s.get("name")) for s in space.sources if isinstance(s, dict) and s.get("name")}
+    feed = [] if space.profile == "brain" else read_feed(root)   # the brain sweeps nothing of its own
+    if declared:
+        feed = [r for r in feed if str(r.get("_feed")) in declared]   # only the feeds this space declared
+    records = [r for r in feed if watermark is None or pages.parse_iso(r["at"]) > watermark]
     # Re-attach: a witness page written while the registry could not place its record (no
     # subject, not held in doubt) is tried again now that the registry may have caught up.
     # The page is rewritten from its own frontmatter and body, never from the feed.
@@ -348,7 +391,7 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
         if target.exists():
             report.plan.append(f"skip {record['id']}: witness page exists")
             continue
-        chars += len(json.dumps(record))
+        chars += len(json.dumps({k: v for k, v in record.items() if not str(k).startswith('_')}))
         audience = audience_of(space, record)
         hits = reg.match(record)
         mentions = reg.mentions(record)
@@ -390,11 +433,13 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
             else:
                 report.held_other += 1
         else:
+            extra = dict(verdict.extra or {})
+            sent_body = extra.pop("trimmed_body", body)
             item = item_frontmatter(space, record, subject.id, home, verdict.cls,
-                                    verdict.stage_after, now, verdict.extra)
+                                    verdict.stage_after, now, extra)
             report.plan.append(f"queue {verdict.cls} {record['id']} -> {home}: {verdict.why}")
             if not dry_run:
-                pages.write(root / release.QUEUE / f"{item['id']}.md", item, body)
+                pages.write(root / release.QUEUE / f"{item['id']}.md", item, sent_body)
             report.queued += 1
         if verdict.hold != "never_leaves":
             signal = signal_for(subject.id, home, now)
