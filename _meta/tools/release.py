@@ -37,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pages  # noqa: E402
 import registry as registry_mod  # noqa: E402
 import spaceyaml  # noqa: E402
+import authority  # noqa: E402
 
 try:  # the secrets scan is another tool; shipping works without it
     import scan  # noqa: E402
@@ -336,6 +337,9 @@ def _ready_items(root: Path, now: dt.datetime, report: ShipReport,
             report.waiting += 1
         elif fm.get("class") not in NEEDS_NO_LISTING and fm.get("listed") is not True:
             report.skipped_unlisted += 1
+        elif (space is not None and fm.get("class") not in ("retraction", "signal")
+              and not fm.get("approved_by") and not authority.allows(space, "release", "after_window")):
+            report.waiting += 1   # the badge says propose: nothing leaves without a person's yes
         else:
             ready.append((path, fm, body))
     return ready

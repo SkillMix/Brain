@@ -265,7 +265,8 @@ def apply_change(root, change: Change, key: str, now=None, land_it: bool = False
         land(root, paths, runner)
     else:
         _append(root / CHANGES, json.dumps({"id": f"{key}-{pages.iso(now)}", "at": pages.iso(now),
-                                            "kind": change.kind, "paths": paths}))
+                                            "kind": change.kind, "paths": paths,
+                                            "acted_for": space.owner or "owner", "path": "badge:edit_inside"}))
     return "applied"
 
 
@@ -492,16 +493,22 @@ def run(root, now=None, land_it: bool = False, scorer=None, runner=None) -> Repo
     report = Report()
     if space.profile == "channel":
         return report
+    import authority
+    at_once = authority.allows(space, "edit_inside", "at_once")  # the badge: propose means ask first
     # one duty at a time, each finding computed on the layout the previous duty left
     for finder in (kind_moves, stray_pages, lambda r, s, g: stray_desk(r, s, g)[0]):
         reg = registry_mod.Registry(root, space)
         for change in finder(root, space, reg):
-            apply_change(root, change, _pid(change.kind, change.summary), now, land_it, scorer, report, runner)
+            if at_once:
+                apply_change(root, change, _pid(change.kind, change.summary), now, land_it, scorer, report, runner)
+            else:
+                _propose(root, change, now, report)
     reg = registry_mod.Registry(root, space)
     desk_props = stray_desk(root, space, reg)[1]
     for change in desk_props + splits(root, space, reg) + merges(reg) + umbrellas(reg):
         _propose(root, change, now, report)
-    report.migrations = migrate(root, now=now, land_it=land_it, scorer=scorer, runner=runner)
+    if at_once:
+        report.migrations = migrate(root, now=now, land_it=land_it, scorer=scorer, runner=runner)
     return report
 
 

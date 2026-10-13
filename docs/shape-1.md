@@ -75,14 +75,15 @@ personal/  academic/  _scratch/   gitignored in every profile; outside every too
 | `audience` | `everyone` (the brain) or a list of names: who may read this space |
 | `parent` | the parent space's name; `null` for the brain |
 | `kinds` | the company's vocabulary under `knowledge/`, declared once in the brain and inherited through the mount; `decisions` and `sources` are fixed and never declared |
-| `authority` | the badge: per action class (`edit_inside`, `write_knowledge`, `release`, `write_outside_system`, `send_outward`, `spend`) one level, `propose` (the agent drafts, a person acts), `after_window` (happens after the window, can be pulled back) or `at_once`; floors: `send_outward` and `spend` never above `propose`, `release` never above `after_window` where the audience would widen; raised only by a human owner, lowered by evidence for four weeks |
+| `authority` | the badge: per action class (`edit_inside`, `write_knowledge`, `release`, `write_outside_system`, `send_outward`, `spend`) one level, `propose` (the agent drafts, a person acts), `after_window` (happens after the window, can be pulled back) or `at_once`; floors: `send_outward` and `spend` never above `propose`, `release` never above `after_window` where the audience would widen; raised only by a human owner, lowered by evidence for four weeks; the brain's `floors:` make any floor stricter below it; tools ask `authority.py` before they act |
 | `agents` | who acts here, `{name, acts_for}`; every action above `propose` records whom it acted for and by which path |
 | `models` | which model providers may read this space; the harness's permission profile enforces it |
 | `budget` | `{tokens_per_day}`: declared and shown in the health line, not enforced; the shed order is rules.md section 7 |
 | `window_hours` | the release window; 24 is the floor, a person may set longer |
 | `standing_choices` | `[{destination, kind}]`: one kind of record (`mail`, `call`, `message`, `event`, `document`) to one destination at once; set by the person; never applied to calls |
 | `left_out` | whole-word terms that never travel to this space, whatever the release class |
-| `never_leaves` | whole-word terms that never leave this space, by any path, at any badge level |
+| `never_leaves` | whole-word terms that never leave this space, by any path, at any badge level; the brain's terms are added to every space's list |
+| `agents` | one row per agent: `name`, `acts_for` (a person or `owner`), optionally `space` and a `badge:` that only lowers the space's levels |
 | `protected` | paths whose pull requests wait for the owner's one click instead of merging on green |
 | `sources` | `[{name, adapter, audience}]`: connected systems and who can already read their records (`owner`, `crew`, `everyone` or names) |
 | `mounts` | `[{name, repo, branch, path}]`: read-only, pinned windows on ancestors; the brain at `./brain`, flat, never nested |
