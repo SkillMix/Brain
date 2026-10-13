@@ -5,7 +5,9 @@ The destination's librarian runs this before anything reads the space. For every
 
 | The release is...                                   | It lands as                     |
 |-----------------------------------------------------|---------------------------------|
-| a record (not signed)                               | a candidate, as before          |
+| a record (not signed): a handed-sideways witness    | evidence under `knowledge/sources/`, never |
+|   page                                              |   something to sign; the same record from  |
+|                                                     |   several releasers lands once             |
 | signed, routine (fingerprint matches, not high      | filed into `knowledge/` silently |
 |   stakes, its releaser trusted, no other signer's   |                                 |
 |   page changed)                                     |                                 |
@@ -16,8 +18,8 @@ The destination's librarian runs this before anything reads the space. For every
 | the same text as the page already there             | a duplicate: dropped, logged    |
 | a body that does not match its fingerprint          | pending, never filed            |
 
-Once a scaled week `sample_item` draws up to three silent landings and at-once arrivals of
-the week for the domain owner (else the space owner); `apply_sample` records the verdict in
+Once a scaled week `sample_item` draws up to five silent landings, at-once arrivals and
+request answers sent under a standing choice of the week for the domain owner (else the space owner); `apply_sample` records the verdict in
 `_meta/state/samples.jsonl`, sends a content-free `sample_failed` signal to the releasing
 space for each failed one (that space pauses the path that let it through), and
 `recompute_trust` puts a releaser whose failed share over four scaled weeks is above 0.2
@@ -49,7 +51,7 @@ SIGNALS_OUT = Path("_outbound") / "signals"
 STRIP = ("class", "stage_after", "listed", "listed_at", "destination", "from_space", "landing",
          "disagrees_with", "for", "target", "recommendation", "depends", "deadline", "approved_by",
          "approved_at", "page")
-SAMPLE_SIZE = 3
+SAMPLE_SIZE = 5
 TRUST_SHARE = 0.2
 TRUST_MIN = 5
 TRUST_DAYS = 28
@@ -62,6 +64,53 @@ class LandingReport:
     disagreements: list = field(default_factory=list)
     duplicates: list = field(default_factory=list)
     conflicts: list = field(default_factory=list)
+    records: list = field(default_factory=list)
+    record_duplicates: list = field(default_factory=list)
+
+
+def record_key(fm: dict, body: str) -> str:
+    """One record, whoever released it: its title, its time to the minute and its text."""
+    at = str(fm.get("at") or "")[:16]
+    return pages.fingerprint(f"{str(fm.get('title') or '').strip().lower()}|{at}|{pages.normalize(body)}")
+
+
+def _file_record(root: Path, path: Path, fm: dict, body: str, now: dt.datetime, report) -> None:
+    """A record handed sideways is evidence at its home: a witness page under
+    `knowledge/sources/<yyyy>/<mm>/`, a draft forever, never an item to sign. The same record
+    released by several people lands once; the others are named under `also_from`."""
+    releaser = str(fm.get("released_from") or "")
+    pid = str(fm.get("id") or path.stem)
+    try:
+        when = pages.parse_iso(fm.get("at") or fm.get("released_at"))
+    except (TypeError, ValueError):
+        when = now
+    folder = root / "knowledge" / "sources" / f"{when:%Y}" / f"{when:%m}"
+    key = record_key(fm, body)
+    for other in sorted(folder.glob("*.md")) if folder.is_dir() else []:
+        try:
+            ofm, obody = pages.read(other)
+        except Exception:
+            continue
+        if ofm.get("record_key") == key:
+            also = sorted(set(ofm.get("also_from") or []) | {releaser})
+            if releaser != ofm.get("landed_from") and also != (ofm.get("also_from") or []):
+                pages.write(other, dict(ofm, also_from=also), obody)
+            path.unlink()
+            _append(root / "log.md", f"- {pages.iso(now)} landed duplicate record {pid} of "
+                                     f"{other.relative_to(root).as_posix()} from {releaser}")
+            report.record_duplicates.append(pid)
+            return
+    page_fm = {k: v for k, v in fm.items() if k not in STRIP}
+    page_fm.update(status="draft", landed_at=pages.iso(now), landed_from=releaser, record_key=key)
+    target = folder / f"{pid}.md"
+    pages.write(target, page_fm, body)
+    path.unlink()
+    rel = target.relative_to(root).as_posix()
+    _append(root / "log.md", f"- {pages.iso(now)} filed record {pid} at {rel} from {releaser}")
+    _append(root / LANDED, json.dumps({"at": pages.iso(now), "id": pid, "target": rel, "from": releaser,
+                                       "by": None, "subject": fm.get("subject"),
+                                       "class": fm.get("release_class"), "record": True}))
+    report.records.append(pid)
 
 
 CONFLICTS = Path("_inbound") / "conflicts"
@@ -161,6 +210,9 @@ def land(root, space: spaceyaml.Space | None = None, reg=None, now: dt.datetime 
             if _land_conflict(root, path, fm, body, now):
                 report.conflicts.append(str(fm.get("id") or path.stem))
             continue
+        if fm.get("released_from") and not claims_signature(fm) and str(fm.get("type")) == "source":
+            _file_record(root, path, fm, body, now, report)
+            continue
         if not fm.get("released_from") or not claims_signature(fm):
             continue
         groups.setdefault(_target(fm, path, now), []).append((path, fm, body))
@@ -168,11 +220,18 @@ def land(root, space: spaceyaml.Space | None = None, reg=None, now: dt.datetime 
         prints = {fm.get("fingerprint") for _, fm, body in group if signed_ok(fm, body)}
         if len(group) > 1 and len(prints) > 1:
             ids_ = [str(fm.get("id") or p.stem) for p, fm, _ in group]
+            by_id = {str(fm.get("id") or p.stem): fm for p, fm, _ in group}
             for path, fm, body in group:
                 me = str(fm.get("id") or path.stem)
-                _mark(path, fm, body, landing="pending: disagreement",
-                      disagrees_with=[i for i in ids_ if i != me],
+                others = [i for i in ids_ if i != me]
+                lines = "\n".join(f"- {i}, released from {by_id[i].get('released_from')} by "
+                                   f"{by_id[i].get('signed_by')}, says otherwise; the domain owner may pick."
+                                   for i in others)
+                if "## Disagreements" not in body:
+                    body = body.rstrip("\n") + "\n\n## Disagreements\n\n" + lines + "\n"
+                _mark(path, fm, body, landing="pending: disagreement", disagrees_with=others,
                       **{"for": domain_owner(reg, space, fm.get("subject"))})
+                pages.write(path, pages.read(path)[0], body)
                 report.disagreements.append(me)
             continue
         for path, fm, body in group:
@@ -255,6 +314,15 @@ def sample_item(root, space=None, reg=None, now: dt.datetime | None = None, give
         if fm.get("released_from") and fm.get("release_class") == "at_once" and at >= since:
             pool.append({"id": str(fm.get("id") or path.stem), "title": fm.get("title"),
                          "from": fm.get("released_from"), "subject": fm.get("subject")})
+    for row in _jsonl(root / "_meta" / "state" / "requests.jsonl"):
+        # what this space answered at once under a standing choice is sampled too
+        try:
+            fresh = pages.parse_iso(row.get("at")) >= since
+        except (TypeError, ValueError):
+            continue
+        if fresh and row.get("outcome") == "answered" and str(row.get("choice") or "").endswith(":at_once"):
+            pool.append({"id": str(row.get("id")), "title": f"answer to {row.get('from')} ({row.get('class')})",
+                         "from": "a standing choice", "subject": None})
     if not pool:
         return None
     picked = random.Random(week).sample(pool, min(SAMPLE_SIZE, len(pool)))

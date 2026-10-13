@@ -17,7 +17,10 @@ Only a person signs. The read-back shows the exact text that will land and its f
 ## Run
 
 1. Show the list: `python _meta/tools/needs_you.py <root>` (about seven lines, "and N
-   more"; `--json` for the full set).
+   more"; `--json` for the full set). The line "held in doubt: N" opens on demand:
+   `python _meta/tools/needs_you.py <root> --doubt` lists each held page with its reason and
+   recommendation; its id takes the same verbs (yes releases it, no keeps it home for good,
+   `edit <subject>` names the one subject it is about, always adds the standing choice).
 2. Brief and take verdicts (contract below). Verbs: `yes`, `edit <note>`, `no`, `later`,
    `always`; in bulk ("1 to 4 yes, 5 edit: the date is the ninth, 6 later").
 3. Read back: `python _meta/tools/sign.py <root> read-back <ids>` prints each item's exact

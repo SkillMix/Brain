@@ -84,6 +84,8 @@ def index(root: Path) -> dict:
             add(kind, rel, fm, body)
     for rel, fm, body in needs_you.pages_in(root, needs_you.QUEUE):
         add("high_stakes" if fm.get("high_stakes") else "leaving", rel, fm, body)
+    for rel, fm, body in needs_you.doubt_pages(root):
+        add("doubt", rel, fm, body)
     for item in needs_you.routine_items(root):
         found.setdefault(item.id, Found(item.kind, None, {}, "", item=item))
     return found
@@ -130,6 +132,8 @@ def _log(root: Path, line: str) -> None:
 def _add_standing_choice(space: spaceyaml.Space, destination, kind, report: ApplyReport) -> None:
     if not destination or destination == space.name:
         return
+    if kind == "call":
+        return  # a call never travels under a standing choice
     kind = kind if kind in spaceyaml.RECORD_KINDS else "mail"
     choice = {"destination": str(destination), "kind": kind}
     if choice in space.standing_choices:
@@ -166,8 +170,36 @@ def target_of(fm: dict, path: Path, now: dt.datetime) -> str:
 
 
 # ----- one handler per item kind ---------------------------------------------------
+def _high_stakes(space: spaceyaml.Space, fm: dict, body: str) -> bool:
+    import release
+    return bool(fm.get("high_stakes")) or release.first_term(
+        f"{fm.get('title', '')}\n{body}", space.high_stakes) is not None
+
+
+def _file_evidence(root, space, fm: dict, body: str, path: Path, item_id, by, now, report) -> None:
+    """A record is evidence: filed as a witness page, never signed (a stable page under
+    `knowledge/sources/` is invalid)."""
+    when = now
+    for key in ("at", "released_at"):
+        try:
+            when = pages.parse_iso(fm.get(key))
+            break
+        except (TypeError, ValueError):
+            continue
+    target = root / "knowledge" / "sources" / f"{when:%Y}" / f"{when:%m}" / f"{fm.get('id') or path.stem}.md"
+    page_fm = {k: v for k, v in fm.items() if k not in CANDIDATE_ONLY}
+    page_fm.update(status="draft", filed_by=by, filed_at=pages.iso(now))
+    pages.write(target, page_fm, body)
+    path.unlink()
+    _log(root, f"- {pages.iso(now)} filed record {item_id} as evidence by {by}")
+    report.verdicts_recorded += 1
+
+
 def _candidate(root, space, entry: Found, item_id, verb, note, by, now, report: ApplyReport):
     fm, body, path = dict(entry.fm), entry.body, entry.path
+    if str(fm.get("type")) == "source" and verb in ("yes", "edit", "always"):
+        _file_evidence(root, space, fm, body, path, item_id, by, now, report)
+        return
     if verb == "later":
         fm["deadline"] = pages.iso(now + space.scale(24))
         pages.write(path, fm, body)
@@ -194,10 +226,12 @@ def _candidate(root, space, entry: Found, item_id, verb, note, by, now, report: 
     destination = fm.get("destination")
     if destination:
         qid = str(fm.get("id") or path.stem)
+        stakes = _high_stakes(space, fm, body)  # a signature never skips the window for these
         queue_fm = {"id": qid, "type": fm.get("type") or "entity", "title": fm.get("title") or qid,
-                    "generated": pages.generated("sign", now), "class": "at_once",
+                    "generated": pages.generated("sign", now), "class": "window" if stakes else "at_once",
                     "destination": str(destination), "subject": fm.get("subject"),
-                    "stage_after": pages.iso(now), "listed": False,
+                    "stage_after": pages.iso(now + space.window() if stakes else now), "listed": False,
+                    "high_stakes": stakes or None, "path": f"approved:{by}", "approved_by": by,
                     "evidence": list(fm.get("evidence") or []), "from_space": space.name,
                     "kind": fm.get("kind"), "page": target.relative_to(root).as_posix()}
         queue_fm.update(signature)
@@ -205,7 +239,7 @@ def _candidate(root, space, entry: Found, item_id, verb, note, by, now, report: 
         report.released_queued.append(qid)
     if verb == "always":
         _add_standing_choice(space, destination or _home_of(root, space, fm.get("subject")),
-                             "mail", report)
+                             fm.get("kind") or "mail", report)
 
 
 def _check(root, space, entry: Found, item_id, verb, note, by, now, report: ApplyReport):
@@ -245,9 +279,47 @@ def _queue_item(root, space, entry: Found, item_id, verb, note, by, now, report:
             fm.update(signed_by=by, signed_at=pages.iso(now), signed_in=space.name,
                       fingerprint=pages.fingerprint(body))
         report.edited.append(item_id)
-    fm.update(stage_after=pages.iso(now), listed=True, listed_at=pages.iso(now),
-              approved_by=by, approved_at=pages.iso(now))
+    if _high_stakes(space, fm, body):
+        # the holder's yes is recorded, but a high-stakes item still waits its window
+        fm.update(approved_by=by, approved_at=pages.iso(now), path=f"approved:{by}")
+    else:
+        fm.update(stage_after=pages.iso(now), listed=True, listed_at=pages.iso(now), cls_was=fm.get("class"),
+                  approved_by=by, approved_at=pages.iso(now), path=f"approved:{by}")
+        fm["class"] = "at_once"
     pages.write(path, fm, body)
+    report.signed.append(item_id)
+    if verb == "always":
+        _add_standing_choice(space, fm.get("destination"), fm.get("kind"), report)
+
+
+def _doubt(root, space, entry: Found, item_id, verb, note, by, now, report: ApplyReport):
+    """A page held in doubt: yes releases it (the holder approved it, so at once unless it is
+    high-stakes), no keeps it home for good, always also adds the standing choice."""
+    fm, body, path = dict(entry.fm), entry.body, entry.path
+    if verb == "later":
+        report.deferred.append(item_id)
+        return
+    if verb == "no":
+        fm.update(kept=True, kept_by=by, kept_at=pages.iso(now))
+        pages.write(path, fm, body)
+        _log(root, f"- {pages.iso(now)} kept {item_id} home by {by}")
+        report.discarded.append(item_id)
+        return
+    if verb == "edit" and note.strip() and not fm.get("destination"):
+        subject = note.strip().split()[0]   # "edit: harbor" names the one subject it is about
+        fm["subject"], fm["destination"] = subject, _home_of(root, space, subject)
+    if not fm.get("destination"):
+        report.skipped.append(item_id)   # several subjects: name the one with edit
+        return
+    stakes = _high_stakes(space, fm, body)
+    fm.update({"class": "window" if stakes else "at_once", "approved_by": by, "approved_at": pages.iso(now),
+               "path": f"approved:{by}", "stage_after": pages.iso(now + space.window() if stakes else now),
+               "listed": False})
+    for key in ("reason", "why", "recommendation", "default"):
+        fm.pop(key, None)
+    pages.write(root / needs_you.QUEUE / path.name, fm, body)
+    path.unlink()
+    _log(root, f"- {pages.iso(now)} released {item_id} from doubt by {by}")
     report.signed.append(item_id)
     if verb == "always":
         _add_standing_choice(space, fm.get("destination"), fm.get("kind"), report)
@@ -322,7 +394,7 @@ def _review_line(root: Path, space, batch: Path, number: int, verb: str, note: s
     return True
 
 
-HANDLERS = {"candidate": _candidate, "check": _check, "leaving": _queue_item,
+HANDLERS = {"candidate": _candidate, "check": _check, "leaving": _queue_item, "doubt": _doubt,
             "high_stakes": _queue_item, "question": _question, "answer": _question}
 
 

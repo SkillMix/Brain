@@ -46,6 +46,7 @@ LABELS = {
     "protected_pr": "changes waiting for your one click",
     "outbox": "drafts older than two weeks, not sent",
     "doubt": "items held back in doubt",
+    "landed_silently": "updates that landed here silently this week",
     "sample": "samples to look over",
 }
 
@@ -153,6 +154,22 @@ def _health_lines(root: Path) -> list:
     return [line.strip() for line in body.splitlines() if line.strip() and not line.startswith("#")]
 
 
+def _landed_this_week(root: Path, space: spaceyaml.Space, now: dt.datetime) -> int:
+    """Silent landings and filed records of the last scaled week: a count, never a list."""
+    import json as _json
+    path = root / "_meta" / "state" / "landed.jsonl"
+    if not path.exists():
+        return 0
+    since, n = now - space.scale(7 * 24), 0
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            if since <= pages.parse_iso(_json.loads(line).get("at")) <= now:
+                n += 1
+        except Exception:
+            continue
+    return n
+
+
 def _left_yesterday(root: Path, space: spaceyaml.Space, now: dt.datetime) -> list:
     """Log lines for releases shipped at once in the last scaled day."""
     log = root / "log.md"
@@ -169,7 +186,7 @@ def _left_yesterday(root: Path, space: spaceyaml.Space, now: dt.datetime) -> lis
         except (TypeError, ValueError):
             continue
         if since < at <= now:
-            out.append(line.strip())
+            out.append(f"{len(out) + 1}) " + line.strip()[2:])
     return out
 
 
@@ -245,6 +262,9 @@ def run(root, person: str, now: dt.datetime | None = None, shadow: bool = False,
     counts = dict(Counter(item.kind for item in items))
     if "doubt" in counts:  # one list line, but the mail counts the held pages
         counts["doubt"] = needs_you.doubt_count(root)
+        silent = _landed_this_week(root, space, now)
+        if silent:
+            counts["landed_silently"] = silent
     listed = _mark_listed(root, space, items, now)
     health = _health_lines(root)
     page_fm = {"id": _page_id(root), "type": "snapshot", "title": "Needs you", "status": "draft",

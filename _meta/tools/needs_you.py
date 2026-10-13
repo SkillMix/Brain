@@ -249,9 +249,28 @@ def _answers(root: Path) -> list:
     return out
 
 
+def doubt_pages(root) -> list:
+    """The pages held at home in doubt that nobody has answered yet."""
+    return [(rel, fm, body) for rel, fm, body in pages_in(Path(root), HELD)
+            if fm.get("reason") == "doubt" and not fm.get("kept")]
+
+
 def doubt_count(root) -> int:
     """How many pages are held at home in doubt (one Needs-you line counts them all)."""
-    return sum(1 for _, fm, _ in pages_in(Path(root), HELD) if fm.get("reason") == "doubt")
+    return len(doubt_pages(root))
+
+
+def doubt_items(root) -> list:
+    """The doubt line opened: one item per held page, its reason and a recommendation."""
+    out = []
+    for rel, fm, body in doubt_pages(Path(root)):
+        dest = fm.get("destination") or ", ".join(fm.get("candidates") or []) or "nowhere yet"
+        out.append(Item(id=str(fm.get("id") or Path(rel).stem), kind="doubt",
+                        text=f"{fm.get('title') or Path(rel).stem} (to {dest}): {fm.get('why') or 'privacy doubt'}",
+                        recommendation=_text(fm.get("recommendation"), "no: keep it home"),
+                        default=_text(fm.get("default"), "stays home"), payload=rel,
+                        fingerprint=pages.fingerprint(body)))
+    return out
 
 
 def _doubt(root: Path) -> list:
@@ -386,7 +405,19 @@ def main(argv=None) -> int:
     ap.add_argument("root", nargs="?", default=".")
     ap.add_argument("--json", action="store_true", help="print the items as JSON instead of markdown")
     ap.add_argument("--limit", type=int, default=7, help="lines to show before `and N more`")
+    ap.add_argument("--doubt", action="store_true", help="open the held-in-doubt line: one item each")
     args = ap.parse_args(argv)
+    if args.doubt:
+        items = doubt_items(args.root)
+        if args.json:
+            print(json.dumps([i.to_dict() for i in items], indent=2, ensure_ascii=False))
+        else:
+            for n, item in enumerate(items, 1):
+                print(f"{n}. {item.id}: {item.text} I recommend: {item.recommendation}. "
+                      f"If nothing: {item.default}.")
+            if not items:
+                print("Nothing is held in doubt.")
+        return 0
     items = collect(args.root)
     if args.json:
         print(json.dumps([i.to_dict() for i in items], indent=2, ensure_ascii=False))

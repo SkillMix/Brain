@@ -49,12 +49,18 @@ def test_a_routine_signed_release_lands_silently(tmp_path):
     assert errors(root) == []
 
 
-def test_unsigned_records_stay_candidates(tmp_path):
+def test_unsigned_records_land_as_evidence_once(tmp_path):
     root = harbor_space(tmp_path)
-    write_page(root, "_inbound/candidates/p-0000a002.md", id="p-0000a002", type="source",
-               title="A mail", subject="harbor", released_from="ada", release_class="at_once")
+    for pid, who in (("p-0000a002", "ada"), ("p-0000a012", "ben")):
+        write_page(root, f"_inbound/candidates/{pid}.md", id=pid, type="source", title="A mail",
+                   subject="harbor", released_from=who, release_class="at_once", at="2026-10-11T09:00:00Z")
     report = landing.land(root, now=NOW)
-    assert report.silent == [] and (root / "_inbound/candidates/p-0000a002.md").exists()
+    assert report.silent == [] and report.records == ["p-0000a002"]
+    assert report.record_duplicates == ["p-0000a012"]
+    assert not list((root / "_inbound" / "candidates").glob("*.md"))
+    page = root / "knowledge/sources/2026/10/p-0000a002.md"
+    fm, _ = pages.read(page)
+    assert fm["status"] == "draft" and fm["landed_from"] == "ada" and fm["also_from"] == ["ben"]
 
 
 def test_high_stakes_and_trust_land_pending_for_the_domain_owner(tmp_path):
@@ -115,7 +121,7 @@ def test_weekly_sample_item_and_a_failed_sample(tmp_path):
     item = landing.sample_item(root, now=NOW + dt.timedelta(hours=1), given={})
     assert item["kind"] == "sample" and item["id"].startswith("sample-")
     picked = json.loads(item["payload"])
-    assert 1 <= len(picked) <= 3
+    assert 1 <= len(picked) <= 5
     assert landing.sample_item(root, now=NOW + dt.timedelta(hours=2), given={item["id"]: {"verb": "yes"}}) is None
     landing.apply_sample(root, item, {"verb": "no", "note": "1"}, now=NOW + dt.timedelta(hours=3))
     rows = [json.loads(l) for l in (root / "_meta/state/samples.jsonl").read_text(encoding="utf-8").splitlines()]

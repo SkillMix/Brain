@@ -705,6 +705,26 @@ def read_signals(root: Path, space, now) -> list:
     return paused
 
 
+def moved_signals(root: Path, space, now) -> dict:
+    """Content-free signals that an open item moved, from the last scaled week: subject ->
+    (when, from which space). They flag the status page while the content waits its window."""
+    import yaml
+    out: dict = {}
+    folder = root / SIGNALS_IN
+    since = now - space.scale(7 * 24)
+    for path in sorted(folder.glob("*.yaml")) if folder.is_dir() else []:
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            at = pages.parse_iso(data.get("at"))
+        except Exception:
+            continue
+        if not isinstance(data, dict) or data.get("kind") == "sample_failed" or not data.get("subject"):
+            continue
+        if since <= at <= now and (data["subject"] not in out or at > out[data["subject"]][0]):
+            out[str(data["subject"])] = (at, str(data.get("from") or "another space"))
+    return out
+
+
 def unreachable_sources(root: Path) -> list:
     """The sources the newest agent sweep step could not reach (`notes.unreachable`)."""
     latest = None
@@ -835,14 +855,21 @@ def run(root, now=None, check: bool = False) -> StatusReport:
     outputs: dict = {}
     template = _template(root, "status-page.md")
     status_ids: dict = {}
+    moved = moved_signals(root, space, now)
     for subject in reg.everywhere():
         evs = evidence.get(subject.id)
-        if evs and subject.stateful and subject.state != "archived":
+        if (evs or subject.id in moved) and subject.stateful and subject.state != "archived":
             rel = f"live/subjects/{subject.id}.md"
             fm = _snapshot_fm(root, rel, f"{subject.title}: status", now)
             fm["subject"] = subject.id
             status_ids[subject.id] = fm["id"]
-            outputs[rel] = pages.render(fm, _render_status(space, subject, evs, now, template))
+            text = _render_status(space, subject, evs or [], now, template)
+            if subject.id in moved:
+                at, origin = moved[subject.id]
+                flag = (f"- Moved: {origin} signals that an open item moved; the content follows "
+                        f"within its window (reported, team, {at:%Y-%m-%d})\n")
+                text = text.replace("## Open\n\n", "## Open\n\n" + flag, 1)
+            outputs[rel] = pages.render(fm, text)
             report.status_pages.append(rel)
     fresh = {pid: root / rel for pid, rel in ids.scan(root).items()}
     for ancestor in space.ancestor_roots():

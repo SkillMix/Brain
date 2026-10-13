@@ -58,7 +58,7 @@ def test_window_item_waits_for_listing_then_ships_offline(tmp_path):
     assert (harbor / "_inbound" / "signals").exists()
     signal_path, = sorted((harbor / "_inbound" / "signals").glob("*.yaml"))
     signal = yaml.safe_load(signal_path.read_text(encoding="utf-8"))
-    assert signal["subject"] == "harbor" and set(signal) == {"id", "subject", "destination", "at", "note"}
+    assert signal["subject"] == "harbor" and set(signal) == {"id", "subject", "destination", "at", "note", "from"}
     assert not list((ada / "_outbound" / "signals").glob("*.yaml"))
     report = release.ship(ada, now=later, offline_roots=offline)
     assert report.shipped == 0 and report.skipped_unlisted == 1
