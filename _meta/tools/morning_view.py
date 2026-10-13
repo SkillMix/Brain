@@ -47,6 +47,7 @@ LABELS = {
     "outbox": "drafts older than two weeks, not sent",
     "doubt": "items held back in doubt",
     "landed_silently": "updates that landed here silently this week",
+    "meetings": "meetings today and tomorrow, with who is who on your page",
     "sample": "samples to look over",
 }
 
@@ -154,6 +155,19 @@ def _health_lines(root: Path) -> list:
     return [line.strip() for line in body.splitlines() if line.strip() and not line.startswith("#")]
 
 
+def _today_lines(root: Path) -> list:
+    """The meetings snapshot the sweep wrote, with who is who."""
+    path = root / "live" / "today.md"
+    if not path.exists():
+        return []
+    try:
+        _, body = pages.read(path)
+    except Exception:
+        return []
+    return [line.rstrip() for line in body.splitlines() if line.lstrip().startswith("- ")
+            and line.strip() != "- No meetings."]
+
+
 def _landed_this_week(root: Path, space: spaceyaml.Space, now: dt.datetime) -> int:
     """Silent landings and filed records of the last scaled week: a count, never a list."""
     import json as _json
@@ -195,6 +209,9 @@ def _markdown(root: Path, space: spaceyaml.Space, person: str, items: list, now:
     lines = needs_you.render(root, now=now, limit=limit, items=items).rstrip("\n").splitlines()
     lines.insert(1, f"For {person}, as of {pages.iso(now)}.")
     left = _left_yesterday(root, space, now)
+    today = _today_lines(root)
+    if today:
+        lines += ["", "## Today's meetings"] + today
     lines += ["", "## Left yesterday"] + (left or ["Nothing left at once."])
     lines += ["", "## Health"] + (health or ["No health line yet."])
     return "\n".join(lines) + "\n"
@@ -265,6 +282,9 @@ def run(root, person: str, now: dt.datetime | None = None, shadow: bool = False,
         silent = _landed_this_week(root, space, now)
         if silent:
             counts["landed_silently"] = silent
+        meetings = sum(1 for line in _today_lines(root) if not line.startswith("  "))
+        if meetings:
+            counts["meetings"] = meetings
     listed = _mark_listed(root, space, items, now)
     health = _health_lines(root)
     page_fm = {"id": _page_id(root), "type": "snapshot", "title": "Needs you", "status": "draft",

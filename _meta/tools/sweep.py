@@ -415,12 +415,109 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
         path = root / WATERMARK
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(yaml.safe_dump({"at": pages.iso(newest)}), encoding="utf-8", newline="\n")
+    try:
+        write_today(root, space, now)
+    except Exception:  # a snapshot never stops the sweep
+        pass
     release.append_run_line(root, "sweep", now, space, report.cost_tokens, {
         "records": report.records_seen, "witness": report.witness_written,
         "attached": report.attached, "queued": report.queued, "signals": report.signals,
         "held_in_doubt": report.held_in_doubt, "held_other": report.held_other,
         "reattached": reattached})
     return report
+
+
+# ----- snapshots: refresh folded into the sweep -------------------------------------
+def _people_index(space: spaceyaml.Space) -> dict:
+    """email or lower-case name -> 'Title (kind)' for every person and client subject."""
+    out: dict = {}
+    try:
+        subjects = registry.Registry(space.root, space).everywhere()
+    except Exception:
+        return out
+    for s in subjects:
+        if s.kind not in ("people", "clients"):
+            continue
+        label = f"{s.title} ({'colleague' if s.kind == 'people' else 'client'})"
+        out[s.title.strip().lower()] = label
+        for alias in s.aliases or []:
+            out[str(alias).strip().lower()] = label
+        match = s.match if isinstance(getattr(s, "match", None), dict) else {}
+        for key in ("email", "domain"):
+            if match.get(key):
+                out[str(match[key]).strip().lower()] = label
+    return out
+
+
+def _last_contact(root: Path, who: str) -> str | None:
+    """The newest witness page this person sent, received or attended."""
+    best = None
+    needle = who.strip().lower()
+    for path in (root / WITNESS_ROOT).rglob("*.md"):
+        try:
+            fm, _ = pages.read(path)
+        except Exception:
+            continue
+        names = [str(fm.get("from") or "")] + [str(x) for x in (fm.get("to") or []) + (fm.get("participants") or [])]
+        if any(needle and needle in n.lower() for n in names) and fm.get("kind") != "event":
+            at = str(fm.get("at") or "")[:10]
+            best = at if best is None or at > best else best
+    return best
+
+
+def who_is(space: spaceyaml.Space, root: Path, participant: str, index: dict) -> str:
+    text = str(participant).strip()
+    low = text.lower()
+    address = low.split("<")[-1].rstrip(">").strip() if "<" in low else low
+    for key in (address, low, address.split("@")[-1] if "@" in address else None):
+        if key and key in index:
+            return f"{text}: {index[key]}"
+    last = _last_contact(root, address.split("@")[0] if "@" in address else address)
+    return f"{text}: new here, last contact {last}" if last else f"{text}: first contact"
+
+
+def write_today(root: Path, space: spaceyaml.Space, now: dt.datetime) -> Path | None:
+    """`live/today.md`: today's and tomorrow's meetings from the calendar's witness pages, each
+    participant with who they are (registry) or when we last heard from them."""
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + dt.timedelta(days=2)
+    meetings = []
+    for path in (root / WITNESS_ROOT).rglob("*.md") if (root / WITNESS_ROOT).is_dir() else []:
+        try:
+            fm, _ = pages.read(path)
+            at = pages.parse_iso(fm.get("at"))
+        except Exception:
+            continue
+        if fm.get("kind") == "event" and start <= at < end:
+            meetings.append((at, fm))
+    if not meetings and not (root / "live" / "today.md").exists():
+        return None
+    index = _people_index(space)
+    own = {space.owner.strip().lower(), space.owner_email.strip().lower()} - {""}
+    lines = []
+    for at, fm in sorted(meetings, key=lambda m: m[0]):
+        lines.append(f"- {at:%Y-%m-%d %H:%M} {fm.get('title') or 'a meeting'}")
+        for person in fm.get("participants") or []:
+            if str(person).strip().lower() in own:
+                continue
+            lines.append(f"  - {who_is(space, root, str(person), index)}")
+    body = ("# Today\n\nToday's and tomorrow's meetings from the calendar, with who is who. A "
+            "snapshot the sweep rewrites each run.\n\n" + ("\n".join(lines) or "- No meetings.") + "\n")
+    fm = {"id": _snapshot_id(root, "live/today.md"), "type": "snapshot", "title": "Today",
+          "status": "draft", "generated": pages.generated("sweep", now)}
+    target = root / "live" / "today.md"
+    pages.write(target, fm, body)
+    return target
+
+
+def _snapshot_id(root: Path, rel: str) -> str:
+    path = Path(root) / rel
+    if path.exists():
+        try:
+            return str(pages.read(path)[0].get("id") or pages.new_id())
+        except Exception:
+            pass
+    return pages.new_id()
 
 
 def main(argv=None) -> int:
