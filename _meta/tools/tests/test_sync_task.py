@@ -188,7 +188,8 @@ def test_a_missing_yaml_under_pep_668_moves_start_into_a_venv(tmp_path, capsys):
 def test_a_python_without_venv_names_the_install(tmp_path, capsys):
     def run(argv, **kw):
         return subprocess.CompletedProcess(argv, 1, "", "")
-    assert start.ensure_yaml([], venv=tmp_path / "venv", run=run, have=lambda: False) == 1
+    assert start.ensure_yaml([], venv=tmp_path / "venv", run=run, have=lambda: False,
+                             install=lambda tool: (None, "no network")) == 1
     assert "python3-venv" in capsys.readouterr().out
 
 

@@ -32,6 +32,7 @@ from xml.sax.saxutils import escape as xml_escape
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import doctor  # noqa: E402
 import pages  # noqa: E402
 import registry  # noqa: E402
 import spaceyaml  # noqa: E402
@@ -615,7 +616,7 @@ def default_user_instructions(root, offline, home) -> Path:
     return Path.home() / ".claude" / "CLAUDE.md"
 
 
-# ----- the sync task and the platform ------------------------------------------
+# ----- OS tasks: the sync task and, without a harness scheduler, the routines --------------
 SYSTEM = platform.system()   # "Windows", "Darwin" or "Linux"
 CONHOST = r"%SystemRoot%\System32\conhost.exe"
 # What `onboard --check` reads back from a Windows task, each with what it means.
@@ -632,22 +633,46 @@ def python_cmd() -> str:
     return f'"{path}"' if " " in path else path
 
 
-def task_xml(arguments: str, minutes: int) -> str:
-    """A Windows task repeating every `minutes`: hidden behind `conhost --headless`, started and
-    kept running on battery, a missed start run as soon as the machine wakes. `schtasks /Create`
-    cannot set the battery or catch-up flags; the task XML can, and its action has no
-    261-character limit."""
-    begin = dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+def daily_times(schedule: str):
+    """(hour, minute) pairs of a cron schedule that runs at fixed times every day, else None."""
+    fields = str(schedule).split()
+    if len(fields) != 5 or fields[2:] != ["*", "*", "*"]:
+        return None
+    try:
+        minutes, hours = ([int(x) for x in f.split(",")] for f in fields[:2])
+    except ValueError:
+        return None
+    return sorted((h, m) for h in hours for m in minutes)
+
+
+def _argline(py, args) -> str:
+    """The interpreter and its arguments, every value quoted, every flag bare."""
+    return " ".join([f'"{py}"'] + [str(a) if str(a).startswith("-") else f'"{a}"' for a in args])
+
+
+def task_xml(arguments: str, minutes: int | None = None, times=None) -> str:
+    """A Windows task, every `minutes` or daily at `times`: hidden behind `conhost --headless`,
+    started and kept running on battery, a missed start run as soon as the machine wakes.
+    `schtasks /Create` cannot set the battery or catch-up flags; the task XML can, and its
+    action has no 261-character limit."""
+    now = dt.datetime.now()
+    if minutes:
+        triggers = (f"    <TimeTrigger>\n      <Repetition><Interval>PT{minutes}M</Interval>"
+                    "<StopAtDurationEnd>false</StopAtDurationEnd></Repetition>\n"
+                    f"      <StartBoundary>{now.strftime('%Y-%m-%dT%H:%M:%S')}</StartBoundary>\n"
+                    "      <Enabled>true</Enabled>\n    </TimeTrigger>\n")
+        what = f"every {minutes} minutes"
+    else:
+        triggers = "".join(f"    <CalendarTrigger>\n      <StartBoundary>{now.strftime('%Y-%m-%d')}T{h:02d}:{m:02d}:00"
+                           "</StartBoundary>\n      <Enabled>true</Enabled>\n"
+                           "      <ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>\n"
+                           "    </CalendarTrigger>\n" for h, m in times)
+        what = "daily at " + ", ".join(f"{h:02d}:{m:02d}" for h, m in times)
     return f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo><Description>space sync: lands this checkout every {minutes} minutes</Description></RegistrationInfo>
+  <RegistrationInfo><Description>space task, {what}</Description></RegistrationInfo>
   <Triggers>
-    <TimeTrigger>
-      <Repetition><Interval>PT{minutes}M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition>
-      <StartBoundary>{begin}</StartBoundary>
-      <Enabled>true</Enabled>
-    </TimeTrigger>
-  </Triggers>
+{triggers}  </Triggers>
   <Settings>
     <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
@@ -670,58 +695,51 @@ def windows_task_missing(xml: str) -> list:
     return [words for key, words in WINDOWS_TASK.items() if key not in xml]
 
 
-def cron_line(minutes, py, script, root, task, path) -> str:
+def cron_entry(when: str, root, py, args, task, path) -> str:
     """One crontab line: it runs in the checkout with the PATH onboarding saw (cron's own lacks
     gh and often git), logs instead of mailing, and ends in `# <task>`, the marker by which
     onboard replaces it and offboard removes it. cron reads `%` as a newline: escaped."""
-    command = (f'cd "{root}" && PATH="{path}" "{py}" "{script}" --root "{root}" --release-leg '
+    command = (f'cd "{root}" && PATH="{path}" {_argline(py, args)} '
                f'>> "$HOME/.spaces/logs/{task}.log" 2>&1  # {task}')
-    return f"*/{minutes} * * * * " + command.replace("%", "\\%")
+    return f"{when} " + command.replace("%", "\\%")
 
 
-def is_sync_line(text, task, root) -> bool:
-    """A crontab line of this checkout's sync task: its marker, or (written before the marker
-    existed) sync.py and this root on one line."""
+def cron_line(minutes, py, script, root, task, path) -> str:
+    return cron_entry(f"*/{minutes} * * * *", root, py, [script, "--root", root, "--release-leg"], task, path)
+
+
+def is_task_line(text, task, root) -> bool:
+    """A crontab line of this task: its marker, or for a sync task written before the marker
+    existed, sync.py and this root on one line."""
     text = text.rstrip()
-    return text.endswith(f"# {task}") or ("sync.py" in text and str(root) in text)
+    return text.endswith(f"# {task}") or (task.startswith("space-sync-") and "sync.py" in text and str(root) in text)
 
 
-def systemd_units(task, root, py, script, path, minutes) -> tuple:
+def systemd_units(task, root, py, args, path, calendars) -> tuple:
     """A systemd user service and its timer, for a Linux without cron. `Persistent=true` runs
     a start missed while the machine slept. `%` is a specifier in unit files: doubled."""
     def esc(value):
         return str(value).replace("%", "%%")
-    service = (f"[Unit]\nDescription={task}: land this checkout\n\n[Service]\nType=oneshot\n"
-               f"WorkingDirectory={esc(root)}\nEnvironment=\"PATH={esc(path)}\"\n"
-               f'ExecStart="{esc(py)}" "{esc(script)}" --root "{esc(root)}" --release-leg\n')
-    timer = (f"[Unit]\nDescription={task} every {minutes} minutes\n\n[Timer]\nOnCalendar=*:0/{minutes}\n"
-             "Persistent=true\n\n[Install]\nWantedBy=timers.target\n")
+    service = (f"[Unit]\nDescription={task}\n\n[Service]\nType=oneshot\nWorkingDirectory={esc(root)}\n"
+               f"Environment=\"PATH={esc(path)}\"\nExecStart={esc(_argline(py, args))}\n")
+    timer = (f"[Unit]\nDescription={task}\n\n[Timer]\n" + "".join(f"OnCalendar={c}\n" for c in calendars)
+             + "Persistent=true\n\n[Install]\nWantedBy=timers.target\n")
     return service, timer
 
 
-def register_sync(report, root, name, minutes, offline, dry_run) -> dict:
-    """Register `sync.py` with the OS scheduler: a task XML on Windows, a cron line on macOS
-    and Linux, a systemd user timer on a Linux without cron. Offline: recorded, not registered."""
-    root = Path(root)
-    py, script, task = sys.executable, root / "_meta" / "tools" / "sync.py", f"space-sync-{name}"
-    path = os.environ.get("PATH", "")
+def register_task(report, label, task, root, args, minutes=None, times=None, cron=None, dry_run=False) -> dict:
+    """Register one OS task that runs this interpreter with `args` in `root`, every `minutes`
+    or daily at `times` (`cron` is the same schedule in cron's words): a task XML on Windows, a
+    cron line on macOS and Linux, a systemd user timer on a Linux without cron."""
+    root, py, path = Path(root), sys.executable, os.environ.get("PATH", "")
     if SYSTEM == "Windows":
-        arguments = f'--headless "{py}" "{script}" --root "{root}" --release-leg'
+        arguments = f"--headless {_argline(py, args)}"
         record = {"name": task, "kind": "schtasks", "line": f"{CONHOST} {arguments}",
                   "create": ["schtasks", "/Create", "/F", "/TN", task, "/XML", f"{task}.xml"],
                   "check": ["schtasks", "/Query", "/TN", task, "/XML"], "root": str(root)}
-    else:
-        record = {"name": task, "kind": "cron", "line": cron_line(minutes, py, script, root, task, path),
-                  "create": ["crontab", "-"], "check": ["crontab", "-l"], "root": str(root)}
-    if offline:
-        write_text(root / "_meta" / "state" / "sync-task.txt", " ".join(record["create"]) + "\n"
-                   + record["line"] + "\n" + "check: " + " ".join(record["check"]) + "\n")
-        report.add(f"sync task {name}", True, "cat _meta/state/sync-task.txt", "offline: command recorded")
-        return record
-    if SYSTEM == "Windows":
         fd, xml_path = tempfile.mkstemp(suffix=".xml")
         os.close(fd)
-        Path(xml_path).write_text(task_xml(arguments, minutes), encoding="utf-16")
+        Path(xml_path).write_text(task_xml(arguments, minutes, times), encoding="utf-16")
         try:
             res = run_cmd(record["create"][:-1] + [xml_path], dry_run)
         finally:
@@ -729,22 +747,24 @@ def register_sync(report, root, name, minutes, offline, dry_run) -> dict:
         verify = run_cmd(record["check"], dry_run)
         missing = [] if dry_run else windows_task_missing(verify.stdout or "")
         ok = res.returncode == 0 and verify.returncode == 0 and not missing
-        report.add(f"sync task {name}", ok, " ".join(record["check"]),
-                   f"{task} every {minutes} minutes, hidden, on battery too" if ok
+        report.add(label, ok, " ".join(record["check"]), f"{task}: hidden, on battery too, catches up" if ok
                    else (res.stderr or verify.stderr).strip()[:200] or "registered without: " + ", ".join(missing))
         return record
+    when = cron or f"*/{minutes} * * * *"
+    record = {"name": task, "kind": "cron", "line": cron_entry(when, root, py, args, task, path),
+              "create": ["crontab", "-"], "check": ["crontab", "-l"], "root": str(root)}
     listed = run_cmd(["crontab", "-l"], dry_run)
     if listed.returncode == 127:   # no cron on this machine
         if SYSTEM == "Linux" and run_cmd(["systemctl", "--user", "show-environment"], dry_run).returncode == 0:
-            return register_systemd(report, record, root, py, script, path, name, minutes, dry_run)
-        report.add(f"sync task {name}", False, "crontab -l", "cron is not installed: install it once "
-                   "(Debian or Ubuntu `sudo apt install cron`, Fedora `sudo dnf install cronie`) and run onboard "
-                   "again", needs_owner=True)
+            calendars = [f"*:0/{minutes}"] if minutes else [f"*-*-* {h:02d}:{m:02d}:00" for h, m in times]
+            return register_systemd(report, label, record, root, py, args, path, calendars, dry_run)
+        report.add(label, False, "crontab -l", "cron is not installed: install it once (Debian or Ubuntu "
+                   "`sudo apt install cron`, Fedora `sudo dnf install cronie`) and run onboard again", needs_owner=True)
         return record
     if not dry_run:
         (Path.home() / ".spaces" / "logs").mkdir(parents=True, exist_ok=True)
     lines = (listed.stdout or "").splitlines() if listed.returncode == 0 else []
-    wanted = [line for line in lines if not is_sync_line(line, task, root)] + [record["line"]]
+    wanted = [line for line in lines if not is_task_line(line, task, root)] + [record["line"]]
     res = subprocess.CompletedProcess(record["create"], 0, "", "")
     if wanted != lines:
         with tempfile.NamedTemporaryFile("w", suffix=".cron", delete=False, encoding="utf-8", newline="\n") as tmp:
@@ -753,16 +773,16 @@ def register_sync(report, root, name, minutes, offline, dry_run) -> dict:
         os.unlink(tmp.name)
     verify = run_cmd(record["check"], dry_run)
     ok = res.returncode == 0 and verify.returncode == 0 and (dry_run or record["line"] in verify.stdout)
-    report.add(f"sync task {name}", ok, " ".join(record["check"]),
-               f"{task} every {minutes} minutes (cron)" if ok else (res.stderr or verify.stderr).strip()[:200])
+    report.add(label, ok, " ".join(record["check"]),
+               f"{task}: {when} (cron)" if ok else (res.stderr or verify.stderr).strip()[:200])
     return record
 
 
-def register_systemd(report, record, root, py, script, path, name, minutes, dry_run) -> dict:
+def register_systemd(report, label, record, root, py, args, path, calendars, dry_run) -> dict:
     """The fallback on a Linux without cron: a systemd user timer that catches up after sleep."""
     task = record["name"]
     units = Path.home() / ".config" / "systemd" / "user"
-    service, timer = systemd_units(task, root, py, script, path, minutes)
+    service, timer = systemd_units(task, root, py, args, path, calendars)
     if not dry_run:
         write_text(units / f"{task}.service", service)
         write_text(units / f"{task}.timer", timer)
@@ -774,10 +794,57 @@ def register_systemd(report, record, root, py, script, path, name, minutes, dry_
                    "units": [str(units / f"{task}.service"), str(units / f"{task}.timer")]})
     verify = run_cmd(record["check"], dry_run)
     ok = res.returncode == 0 and verify.returncode == 0
-    report.add(f"sync task {name}", ok, " ".join(record["check"]),
-               f"{task}.timer every {minutes} minutes (systemd; no cron here)" if ok
+    report.add(label, ok, " ".join(record["check"]), f"{task}.timer (systemd; no cron here)" if ok
                else (res.stderr or verify.stderr).strip()[:200])
     return record
+
+
+def register_sync(report, root, name, minutes, offline, dry_run) -> dict:
+    """Register `sync.py` every `minutes`. Offline: recorded, not registered."""
+    root = Path(root)
+    script, task = root / "_meta" / "tools" / "sync.py", f"space-sync-{name}"
+    args = [script, "--root", root, "--release-leg"]
+    if offline:
+        line = (f"{CONHOST} --headless {_argline(sys.executable, args)}" if SYSTEM == "Windows"
+                else cron_line(minutes, sys.executable, script, root, task, os.environ.get("PATH", "")))
+        create = ["schtasks", "/Create", "/F", "/TN", task, "/XML", f"{task}.xml"] if SYSTEM == "Windows" \
+            else ["crontab", "-"]
+        check = ["schtasks", "/Query", "/TN", task, "/XML"] if SYSTEM == "Windows" else ["crontab", "-l"]
+        write_text(root / "_meta" / "state" / "sync-task.txt",
+                   " ".join(create) + "\n" + line + "\n" + "check: " + " ".join(check) + "\n")
+        report.add(f"sync task {name}", True, "cat _meta/state/sync-task.txt", "offline: command recorded")
+        return {"name": task, "kind": "schtasks" if SYSTEM == "Windows" else "cron", "line": line,
+                "create": create, "check": check, "root": str(root)}
+    return register_task(report, f"sync task {name}", task, root, args, minutes=minutes, dry_run=dry_run)
+
+
+def register_routines(report, workspace, offline=False, dry_run=False) -> list:
+    """For a harness without scheduled tasks: each routine rendered under
+    `_meta/state/routines/` becomes an OS task that runs `routine.py <prompt>` at the routine's
+    times, which hands the prompt to `claude -p`. Recorded as `routine_tasks` for `--check`."""
+    workspace = Path(workspace).resolve()
+    name = spaceyaml.load(workspace).name
+    records = []
+    for prompt in sorted((workspace / "_meta" / "state" / "routines").glob("*.md")):
+        meta = yaml.safe_load(prompt.read_text(encoding="utf-8").split("---")[1]) or {}
+        routine, schedule = meta.get("name") or prompt.stem, str(meta.get("schedule") or "")
+        task, times = f"space-{routine}-{name}", daily_times(schedule)
+        label = f"routine task {task}"
+        if offline:
+            report.add(label, True, f"cat {prompt}", "offline: not registered")
+            continue
+        if times is None:
+            report.add(label, False, f"cat {prompt}", f"schedule {schedule!r} is not a list of daily times")
+            continue
+        records.append(register_task(report, label, task, workspace,
+                                     [workspace / "_meta" / "tools" / "routine.py", prompt],
+                                     times=times, cron=schedule, dry_run=dry_run))
+    if records and not dry_run:
+        path = workspace / "_meta" / "state" / "onboard.yaml"
+        state = read_yaml(path, {}) or {}
+        state["routine_tasks"] = records
+        write_yaml(path, state)
+    return records
 
 
 def platform_settings(report, root, repo, org, dry_run) -> None:
@@ -1235,8 +1302,8 @@ def prune_offboarded(root) -> list:
 
 
 def check(root) -> list:
-    """Re-run only the read-back checks; print nothing here. The one write: an onboarding root
-    forgets spaces that were offboarded (`prune_offboarded`)."""
+    """Re-run only the read-back checks, the doctor's included (read only); print nothing here.
+    The one write: an onboarding root forgets spaces that were offboarded (`prune_offboarded`)."""
     root = Path(root).resolve()
     prune_offboarded(root)
     state = read_yaml(root / "_meta" / "state" / "onboard.yaml", {}) or {}
@@ -1258,19 +1325,14 @@ def check(root) -> list:
     if state.get("offline"):
         steps.append(Step("sync task", (root / "_meta" / "state" / "sync-task.txt").exists(),
                           "cat _meta/state/sync-task.txt", "offline: recorded, not registered"))
-    elif task.get("check") and task["check"][0] == "schtasks":
-        name = task.get("name") or task["check"][3]
-        argv = ["schtasks", "/Query", "/TN", name, "/XML"]
-        res = run_cmd(argv)
-        missing = windows_task_missing(res.stdout or "")
-        ok = res.returncode == 0 and not missing
-        steps.append(Step("sync task", ok, " ".join(argv), name if ok else (
-            f"registered without: {', '.join(missing)}; run onboard again to re-register it" if res.returncode == 0
-            else (res.stderr or res.stdout or "not registered").strip()[:200])))
     elif task.get("check"):
-        res = run_cmd(task["check"])
-        ok = res.returncode == 0 and (not task.get("line") or task["line"] in res.stdout)
-        steps.append(Step("sync task", ok, " ".join(task["check"]), task.get("name", "")))
+        steps.append(task_step("sync task", task))
+    steps.extend(task_step(f"routine task {t['name']}", t) for t in state.get("routine_tasks") or [] if t.get("check"))
+    if state and not state.get("offline"):
+        # this machine's prerequisites, read only: what broke since onboarding is named with its fix
+        for r in doctor.diagnose(doctor.Machine(run=run_cmd, reach=lambda: True), fix=False,
+                                 repos=[state["repo"]] if state.get("repo") else []):
+            steps.append(Step(f"doctor: {r.name}", r.ok, r.check, r.found if r.ok else r.yours, not r.ok))
     if state.get("repo") and not state.get("offline"):
         res = run_cmd(["gh", "api", f"repos/{state['repo']}", "-q", ".allow_auto_merge"])
         steps.append(Step("auto-merge armed", res.stdout.strip() == "true",
@@ -1295,6 +1357,23 @@ def check(root) -> list:
         if (current.get("items") or []) != owner_items:
             write_yaml(target, {"items": owner_items})
     return steps
+
+
+def task_step(label: str, task: dict) -> Step:
+    """Read an OS task back: a Windows task as XML, its battery, catch-up and hidden settings
+    included; a cron line by its text; a systemd timer by `is-active`."""
+    if task["check"][0] == "schtasks":
+        name = task.get("name") or task["check"][3]
+        argv = ["schtasks", "/Query", "/TN", name, "/XML"]
+        res = run_cmd(argv)
+        missing = windows_task_missing(res.stdout or "")
+        ok = res.returncode == 0 and not missing
+        return Step(label, ok, " ".join(argv), name if ok else (
+            f"registered without: {', '.join(missing)}; run onboard again to re-register it" if res.returncode == 0
+            else (res.stderr or res.stdout or "not registered").strip()[:200]))
+    res = run_cmd(task["check"])
+    ok = res.returncode == 0 and (not task.get("line") or task["line"] in res.stdout)
+    return Step(label, ok, " ".join(task["check"]), task.get("name", ""))
 
 
 def crew_mount_steps(space) -> list:
@@ -1630,6 +1709,8 @@ def main(argv=None) -> int:
                     help="switch this shadow space to live (mounts by name from --answers `mounts:`)")
     ap.add_argument("--with-projects", action="store_true",
                     help="company case: also create the project spaces listed in the answers")
+    ap.add_argument("--os-routines", action="store_true",
+                    help="a harness without scheduled tasks: the OS runs this workspace's routines via `claude -p`")
     args = ap.parse_args(argv)
     if args.fixture:
         return fixture(args.fixture)
@@ -1640,6 +1721,11 @@ def main(argv=None) -> int:
     if args.invite:
         print(f"invitation: {invite(root, args.invite, org=args.org)}")
         return 0
+    if args.os_routines:
+        report = Report(case="routines")
+        register_routines(report, root, offline=args.offline, dry_run=args.dry_run)
+        print_steps(report.steps or [Step("routines", False, "ls _meta/state/routines", "none rendered yet: run start.py")])
+        return 1 if report.failed() or not report.steps else 0
     if args.go_live:
         report = go_live(root, read_yaml(args.answers, {}) if args.answers else {}, offline=args.offline,
                          org=args.org, dry_run=args.dry_run)

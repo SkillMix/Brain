@@ -34,6 +34,8 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 VENV = Path.home() / ".spaces" / "venv"
@@ -43,11 +45,13 @@ def venv_python(venv: Path) -> Path:
     return Path(venv) / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
-def ensure_yaml(argv, venv=VENV, run=subprocess.run, have=None) -> int | None:
+def ensure_yaml(argv, venv=VENV, run=subprocess.run, have=None, install=None) -> int | None:
     """None when PyYAML imports here. Else the agent installs it: `pip --user` first; where the
     system Python refuses that (PEP 668: Homebrew on macOS, Debian and Ubuntu), a venv at
     ~/.spaces/venv, and start.py runs again with that interpreter, so the sync task uses it
-    too. Returns that run's exit code, or 1 with the one fix only the person can make."""
+    too. A Python without its venv module (Debian without python3-venv) gets the venv from uv,
+    pinned and checksummed, with no password. Returns that run's exit code, or 1 with the one
+    fix only the person can make."""
     have = have or (lambda: importlib.util.find_spec("yaml") is not None)
     if have():
         return None
@@ -58,11 +62,20 @@ def ensure_yaml(argv, venv=VENV, run=subprocess.run, have=None) -> int | None:
         if have():
             return None
     py = venv_python(venv)
+    pip = [str(py), "-m", "pip", "install", "--quiet", "pyyaml"]
     if not py.exists() and run([sys.executable, "-m", "venv", str(venv)]).returncode != 0:
-        print("start: this Python cannot make a virtual environment; install that part once with "
-              "`sudo apt install python3-venv` (Debian, Ubuntu), then say the sentence again")
-        return 1
-    if run([str(py), "-m", "pip", "install", "--quiet", "pyyaml"]).returncode != 0:
+        if install is None:
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            import doctor
+            install = lambda tool: doctor.install(tool, doctor.Machine())  # noqa: E731
+        folder, _ = install("uv")
+        uv = str(Path(folder) / ("uv.exe" if os.name == "nt" else "uv")) if folder else None
+        if uv is None or run([uv, "venv", "--python", sys.executable, str(venv)]).returncode != 0:
+            print("start: this Python cannot make a virtual environment; install that part once with "
+                  "`sudo apt install python3-venv` (Debian, Ubuntu), then say the sentence again")
+            return 1
+        pip = [uv, "pip", "install", "--python", str(py), "--quiet", "pyyaml"]
+    if run(pip).returncode != 0:
         print(f"start: PyYAML did not install into {venv}; check the network, then say the sentence again")
         return 1
     return run([str(py), str(Path(__file__).resolve()), *argv]).returncode
@@ -76,10 +89,14 @@ if __name__ == "__main__":   # the agent does every step: the one library the to
 import yaml  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import doctor  # noqa: E402
 import onboard  # noqa: E402
 import spaceyaml  # noqa: E402
 
 HERE = Path(__file__).resolve().parents[2]
+# One start at a time on this machine; a lock older than LOCK_HOURS is a crashed run's.
+LOCK = Path(tempfile.gettempdir()) / "spaces-start.lock"
+LOCK_HOURS = 1
 ROUTINES = HERE / "_meta" / "templates" / "routines"
 INVITATIONS = "_meta/state/invitations"
 GITHUB = "https://github.com/"
@@ -210,13 +227,35 @@ def render_routines(workspace: Path, person: str) -> list:
 
 
 # ----- start ---------------------------------------------------------------------------
-def preflight(report: onboard.Report, offline: bool) -> bool:
-    if offline:
-        return True
-    ok = onboard.run_cmd(["gh", "auth", "status"]).returncode == 0
-    report.add("signed in to the host", ok, "gh auth status",
-               "signed in" if ok else "run `gh auth login` once, then say the sentence again", needs_owner=not ok)
-    return ok
+def take_lock(path=None) -> Path | None:
+    """The sentence said twice: the second start waits for the first instead of racing it."""
+    path = Path(path or LOCK)
+    try:
+        if time.time() - path.stat().st_mtime < LOCK_HOURS * 3600:
+            return None
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return None
+    with os.fdopen(fd, "w") as fh:
+        fh.write(f"{os.getpid()}\n")
+    return path
+
+
+def checkup(report: onboard.Report, brain, tpl, offline: bool, fix: bool, spaces) -> bool:
+    """The doctor, before anything is created: every prerequisite of this machine, fixed where
+    no password is needed; what is the person's becomes a row with its check, and start stops."""
+    repos = [r for r in (normalize(brain) if brain else None, tpl)
+             if r and "/" in r and not is_local(r)]
+    rows = doctor.diagnose(fix=fix, orgs=list(dict.fromkeys(r.split("/")[0] for r in repos)), repos=repos,
+                           offline=offline, spaces=spaces)
+    for r in rows:
+        report.add(f"doctor: {r.name}", r.ok, r.check, (r.fixed or r.found) if r.ok else r.yours,
+                   needs_owner=not r.ok)
+    return all(r.ok for r in rows)
 
 
 def plan(report: onboard.Report, dst, full, tpl, case) -> onboard.Report:
@@ -233,10 +272,27 @@ def plan(report: onboard.Report, dst, full, tpl, case) -> onboard.Report:
 def start(here=HERE, invitation=None, brain=None, company=None, name=None, email=None, feeds=None,
           org=None, home=None, template=None, offline=False, dry_run=False,
           user_instructions=None) -> onboard.Report:
-    here = Path(here).resolve()
     report = onboard.Report(case="start")
-    if not preflight(report, offline):
+    lock = take_lock()
+    if lock is None:
+        report.add("one start at a time", False, f"test -f {LOCK}", "another start is running on this machine: "
+                   "it finishes on its own; say the sentence again when it has")
         return report
+    try:
+        tpl = template or onboard.git_remote(Path(here).resolve())
+        target = parse_invitation(invitation)[0] if invitation else brain
+        spaces = Path(home) if home else Path.home() / "spaces"
+        if checkup(report, target, tpl, offline, not dry_run, spaces):
+            setup(report, here, invitation, brain, company, name, email, feeds, org, home, template, offline,
+                  dry_run, user_instructions)
+    finally:
+        lock.unlink(missing_ok=True)
+    return report
+
+
+def setup(report, here, invitation, brain, company, name, email, feeds, org, home, template, offline, dry_run,
+          user_instructions) -> onboard.Report:
+    here = Path(here).resolve()
     who = identity(name, email, offline)
     given = Path(home) if home else None
     home = given or Path.home() / "spaces"
@@ -333,8 +389,16 @@ def main(argv=None) -> int:
     ap.add_argument("--user-instructions", help="the user-level instruction file (default ~/.claude/CLAUDE.md)")
     ap.add_argument("--offline", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--doctor", action="store_true", help="only check this machine and fix what needs no password")
     ap.add_argument("--json", action="store_true", help="print the summary as JSON")
     args = ap.parse_args(argv)
+    if args.doctor:
+        report = onboard.Report(case="doctor")
+        target = parse_invitation(args.invitation)[0] if args.invitation else args.brain
+        ok = checkup(report, target, args.template or onboard.git_remote(HERE), args.offline, True,
+                     Path(args.home) if args.home else Path.home() / "spaces")
+        onboard.print_steps(report.steps)
+        return 0 if ok else 1
     report = start(HERE, invitation=args.invitation, brain=args.brain, company=args.company, name=args.name,
                    email=args.email, feeds=args.feeds, org=args.org, home=args.home, template=args.template,
                    offline=args.offline, dry_run=args.dry_run, user_instructions=args.user_instructions)
@@ -351,6 +415,8 @@ def main(argv=None) -> int:
             print(f"plan: {line}")
         for row in result["yours"]:
             print(f"yours: {row.get('name')}: {row.get('result')} (check: {row.get('check')})")
+        if result["failed"] or result["yours"]:
+            print("then say the sentence again: every step already done is kept")
     return 1 if result["failed"] else 0
 
 

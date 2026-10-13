@@ -129,6 +129,8 @@ def test_a_dry_run_prints_the_plan_and_stops_before_onboard(tmp_path, monkeypatc
         return subprocess.CompletedProcess(argv, 0, "", "")
     monkeypatch.setattr(onboard, "run_cmd", fake)
     monkeypatch.setattr(start, "_out", lambda *a, **k: "")
+    monkeypatch.setattr(start.doctor, "diagnose", lambda **kw: [])   # the machine's own checks: test_doctor
+    monkeypatch.setattr(start, "LOCK", tmp_path / "start.lock")
     tpl, brain = template_copy(tmp_path), brain_with_invitation(tmp_path)
     monkeypatch.setattr(start, "HERE", tpl)
     code = start.main(["--invitation", f"{brain.as_posix()}:ada", "--org", "lantern", "--home",

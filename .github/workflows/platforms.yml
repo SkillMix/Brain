@@ -1,8 +1,9 @@
 # Setup on every system: the unit tests, the behaviour scenarios and an offline start from a
 # fixture invitation on Windows, macOS and Linux; on macOS and Linux the unit tests also run the
-# generated cron command under `env -i` with a stub `gh` on the registration PATH. Not a
-# required check (`checks` is). Runs when the setup tools change; in an instance the gate finds
-# no template marker and the matrix is skipped.
+# generated cron command under `env -i` with a stub `gh` on the registration PATH. `bare` runs
+# the whole first step on a machine with nothing on it (no git, gh or Python): the bootstrap
+# installs a Python, the doctor installs git and gh. Not required checks (`checks` is). Runs
+# when the setup tools change; in an instance the gate finds no template marker and skips them.
 name: platforms
 
 on:
@@ -12,8 +13,14 @@ on:
       - "_meta/tools/start.py"
       - "_meta/tools/offboard.py"
       - "_meta/tools/sync.py"
+      - "_meta/tools/doctor.py"
+      - "_meta/tools/routine.py"
+      - "_meta/tools/bootstrap.sh"
+      - "_meta/tools/bootstrap.ps1"
       - "_meta/tools/tests/test_sync_task.py"
       - "_meta/tools/tests/test_start.py"
+      - "_meta/tools/tests/test_doctor.py"
+      - "_meta/tools/tests/test_routines.py"
       - "_meta/templates/**"
       - ".github/workflows/platforms.yml"
   push:
@@ -23,8 +30,14 @@ on:
       - "_meta/tools/start.py"
       - "_meta/tools/offboard.py"
       - "_meta/tools/sync.py"
+      - "_meta/tools/doctor.py"
+      - "_meta/tools/routine.py"
+      - "_meta/tools/bootstrap.sh"
+      - "_meta/tools/bootstrap.ps1"
       - "_meta/tools/tests/test_sync_task.py"
       - "_meta/tools/tests/test_start.py"
+      - "_meta/tools/tests/test_doctor.py"
+      - "_meta/tools/tests/test_routines.py"
       - "_meta/templates/**"
       - ".github/workflows/platforms.yml"
   workflow_dispatch:
@@ -69,3 +82,36 @@ jobs:
 
       - name: Offline start from a fixture invitation, and the cron command under env -i
         run: python -m pytest _meta/tools/tests/test_start.py _meta/tools/tests/test_sync_task.py -v -k "start_command or empty_environment"
+
+  bare:
+    needs: gate
+    if: needs.gate.outputs.template == 'true'
+    runs-on: ubuntu-latest
+    container: ubuntu:24.04
+    steps:
+      - name: A downloader and certificates, nothing else
+        run: apt-get update -qq && apt-get install -y -qq curl ca-certificates
+
+      # without git on PATH, checkout downloads the tree through the API
+      - uses: actions/checkout@v4
+
+      - name: Nothing installed yet
+        run: |
+          for tool in git gh python3 python; do
+            if command -v "$tool" >/dev/null 2>&1; then echo "$tool is already here"; exit 1; fi
+          done
+
+      - name: Bootstrap a Python, then the doctor installs git and gh
+        run: |
+          sh _meta/tools/bootstrap.sh --doctor | tee doctor.txt || true
+          grep -E "^ok +doctor: python" doctor.txt
+          grep -E "^ok +doctor: git " doctor.txt
+          grep -E "^ok +doctor: gh " doctor.txt
+          grep -E "^owner +doctor: github sign-in" doctor.txt
+
+      - name: Offline start from a fixture invitation, and the doctor's own tests
+        run: |
+          export PATH="$HOME/.spaces/tools/gh/bin:$HOME/.spaces/tools/uv:$PATH"
+          uv venv /tmp/tests --python 3.12
+          uv pip install --python /tmp/tests/bin/python pyyaml pytest
+          /tmp/tests/bin/python -m pytest _meta/tools/tests/test_start.py _meta/tools/tests/test_doctor.py -q -k "start_command or doctor or bootstrap"

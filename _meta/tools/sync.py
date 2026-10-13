@@ -40,6 +40,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import doctor  # noqa: E402
 import pages  # noqa: E402
 import scan  # noqa: E402
 import spaceyaml  # noqa: E402
@@ -428,6 +429,7 @@ def parse(argv) -> argparse.Namespace:
 
 def main(argv=None) -> int:
     args = parse(sys.argv[1:] if argv is None else argv)
+    doctor.use_tools()   # git and gh that onboarding installed under ~/.spaces/tools
     root = Path(args.root).resolve()
     gdir = git_dir(root)
     if gdir is None:

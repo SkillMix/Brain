@@ -39,15 +39,22 @@ that proves it. Your first morning briefing arrives the next day.
 
 When a person asks to be set up, onboarded or to start, and names this repository:
 
-1. Clone it anywhere temporary: `gh repo clone OWNER/REPOSITORY <temporary folder>`.
-2. Run `python <temporary folder>/_meta/tools/start.py` (`python3` where `python` is absent), adding `--invitation <brain>:<slug>`
+1. Clone it anywhere temporary: `gh repo clone OWNER/REPOSITORY <temporary folder>` (without
+   `gh`, install it from https://cli.github.com; not signed in, ask the person to run
+   `gh auth login --web` once).
+2. Run `sh <temporary folder>/_meta/tools/bootstrap.sh` (Windows: `powershell -NoProfile
+   -ExecutionPolicy Bypass -File <temporary folder>\_meta\tools\bootstrap.ps1`): it finds or
+   installs Python 3.10+ and runs `_meta/tools/start.py`, whose doctor checks this machine first
+   and installs what needs no password. Pass it `--invitation <brain>:<slug>`
    when the person gave an invitation, `--company "<name>"` when they named their company, and
    `--feeds <list>` naming the connectors your session has (mail, calendar, chat, calls,
    tracker, documents). Ask nothing else: every other answer has a default.
-3. If it reports "run `gh auth login`", ask the person to run it once, then run step 2 again.
+3. Each `doctor:` row in `yours` is one sentence for the person with the exact command (a
+   sign-in, a password, a dialog, an access grant): ask once, wait, then run step 2 again.
 4. Schedule the two routines it rendered under `_meta/state/routines/` in the new workspace
-   with your harness's scheduled tasks, each at its `schedule`. Without scheduled tasks, say
-   so: the sync task still lands everything, and the routines can be run by hand.
+   with your harness's scheduled tasks, each at its `schedule`. Without scheduled tasks, run
+   `python <workspace>/_meta/tools/onboard.py <workspace> --os-routines`: the OS scheduler runs
+   them through `claude -p`.
 5. Tell the person in three lines where their workspace is, what is still theirs (the
    `yours:` lines) and that their morning briefing starts tomorrow.
 
