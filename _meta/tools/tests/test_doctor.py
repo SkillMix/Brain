@@ -367,3 +367,21 @@ def test_a_download_python_cannot_verify_falls_back_to_curl(tmp_path, monkeypatc
     monkeypatch.setattr(doctor, "run_cmd", run)
     doctor.download("https://github.com/cli/cli/releases/download/x.zip", tmp_path / "x.zip")
     assert calls[0][0] == "curl" and (tmp_path / "x.zip").read_bytes() == b"archive"
+
+
+def test_a_new_company_is_not_asked_to_join_the_templates_organization(tmp_path, monkeypatch):
+    start, tpl, brain, seen = _start_world(tmp_path, monkeypatch, [doctor.Row("gh", False, "x", "gh --version",
+                                                                              yours="install gh")])
+    start.start(tpl, company="Lantern Works", template="elsewhere/brain-template", home=tmp_path / "home",
+                user_instructions=tmp_path / "CLAUDE.md")
+    assert seen["orgs"] == [] and seen["repos"] == ["elsewhere/brain-template"]
+
+
+def test_a_start_the_doctor_stopped_exits_non_zero(tmp_path, monkeypatch, capsys):
+    start, tpl, brain, seen = _start_world(tmp_path, monkeypatch, [
+        doctor.Row("github sign-in", False, "not signed in", "gh auth status", yours="sign in")])
+    monkeypatch.setattr(start, "HERE", tpl)
+    code = start.main(["--invitation", "lantern-org/brain:ada", "--template", "lantern-org/brain-template",
+                       "--home", str(tmp_path / "home"), "--json"])
+    out = capsys.readouterr().out
+    assert code == 1 and json.loads(out[out.index("{"):])["stopped"] is True

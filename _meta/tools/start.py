@@ -248,9 +248,10 @@ def take_lock(path=None) -> Path | None:
 def checkup(report: onboard.Report, brain, tpl, offline: bool, fix: bool, spaces) -> bool:
     """The doctor, before anything is created: every prerequisite of this machine, fixed where
     no password is needed; what is the person's becomes a row with its check, and start stops."""
-    repos = [r for r in (normalize(brain) if brain else None, tpl)
-             if r and "/" in r and not is_local(r)]
-    rows = doctor.diagnose(fix=fix, orgs=list(dict.fromkeys(r.split("/")[0] for r in repos)), repos=repos,
+    brain = normalize(brain) if brain and not is_local(brain) else None
+    repos = [r for r in (brain, tpl) if r and "/" in r and not is_local(r)]
+    # membership only in the company's own organization; the template needs read access alone
+    rows = doctor.diagnose(fix=fix, orgs=[brain.split("/")[0]] if brain else [], repos=repos,
                            offline=offline, spaces=spaces)
     for r in rows:
         report.add(f"doctor: {r.name}", r.ok, r.check, (r.fixed or r.found) if r.ok else r.yours,
@@ -285,6 +286,8 @@ def start(here=HERE, invitation=None, brain=None, company=None, name=None, email
         if checkup(report, target, tpl, offline, not dry_run, spaces):
             setup(report, here, invitation, brain, company, name, email, feeds, org, home, template, offline,
                   dry_run, user_instructions)
+        else:
+            report.stopped = True   # nothing was created: the person's rows come first
     finally:
         lock.unlink(missing_ok=True)
     return report
@@ -372,6 +375,7 @@ def summary(report: onboard.Report) -> dict:
     return {"workspace": str(getattr(report, "workspace", "") or ""),
             "spaces": {k: str(v) for k, v in report.spaces.items()},
             "routines": getattr(report, "routines", []), "plan": getattr(report, "plan", []),
+            "stopped": bool(getattr(report, "stopped", False)),
             "done": sum(1 for s in report.steps if s.done), "failed": failed, "yours": owner}
 
 
@@ -417,7 +421,7 @@ def main(argv=None) -> int:
             print(f"yours: {row.get('name')}: {row.get('result')} (check: {row.get('check')})")
         if result["failed"] or result["yours"]:
             print("then say the sentence again: every step already done is kept")
-    return 1 if result["failed"] else 0
+    return 1 if result["failed"] or result["stopped"] else 0
 
 
 if __name__ == "__main__":
