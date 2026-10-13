@@ -25,7 +25,8 @@ sweeps nothing of its own. You export; the tool decides.
    "repo", "tracker", "calendar"}, "attachments": [...], "audience": owner|crew|everyone,
    "participants": [...]}`.
    Per kind: mail = messages sent, received or copied to the person (`thread`, `labels`);
-   call = a recorded meeting, `text` its transcript or summary, `participants` everyone on
+   Mail and messages always carry `from` and `to` as addresses: without them no status page
+   knows who owes whom. call = a recorded meeting, `text` its transcript or summary, `participants` everyone on
    it; message = chat DMs and channels (`channel`); event = calendar entries (`calendar`);
    document = a new or changed file, `text` an excerpt, the file only as a pointer in
    `attachments`. `audience` is the source's declared audience, copied as is. `id` is the

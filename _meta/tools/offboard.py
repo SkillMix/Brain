@@ -53,7 +53,16 @@ def remove_sync_task(report, root, state, task_name, dry_run) -> None:
     report.add("sync task removed", ok, "crontab -l", "no sync line left" if ok else "a sync line remains")
 
 
-def run(root, online, dry_run=False) -> onboard.Report:
+def raw_records(root: Path) -> list:
+    """A personal space's raw records: the feed files and the witness pages of its own sweep."""
+    root = Path(root)
+    out = sorted((root / "_meta" / "state" / "feed").glob("*.jsonl")) if (root / "_meta/state/feed").is_dir() else []
+    base = root / "knowledge" / "sources"
+    out += sorted(base.rglob("*.md")) if base.is_dir() else []
+    return out
+
+
+def run(root, online, dry_run=False, forget_records: bool = False) -> onboard.Report:
     root = Path(root).resolve()
     space = spaceyaml.load(root)
     now = space.now()
@@ -64,6 +73,17 @@ def run(root, online, dry_run=False) -> onboard.Report:
         print(f"{zone}: {count} still here (nothing moved)")
     report.add("still waiting", True, "ls _outbound/queue _outbound/held _inbound/candidates",
                ", ".join(f"{k} {v}" for k, v in counts.items()))
+    if space.profile == "personal":
+        raw = raw_records(root)
+        if forget_records and not dry_run:
+            # the person's own command: raw personal records go at offboard; git keeps history
+            for path in raw:
+                path.unlink(missing_ok=True)
+            report.add("raw records removed", True, "ls _meta/state/feed knowledge/sources",
+                       f"{len(raw)} files removed on the person's own command; history keeps them")
+        else:
+            report.add("raw records listed", True, "python _meta/tools/offboard.py . --forget-records",
+                       f"{len(raw)} raw records stay; the person removes them with --forget-records")
     state = onboard.read_yaml(root / "_meta" / "state" / "onboard.yaml", {}) or {}
     task_name = (state.get("sync_task") or {}).get("name") or f"space-sync-{space.name}"
     if online:
@@ -127,8 +147,10 @@ def main(argv=None) -> int:
     ap.add_argument("root", nargs="?", default=".")
     ap.add_argument("--online", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--forget-records", action="store_true",
+                    help="the person's own command: remove the raw feed files and witness pages")
     args = ap.parse_args(argv)
-    report = run(args.root, args.online, dry_run=args.dry_run)
+    report = run(args.root, args.online, dry_run=args.dry_run, forget_records=args.forget_records)
     onboard.print_steps(report.steps)
     return 1 if report.failed() else 0
 

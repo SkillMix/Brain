@@ -408,7 +408,7 @@ def answer(root, now: dt.datetime | None = None, offline_roots: dict | None = No
                                 f"(standing choice: {cls}; path {choice_path})")
                 _append(root / HOLDER_LOG, {"at": pages.iso(now), "id": rid, "from": asker, "class": cls,
                                             "asked_by": req.get("asked_by"), "outcome": "answered",
-                                            "choice": f"{cls}:at_once"})
+                                            "choice": f"{cls}:at_once", "subject": req.get("subject")})
                 report.answered.append(rid)
                 continue
             if verdict.get("verb") in ("yes", "edit", "always"):

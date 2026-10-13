@@ -136,6 +136,41 @@ def channel(root, other_root, online=False, org=None, home=None, dry_run=False,
     return report
 
 
+def vault(root, name: str, audience: list, online=False, org=None, home=None, dry_run=False) -> onboard.Report:
+    """A vault: the project template with a list of names as its audience, for what only a few
+    people may read (HR, finance, a deal). It mounts the brain; nobody else mounts it."""
+    root = Path(root).resolve()
+    space = spaceyaml.load(root)
+    name = onboard.slugify(name)
+    report = onboard.Report(case="vault")
+    names = [str(a).strip() for a in audience if str(a).strip()]
+    if len(names) < 1:
+        report.add("audience", False, "--audience", "a vault names who may read it")
+        return report
+    dst, repo = onboard.create_space(report, root, name, name, not online, org, home,
+                                     onboard.template_repo(root), dry_run)
+    if dst is None:
+        return report
+    mount = next((m for m in space.mounts if m.get("name") == "brain"), {})
+    brain_path = mount.get("path") or "brain"
+    if not online and space.mount_root("brain") is not None:
+        brain_path = os.path.relpath(space.mount_root("brain"), dst).replace("\\", "/")
+    values = onboard.space_values(space.data, name, names[0], space.owner_email if names[0] == space.owner else "",
+                                  names, "brain", mount.get("repo"), brain_path)
+    onboard.setup_space(report, dst, "project", values, [])
+    data = spaceyaml.load(dst)
+    data.data["vault"] = True
+    spaceyaml.save(data)
+    onboard.finish_space(report, dst)
+    if online:
+        onboard.platform_settings(report, dst, repo, org, dry_run)
+        onboard.commit_fill(report, dst, True, dry_run)
+    report.add("vault", True, f"grep -c 'vault: true' {dst / 'space.yaml'}",
+               f"{name}: read by {', '.join(names)} only; nobody else mounts it")
+    report.spaces[name] = dst
+    return report
+
+
 def link_items(name: str) -> tuple:
     """The chat channel and tracker project named like the space, and the two items that
     propose creating them (the adapters confirm on the next sweep)."""
@@ -268,6 +303,8 @@ def main(argv=None) -> int:
     ap.add_argument("--seed")
     ap.add_argument("--name")
     ap.add_argument("--parent", help="the parent space (a division) for a sub-team")
+    ap.add_argument("--vault", action="store_true", help="a vault: --name and --audience, no seed")
+    ap.add_argument("--audience", nargs="*", default=[], help="a vault's readers, by name")
     ap.add_argument("--crew", nargs="*", default=[])
     ap.add_argument("--offline", action="store_true")
     ap.add_argument("--org")
@@ -279,8 +316,15 @@ def main(argv=None) -> int:
                          dry_run=args.dry_run, name=args.name)
         onboard.print_steps(report.steps)
         return 1 if report.failed() else 0
+    if args.vault:
+        if not args.name or not args.audience:
+            ap.error("a vault needs --name and --audience")
+        report = vault(args.root, args.name, args.audience, online=not args.offline, org=args.org,
+                       home=args.home, dry_run=args.dry_run)
+        onboard.print_steps(report.steps)
+        return 1 if report.failed() else 0
     if not args.seed or not args.name:
-        ap.error("give --seed and --name, or --channel")
+        ap.error("give --seed and --name, or --channel, or --vault")
     report = run(args.root, args.seed, args.name, args.crew, not args.offline, org=args.org,
                  home=args.home, dry_run=args.dry_run, parent=args.parent)
     onboard.print_steps(report.steps)

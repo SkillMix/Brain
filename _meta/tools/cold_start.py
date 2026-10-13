@@ -66,7 +66,10 @@ def targets(conf: dict, reg) -> list:
     if not match:
         return []
     kind, slug = match.group(1), match.group(2)
+    # sign only what is active and important now: an active subject that is important or
+    # stateful (an open deal, a running project); the rest stays evidence
     subjects = [s for s in reg.all() if s.kind == kind and s.state == "active"
+                and (s.important or s.stateful or slug not in ("<all>", "*"))
                 and (slug in ("<all>", "*") or s.id == slug)]
     return [(f"_inbound/candidates/cold-start-{s.id}.md",
              {"type": TYPE_BY_KIND.get(kind, "entity"), "kind": kind, "subject": s.id,

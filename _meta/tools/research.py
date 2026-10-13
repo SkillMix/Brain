@@ -44,23 +44,29 @@ def ingest(root, records_path, dry_run: bool = False) -> dict:
             rec = json.loads(line)
         except ValueError:
             continue
-        if not isinstance(rec, dict) or not rec.get("url") or not rec.get("id"):
+        weak = bool(rec.get("weak"))   # an agent's own notes or memory: weak evidence, no url needed
+        if not isinstance(rec, dict) or not rec.get("id") or (not rec.get("url") and not weak):
             continue
         if rec.get("about") not in ABOUT:
             skipped.append(f"{rec.get('id')}: about must be one of {', '.join(ABOUT)}")
             continue
         at = pages.parse_iso(rec.get("at") or pages.iso(now))
         rid = _slug(rec["id"])
-        witness = root / "knowledge" / "sources" / f"{at:%Y}" / f"{at:%m}" / f"web-{rid}.md"
+        prefix = "notes" if weak else "web"
+        witness = root / "knowledge" / "sources" / f"{at:%Y}" / f"{at:%m}" / f"{prefix}-{rid}.md"
         if witness.exists():
             kept.append(witness.relative_to(root).as_posix())
         else:
-            fm = {"id": pages.new_id(), "type": "source", "title": str(rec.get("title") or rec["url"])[:120],
-                  "status": "draft", "generated": pages.generated("research", now), "record": f"web-{rid}",
-                  "source": "web", "kind": "document", "at": pages.iso(at), "url": rec["url"],
-                  "about": rec["about"], "mentions": [], "audience": "everyone", "identifiers": {}}
+            fm = {"id": pages.new_id(), "type": "source", "title": str(rec.get("title") or rec.get("url") or rid)[:120],
+                  "status": "draft", "generated": pages.generated("research", now), "record": f"{prefix}-{rid}",
+                  "source": "agent-notes" if weak else "web", "kind": "document", "at": pages.iso(at),
+                  "url": rec.get("url"), "about": rec["about"], "mentions": [],
+                  "audience": "owner" if weak else "everyone", "identifiers": {}}
+            if weak:
+                fm["weak"] = True
             if not dry_run:
-                pages.write(witness, fm, f"{str(rec.get('text') or '').strip()}\n\nSource: {rec['url']}\n")
+                where = rec.get("url") or "an agent's own notes (weak evidence)"
+                pages.write(witness, fm, f"{str(rec.get('text') or '').strip()}\n\nSource: {where}\n")
             written.append(witness.relative_to(root).as_posix())
         for n, claim in enumerate(rec.get("claims") or [], 1):
             think = str(claim.get("think") or "").strip()
@@ -70,13 +76,14 @@ def ingest(root, records_path, dry_run: bool = False) -> dict:
             if (root / rel).exists():
                 kept.append(rel)
                 continue
-            based = f"{rec.get('title') or 'a public page'} ({rec['url']})"
+            based = (f"{rec.get('title') or 'an agent note'} (agent notes, weak evidence)" if weak
+                     else f"{rec.get('title') or 'a public page'} ({rec['url']})")
             fm = {"id": pages.new_id(), "type": "review", "title": f"Confirm: {rec.get('title') or rid}",
                   "status": "draft", "generated": pages.generated("research", now),
                   "question": f"I think: {think} Based on {based}. Right?", "recommendation": "yes",
                   "default": "stays a draft until you answer", "depends": int(claim.get("depends", 2)),
                   "batch": "public web", "payload": str(claim.get("candidate") or "_meta/subjects.yaml"),
-                  "evidence": [rec["url"]]}
+                  "evidence": [rec.get("url") or f"{prefix}-{rid}"]}
             if not dry_run:
                 pages.write(root / rel, fm, f"# Confirm\n\n{think}\n\nBased on: {based}\n")
             written.append(rel)
