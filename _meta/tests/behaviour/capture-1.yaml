@@ -1,0 +1,57 @@
+# Capture records each question with its tier and pages; it never edits a page.
+name: capture logs a question in the question log and nowhere else
+command:
+- python
+- _meta/tools/questions_log.py
+- '{root}'
+- append
+- --question
+- Where does Harbor stand?
+- --subject
+- harbor
+- --tier
+- evidence
+- --page
+- p-0000c001
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1440
+      name: ada
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience:
+      - Ada Okafor
+      parent: brain
+      sources:
+      - name: mail
+        adapter: files
+        audience: owner
+    work/.gitkeep: ''
+    journal/.gitkeep: ''
+    outbox/.gitkeep: ''
+    _meta/subjects.yaml:
+      subjects:
+      - id: harbor
+        kind: projects
+        title: Harbor
+        state: active
+        owner: Ada Okafor
+        home: ada
+        match:
+          label: Harbor
+      - id: ben
+        kind: people
+        title: Ben Liu
+        state: active
+env:
+  SPACE_NOW: '2026-10-05T09:00:00Z'
+expect:
+  exit: 0
+  writes_only_under:
+  - _meta/questions.log
+  must_exist:
+  - _meta/questions.log

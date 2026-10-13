@@ -1,0 +1,50 @@
+# One commit per structural change, landed by the script.
+name: a structure landing outside a repository changes nothing
+command:
+- python
+- _meta/tools/sync.py
+- --root
+- '{root}'
+- --only
+- work
+- --message
+- 'chore: structure'
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1440
+      name: ada
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience:
+      - Ada Okafor
+      parent: brain
+      sources:
+      - name: mail
+        adapter: files
+        audience: owner
+    work/.gitkeep: ''
+    journal/.gitkeep: ''
+    outbox/.gitkeep: ''
+    _meta/subjects.yaml:
+      subjects:
+      - id: harbor
+        kind: projects
+        title: Harbor
+        state: active
+        owner: Ada Okafor
+        home: ada
+        match:
+          label: Harbor
+      - id: ben
+        kind: people
+        title: Ben Liu
+        state: active
+env:
+  SPACE_NOW: '2026-10-05T09:00:00Z'
+expect:
+  exit: 2
+  writes_only_under: []

@@ -1,0 +1,56 @@
+# Pulling back is always possible; the path pauses four weeks.
+name: a pull-back moves the item home and pauses its path
+command:
+- python
+- _meta/tools/release.py
+- '{root}'
+- pull-back
+- p-0000c701
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1440
+      name: ada
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience:
+      - Ada Okafor
+      parent: brain
+      sources:
+      - name: mail
+        adapter: files
+        audience: owner
+    work/.gitkeep: ''
+    journal/.gitkeep: ''
+    outbox/.gitkeep: ''
+    _meta/subjects.yaml:
+      subjects:
+      - id: harbor
+        kind: projects
+        title: Harbor
+        state: active
+        owner: Ada Okafor
+        home: ada
+        match:
+          label: Harbor
+      - id: ben
+        kind: people
+        title: Ben Liu
+        state: active
+    _outbound/queue/p-0000c701.md: "---\nid: p-0000c701\ntype: source\ntitle: A mail about Harbor\nstatus: draft\n\
+      generated:\n  by: sweep\n  at: '2026-10-04T09:00:00Z'\nclass: at_once\ndestination: beacon\nsubject: harbor\n\
+      stage_after: '2026-10-04T09:00:00Z'\nlisted: false\npath: standing_choice:beacon:mail\nfrom_space: ada\nkind:\
+      \ mail\n---\nThe mail.\n"
+env:
+  SPACE_NOW: '2026-10-05T09:00:00Z'
+expect:
+  exit: 0
+  writes_only_under:
+  - _outbound/
+  must_exist:
+  - _outbound/held/p-0000c701.md
+  must_not_exist:
+  - _outbound/queue/p-0000c701.md

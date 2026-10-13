@@ -1,0 +1,51 @@
+# Only a personal space's raw records are the person's to remove.
+name: a project's offboarding never removes its records
+command:
+- python
+- _meta/tools/offboard.py
+- '{root}'
+- --forget-records
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: project
+      mode: fixture
+      time_scale: 1440
+      name: harbor
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience:
+      - Ada Okafor
+      parent: brain
+      sources:
+      - name: mail
+        adapter: files
+        audience: owner
+    work/.gitkeep: ''
+    journal/.gitkeep: ''
+    outbox/.gitkeep: ''
+    _meta/subjects.yaml:
+      subjects:
+      - id: harbor
+        kind: projects
+        title: Harbor
+        state: active
+        owner: Ada Okafor
+        home: ada
+        match:
+          label: Harbor
+      - id: ben
+        kind: people
+        title: Ben Liu
+        state: active
+    knowledge/sources/2026/10/m1.md: "---\nid: p-0000c301\ntype: source\ntitle: A mail\nstatus: draft\ngenerated:\n\
+      \  by: sweep\n  at: '2026-10-02T09:00:00Z'\n---\nBody.\n"
+env:
+  SPACE_NOW: '2026-10-05T09:00:00Z'
+expect:
+  exit: 0
+  writes_only_under:
+  - _meta/subjects.yaml
+  must_exist:
+  - knowledge/sources/2026/10/m1.md

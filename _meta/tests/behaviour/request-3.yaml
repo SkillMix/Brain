@@ -1,0 +1,56 @@
+# Walk and search what you may read first.
+name: a subject this space can read needs no request
+command:
+- python
+- _meta/tools/request.py
+- '{root}'
+- ask
+- --subject
+- harbor
+- --class
+- status
+- --question
+- Where does Harbor stand?
+- --asked-by
+- Ada Okafor
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1440
+      name: ada
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience:
+      - Ada Okafor
+      parent: brain
+      sources:
+      - name: mail
+        adapter: files
+        audience: owner
+    work/.gitkeep: ''
+    journal/.gitkeep: ''
+    outbox/.gitkeep: ''
+    _meta/subjects.yaml:
+      subjects:
+      - id: harbor
+        kind: projects
+        title: Harbor
+        state: active
+        owner: Ada Okafor
+        home: ada
+        match:
+          label: Harbor
+      - id: ben
+        kind: people
+        title: Ben Liu
+        state: active
+env:
+  SPACE_NOW: '2026-10-05T09:00:00Z'
+expect:
+  exit: 3
+  writes_only_under: []
+  must_not_exist:
+  - _outbound/requests/*.md

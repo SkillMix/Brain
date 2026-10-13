@@ -1,0 +1,55 @@
+# Every action above propose records acted_for and its path.
+name: a created issue is recorded with whom it was for
+command:
+- python
+- _meta/tools/tracker.py
+- '{root}'
+- record
+- tr-0000c201
+- --issue
+- HAR-12
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1440
+      name: ada
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience:
+      - Ada Okafor
+      parent: brain
+      sources:
+      - name: mail
+        adapter: files
+        audience: owner
+    work/.gitkeep: ''
+    journal/.gitkeep: ''
+    outbox/.gitkeep: ''
+    _meta/subjects.yaml:
+      subjects:
+      - id: harbor
+        kind: projects
+        title: Harbor
+        state: active
+        owner: Ada Okafor
+        home: ada
+        match:
+          label: Harbor
+      - id: ben
+        kind: people
+        title: Ben Liu
+        state: active
+    _outbound/tracker/tr-0000c201.md: "---\nid: tr-0000c201\ntype: tracker_request\ntitle: Fix the export\nstatus:\
+      \ queued\ngenerated:\n  by: tracker\n  at: '2026-10-04T09:00:00Z'\nsubject: harbor\nrequested_by: Ada Okafor\n\
+      requested_at: '2026-10-04T09:00:00Z'\n---\nIt drops rows.\n"
+env:
+  SPACE_NOW: '2026-10-05T09:00:00Z'
+expect:
+  exit: 0
+  writes_only_under:
+  - _outbound/tracker/
+  must_exist:
+  - _outbound/tracker/tr-0000c201.md

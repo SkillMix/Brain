@@ -1,0 +1,63 @@
+# Ask narrowly, as a file; the sync script carries it.
+name: a request is a file in the outbound folder, nothing else
+command:
+- python
+- _meta/tools/request.py
+- '{root}'
+- ask
+- --subject
+- beacon
+- --class
+- status
+- --question
+- Where does Beacon stand?
+- --asked-by
+- Ada Okafor
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1440
+      name: ada
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience:
+      - Ada Okafor
+      parent: brain
+      sources:
+      - name: mail
+        adapter: files
+        audience: owner
+    work/.gitkeep: ''
+    journal/.gitkeep: ''
+    outbox/.gitkeep: ''
+    _meta/subjects.yaml:
+      subjects:
+      - id: harbor
+        kind: projects
+        title: Harbor
+        state: active
+        owner: Ada Okafor
+        home: ada
+        match:
+          label: Harbor
+      - id: ben
+        kind: people
+        title: Ben Liu
+        state: active
+      - id: beacon
+        kind: projects
+        title: Beacon
+        state: active
+        home: beacon
+env:
+  SPACE_NOW: '2026-10-05T09:00:00Z'
+expect:
+  exit: 0
+  writes_only_under:
+  - _outbound/requests/
+  - _meta/questions.log
+  must_exist:
+  - _outbound/requests/*.md
