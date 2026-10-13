@@ -8,7 +8,8 @@ adapter measures whether it works and, only when the person switches it on, fill
 `scan` reads the harness's session transcripts under `path` (`<project>/<session>.jsonl`, one
 JSON object per line per event: `sessionId`, `cwd`, `timestamp`, `message`; files untouched for
 four scaled weeks are skipped, and so is a session whose folder names an `exclude` word, such
-as the private zones' work), records every session in
+as the private zones' work, or whose person typed an `exclude_words` word or phrase, matched as
+whole words), records every session in
 `_meta/state/sessions.yaml` (id, start, end, working directory, captured; never content) and
 marks a session captured when a daily note carries its marker (`<!-- session: <id> -->`) or
 an entry heading (`## HH:MMZ`) falls inside the session's span. The health line shows the
@@ -54,6 +55,14 @@ def settings(space: spaceyaml.Space) -> dict:
         out["path"] = os.path.expanduser(os.path.expandvars(str(out["path"])))
     out["switch"] = "on" if str(out.get("switch")).lower() in ("on", "true", "yes") else "off"
     return out
+
+
+def _typed_any(asked: list, words: list) -> bool:
+    """Whether the person typed any of the words or phrases, as whole words, ignoring case."""
+    if not words:
+        return False
+    text = " ".join(asked).lower()
+    return any(re.search(r"(?<![^\W_])" + re.escape(w) + r"(?![^\W_])", text) for w in words)
 
 
 def _text(content) -> str:
@@ -160,6 +169,7 @@ def scan(root, now: dt.datetime | None = None) -> dict:
     rows = []
     since = now - space.scale(WINDOW_DAYS * 24)
     exclude = [str(x).lower() for x in cfg.get("exclude") or []]
+    words = [str(x).lower().strip() for x in cfg.get("exclude_words") or [] if str(x).strip()]
     # top-level session files only (a harness keeps sub-agents' transcripts deeper), recent ones
     files = sorted(p for p in base.glob("*/*.jsonl")) if base.is_dir() else []
     for path in files:
@@ -170,6 +180,8 @@ def scan(root, now: dt.datetime | None = None) -> dict:
             continue
         if session["routine"] or any(x in session["cwd"].lower() for x in exclude):
             continue  # a scheduled routine is not a person's session; excluded folders are private
+        if _typed_any(session["asked"], words):
+            continue  # what the person typed marks the session private (school work, own life)
         is_captured = captured(session, notes)
         rows.append({"id": session["id"], "start": pages.iso(session["start"]), "end": pages.iso(session["end"]),
                      "cwd": session["cwd"], "captured": is_captured})

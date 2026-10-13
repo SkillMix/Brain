@@ -350,6 +350,8 @@ class Space:
                 errs.append("transcripts must be {path, switch}")
             elif str(transcripts.get("switch", "off")).lower() not in ("on", "off", "true", "false"):
                 errs.append("transcripts.switch must be on or off")
+            elif not isinstance(transcripts.get("exclude_words") or [], list):
+                errs.append("transcripts.exclude_words must be a list of words or phrases")
         for key in ("left_out", "never_leaves", "protected", "models"):
             value = data.get(key)
             if value is not None and not isinstance(value, list):

@@ -101,3 +101,22 @@ def test_old_files_and_excluded_folders_are_not_counted(tmp_path):
     (nested / "agent-1.jsonl").write_text((folder / "project-a" / "s-work.jsonl").read_text(encoding="utf-8"),
                                           encoding="utf-8")
     assert transcripts.scan(root, now=NOW)["seen"] == 1
+
+
+def test_typed_exclude_words_keep_a_session_out_of_pages_and_the_rate(tmp_path):
+    folder = tmp_path / "transcripts"
+    root = make_space(tmp_path / "ada", transcripts={"path": str(folder), "switch": "on",
+                                                     "exclude_words": ["homework", "plan my day"]})
+    session(folder, "s-work", NOW - dt.timedelta(hours=5), asked="Draft the Harbor plan")
+    session(folder, "s-school", NOW - dt.timedelta(hours=4), asked="Check my Homework 3 answers")
+    session(folder, "s-day", NOW - dt.timedelta(hours=3), asked="Help me plan my day")
+    session(folder, "s-near", NOW - dt.timedelta(hours=2), asked="Plan my days off the homeworkshop")
+    report = transcripts.scan(root, now=NOW)
+    made = {p.stem for p in (root / "knowledge" / "sources").rglob("session-*.md")}
+    assert made == {"session-s-work", "session-s-near"}
+    assert report["seen"] == 2
+
+
+def test_exclude_words_must_be_a_list(tmp_path):
+    root = make_space(tmp_path / "ada", transcripts={"path": "x", "switch": "on", "exclude_words": "homework"})
+    assert any("exclude_words" in e for e in validate.validate(root))
