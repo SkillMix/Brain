@@ -87,7 +87,44 @@ def _context(routine: str, root: Path, now: dt.datetime) -> dict:
             "errors": [], "skipped": []}
 
 
+STALE = Path("_meta") / "state" / "stale.yaml"
+
+
+def _mark_stale(space: spaceyaml.Space, ctx: dict, now: dt.datetime) -> None:
+    """A failed step leaves yesterday's output, labelled: `stale.yaml` names each failed step
+    and since when; the health line and the briefing show it until the step runs again."""
+    path = space.root / STALE
+    data = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}) if path.exists() else {}
+    failed = {e["step"] for e in ctx["errors"]}
+    for step, result in ctx["steps"].items():
+        if step in failed:
+            data.setdefault(step, pages.iso(now))
+        elif result is not None:
+            data.pop(step, None)
+    if data or path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(yaml.safe_dump(data, sort_keys=True), encoding="utf-8", newline="\n")
+
+
+def _template_sync_due(space: spaceyaml.Space, now: dt.datetime) -> bool:
+    """Once a scaled week, where a provenance file names the template; never in the fixture."""
+    if space.mode == "fixture" or not (space.root / "_meta" / "state" / "template-version.yaml").exists():
+        return False
+    path = space.root / RUNS_LOG
+    last = None
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if path.exists() else []:
+        try:
+            row = json.loads(line)
+            if row.get("routine") == "template-sync":
+                at = pages.parse_iso(row.get("at"))
+                last = at if last is None or at > last else last
+        except Exception:
+            continue
+    return last is None or now - last >= space.scale(7 * 24)
+
+
 def _run_line(space: spaceyaml.Space, ctx: dict, now: dt.datetime) -> None:
+    _mark_stale(space, ctx, now)
     notes = []
     if ctx["errors"]:
         notes.append("errors: " + "; ".join(f"{e['step']}: {e['error']}" for e in ctx["errors"]))
@@ -128,6 +165,8 @@ def daily(root, person: str | None = None, now: dt.datetime | None = None, shado
     now = now or space.now()
     person = person or space.owner
     ctx = _context("daily", root, now)
+    if _template_sync_due(space, now):
+        _step(ctx, "template_sync", "template_sync", "guarded", root)
     _step(ctx, "status", "status", "run", root, now=now)
     _step(ctx, "requests_collect", "request", "collect", root, now=now, offline_roots=offline_roots)
     _step(ctx, "requests_answer", "request", "answer", root, now=now, offline_roots=offline_roots)

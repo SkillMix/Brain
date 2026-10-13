@@ -249,6 +249,19 @@ def _answers(root: Path) -> list:
     return out
 
 
+def _tracker(root: Path) -> list:
+    """At the badge's `propose`, each queued tracker request waits for a person's yes."""
+    try:
+        import tracker
+        waiting = tracker.waiting_for_a_person(root)
+    except Exception:
+        return []
+    return [Item(id=str(fm.get("id")), kind="tracker", text=f"Create the tracker issue \"{fm.get('title')}\"?",
+                 recommendation="yes", default="it waits, nothing is created",
+                 payload=Path(path).relative_to(Path(root)).as_posix(), fingerprint=pages.fingerprint(body))
+            for path, fm, body in waiting]
+
+
 def doubt_pages(root) -> list:
     """The pages held at home in doubt that nobody has answered yet."""
     return [(rel, fm, body) for rel, fm, body in pages_in(Path(root), HELD)
@@ -371,7 +384,7 @@ def collect(root, now: dt.datetime | None = None, online: bool = True, person: s
     answered = answered_ids(root)
     items = (_candidates(root) + _checks(root) + _queue(root, space, now) + _outbox(root, space, now)
              + _questions(root) + _answers(root)
-             + [i for i in routine_items(root) if i.id not in answered] + _doubt(root)
+             + [i for i in routine_items(root) if i.id not in answered] + _doubt(root) + _tracker(root)
              + (_protected_prs(root) if online else []))
     person = person if person is not None else (space.owner if space.profile == "personal" else "")
     if person:

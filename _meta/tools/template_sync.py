@@ -47,6 +47,7 @@ class Report:
     kept: list = field(default_factory=list)      # changed here, changed there: this space wins
     unchanged: int = 0
     commit: str = ""
+    reverted: bool = False
 
     def summary(self) -> str:
         return (f"template sync: {len(self.added)} added, {len(self.updated)} updated, "
@@ -156,6 +157,58 @@ def run(root, source: str | None = None, check: bool = False) -> Report:
     return report
 
 
+def _failures(root: Path) -> int | None:
+    """The answer and leak tests' failures, or None when this space has neither."""
+    try:
+        import tests_run
+    except ImportError:
+        return None
+    total, ran = 0, False
+    for name, rel in (("answers", "_meta/tests/answers.yaml"), ("leaks", "_meta/tests/leaks.yaml")):
+        if (root / rel).exists():
+            try:
+                result = getattr(tests_run, name)(root, record=False)
+            except Exception:
+                return None
+            total += int(getattr(result, "failed", 0) or 0)
+            ran = True
+    return total if ran else None
+
+
+def guarded(root, source: str | None = None) -> Report:
+    """Template sync with the tests before and after: a change that lowers the score is put
+    back as it was, file by file, and the revert is recorded (vision section 13)."""
+    root = Path(root)
+    before = _failures(root)
+    plan = run(root, source=source, check=True)
+    backup = {}
+    for rel in plan.added + plan.updated:
+        path = root / rel
+        backup[rel] = path.read_bytes() if path.exists() else None
+    prov = root / PROVENANCE
+    prov_bytes = prov.read_bytes() if prov.exists() else None
+    report = run(root, source=source)
+    after = _failures(root)
+    if before is not None and after is not None and after > before:
+        for rel, data in backup.items():
+            path = root / rel
+            if data is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(data)
+        if prov_bytes is None:
+            prov.unlink(missing_ok=True)
+        else:
+            prov.write_bytes(prov_bytes)
+        report.reverted = True
+        import json
+        with (root / "_meta" / "state" / "runs.jsonl").open("a", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps({"routine": "template-sync", "at": spaceyaml.load(root).now().strftime(
+                "%Y-%m-%dT%H:%M:%SZ"), "space": spaceyaml.load(root).name, "cost_tokens": 0,
+                "notes": {"reverted": True, "failures_before": before, "failures_after": after}}) + "\n")
+    return report
+
+
 def _run_line(root: Path, space, report: Report) -> None:
     import json
     line = {"routine": "template-sync", "at": space.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -174,6 +227,13 @@ def main(argv=None) -> int:
         print(__doc__)
         return 0
     check = "--check" in argv
+    if "--guarded" in argv:
+        argv = [a for a in argv if a != "--guarded"]
+        src = argv[argv.index("--from") + 1] if "--from" in argv else None
+        roots = [a for a in argv if not a.startswith("--") and a != src] or ["."]
+        report = guarded(roots[0], source=src)
+        print(report.summary() + ("; reverted: the tests scored lower" if report.reverted else ""))
+        return 1 if report.reverted else 0
     source = None
     if "--from" in argv:
         source = argv[argv.index("--from") + 1]

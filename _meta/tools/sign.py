@@ -86,6 +86,12 @@ def index(root: Path) -> dict:
         add("high_stakes" if fm.get("high_stakes") else "leaving", rel, fm, body)
     for rel, fm, body in needs_you.doubt_pages(root):
         add("doubt", rel, fm, body)
+    try:
+        import tracker
+        for path, fm, body in tracker.waiting_for_a_person(root):
+            add("tracker", Path(path).relative_to(root), fm, body)
+    except Exception:
+        pass
     for item in needs_you.routine_items(root):
         found.setdefault(item.id, Found(item.kind, None, {}, "", item=item))
     return found
@@ -292,6 +298,23 @@ def _queue_item(root, space, entry: Found, item_id, verb, note, by, now, report:
         _add_standing_choice(space, fm.get("destination"), fm.get("kind"), report)
 
 
+def _tracker_item(root, space, entry: Found, item_id, verb, note, by, now, report: ApplyReport):
+    """A tracker request at `propose`: yes lets the tracker routine create it, no declines it."""
+    fm, body, path = dict(entry.fm), entry.body, entry.path
+    if verb == "later":
+        report.deferred.append(item_id)
+        return
+    if verb == "no":
+        fm.update(status="declined", declined_by=by, declined_at=pages.iso(now))
+        report.discarded.append(item_id)
+    else:
+        if verb == "edit" and note.strip():
+            body = pages.normalize(note)
+        fm.update(approved_by=by, approved_at=pages.iso(now))
+        report.signed.append(item_id)
+    pages.write(path, fm, body)
+
+
 def _doubt(root, space, entry: Found, item_id, verb, note, by, now, report: ApplyReport):
     """A page held in doubt: yes releases it (the holder approved it, so at once unless it is
     high-stakes), no keeps it home for good, always also adds the standing choice."""
@@ -394,7 +417,7 @@ def _review_line(root: Path, space, batch: Path, number: int, verb: str, note: s
     return True
 
 
-HANDLERS = {"candidate": _candidate, "check": _check, "leaving": _queue_item, "doubt": _doubt,
+HANDLERS = {"candidate": _candidate, "check": _check, "leaving": _queue_item, "doubt": _doubt, "tracker": _tracker_item,
             "high_stakes": _queue_item, "question": _question, "answer": _question}
 
 

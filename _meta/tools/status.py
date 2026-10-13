@@ -504,6 +504,12 @@ def _health_line(space, name: str, root, now) -> str:
         rate = capture_rate(root, space, now)
         extras.append(f"capture rate {rate[0]:.2f} ({rate[1]} sessions)" if rate else "capture rate n/a")
     extras += [_requests_cell(root, space, now), _index_cell(root)]
+    stale_path = root / "_meta" / "state" / "stale.yaml"
+    if stale_path.exists():
+        import yaml
+        stale = yaml.safe_load(stale_path.read_text(encoding="utf-8")) or {}
+        if stale:
+            extras.append("stale: " + ", ".join(f"{k} since {str(v)[:10]}" for k, v in sorted(stale.items())))
     runs, cost = 0, 0
     for run in _jsonl(root / "_meta" / "state" / "runs.jsonl"):
         try:
