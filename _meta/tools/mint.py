@@ -6,9 +6,9 @@
 
 The seed is `work/<kind>/<subject>/<effort>/` in a personal space. Mint creates the project
 space from the template (online: a new private repository in the organization, cloned
-under `--home` or ~/.spaces; offline: a sibling directory), fills its `space.yaml` with
-profile project and the crew as audience, copies the seed's pages in as drafts under
-`knowledge/<kind>/<subject>/`, sets the subject's `home` in this space's registry and
+under `--home` or ~/.spaces; offline: under `--home`, else a sibling directory), fills its
+`space.yaml` with profile project and the crew as audience, copies the seed's pages in as
+drafts under `knowledge/<kind>/<subject>/`, sets the subject's `home` in this space's registry and
 proposes the platform team on Needs you. Every crew member's workspace checked out on this
 machine mounts the new space; one checked out elsewhere gets a Needs-you item in the brain
 with the mount line (`--mount`, the fix `onboard --check` names when a mount is missing).

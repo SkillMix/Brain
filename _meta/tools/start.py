@@ -17,6 +17,8 @@ which does every step itself and asks nothing that has a default:
 
 Defaults the person may want to change (the domains, the never-leaves list, the schedule)
 are taken and return on their Needs-you list. Run again, it changes nothing that is right.
+`--dry-run` prints the plan and stops before onboard; offline, a space is copied under
+`--home` when given, else beside this copy.
 
     python start.py [--invitation <brain repo>:<slug> | --brain <brain repo>] [--company NAME]
                     [--name NAME] [--email EMAIL] [--feeds mail,calendar,chat,calls,tracker]
@@ -132,7 +134,7 @@ def find_invitation(brain: str, slug: str | None, who: dict) -> tuple[dict | Non
     found = []
     for name in list_dir(brain, INVITATIONS):
         data = yaml.safe_load(read_file(brain, f"{INVITATIONS}/{name}") or "") or {}
-        keys = {str(data.get(k) or "").strip().lower() for k in ("name", "github", "email")} - {""}
+        keys = {str(data.get(k) or "").strip().lower() for k in ("name", "github", "login", "email")} - {""}
         mine = {str(who.get(k) or "").strip().lower() for k in ("name", "login", "email")} - {""}
         if keys & mine:
             found.append((name, data))
@@ -184,6 +186,17 @@ def preflight(report: onboard.Report, offline: bool) -> bool:
     return ok
 
 
+def plan(report: onboard.Report, dst, full, tpl, case) -> onboard.Report:
+    """A dry run stops before onboard: nothing was created, so there is no space to read."""
+    report.plan = [f"create {full} from {tpl} and clone it into {dst}" if full else f"copy the template to {dst}",
+                   f"run onboard there ({case} case): mounts, the personal instruction, the sync task, "
+                   "the first commit",
+                   "nothing was created: say the sentence again without --dry-run"]
+    report.add("dry run", True, "python _meta/tools/start.py (without --dry-run)",
+               "stopped before onboard; the plan is below")
+    return report
+
+
 def start(here=HERE, invitation=None, brain=None, company=None, name=None, email=None, feeds=None,
           org=None, home=None, template=None, offline=False, dry_run=False,
           user_instructions=None) -> onboard.Report:
@@ -192,7 +205,9 @@ def start(here=HERE, invitation=None, brain=None, company=None, name=None, email
     if not preflight(report, offline):
         return report
     who = identity(name, email, offline)
-    home = Path(home) if home else Path.home() / "spaces"
+    given = Path(home) if home else None
+    home = given or Path.home() / "spaces"
+    space_home = given if offline else home   # offline: beside this copy unless a home is given
     tpl = template or onboard.git_remote(here)
     slug = None
     if invitation:
@@ -215,14 +230,16 @@ def start(here=HERE, invitation=None, brain=None, company=None, name=None, email
         space_org = org or answers.get("workspace_org") or answers.get("org") or who["login"]
         repo_name = f"{answers['slug']}-workspace"
         dst, full = onboard.create_space(report, here, answers["slug"], repo_name, offline, space_org,
-                                         home, tpl, dry_run)
+                                         space_home, tpl, dry_run)
         if dst is None and not offline and who["login"] and space_org != who["login"]:
             # no right to create in the organization: the person's own account holds it instead
             space_org = who["login"]
             dst, full = onboard.create_space(report, here, answers["slug"], repo_name, offline, space_org,
-                                             home, tpl, dry_run)
+                                             space_home, tpl, dry_run)
         if dst is None:
             return report
+        if dry_run:
+            return plan(report, dst, full, tpl, "person")
         answers = onboard.interview(answers, interactive=False, case="person", root=dst)
         sub = onboard.run(dst, answers, offline=offline, org=space_org, dry_run=dry_run, home=home,
                           user_instructions=user_instructions, brain=answers["brain"])
@@ -233,9 +250,12 @@ def start(here=HERE, invitation=None, brain=None, company=None, name=None, email
                    "owner_email": who["email"], "org": space_org}
         if feeds_text:
             answers["feeds"] = feeds_text
-        dst, full = onboard.create_space(report, here, "brain", "brain", offline, space_org, home, tpl, dry_run)
+        dst, full = onboard.create_space(report, here, "brain", "brain", offline, space_org, space_home, tpl,
+                                         dry_run)
         if dst is None:
             return report
+        if dry_run:
+            return plan(report, dst, full, tpl, "company")
         answers = onboard.interview(answers, interactive=False, case="company", root=dst)
         sub = onboard.run(dst, answers, offline=offline, org=space_org, dry_run=dry_run, home=home,
                           user_instructions=user_instructions)
@@ -262,7 +282,7 @@ def summary(report: onboard.Report) -> dict:
     owner = [s.row() for s in report.steps if not s.done and s.needs_owner]
     return {"workspace": str(getattr(report, "workspace", "") or ""),
             "spaces": {k: str(v) for k, v in report.spaces.items()},
-            "routines": getattr(report, "routines", []),
+            "routines": getattr(report, "routines", []), "plan": getattr(report, "plan", []),
             "done": sum(1 for s in report.steps if s.done), "failed": failed, "yours": owner}
 
 
@@ -294,6 +314,8 @@ def main(argv=None) -> int:
             print(f"\nworkspace: {result['workspace']}")
         for r in result["routines"]:
             print(f"routine {r['name']} ({r['schedule']}): {r['prompt_file']}")
+        for line in result["plan"]:
+            print(f"plan: {line}")
         for row in result["yours"]:
             print(f"yours: {row.get('name')}: {row.get('result')} (check: {row.get('check')})")
     return 1 if result["failed"] else 0

@@ -398,6 +398,10 @@ def test_an_invitation_carries_the_crew_projects_and_the_colleague_onboards_offl
     assert answers["say"].startswith("Onboard me to lantern-org: https://github.com/")
     assert answers["say"].endswith("with my invitation lantern-org/brain:ben")
     assert answers["say"] in items[0]["text"]
+    # no host login known: access cannot be checked, so the owner gets the access item anyway
+    assert "login" not in answers
+    access = next(i for i in items if i["id"] == "invite-ben-access")
+    assert "host login" in access["text"] and "team" in access["recommendation"]
     # on the colleague's machine (offline here): a template copy, the answers, the brain
     ws = tmp_path / "ben-workspace"
     onboard.copy_template(onboard.TEMPLATE_ROOT, ws)
@@ -409,6 +413,70 @@ def test_an_invitation_carries_the_crew_projects_and_the_colleague_onboards_offl
     assert space.profile == "personal" and space.owner == "Ben Liu"
     assert {m["name"] for m in space.mounts} == {"brain", "harbor"} and space.mount_root("harbor") is not None
     assert errors(ws) == []
+
+
+def _access_world(levels: dict, calls: list):
+    """A fake host that answers only permission reads: `levels` maps a repository to the
+    colleague's permission on it; every call is recorded."""
+    def fake(argv, dry_run=False, cwd=None):
+        argv = [str(a) for a in argv]
+        calls.append(argv)
+        repo = argv[2].split("repos/")[1].split("/collaborators/")[0] if len(argv) > 2 else ""
+        if argv[:2] == ["gh", "api"] and argv[2].endswith("/permission") and repo in levels:
+            return subprocess.CompletedProcess(argv, 0, levels[repo] + "\n", "")
+        return subprocess.CompletedProcess(argv, 1, "", "not found")
+    return fake
+
+
+def _invited_brain(tmp_path) -> Path:
+    brain = make_space(tmp_path / "brain", profile="brain", name="lantern", subjects=[
+        {"id": "ben", "kind": "people", "title": "Ben Liu", "match": {"github": "ben-lw"}}])
+    onboard.write_yaml(brain / "_meta" / "state" / "onboard.yaml", {"case": "company", "repo": "lantern-org/brain"})
+    onboard.write_yaml(brain / "_meta" / "state" / "template-version.yaml", {"repo": "lantern-org/brain-template"})
+    return brain
+
+
+def test_an_invitation_checks_the_colleagues_read_access_and_asks_the_owner_for_it(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(onboard, "run_cmd", _access_world(
+        {"lantern-org/brain-template": "read", "lantern-org/brain": "none"}, calls))
+    brain = _invited_brain(tmp_path)
+    assert registry.Registry(brain, spaceyaml.load(brain)).check() == []   # a host login is a match key
+    answers = yaml.safe_load(onboard.invite(brain, "ben").read_text(encoding="utf-8"))
+    assert answers["login"] == "ben-lw"
+    items = yaml.safe_load((brain / "_inbound" / "needs-you" / "invitations.yaml").read_text(encoding="utf-8"))["items"]
+    by_id = {i["id"]: i for i in items}
+    assert "works once" in by_id["invite-ben"]["text"]
+    access = by_id["invite-ben-access"]
+    assert "lantern-org/brain" in access["text"] and "lantern-org/brain-template" not in access["text"]
+    rec = access["recommendation"]
+    assert "team" in rec and "lantern-org/brain-template" in rec and "lantern-org/brain" in rec and "Ben Liu" in rec
+    for repo in ("lantern-org/brain-template", "lantern-org/brain"):
+        assert f"gh api repos/{repo}/collaborators/ben-lw/permission" in access["check"]
+    # reads only: an agent never grants access
+    assert calls and all(c[:2] == ["gh", "api"] and c[2].endswith("/permission") and "-X" not in c
+                         and "--method" not in c for c in calls)
+
+
+def test_the_access_item_leaves_once_the_colleague_can_read_both(tmp_path, monkeypatch):
+    levels = {"lantern-org/brain-template": "none", "lantern-org/brain": "none"}
+    monkeypatch.setattr(onboard, "run_cmd", _access_world(levels, []))
+    brain = _invited_brain(tmp_path)
+    onboard.invite(brain, "ben")
+    path = brain / "_inbound" / "needs-you" / "invitations.yaml"
+    assert "invite-ben-access" in [i["id"] for i in yaml.safe_load(path.read_text(encoding="utf-8"))["items"]]
+    levels.update({"lantern-org/brain-template": "read", "lantern-org/brain": "write"})
+    onboard.invite(brain, "ben")
+    assert [i["id"] for i in yaml.safe_load(path.read_text(encoding="utf-8"))["items"]] == ["invite-ben"]
+
+
+def test_an_offline_space_is_made_under_home_when_given(tmp_path):
+    src = make_space(tmp_path / "src", profile="personal")
+    given = onboard.create_space(onboard.Report("person"), src, "harbor", "harbor", True, None,
+                                 tmp_path / "home", None, False)
+    assert given == (tmp_path / "home" / "harbor", None) and (tmp_path / "home" / "harbor" / "space.yaml").exists()
+    default = onboard.create_space(onboard.Report("person"), src, "beacon", "beacon", True, None, None, None, False)
+    assert default == (tmp_path / "beacon", None) and (tmp_path / "beacon" / "space.yaml").exists()
 
 
 def test_copy_template_never_copies_mounted_spaces(tmp_path):
