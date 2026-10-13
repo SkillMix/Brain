@@ -272,6 +272,9 @@ def _queue_item(root, space, entry: Found, item_id, verb, note, by, now, report:
         fm.update(reason="pulled", why=note or f"pulled by {by}", pulled_at=pages.iso(now))
         pages.write(root / needs_you.HELD / path.name, fm, body)
         path.unlink()
+        if fm.get("path") and not str(fm["path"]).startswith("approved:"):
+            import release   # the path that let it through pauses for four weeks
+            release.pause(root, fm["path"], now, "pulled back", item_id, space)
         report.discarded.append(item_id)
         return
     if verb == "later":

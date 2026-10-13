@@ -515,8 +515,11 @@ def run(root, now=None, land_it: bool = False, scorer=None, runner=None) -> Repo
 def apply(root, key: str, reviewed_by: str, now=None, land_it: bool = False, scorer=None, runner=None) -> str:
     """Apply one reviewed proposal; refused without a named reviewer."""
     root = Path(root)
-    if not str(reviewed_by or "").strip():
+    who = str(reviewed_by or "").strip()
+    if not who:
         raise ValueError("a judgment change needs an independent review: give --reviewed-by")
+    if who.lower() in ("librarian", "status", "routine") or who.lower().startswith("routine:"):
+        raise ValueError("the reviewer is never the routine that proposed the change")
     path = root / STATE / f"{key}.yaml"
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if data.get("status") != "open":

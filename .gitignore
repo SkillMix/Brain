@@ -5,6 +5,7 @@ _scratch/
 
 # Local caches
 _meta/state/feed/
+_meta/state/search-index.json
 __pycache__/
 *.pyc
 .pytest_cache/

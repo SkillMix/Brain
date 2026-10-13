@@ -350,6 +350,9 @@ class Space:
                     errs.append(f"agents[{n}].badge.{action}: an action class and a level")
                 elif LEVELS.index(lvl) > LEVELS.index(self.authority.get(action, "propose")):
                     errs.append(f"agents[{n}].badge.{action}: an agent row never rises above the space's level")
+        for ptype, days in (data.get("windows") or {}).items():
+            if isinstance(days, bool) or not isinstance(days, int) or days <= 0:
+                errs.append(f"windows.{ptype}: a whole number of days")
         if self.window_hours < DEFAULTS["window_hours"]:
             errs.append("window_hours: 24 is the floor")
         declared_kinds = data.get("kinds")

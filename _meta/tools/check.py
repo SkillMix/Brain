@@ -205,14 +205,23 @@ def hit_rate(root, days: float, now: dt.datetime | None = None) -> float | None:
     rows = _verdicts_in(root, space, days, now or space.now())
     if not rows:
         return None
-    return sum(1 for r in rows if str(r.get("verdict")) != "no") / len(rows)
+    return real_share(rows)
+
+
+REAL = ("yes", "edit", "retire")
+
+
+def real_share(rows: list) -> float:
+    """The checker's hit rate: the share of verdicts that said the hit was real (yes, edit or
+    retire). The health line and the narrowing use this one formula."""
+    return sum(1 for r in rows if str(r.get("verdict")) in REAL) / len(rows) if rows else 0.0
 
 
 def narrowed(root, space, now) -> list:
     rows = _verdicts_in(root, space, RATE_DAYS, now)
     if len(rows) < MIN_VERDICTS:
         return []
-    rate = sum(1 for r in rows if str(r.get("verdict")) != "no") / len(rows)
+    rate = real_share(rows)
     return list(NARROWABLE) if rate < NOISE_FLOOR else []
 
 
@@ -315,11 +324,23 @@ def check_past_window(signed: list, reg, space, now) -> list:
     return hits
 
 
+def _departed(reg, page) -> bool:
+    """A signed page about a person the registry marks as left: the daily pass reads it."""
+    subject = reg.get(page.subject) if page.subject else None
+    return subject is not None and subject.kind == "people" and subject.state == "archived"
+
+
 def check_person_claim(people_pages: list, reg, space) -> list:
     """A page under knowledge/people/<id>/ states a role the registry contradicts."""
     hits = []
     for page in people_pages:
         subject = reg.get(page.subject) if page.subject else None
+        if subject is not None and subject.state == "archived" and str(page.fm.get("status")) == "stable":
+            text = (f"the registry says {subject.title} has left (archived); this page still describes "
+                    f"them as current. I think it needs a line that they left. Still current?")
+            hits.append(Hit("person_claim", page.rel, page.subject, "left", ["_meta/subjects.yaml"],
+                            text, route_for(page, reg, space)))
+            continue
         registered = str((subject.extra if subject else {}).get("role") or "").strip()
         if not registered:
             continue
@@ -549,7 +570,7 @@ def run(root, now: dt.datetime | None = None) -> CheckReport:
     in_scope: dict = {p.rel: p for plist in subject_pages.values() for p in plist}
     if report.window_pass:
         for page in store.all():
-            if page.signed and closes_soon(page, space, now):
+            if page.signed and (closes_soon(page, space, now) or _departed(reg, page)):
                 in_scope.setdefault(page.rel, page)
     scoped = sorted(in_scope.values(), key=lambda p: p.rel)
     signed = [p for p in scoped if p.signed]

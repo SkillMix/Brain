@@ -61,7 +61,10 @@ A release waits only when it widens who can see something. At once: content its 
 can already read, content its holder approved (by name or by a standing choice for that
 destination), retractions and signals. Otherwise after one window and one morning view.
 Doubt about the class means the window; doubt about privacy means the item stays home and
-is shown as a count. External disclosure is not internal permission.
+is shown as a count. External disclosure is not internal permission. A subject's `home` is
+the narrowest shared space whose audience covers everyone on the subject; no home means the
+conclusion stays where it was made. A release to a project carries only project facts:
+a line with a left-out term or another client's name stays home.
 
 ## 7. Budget
 

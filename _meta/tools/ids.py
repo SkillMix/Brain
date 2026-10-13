@@ -84,7 +84,8 @@ def _roots(root) -> list:
 
 
 def known(root) -> dict:
-    """id -> relative path across this space and its ancestors; the nearest space wins."""
+    """id -> relative path across this space and its ancestors; an id found in this space is
+    resolved here before an ancestor's copy (ids are unique, so this only settles a stale copy)."""
     merged: dict = {}
     for base in _roots(root):
         for pid, rel in table(base).items():

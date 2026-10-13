@@ -124,10 +124,9 @@ def _evidence(root: Path, path: Path, fm: dict, body: str, landed: bool) -> Evid
     if at is None:
         return None
     arrived = max(at, gen_at) if gen_at else at
-    subjects = []
-    for value in [fm.get("subject")] + list(fm.get("mentions") or []):
-        if value and str(value) not in subjects:
-            subjects.append(str(value))
+    # evidence attaches by identifier: a record joins only the subject it matched, never one
+    # it merely mentions (vision section 7)
+    subjects = [str(fm["subject"])] if fm.get("subject") else []
     return Evidence(record=str(fm.get("record") or path.stem),
                     rel=path.relative_to(root).as_posix(), at=at, arrived=arrived,
                     title=str(fm.get("title") or ""), body=body, subjects=subjects,
