@@ -176,6 +176,14 @@ def target_of(fm: dict, path: Path, now: dt.datetime) -> str:
 
 
 # ----- one handler per item kind ---------------------------------------------------
+def _own_repo(root: Path) -> str | None:
+    try:
+        import onboard
+        return onboard.git_remote(root)
+    except Exception:
+        return None
+
+
 def _high_stakes(space: spaceyaml.Space, fm: dict, body: str) -> bool:
     import release
     return bool(fm.get("high_stakes")) or release.first_term(
@@ -224,10 +232,15 @@ def _candidate(root, space, entry: Found, item_id, verb, note, by, now, report: 
     target = root / target_of(fm, path, now)
     signature = {"status": "stable", "signed_by": by, "signed_at": pages.iso(now),
                  "signed_in": space.name, "fingerprint": fingerprint}
+    repo = _own_repo(root)
+    if repo:
+        signature["signed_repo"] = repo   # where another space's landing checks this signature
     page_fm = {k: v for k, v in fm.items() if k not in CANDIDATE_ONLY}
     page_fm.update(signature)
     pages.write(target, page_fm, body)
     path.unlink()
+    # the trust root: this space's own history names what was signed, by whom, and its text
+    _log(root, f"- {pages.iso(now)} fingerprint {fm.get('id') or item_id} {fingerprint} by {by}")
     report.signed.append(item_id)
     destination = fm.get("destination")
     if destination:

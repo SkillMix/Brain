@@ -43,6 +43,13 @@ writes the invitation and one Needs-you item whose text holds the sentence to se
 person that sentence and where to send it; you never send it yourself. When the colleague is
 not in the registry yet, add them as a `people` subject first (the status routine lands it).
 
+## "Connect my mail" (calendar, chat, calls, tracker, documents)
+
+`python _meta/tools/onboard.py <workspace> --connect <feed>` adds it to the workspace's
+sources and the register of connected systems. The person signs in to the connector in their
+own harness (the claude.ai connector settings, say); the next sweep reads it. Read-back: the
+feed file `_meta/state/feed/<feed>.jsonl` fills after the next sweep chain.
+
 ## "Schedule my routines"
 
 The rendered prompts are in `<workspace>/_meta/state/routines/`; schedule each as in step 6

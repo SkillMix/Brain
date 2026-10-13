@@ -184,6 +184,16 @@ def _landed_this_week(root: Path, space: spaceyaml.Space, now: dt.datetime) -> i
     return n
 
 
+def _left_ids(lines: list) -> list:
+    """The item each numbered Left-yesterday line names, so "left 2 no" pulls it back."""
+    import re as _re
+    out = []
+    for line in lines:
+        found = _re.search(r"\b(p-[0-9a-f]{8}|rq-[0-9a-z]+)\b", line)
+        out.append(found.group(1) if found else None)
+    return out
+
+
 def _left_yesterday(root: Path, space: spaceyaml.Space, now: dt.datetime) -> list:
     """Log lines for releases shipped at once in the last scaled day."""
     log = root / "log.md"
@@ -297,7 +307,8 @@ def run(root, person: str, now: dt.datetime | None = None, shadow: bool = False,
     # the day's numbering, so a reply ("1-4 yes, 5 later") maps to the items as listed
     _write_json(root / "_meta" / "state" / "morning" / f"{now:%Y-%m-%d}.json",
                 {"date": f"{now:%Y-%m-%d}", "items": [{"id": i.id, "kind": i.kind, "text": i.text,
-                                                       "fingerprint": i.fingerprint} for i in items]})
+                                                       "fingerprint": i.fingerprint} for i in items],
+                 "left": _left_ids(_left_yesterday(root, space, now))})
     line = {"routine": ROUTINE, "at": pages.iso(now), "space": space.name, "cost_tokens": 0,
             "notes": {"items": len(items), "listed": len(listed), "shadow": shadow,
                       "recipient": bool(payload["to"])}}
