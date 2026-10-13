@@ -412,3 +412,16 @@ weak evidence. `forget.py <subject>` lists everything about a subject id; offboa
 raw personal records and removes them only on the person's own command. A recurring sharing
 group or a second regular reader proposes a mint; mint makes a vault (a list of names). Every
 skill has three behaviour scenarios, procedure pages included.
+
+**Batch 7, the trust root and the last details.** `sign` records the repository it signed in
+and a fingerprint line in its own log; landing at the home files a signed release silently
+only when the signer's history shows that line, else pending. The default high-stakes words
+cover HR, security and legal. A workspace with no feeds gets one connector offer each on
+Needs you, and `onboard.py --connect <feed>` adds one. A release's log line names its path,
+and a reply `left 2 no` pulls back what the briefing listed under Left yesterday.
+
+**Settled by decision, not code** (the vision leaves the method open; each is a line in
+`docs/decisions.md`): evidence lowers paths only; `models:` is stated in the contract;
+connector permissions stay per person; combined answers and hit expansion live in the query
+skill; the narrowest-shared-space rule is stated in `rules.md`; a corridor to a project
+includes its crew; the project case starts from a seed or a mint signal.
