@@ -190,6 +190,39 @@ def covers(audience, subject: registry.Subject, dest_space) -> bool:
     return False
 
 
+PRICING = ("pricing", "price list")
+
+
+def _address(value) -> str:
+    text = str(value or "").strip().lower()
+    return text.split("<")[-1].rstrip(">").strip() if "<" in text else text
+
+
+def sent_by_owner(space: spaceyaml.Space, record: dict) -> bool:
+    return bool(space.owner_email) and _address(record.get("from")) == space.owner_email.strip().lower()
+
+
+def named_person(space: spaceyaml.Space, record: dict, text: str) -> str | None:
+    """A mail from outside the company that names a registered person: a claim about a named
+    person is high-stakes. Colleagues writing about each other are not flagged here."""
+    if record.get("kind") not in ("mail", "message"):
+        return None
+    sender, own = _address(record.get("from")), _address(space.owner_email)
+    if not sender or "@" not in sender or not own or "@" not in own:
+        return None
+    if sender.split("@")[1] == own.split("@")[1]:
+        return None
+    try:
+        people = [s for s in registry.Registry(space.root, space).everywhere() if s.kind == "people"]
+    except Exception:
+        return None
+    for person in people:
+        for name in [person.title, *(person.aliases or [])]:
+            if name and " " in str(name) and release.first_term(text, [str(name)]):
+                return str(person.title)
+    return None
+
+
 def classify(space: spaceyaml.Space, record: dict, subject: registry.Subject, destination: str,
              dest_space, audience, now: dt.datetime) -> Verdict:
     text = record_text(record)
@@ -206,9 +239,16 @@ def classify(space: spaceyaml.Space, record: dict, subject: registry.Subject, de
             return Verdict(hold="doubt",
                            why="call with participants outside the crew: " + ", ".join(outside))
     term = release.first_term(text, space.high_stakes)
+    if term and term in PRICING and sent_by_owner(space, record):
+        term = None   # a quote already sent is a record of what was said, not a pricing rule
     if term:
         return Verdict(cls="window", stage_after=now + space.window(), extra={"high_stakes": True},
                        why=f"high-stakes term `{term}`: waits the window, lands pending")
+    named = named_person(space, record, text)
+    if named:
+        return Verdict(cls="window", stage_after=now + space.window(), extra={"high_stakes": True},
+                       why=f"an outside party writes about {named}: a claim about a named person waits "
+                           "the window and lands pending")
     paused_why = ""
     if covers(audience, subject, dest_space):
         path = f"audience:{record.get('source') or 'unknown'}"

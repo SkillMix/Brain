@@ -46,9 +46,13 @@ def test_at_once_release_landed_in_harbor(fixture_dir):
     # harbor's own weekly review batch (a contested page) is the one candidate made at home
     landed = [p for p in (target / "harbor" / "_inbound" / "candidates").glob("*.md")
               if not p.name.startswith("review-")]
-    classes = {pages.read(p)[0].get("release_class") for p in landed}
+    # records handed sideways are evidence at their home, never something to sign
+    records = [p for p in (target / "harbor" / "knowledge" / "sources").rglob("*.md")
+               if pages.read(p)[0].get("landed_from")]
+    classes = {pages.read(p)[0].get("release_class") for p in landed + records}
     assert "at_once" in classes
-    assert all(pages.read(p)[0].get("released_from") for p in landed)
+    assert all(pages.read(p)[0].get("released_from") for p in landed + records)
+    assert all(pages.read(p)[0].get("status") == "draft" for p in records)
 
 
 def test_left_out_and_doubt_stay_home(fixture_dir):
@@ -89,6 +93,7 @@ def test_window_item_left_only_after_listing(fixture_dir):
     log = (target / "chloe" / "log.md").read_text(encoding="utf-8")
     assert "released" in log and "(window)" in log
     landed = [pages.read(p)[0] for p in (target / "beacon" / "_inbound" / "candidates").glob("*.md")]
+    landed += [pages.read(p)[0] for p in (target / "beacon" / "knowledge" / "sources").rglob("*.md")]
     assert any(fm.get("release_class") == "window" for fm in landed)
 
 

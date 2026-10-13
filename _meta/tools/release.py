@@ -156,6 +156,9 @@ def left_out_of(dest_space: spaceyaml.Space | None) -> list:
 def hold(root: Path, fm: dict, body: str, reason: str, why: str) -> Path:
     """Write an item to _outbound/held/ with its reason; held items never leave by themselves."""
     held_fm = dict(fm, reason=reason, why=why)
+    if reason == "doubt":  # shown as one count; opened on demand, each with a recommendation
+        held_fm.setdefault("recommendation", "no: keep it home")
+        held_fm.setdefault("default", "stays home")
     return pages.write(Path(root) / HELD / f"{fm['id']}.md", held_fm, body)
 
 
@@ -244,6 +247,17 @@ def landed_frontmatter(space: spaceyaml.Space, fm: dict, now: dt.datetime) -> di
     out["released_from"] = space.name
     out["released_at"] = pages.iso(now)
     out["release_class"] = fm.get("class")
+    out["acted_for"] = fm.get("approved_by") or space.owner or "owner"
+    if fm.get("path"):
+        out["path"] = fm.get("path")
+    if fm.get("subject") and not out.get("domain"):
+        try:
+            import registry as registry_mod
+            domain = registry_mod.Registry(space.root, space).domain_of(str(fm["subject"]))
+            if domain is not None:
+                out["domain"] = domain.id
+        except Exception:
+            pass
     out.setdefault("evidence", [])
     return out
 
@@ -391,6 +405,7 @@ def ship(root, now: dt.datetime | None = None,
             for _, data in signals:
                 target = dest_root / SIGNAL_LANDING / f"{data['id']}.yaml"
                 target.parent.mkdir(parents=True, exist_ok=True)
+                data = dict(data, **{"from": data.get("from") or space.name})
                 target.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
                                   encoding="utf-8", newline="\n")
 

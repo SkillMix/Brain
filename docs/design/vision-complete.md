@@ -352,3 +352,63 @@ on real data, or fail only on findings already on Needs you; Needs you renders; 
 line carries what the sub-project adds; nothing reaches Slack, Linear, clients or anyone but
 the owner. From sub-project 8 on, a trial request from the owner's workspace to the project
 is answered by a standing choice.
+
+## 12. The audit of 2026-10-13: closing every gap
+
+A second audit read every requirement of the vision against the template, with file
+evidence. What it found partial or missing is built here, in six batches, each with its
+tests, landed through the template and synced to every live space. Decisions are one line
+each in `docs/decisions.md`. Parked items stay parked (section 0).
+
+**Batch 1, defects in the flow.** Records handed sideways land as evidence
+(`knowledge/sources/`), never as something to sign. Items held in doubt can be opened one by
+one (`needs_you.py --doubt`), each with its reason and a recommendation, and answered: yes
+releases it at once (the holder approved it), no keeps it home for good, always adds the
+standing choice and releases it. Signing or approving a high-stakes item never skips the
+window. A client mail naming a registered person is high-stakes; an amount the space's own
+person sent out is a record of what was said, not a pricing rule. The weekly sample takes
+five silent landings (the vision's number) and draws from request answers too; the morning
+view counts the week's silent landings. A signal flags the home's status page ("changed
+<date>, signal from <space>"). Releases carry the subject's `domain`.
+
+**Batch 2, the badge.** `authority.py` answers one question, `level(space, action)`, from
+`space.yaml` within the floors of `rules.md` section 3, and the tools ask it: release ships
+nothing above the space's `release` level (`propose`: a person's yes first), the tracker
+routine writes only at its `outside_system` level, nothing sends or spends. The validator
+refuses a level above a floor. Every action above `propose` records `acted_for` and `path`.
+Agent rows carry `acts_for`, `space` and `badge`; the never-leaves list is inherited from
+the brain; `models:` is stated in `AGENTS.md` so any harness reading the contract knows
+whether it may read the space.
+
+**Batch 3, status that answers.** Open items by direction (we owe, waiting on them,
+internal) from the last record of each thread; the `system` tier for tracker and code
+records. The brain's projects page (`live/projects.md`) is generated from the registry,
+the signals and the landings. The sweep writes snapshots in the same pass (`live/today.md`:
+today's and tomorrow's meetings), and the morning briefing carries a who-is-this line per
+meeting from the registry and the last contact. Onboarding's identity drafts reach Needs you.
+
+**Batch 4, routines.** One routine writes the tracker: sessions queue requests as files
+(`_outbound/tracker/`), the tracker routine creates the issues with its connector and
+records their ids; nothing else writes the tracker. A failed chain step leaves yesterday's
+output, labelled stale on the health line and in the briefing. Template sync runs weekly in
+the daily chain, with the answer and leak tests before and after, and reverts a change that
+lowers the score.
+
+**Batch 5, structure, checks and releases.** The validator checks audience and parent, warns
+on missing ancestor mounts and on pages past their window, and checks `review_every`. Online
+mint adds every ancestor mount. A minted deal becomes a project kind. The checker compares a
+named-person claim with live state and both hit rates use one formula. A brain sweeps nothing
+of its own; a sweep reads only declared sources; status and distill follow only attached
+records. Identical records released by several people land once; a disagreement writes a
+Disagreements line. The left-out defaults gain role and other clients, and a mixed passage
+keeps only its project facts. Approvals by name and at-once answers show under "left
+yesterday", numbered for a pull-back by reply; a pull-back before shipping pauses its path;
+the subject's owner can retract at the home; a person-to-person channel has exactly two
+readers. Union merge covers nested run files; the search index is ignored by git.
+
+**Batch 6, start and end.** `seed` backfills a person's feeds and distills only what is
+active and important now; the cold start filters on important too and takes agent notes as
+weak evidence. `forget.py <subject>` lists everything about a subject id; offboard lists the
+raw personal records and removes them only on the person's own command. A recurring sharing
+group or a second regular reader proposes a mint; mint makes a vault (a list of names). Every
+skill has three behaviour scenarios, procedure pages included.
