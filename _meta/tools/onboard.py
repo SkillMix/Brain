@@ -592,17 +592,31 @@ def default_user_instructions(root, offline, home) -> Path:
 
 
 # ----- the sync task and the platform ------------------------------------------
+def task_wrapper(root, task, py, script, home=None) -> Path:
+    """Windows limits a task's command to 261 characters, and a long Python path or checkout
+    path passes it. The task runs one short wrapper outside the repository instead (never
+    committed: it names this machine's paths)."""
+    base = Path(home) if home else Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "spaces"
+    path = base / f"{task}.cmd"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f'@echo off\r\n"{py}" "{script}" --root "{root}" --release-leg\r\n', encoding="utf-8")
+    return path
+
+
 def register_sync(report, root, name, minutes, offline, dry_run) -> dict:
     root = Path(root)
     py, script, task = sys.executable, root / "_meta" / "tools" / "sync.py", f"space-sync-{name}"
     if os.name == "nt":
+        command = f'"{py}" "{script}" --root "{root}" --release-leg'
+        if len(command) > 255 and not offline:
+            command = f'"{task_wrapper(root, task, py, script)}"'
         create = ["schtasks", "/Create", "/F", "/SC", "MINUTE", "/MO", str(minutes), "/TN", task,
-                  "/TR", f'"{py}" "{script}" --root "{root}" --release-leg']
+                  "/TR", command]
         check, line = ["schtasks", "/Query", "/TN", task], None
     else:
         line = f"*/{minutes} * * * * {py} {script} --root {root} --release-leg"
         create, check = ["crontab", "-"], ["crontab", "-l"]
-    record = {"name": task, "create": create, "check": check, "line": line}
+    record = {"name": task, "create": create, "check": check, "line": line, "root": str(root)}
     if offline:
         write_text(root / "_meta" / "state" / "sync-task.txt",
                    " ".join(create) + "\n" + (line + "\n" if line else "") + "check: " + " ".join(check) + "\n")
@@ -1176,7 +1190,8 @@ def go_live(root, answers=None, offline=False, org=None, dry_run=False) -> Repor
     report.add("onboard state paths", True, "cat _meta/state/onboard.yaml",
                f"{old} -> {root}" if old else "already the live paths")
     task = state.get("sync_task") or {}
-    task_ok = bool(task) and str(root) in " ".join(str(x) for x in (task.get("create") or []))
+    task_ok = bool(task) and (task.get("root") == str(root)
+                              or str(root) in " ".join(str(x) for x in (task.get("create") or [])))
     if not task_ok and (old or not task):
         minutes = minutes_of(answers.get("sync_minutes") or 15)
         record = register_sync(report, root, space.name, minutes, offline, dry_run)
