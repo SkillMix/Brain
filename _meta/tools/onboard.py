@@ -976,7 +976,7 @@ def invite(root, slug: str, org: str | None = None, workspace_org: str | None = 
             crew.append({"name": other.name, "repo": f"https://github.com/{other_repo}" if other_repo else None})
     template = (read_yaml(root / "_meta" / "state" / "template-version.yaml", {}) or {}).get("repo") \
         or template_repo(root) or "<template>"
-    company = space.data.get("company") or humanize(space.name)
+    company = space.data.get("company") or (str(repo).split("/")[0] if repo else humanize(space.name))
     say = (f"Onboard me to {company}: https://github.com/{template} with my invitation "
            f"{repo or '<brain>'}:{slug}")
     answers = {"name": person.title, "slug": slug, "email": person.extra.get("email") or "",
