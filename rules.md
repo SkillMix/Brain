@@ -37,7 +37,10 @@ else's signed page.
 
 `send_outward` and `spend` never rise above `propose`. `release` never rises above
 `after_window` for records whose audience would widen. The template defaults are in
-`space.yaml`.
+`space.yaml`; the brain's `floors:` may make any of them stricter for every space below it,
+never looser. An agent row's `badge:` only lowers. Evidence lowers a path for four weeks
+(a pull-back or a failed sample pauses the standing choice or source audience that let an
+item through); every other level is lowered or raised only by a person in `space.yaml`.
 
 ## 4. Left-out defaults for a project destination
 

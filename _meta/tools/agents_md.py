@@ -129,9 +129,15 @@ def render(root) -> str:
     kinds = [KINDS_INTRO["channel" if profile == "channel" else "pages"], ""]
     kinds += [f"- `{kind}`" for kind in space.kinds]
     kinds += [f"- `{kind}` (fixed)" for kind in spaceyaml.FIXED_KINDS]
+    models = [str(m) for m in (space.models or [])]
+    if models and models != ["any"]:
+        never_text = NEVER + ("\n- Never read this space as a model outside its `models:` list ("
+                              + ", ".join(models) + "): if you are not one of them, stop and tell the person.")
+    else:
+        never_text = NEVER
     text = _template(root).format(
         name=space.name, profile=profile, owner=space.owner or "unset",
-        zones="\n".join(zones), never=NEVER, needs_you=_needs_you(root, profile), kinds="\n".join(kinds))
+        zones="\n".join(zones), never=never_text, needs_you=_needs_you(root, profile), kinds="\n".join(kinds))
     return text.replace("\r\n", "\n").rstrip("\n") + "\n"
 
 

@@ -53,7 +53,7 @@ DEFAULTS = {
     "authority": {"edit_inside": "at_once", "write_knowledge": "propose",
                   "release": "after_window", "write_outside_system": "at_once",
                   "send_outward": "propose", "spend": "propose"},
-    "floors": {"send_outward": "propose", "spend": "propose"},
+    "floors": {"send_outward": "propose", "spend": "propose", "release": "after_window"},
     "left_out": ["price", "prices", "pricing", "fee", "fees", "commercial terms",
                  "day rate", "hourly rate", "margin", "salary", "pay", "employment",
                  "immigration", "visa", "password", "credential", "credentials",
@@ -165,8 +165,36 @@ class Space:
 
     @property
     def never_leaves(self) -> list:
+        """This space's list plus the brain's: a space may add terms, never drop the brain's."""
         value = self.data.get("never_leaves")
-        return list(DEFAULTS["never_leaves"] if value is None else value)
+        own = list(DEFAULTS["never_leaves"] if value is None else value)
+        if self.profile != "brain":
+            try:
+                brain = self.brain_space()
+            except Exception:
+                brain = None
+            if brain is not None:
+                own += [t for t in brain.never_leaves if t not in own]
+        return own
+
+    @property
+    def floors(self) -> dict:
+        """The badge floors: rules.md section 3, made stricter by the brain's `floors:`."""
+        order = {lvl: i for i, lvl in enumerate(LEVELS)}
+        merged = dict(DEFAULTS["floors"])
+        sources = [self.data.get("floors") or {}]
+        if self.profile != "brain":
+            try:
+                brain = self.brain_space()
+            except Exception:
+                brain = None
+            if brain is not None:
+                sources.append(brain.data.get("floors") or {})
+        for extra in sources:
+            for action, lvl in extra.items():
+                if lvl in order and (action not in merged or order[lvl] < order[merged[action]]):
+                    merged[action] = lvl
+        return merged
 
     @property
     def high_stakes(self) -> list:
@@ -309,9 +337,19 @@ class Space:
                 errs.append(f"authority: unknown action class `{action}`")
             elif level not in LEVELS:
                 errs.append(f"authority.{action}: level must be one of {', '.join(LEVELS)}")
-        for action, floor in DEFAULTS["floors"].items():
-            if self.authority.get(action) != floor:
+        for action, floor in self.floors.items():
+            have = self.authority.get(action)
+            if have in LEVELS and floor in LEVELS and LEVELS.index(have) > LEVELS.index(floor):
                 errs.append(f"authority.{action} may not rise above `{floor}` (rules.md section 3)")
+        for n, row in enumerate(self.agents):
+            if not isinstance(row, dict) or not row.get("name") or not row.get("acts_for"):
+                errs.append(f"agents[{n}]: each row names the agent (`name`) and whom it acts for (`acts_for`)")
+                continue
+            for action, lvl in (row.get("badge") or {}).items():
+                if action not in ACTION_CLASSES or lvl not in LEVELS:
+                    errs.append(f"agents[{n}].badge.{action}: an action class and a level")
+                elif LEVELS.index(lvl) > LEVELS.index(self.authority.get(action, "propose")):
+                    errs.append(f"agents[{n}].badge.{action}: an agent row never rises above the space's level")
         if self.window_hours < DEFAULTS["window_hours"]:
             errs.append("window_hours: 24 is the floor")
         declared_kinds = data.get("kinds")
