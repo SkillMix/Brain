@@ -238,3 +238,19 @@ def test_leak_needles_match_whole_words_only():
     assert not tests_run.carries("the page beneath the fold", "Ben")
     assert not tests_run.carries("id p-12950ab3", "950")
     assert not tests_run.carries("anything", "  ")
+
+
+def test_leaks_never_read_the_targets_own_mounts(tmp_path):
+    root = make_space(tmp_path / "harbor", profile="project")
+    (root / ".gitmodules").write_text("""[submodule "brain"]
+	path = brain
+	url = https://example.test/brain
+""", encoding="utf-8")
+    (root / "brain").mkdir()
+    (root / "brain" / "index.md").write_text("Their day rate is EUR 950.\n", encoding="utf-8")
+    page = root / "knowledge" / "plan.md"
+    page.parent.mkdir(parents=True, exist_ok=True)
+    page.write_text("A clean plan.\n", encoding="utf-8")
+    files = {f.relative_to(root).as_posix() for f in tests_run._tracked_files(root)}
+    assert "knowledge/plan.md" in files
+    assert not any(f.startswith("brain/") for f in files)

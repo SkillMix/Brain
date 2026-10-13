@@ -403,8 +403,29 @@ def _ignored_dirs(target: Path) -> tuple[set, set]:
     return names, anchored
 
 
+def _mount_paths(target: Path) -> set:
+    """The target's own mounts: other spaces' checkouts inside it, never its own content."""
+    out = set()
+    modules = target / ".gitmodules"
+    if modules.exists():
+        for line in modules.read_text(encoding="utf-8", errors="replace").splitlines():
+            key, _, value = line.strip().partition("=")
+            if key.strip() == "path" and value.strip():
+                out.add(value.strip().replace("\\", "/").strip("/"))
+    try:
+        mounts = spaceyaml.load(target).mounts
+    except Exception:
+        mounts = []
+    for mount in mounts:
+        rel = str(mount.get("path") or "").replace("\\", "/").strip("/")
+        if rel and not rel.startswith("..") and not Path(rel).is_absolute():
+            out.add(rel)
+    return out
+
+
 def _tracked_files(target: Path):
     names, anchored = _ignored_dirs(target)
+    anchored = set(anchored) | _mount_paths(target)
     for dirpath, dirnames, filenames in os.walk(target):
         here = Path(dirpath)
         rel_dir = here.relative_to(target).as_posix() if here != target else ""
