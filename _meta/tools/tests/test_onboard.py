@@ -392,6 +392,10 @@ def test_an_invitation_carries_the_crew_projects_and_the_colleague_onboards_offl
     assert [p["name"] for p in answers["crew_projects"]] == ["harbor"]
     items = yaml.safe_load((brain / "_inbound" / "needs-you" / "invitations.yaml").read_text(encoding="utf-8"))["items"]
     assert items[0]["id"] == "invite-ben" and items[0]["check"].startswith("gh repo view")
+    # the one sentence the colleague says, in the invitation and on the owner's item
+    assert answers["say"].startswith("Onboard me to lantern-org: https://github.com/")
+    assert answers["say"].endswith("with my invitation lantern-org/brain:ben")
+    assert answers["say"] in items[0]["text"]
     # on the colleague's machine (offline here): a template copy, the answers, the brain
     ws = tmp_path / "ben-workspace"
     onboard.copy_template(onboard.TEMPLATE_ROOT, ws)
