@@ -192,6 +192,33 @@ def _mark(path: Path, fm: dict, body: str, **fields) -> None:
         pages.write(path, dict(fm, **changed), body)
 
 
+def signer_log(repo: str, cache: dict) -> str | None:
+    """The signer's own `log.md`, read with this person's grants (the host's command line)."""
+    if repo in cache:
+        return cache[repo]
+    import subprocess
+    try:
+        res = subprocess.run(["gh", "api", f"repos/{repo}/contents/log.md", "-H", "Accept: application/vnd.github.raw"],
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+        cache[repo] = res.stdout if res.returncode == 0 else None
+    except Exception:
+        cache[repo] = None
+    return cache[repo]
+
+
+def verified(fm: dict, cache: dict) -> bool | None:
+    """The trust root (rules.md section 9): a release names the repository it was signed in;
+    the signer's own history must carry the fingerprint line for this page. None when the
+    release names no repository (offline, a fixture): nothing to check against."""
+    repo = fm.get("signed_repo")
+    if not repo:
+        return None
+    text = signer_log(str(repo), cache)
+    if text is None:
+        return False
+    return f" fingerprint {fm.get('id')} {fm.get('fingerprint')} by {fm.get('signed_by')}" in text
+
+
 def land(root, space: spaceyaml.Space | None = None, reg=None, now: dt.datetime | None = None) -> LandingReport:
     root = Path(root)
     space = space or spaceyaml.load(root)
@@ -200,6 +227,7 @@ def land(root, space: spaceyaml.Space | None = None, reg=None, now: dt.datetime 
     report = LandingReport()
     import release  # the high-stakes words and the whole-word matcher are the release rule's
     distrusted = pending_releasers(root)
+    signer_cache: dict = {}
     groups: dict = {}
     for path in sorted((root / CANDIDATES).glob("*.md")):
         try:
@@ -248,6 +276,11 @@ def land(root, space: spaceyaml.Space | None = None, reg=None, now: dt.datetime 
                 report.pending.append(pid)
                 continue
             releaser = str(fm.get("released_from") or "")
+            if verified(fm, signer_cache) is False:
+                _mark(path, fm, body, landing="pending: the signer's history does not show this signature",
+                      **{"for": owner})
+                report.pending.append(pid)
+                continue
             if releaser in distrusted:
                 _mark(path, fm, body, landing=f"pending: trust ({releaser} lands pending for now)",
                       **{"for": owner})

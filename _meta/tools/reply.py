@@ -59,6 +59,25 @@ def parse(text: str, count: int) -> dict:
     return out
 
 
+LEFT = re.compile(r"^\s*left\s+(\d+(?:\s*,\s*\d+)*)\s+no\b", re.I)
+
+
+def parse_left(text: str, left: list) -> list:
+    """`left 2 no` (or `left 1, 3 no`): pull back what the briefing listed under Left yesterday."""
+    out = []
+    for raw in str(text or "").splitlines():
+        if QUOTED.match(raw):
+            break
+        match = LEFT.match(raw)
+        if not match:
+            continue
+        for piece in match.group(1).split(","):
+            n = int(piece.strip())
+            if 1 <= n <= len(left) and left[n - 1] and left[n - 1] not in out:
+                out.append(left[n - 1])
+    return out
+
+
 def _seen(root: Path) -> set:
     path = root / SEEN
     out = set()
@@ -97,13 +116,17 @@ def run(root, now: dt.datetime | None = None) -> list:
         listing = root / MORNING / f"{day}.json"
         if not listing.exists():
             continue
-        items = json.loads(listing.read_text(encoding="utf-8")).get("items") or []
+        day_list = json.loads(listing.read_text(encoding="utf-8"))
+        items = day_list.get("items") or []
         verdicts = parse(rec.get("text"), len(items))
-        if not verdicts:
+        pulled = parse_left(rec.get("text"), day_list.get("left") or [])
+        if not verdicts and not pulled:
             continue
         chosen = {items[n - 1]["id"]: ([v, note] if note else v) for n, (v, note) in sorted(verdicts.items())}
+        chosen.update({pid: "no" for pid in pulled})
         lines = [f"{n}. {items[n - 1]['text']} -> {v}{(': ' + note) if note else ''} "
                  f"(fingerprint {items[n - 1].get('fingerprint') or 'none'})" for n, (v, note) in sorted(verdicts.items())]
+        lines += [f"Left yesterday: pull back {pid} -> no (it is retracted)" for pid in pulled]
         fm = {"id": pages.new_id(), "type": "source", "title": f"Your email reply of {day}: {len(chosen)} answers",
               "status": "draft", "generated": pages.generated("reply", now), "record": rec.get("id"),
               "verdicts": chosen, "recommendation": "read them back, then submit",

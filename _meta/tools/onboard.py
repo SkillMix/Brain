@@ -532,6 +532,25 @@ def instruction_present(path, workspace) -> bool:
     return MARK_OPEN in text and Path(workspace).resolve().as_posix() in text
 
 
+def connect(root, feed: str, audience: str = "owner") -> bool:
+    """Add one connector to this space's sources (and the register of connected systems);
+    the person's sign-in to the connector itself happens in their harness."""
+    root = Path(root)
+    if feed not in FEEDS:
+        raise ValueError(f"a feed is one of {', '.join(FEEDS)}")
+    space = spaceyaml.load(root)
+    if any(isinstance(s, dict) and s.get("name") == feed for s in space.sources):
+        return False
+    space.data["sources"] = space.sources + [{"name": feed, "adapter": "files", "audience": audience}]
+    spaceyaml.save(space)
+    reg = root / "_meta" / "access" / "resources.yaml"
+    data = read_yaml(reg, {}) or {}
+    rows = [r for r in (data.get("resources") or []) if r.get("name") != feed]
+    rows.append({"name": feed, "adapter": "files", "audience": audience})
+    write_yaml(reg, {"resources": rows})
+    return True
+
+
 def allow_directory(settings_path, workspace) -> bool:
     """Add the workspace to the harness's allowed directories in its user-level settings, so a
     session in any repository may read and journal there. Returns True when it changed."""
@@ -955,6 +974,13 @@ def run(root, answers, offline=False, org=None, dry_run=False, home=None, user_i
                    "the owner signs in to the connector; its records then appear in the feed file",
                    needs_owner=True)
     write_needs_you(root, skipped)
+    if workspace is not None and not feeds:
+        # nothing connected yet: each connector is one offer on Needs you, never a requirement
+        write_needs_you(workspace, [{"key": f"connect-{name}", "ask": (
+            f"Connect your {name}? Say 'connect my {name}' in a session: it is added to your sources "
+            "and the next sweep reads it"), "default": "yes, when you have a minute"}
+            for name in ("mail", "calendar", "chat", "calls")], path="_inbound/needs-you/connect.yaml",
+            prefix="onboard")
     for path in dict.fromkeys(report.spaces.values()):
         finish_space(report, path)
     if not offline:
@@ -1399,6 +1425,8 @@ def main(argv=None) -> int:
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--fixture", metavar="DIR")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--connect", metavar="FEED", help="add one connector (mail, calendar, chat, calls, ...) "
+                    "to this space's sources")
     ap.add_argument("--invite", metavar="SLUG", help="in the brain: write a colleague's invitation answers "
                     "and the owner's Needs-you item")
     ap.add_argument("--go-live", action="store_true",
@@ -1409,6 +1437,9 @@ def main(argv=None) -> int:
     if args.fixture:
         return fixture(args.fixture)
     root = Path(args.root).resolve()
+    if args.connect:
+        print(f"{args.connect}: {'added to the sources' if connect(root, args.connect) else 'already a source'}")
+        return 0
     if args.invite:
         print(f"invitation: {invite(root, args.invite, org=args.org)}")
         return 0

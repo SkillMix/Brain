@@ -429,7 +429,8 @@ def ship(root, now: dt.datetime | None = None,
             report.destinations[destination] = report.destinations.get(destination, 0) + 1
             report.retracted += fm.get("class") == "retraction"
             append_line(root / "log.md",
-                        f"- {pages.iso(now)} released {fm['id']} to {destination} ({fm.get('class')})")
+                        f"- {pages.iso(now)} released {fm['id']} to {destination} ({fm.get('class')})"
+                        + (f" via {fm['path']}" if fm.get("path") else ""))
             append_line(root / RELEASED, json.dumps({
                 "id": fm["id"], "at": pages.iso(now), "destination": destination,
                 "class": fm.get("class"), "subject": fm.get("subject"),
