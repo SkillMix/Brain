@@ -314,9 +314,10 @@ def setup_space(report, dst, profile, values, feeds) -> None:
 
 
 def create_space(report, root, dirname, repo_name, offline, org, home, tpl, dry_run):
-    """The directory of a new space: offline a sibling copy, online a clone of a new repository."""
+    """The directory of a new space: offline a copy under `home` (default: a sibling), online a
+    clone of a new repository."""
     if offline:
-        dst = Path(root).parent / dirname
+        dst = (Path(home) if home else Path(root).parent) / dirname
         made = copy_template(root, dst)
         report.add(f"create {dirname}", True, f"test -f {dst / 'space.yaml'}", "copied" if made else "exists")
         return dst, None
@@ -994,10 +995,22 @@ def run(root, answers, offline=False, org=None, dry_run=False, home=None, user_i
 
 
 # ----- invitations: the owner invites, the colleague runs onboard on their own machine -------
+READ_LEVELS = ("read", "triage", "write", "maintain", "admin")
+
+
+def can_read(repo: str, login: str) -> bool:
+    """True when the host says `login` can read `repo`: a permission read, never a grant."""
+    res = run_cmd(["gh", "api", f"repos/{repo}/collaborators/{login}/permission", "-q", ".permission"])
+    return res.returncode == 0 and (res.stdout or "").strip() in READ_LEVELS
+
+
 def invite(root, slug: str, org: str | None = None, workspace_org: str | None = None) -> Path:
     """Write `_meta/state/invitations/<slug>.yaml` (the colleague's answers: name, parent, the
-    brain, the projects they are crew on) and one Needs-you item for the owner with its
-    read-back. Nothing is sent: the owner hands the file over; the colleague answers the rest."""
+    brain, the projects they are crew on, their host login when the registry has it) and one
+    Needs-you item for the owner with its read-back. The sentence works only once the colleague
+    can read the template and the brain: when the host does not confirm both (or no login is
+    known), a second item recommends the access, which only the owner grants (decision
+    2026-10-12, Organization teams). Nothing is sent: the owner hands the file over."""
     root = Path(root).resolve()
     space = spaceyaml.load(root)
     reg = registry.Registry(root, space)
@@ -1022,22 +1035,46 @@ def invite(root, slug: str, org: str | None = None, workspace_org: str | None = 
     company = space.data.get("company") or (str(repo).split("/")[0] if repo else humanize(space.name))
     say = (f"Onboard me to {company}: https://github.com/{template} with my invitation "
            f"{repo or '<brain>'}:{slug}")
+    login = str(person.match.get("github") or "").strip()
     answers = {"name": person.title, "slug": slug, "email": person.extra.get("email") or "",
                "parent": space.name if space.profile != "brain" else "brain",
                "brain": f"https://github.com/{repo}" if repo else "", "feeds": "none", "schedule": 15,
                "org": org, "workspace_org": workspace_org or org, "crew_projects": crew, "say": say}
+    if login:
+        answers["login"] = login
     target = root / "_meta" / "state" / "invitations" / f"{slug}.yaml"
     write_yaml(target, answers)
     items_path = root / "_inbound" / "needs-you" / "invitations.yaml"
-    items = [i for i in (read_yaml(items_path, {}) or {}).get("items") or [] if i.get("id") != f"invite-{slug}"]
+    access_id = f"invite-{slug}-access"
+    items = [i for i in (read_yaml(items_path, {}) or {}).get("items") or []
+             if i.get("id") not in (f"invite-{slug}", access_id)]
     workspace = f"{workspace_org or org}/{slug}-workspace" if (workspace_org or org) else f"<org>/{slug}-workspace"
+    both = [template, repo or "<brain>"]
     items.append({"id": f"invite-{slug}", "kind": "question",
                   "text": (f"Invite {person.title}: send them this one sentence to say in Claude Code "
                            f"on their own machine: \"{say}\". Their agent does the rest (about fifteen "
                            f"minutes, mostly their sign-ins); the answers are in "
-                           f"{target.relative_to(root).as_posix()}"),
+                           f"{target.relative_to(root).as_posix()}. The sentence works once they can "
+                           f"read {both[0]} and {both[1]}"),
                   "recommendation": "yes, on their first day", "default": "they work without a workspace for now "
                   "(rules.md section 10)", "depends": 1, "check": f"gh repo view {workspace}"})
+    blocked = [r for r in both if not login or r.startswith("<") or not can_read(r, login)]
+    if blocked:
+        text = (f"{person.title} cannot read {' and '.join(blocked)} yet (checked as {login}), so the "
+                "invitation sentence stops at its first step" if login else
+                f"{person.title}'s host login is unknown, so their read access to {both[0]} and {both[1]} "
+                "cannot be checked; the invitation sentence works only once they can read both")
+        rec = f"give a company-wide team read access to both {both[0]} and {both[1]}, and add {person.title} to it"
+        if not login:
+            rec += (f"; then add their host login to the registry (`match: {{github: <login>}}` on {slug}) "
+                    "and invite again, so this check runs itself")
+        items.append({"id": access_id, "kind": "question",
+                      "text": text + ". Who sees the brain is your choice: agents never grant access "
+                      "(decision 2026-10-12, Organization teams)",
+                      "recommendation": rec, "default": f"{person.title}'s agent cannot clone the template or "
+                      "read the invitation, so they work without a workspace for now", "depends": 1,
+                      "check": " && ".join(f"gh api repos/{r}/collaborators/{login or '<login>'}/permission "
+                                           "-q .permission" for r in both)})
     write_yaml(items_path, {"items": items})
     return target
 
@@ -1450,7 +1487,7 @@ def main(argv=None) -> int:
     ap.add_argument("--seed", help="a desk seed work/<kind>/<subject>/<effort>/ (the project case)")
     ap.add_argument("--offline", action="store_true")
     ap.add_argument("--org")
-    ap.add_argument("--home", help="where new workspaces are cloned (default ~/.spaces)")
+    ap.add_argument("--home", help="where new workspaces are made (default ~/.spaces; offline: beside this one)")
     ap.add_argument("--user-instructions", help="the user-level instruction file (default ~/.claude/CLAUDE.md)")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--fixture", metavar="DIR")

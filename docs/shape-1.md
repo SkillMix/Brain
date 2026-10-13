@@ -130,9 +130,10 @@ of the kinds), `title`, `state` (`active`, `dormant`, `archived`), optional `par
 depth, loops refused), `owner` (parts inherit their umbrella's; none means the space
 owner), `home` (the space where the subject's shared conclusions live; none means they
 stay here), `match` (the fixed identifiers by which a sweep attaches evidence; keys
-`tracker`, `repo`, `channel`, `label`, `thread`, `calendar`; a record matching none or
-several subjects is never attached), `aliases`, `important`, `stateful` (status page yes or
-no), `added`, `added_by`. Hierarchy and ownership live here, never in paths.
+`tracker`, `repo`, `channel`, `label`, `thread`, `calendar`, `github` (a person's host
+login); a record matching none or several subjects is never attached), `aliases`,
+`important`, `stateful` (status page yes or no), `added`, `added_by`. Hierarchy and
+ownership live here, never in paths.
 
 ### Needs-you items
 

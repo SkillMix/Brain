@@ -3,7 +3,7 @@
 A subject is anything people ask about by name. Hierarchy lives here (`part_of`),
 never in paths; owners live on subjects and parts inherit their umbrella's owner;
 `home` names the space where the subject's shared conclusions live; `match` holds
-the fixed identifiers (tracker, repo, channel, label, thread, calendar) by which a
+the fixed identifiers (tracker, repo, channel, label, thread, calendar, github) by which a
 sweep attaches evidence. Ids are shared up the ladder: a space reuses an ancestor's
 id (read through its mount) and mints a new one only when no space above has one.
 
@@ -26,7 +26,7 @@ import spaceyaml  # noqa: E402
 
 REGISTRY_PATH = Path("_meta") / "subjects.yaml"
 STATES = ("active", "dormant", "archived")
-MATCH_KEYS = ("tracker", "repo", "channel", "label", "thread", "calendar")
+MATCH_KEYS = ("tracker", "repo", "channel", "label", "thread", "calendar", "github")
 
 
 @dataclass
