@@ -1,0 +1,52 @@
+# A decisions question asks the index first; it never writes.
+name: 'the decisions index is derived: building it edits no page'
+command:
+- python
+- _meta/tools/decisions.py
+- '{root}'
+- build
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1440
+      name: ada
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience:
+      - Ada Okafor
+      parent: brain
+      sources:
+      - name: mail
+        adapter: files
+        audience: owner
+    work/.gitkeep: ''
+    journal/.gitkeep: ''
+    outbox/.gitkeep: ''
+    _meta/subjects.yaml:
+      subjects:
+      - id: harbor
+        kind: projects
+        title: Harbor
+        state: active
+        owner: Ada Okafor
+        home: ada
+        match:
+          label: Harbor
+      - id: ben
+        kind: people
+        title: Ben Liu
+        state: active
+    knowledge/projects/harbor/terms.md: "---\nid: p-0000c001\ntype: concept\ntitle: Harbor terms\nstatus: stable\n\
+      generated:\n  by: distill\n  at: '2026-09-20T09:00:00Z'\nsigned_by: Ada Okafor\nsigned_at: '2026-09-21T09:00:00Z'\n\
+      signed_in: ada\nfingerprint: '1111111111111111111111111111111111111111111111111111111111111111'\nsubject:\
+      \ harbor\n---\nHarbor terms hold.\n"
+env:
+  SPACE_NOW: '2026-10-05T09:00:00Z'
+expect:
+  exit: 0
+  writes_only_under: []
+  must_exist:
+  - knowledge/projects/harbor/terms.md

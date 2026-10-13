@@ -1,0 +1,57 @@
+# A process page carries its steps and its checks.
+name: a procedure page passes its lint and nothing is written
+command:
+- python
+- _meta/tools/procedure.py
+- '{root}'
+- lint
+- knowledge/projects/harbor/send-a-proposal.md
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1440
+      name: ada
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience:
+      - Ada Okafor
+      parent: brain
+      sources:
+      - name: mail
+        adapter: files
+        audience: owner
+    work/.gitkeep: ''
+    journal/.gitkeep: ''
+    outbox/.gitkeep: ''
+    _meta/subjects.yaml:
+      subjects:
+      - id: harbor
+        kind: projects
+        title: Harbor
+        state: active
+        owner: Ada Okafor
+        home: ada
+        match:
+          label: Harbor
+      - id: ben
+        kind: people
+        title: Ben Liu
+        state: active
+    knowledge/projects/harbor/send-a-proposal.md: "---\nid: p-0000c101\ntype: process\ntitle: Send a proposal\n\
+      status: stable\ngenerated:\n  by: distill\n  at: '2026-09-20T09:00:00Z'\nsigned_by: Ada Okafor\nsigned_at:\
+      \ '2026-09-21T09:00:00Z'\nsigned_in: ada\nfingerprint: '2222222222222222222222222222222222222222222222222222222222222222'\n\
+      subject: harbor\n---\n## Steps\n\n1. Draft it.\n\n## Checks\n\n- Never include margins. `never: margin`\n"
+    outbox/proposal.md: 'Our margin on this is 30 percent.
+
+      '
+    outbox/clean.md: 'The proposal for Harbor.
+
+      '
+env:
+  SPACE_NOW: '2026-10-05T09:00:00Z'
+expect:
+  exit: 0
+  writes_only_under: []

@@ -1,0 +1,62 @@
+# Evidence eagerly, signatures only for what matters.
+name: the seed turns the backfill into evidence and never signs
+command:
+- python
+- _meta/tools/seed.py
+- '{root}'
+- --days
+- '90'
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1440
+      name: ada
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience:
+      - Ada Okafor
+      parent: brain
+      sources:
+      - name: mail
+        adapter: files
+        audience: owner
+    work/.gitkeep: ''
+    journal/.gitkeep: ''
+    outbox/.gitkeep: ''
+    _meta/subjects.yaml:
+      subjects:
+      - id: harbor
+        kind: projects
+        title: Harbor
+        state: active
+        owner: Ada Okafor
+        home: ada
+        match:
+          label: Harbor
+      - id: ben
+        kind: people
+        title: Ben Liu
+        state: active
+    _meta/state/feed/mail.jsonl: '{"id": "m-s1", "source": "mail", "kind": "mail", "at": "2026-10-02T09:15:00Z",
+      "from": "ops@tidewater.example", "to": ["ada@lantern.example"], "subject": "Harbor plan", "text": "The Harbor
+      plan holds.", "identifiers": {"labels": ["Harbor"]}, "attachments": []}
+
+      '
+env:
+  SPACE_NOW: '2026-10-05T09:00:00Z'
+expect:
+  exit: 0
+  writes_only_under:
+  - knowledge/sources/
+  - _inbound/candidates/
+  - _outbound/
+  never_contains:
+    knowledge/**:
+    - 'status: stable'
+    _inbound/**:
+    - 'status: stable'
+  must_exist:
+  - knowledge/sources/2026/10/*.md

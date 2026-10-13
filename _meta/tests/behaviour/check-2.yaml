@@ -1,0 +1,54 @@
+# The checker asks; it never edits.
+name: a page about someone who left is a question, never an edit
+command:
+- python
+- _meta/tools/check.py
+- '{root}'
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1440
+      name: ada
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience:
+      - Ada Okafor
+      parent: brain
+      sources:
+      - name: mail
+        adapter: files
+        audience: owner
+    work/.gitkeep: ''
+    journal/.gitkeep: ''
+    outbox/.gitkeep: ''
+    _meta/subjects.yaml:
+      subjects:
+      - id: harbor
+        kind: projects
+        title: Harbor
+        state: active
+        owner: Ada Okafor
+        home: ada
+        match:
+          label: Harbor
+      - id: ben
+        kind: people
+        title: Ben Liu
+        state: archived
+    knowledge/people/ben/ben.md: "---\nid: p-0000c601\ntype: entity\ntitle: Ben Liu\nstatus: stable\ngenerated:\n\
+      \  by: distill\n  at: '2026-09-20T09:00:00Z'\nsigned_by: Ada Okafor\nsigned_at: '2026-09-21T09:00:00Z'\nsigned_in:\
+      \ ada\nfingerprint: '3333333333333333333333333333333333333333333333333333333333333333'\nsubject: ben\n---\n\
+      Ben leads delivery.\n"
+env:
+  SPACE_NOW: '2026-10-05T09:00:00Z'
+expect:
+  exit: 0
+  writes_only_under:
+  - _inbound/checks/
+  - _inbound/candidates/review-
+  must_exist:
+  - _inbound/checks/*.md
+  - knowledge/people/ben/ben.md

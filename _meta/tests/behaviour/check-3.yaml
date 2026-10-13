@@ -1,0 +1,48 @@
+# A quiet day costs nothing.
+name: with nothing moved the checker writes no question
+command:
+- python
+- _meta/tools/check.py
+- '{root}'
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1440
+      name: ada
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience:
+      - Ada Okafor
+      parent: brain
+      sources:
+      - name: mail
+        adapter: files
+        audience: owner
+    work/.gitkeep: ''
+    journal/.gitkeep: ''
+    outbox/.gitkeep: ''
+    _meta/subjects.yaml:
+      subjects:
+      - id: harbor
+        kind: projects
+        title: Harbor
+        state: active
+        owner: Ada Okafor
+        home: ada
+        match:
+          label: Harbor
+      - id: ben
+        kind: people
+        title: Ben Liu
+        state: active
+env:
+  SPACE_NOW: '2026-10-05T09:00:00Z'
+expect:
+  exit: 0
+  writes_only_under:
+  - _inbound/candidates/review-
+  must_not_exist:
+  - _inbound/checks/*.md

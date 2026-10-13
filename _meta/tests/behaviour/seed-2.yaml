@@ -1,0 +1,45 @@
+# The brain sweeps nothing of its own.
+name: a brain is never seeded from feeds
+command:
+- python
+- _meta/tools/seed.py
+- '{root}'
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: brain
+      mode: fixture
+      time_scale: 1440
+      name: brain
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience: everyone
+      sources: []
+    _meta/subjects.yaml:
+      subjects:
+      - id: harbor
+        kind: projects
+        title: Harbor
+        state: active
+        owner: Ada Okafor
+        home: ada
+        match:
+          label: Harbor
+      - id: ben
+        kind: people
+        title: Ben Liu
+        state: active
+    _meta/state/feed/mail.jsonl: '{"id": "m-s1", "source": "mail", "kind": "mail", "at": "2026-10-02T09:15:00Z",
+      "from": "ops@tidewater.example", "to": ["ada@lantern.example"], "subject": "Harbor plan", "text": "The Harbor
+      plan holds.", "identifiers": {"labels": ["Harbor"]}, "attachments": []}
+
+      '
+env:
+  SPACE_NOW: '2026-10-05T09:00:00Z'
+expect:
+  exit: 0
+  writes_only_under:
+  - _inbound/candidates/
+  must_not_exist:
+  - knowledge/sources/2026/10/m-s1.md

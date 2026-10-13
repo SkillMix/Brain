@@ -1,0 +1,39 @@
+# Only a registered person is invited.
+name: inviting someone not in the registry refuses and writes nothing
+command:
+- python
+- _meta/tools/onboard.py
+- '{root}'
+- --invite
+- zoe
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: brain
+      mode: fixture
+      time_scale: 1440
+      name: brain
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience: everyone
+      sources: []
+    _meta/subjects.yaml:
+      subjects:
+      - id: harbor
+        kind: projects
+        title: Harbor
+        state: active
+        owner: Ada Okafor
+        home: ada
+        match:
+          label: Harbor
+      - id: ben
+        kind: people
+        title: Ben Liu
+        state: active
+env:
+  SPACE_NOW: '2026-10-05T09:00:00Z'
+expect:
+  exit: 1
+  writes_only_under: []

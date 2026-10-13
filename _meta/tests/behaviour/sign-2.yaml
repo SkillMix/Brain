@@ -1,0 +1,63 @@
+# Yes releases a held item; a record is never signed.
+name: a yes on a held item releases it and signs nothing
+command:
+- python
+- _meta/tools/sign.py
+- '{root}'
+- apply
+- --by
+- Ada Okafor
+- --verdicts
+- '{root}/_scratch/v.yaml'
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1440
+      name: ada
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience:
+      - Ada Okafor
+      parent: brain
+      sources:
+      - name: mail
+        adapter: files
+        audience: owner
+    work/.gitkeep: ''
+    journal/.gitkeep: ''
+    outbox/.gitkeep: ''
+    _meta/subjects.yaml:
+      subjects:
+      - id: harbor
+        kind: projects
+        title: Harbor
+        state: active
+        owner: Ada Okafor
+        home: ada
+        match:
+          label: Harbor
+      - id: ben
+        kind: people
+        title: Ben Liu
+        state: active
+    _outbound/held/p-0000c401.md: "---\nid: p-0000c401\ntype: source\ntitle: A call about Harbor\nstatus: draft\n\
+      generated:\n  by: sweep\n  at: '2026-10-04T09:00:00Z'\ndestination: beacon\nsubject: beacon\nkind: mail\n\
+      class: doubt\nreason: doubt\nwhy: call with outsiders\nfrom_space: ada\n---\nThe call.\n"
+    _scratch/v.yaml: 'p-0000c401: yes
+
+      '
+env:
+  SPACE_NOW: '2026-10-05T09:00:00Z'
+expect:
+  exit: 0
+  writes_only_under:
+  - _outbound/
+  - _scratch/
+  never_contains:
+    _outbound/**:
+    - 'status: stable'
+  must_exist:
+  - _outbound/queue/p-0000c401.md

@@ -183,7 +183,8 @@ PRIVATE_TOP = ("personal", "academic", "_scratch")
 
 def _copy_ignore(root: Path):
     root = Path(root).resolve()
-    skip_top = set(PRIVATE_TOP) | {z for z in HERMETIC_ZONES if "/" not in z}
+    # mounted spaces are other spaces' checkouts: a scenario writes what it needs in its setup
+    skip_top = set(PRIVATE_TOP) | {z for z in HERMETIC_ZONES if "/" not in z} | {"brain", "mounts"}
 
     def ignore(directory, names):
         here = Path(directory).resolve()

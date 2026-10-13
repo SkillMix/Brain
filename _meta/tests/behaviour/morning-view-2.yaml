@@ -1,0 +1,53 @@
+# The morning view renders; the routine sends one mail to the person themself.
+name: today's meetings reach the page and nothing is sent
+command:
+- python
+- _meta/tools/morning_view.py
+- '{root}'
+- --person
+- Ada Okafor
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1440
+      name: ada
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience:
+      - Ada Okafor
+      parent: brain
+      sources:
+      - name: mail
+        adapter: files
+        audience: owner
+    work/.gitkeep: ''
+    journal/.gitkeep: ''
+    outbox/.gitkeep: ''
+    _meta/subjects.yaml:
+      subjects:
+      - id: harbor
+        kind: projects
+        title: Harbor
+        state: active
+        owner: Ada Okafor
+        home: ada
+        match:
+          label: Harbor
+      - id: ben
+        kind: people
+        title: Ben Liu
+        state: active
+    live/today.md: "---\nid: p-0000c801\ntype: snapshot\ntitle: Today\nstatus: draft\ngenerated:\n  by: sweep\n\
+      \  at: '2026-10-05T07:00:00Z'\n---\n# Today\n\n- 2026-10-05 14:00 Harbor review\n  - Ben Liu: Ben Liu (colleague)\n"
+env:
+  SPACE_NOW: '2026-10-05T09:00:00Z'
+expect:
+  exit: 0
+  writes_only_under:
+  - live/
+  never_contains:
+    live/needs-you.md:
+    - 'status: stable'

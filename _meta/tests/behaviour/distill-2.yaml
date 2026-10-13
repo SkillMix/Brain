@@ -1,0 +1,50 @@
+# Evidence attaches by identifier only.
+name: a mention alone never becomes a candidate
+command:
+- python
+- _meta/tools/distill.py
+- '{root}'
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1440
+      name: ada
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience:
+      - Ada Okafor
+      parent: brain
+      sources:
+      - name: mail
+        adapter: files
+        audience: owner
+    work/.gitkeep: ''
+    journal/.gitkeep: ''
+    outbox/.gitkeep: ''
+    _meta/subjects.yaml:
+      subjects:
+      - id: harbor
+        kind: projects
+        title: Harbor
+        state: active
+        owner: Ada Okafor
+        home: ada
+        match:
+          label: Harbor
+      - id: ben
+        kind: people
+        title: Ben Liu
+        state: active
+    knowledge/sources/2026/10/m-s9.md: "---\nid: p-0000c501\ntype: source\ntitle: Notes\nstatus: draft\ngenerated:\n\
+      \  by: sweep\n  at: '2026-10-04T09:00:00Z'\nat: '2026-10-04T09:00:00Z'\nmentions:\n- harbor\nrecord: m-s9\n\
+      ---\nHarbor and others were discussed.\n"
+env:
+  SPACE_NOW: '2026-10-05T09:00:00Z'
+expect:
+  exit: 0
+  writes_only_under: []
+  must_not_exist:
+  - _inbound/candidates/*.md
