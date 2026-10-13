@@ -10,8 +10,9 @@ on disk.
 
 ## When
 
-- Scheduled: every 15 minutes from the OS scheduler, registered by `onboard` (`schtasks` on
-  Windows, cron elsewhere), one task per checkout on the machine.
+- Scheduled: every 15 minutes from the OS scheduler, registered by `onboard` (a hidden Task
+  Scheduler task that also runs on battery on Windows, a cron line on macOS and Linux, a
+  systemd user timer on a Linux without cron), one task per checkout on the machine.
 - By hand, only when the person asks to land now or asks why something did not land.
 
 ## Run

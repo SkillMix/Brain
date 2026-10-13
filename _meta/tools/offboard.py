@@ -3,9 +3,11 @@
     python _meta/tools/offboard.py [root] [--online] [--dry-run]
 
 Prints what still waits (queue, held, candidates) and moves nothing; removes the sync task
-(online) and the personal instruction block from the user-level file; archives the
-repository (online, `gh repo archive`); sets `state: archived` on this space's own subjects
-whose home is this space; writes `_meta/state/offboard.yaml`. Deletes no file.
+(online: the Windows task, the cron line by its `# <task>` marker, or the systemd user timer
+and its two unit files) and the personal instruction block from the user-level file; archives
+the repository (online, `gh repo archive`); sets `state: archived` on this space's own
+subjects whose home is this space; writes `_meta/state/offboard.yaml`. Deletes no file of the
+space.
 """
 from __future__ import annotations
 
@@ -30,7 +32,7 @@ def run_cmd(argv, dry_run=False, cwd=None):
 
 
 def remove_sync_task(report, root, state, task_name, dry_run) -> None:
-    if os.name == "nt":
+    if onboard.SYSTEM == "Windows":
         present = run_cmd(["schtasks", "/Query", "/TN", task_name], dry_run)
         if not dry_run and present.returncode != 0:
             report.add("sync task removed", True, f"schtasks /Query /TN {task_name}",
@@ -41,15 +43,31 @@ def remove_sync_task(report, root, state, task_name, dry_run) -> None:
         ok = res.returncode == 0 and (dry_run or verify.returncode != 0)
         report.add("sync task removed", ok, f"schtasks /Query /TN {task_name}", res.stderr.strip()[:200] or task_name)
         return
-    current = run_cmd(["crontab", "-l"], dry_run).stdout
-    keep = [l for l in current.splitlines() if not ("sync.py" in l and str(root) in l)]
+    timer = Path.home() / ".config" / "systemd" / "user" / f"{task_name}.timer"
+    if timer.exists():   # a Linux without cron got a systemd user timer instead
+        run_cmd(["systemctl", "--user", "disable", "--now", timer.name], dry_run)
+        if not dry_run:
+            timer.unlink()
+            timer.with_suffix(".service").unlink(missing_ok=True)
+        run_cmd(["systemctl", "--user", "daemon-reload"], dry_run)
+        verify = run_cmd(["systemctl", "--user", "is-enabled", timer.name], dry_run)
+        ok = dry_run or verify.returncode != 0
+        report.add("sync task removed", ok, f"systemctl --user is-enabled {timer.name}",
+                   "timer disabled, its two unit files removed" if ok else "the timer is still enabled")
+        return
+    listed = run_cmd(["crontab", "-l"], dry_run)
+    if listed.returncode == 127:
+        report.add("sync task removed", True, "crontab -l", "no cron on this machine: nothing was registered")
+        return
+    current = listed.stdout
+    keep = [l for l in current.splitlines() if not onboard.is_sync_line(l, task_name, root)]
     if len(keep) != len(current.splitlines()):
-        with tempfile.NamedTemporaryFile("w", suffix=".cron", delete=False) as tmp:
+        with tempfile.NamedTemporaryFile("w", suffix=".cron", delete=False, encoding="utf-8", newline="\n") as tmp:
             tmp.write("\n".join(keep) + ("\n" if keep else ""))
         run_cmd(["crontab", tmp.name], dry_run)
         os.unlink(tmp.name)
     verify = run_cmd(["crontab", "-l"], dry_run).stdout
-    ok = dry_run or not any("sync.py" in l and str(root) in l for l in verify.splitlines())
+    ok = dry_run or not any(onboard.is_sync_line(l, task_name, root) for l in verify.splitlines())
     report.add("sync task removed", ok, "crontab -l", "no sync line left" if ok else "a sync line remains")
 
 
