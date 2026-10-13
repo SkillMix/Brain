@@ -24,6 +24,14 @@ task from the OS scheduler; removed the personal instruction block from the user
 instructions; archived the repository on the host (`--online`); set the owner's subject to
 `state: archived` in the registry; recorded each step; deleted nothing.
 
+## Forgetting
+
+`python _meta/tools/forget.py <space> list <subject id>` lists everything about one subject;
+it changes nothing. A personal space's raw records (feed files, witness pages) stay at offboard
+unless the person themselves says to remove them: then, and only then, run
+`python _meta/tools/offboard.py <space> --forget-records`. Git keeps history; a true erasure
+is a history rewrite only the law demands, and it is the person's call.
+
 ## Judgment left to you
 
 Before running, show the person what the tool will list as still waiting: queue items are

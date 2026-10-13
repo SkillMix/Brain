@@ -805,6 +805,68 @@ def moved_signals(root: Path, space, now) -> dict:
     return out
 
 
+MINT_SIGNALS = Path("_inbound") / "needs-you" / "mint-signals.yaml"
+
+
+def mint_signals(root: Path, space, reg, now) -> list:
+    """When a wall is needed (vision section 4): a second regular reader (three answers to one
+    asker about one subject in thirty scaled days), or a recurring group (the same two or more
+    other people on five records of one subject homed here in thirty scaled days). Each is one
+    proposal on Needs you, asked once."""
+    import yaml
+    since = now - space.scale(30 * 24)
+    asked = (yaml.safe_load((root / MINT_SIGNALS).read_text(encoding="utf-8")) or {}) \
+        if (root / MINT_SIGNALS).exists() else {}
+    items = list(asked.get("items") or [])
+    known = {i.get("id") for i in items}
+    readers: dict = {}
+    for row in _jsonl(root / "_meta" / "state" / "requests.jsonl"):
+        try:
+            if row.get("outcome") == "answered" and pages.parse_iso(row.get("at")) >= since:
+                key = (str(row.get("from")), str(row.get("subject") or row.get("class")))
+                readers[key] = readers.get(key, 0) + 1
+        except (TypeError, ValueError):
+            continue
+    for (asker, what), n in sorted(readers.items()):
+        sid = f"mint-signal-reader-{asker}-{what}"
+        if n >= 3 and sid not in known:
+            items.append({"id": sid, "kind": "question", "depends": 1,
+                          "text": f"{asker} asked about {what} {n} times in a month: a second regular reader. "
+                                  "Mint a space (a vault for a few names) that both read?",
+                          "recommendation": "yes, if what they ask is not for everyone",
+                          "default": "requests keep coming one by one"})
+    groups: dict = {}
+    own = {space.owner.strip().lower()}
+    for path, fm, _ in _read_pages(root / "knowledge" / "sources"):
+        sid = str(fm.get("subject") or "")
+        if not sid or (reg.home_of(sid) or space.name) != space.name:
+            continue
+        try:
+            if pages.parse_iso(fm.get("at")) < since:
+                continue
+        except (TypeError, ValueError):
+            continue
+        people = {str(p).strip().lower() for p in (fm.get("participants") or []) + (fm.get("to") or [])} - own
+        people.discard(str(fm.get("from") or "").strip().lower())
+        if len(people) >= 2:
+            key = (sid, tuple(sorted(people)))
+            groups[key] = groups.get(key, 0) + 1
+    for (sid, people), n in sorted(groups.items()):
+        gid = f"mint-signal-group-{sid}"
+        if n >= 5 and gid not in known:
+            items.append({"id": gid, "kind": "question", "depends": 1,
+                          "text": f"The same people keep sharing {sid} with you ({len(people)} people, {n} records "
+                                  "this month): a recurring group. Mint a space for it?",
+                          "recommendation": "yes: python _meta/tools/mint.py with the desk seed and the crew",
+                          "default": "it stays on your desk"})
+            known.add(gid)
+    if len(items) != len(asked.get("items") or []):
+        (root / MINT_SIGNALS).parent.mkdir(parents=True, exist_ok=True)
+        (root / MINT_SIGNALS).write_text(yaml.safe_dump({"items": items}, sort_keys=False), encoding="utf-8",
+                                         newline="\n")
+    return items
+
+
 def _projects_page(root: Path, space, reg, moved: dict, now) -> str:
     """The brain's roll-up of every project, generated from each home: its state, owner and
     home from the registry, the last signal and the last landing. Nothing is kept by hand."""
@@ -999,6 +1061,11 @@ def run(root, now=None, check: bool = False) -> StatusReport:
         outputs[f"knowledge/{kind}/index.md"] = _render_kind_index(kind, own, inherited, status_ids)
     if space.profile == "brain":
         outputs["live/projects.md"] = _projects_page(root, space, reg, moved, now)
+    if not check and space.profile in ("personal", "project"):
+        try:
+            mint_signals(root, space, reg, now)
+        except Exception:   # a proposal never stops the status pass
+            pass
     outputs["index.md"] = splice(_current(root / "index.md") or DEFAULT_INDEX, SUBJECTS_MARKERS,
                                  _subjects_block(by_kind, status_ids))
     outputs["knowledge/index.md"] = splice(_current(root / "knowledge" / "index.md") or DEFAULT_KNOWLEDGE,

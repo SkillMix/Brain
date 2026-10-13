@@ -903,8 +903,8 @@ def run(root, answers, offline=False, org=None, dry_run=False, home=None, user_i
         crew_mounts = []
         for project in answers.get("crew_projects") or []:
             pname = slugify(project.get("name") or "")
-            if not pname:
-                continue
+            if not pname or (project.get("vault") and answers.get("name") not in (project.get("audience") or [])):
+                continue   # a vault is mounted only by the names on it
             ppath = project.get("path") or f"mounts/{pname}"
             if offline and project.get("path") and Path(project["path"]).is_absolute():
                 ppath = os.path.relpath(project["path"], root).replace("\\", "/")

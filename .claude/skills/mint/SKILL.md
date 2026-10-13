@@ -26,6 +26,12 @@ ancestor flat (the brain and the division). Mint also links the new project's ch
 `python _meta/tools/mint.py <root> --seed work/<kind>/<subject>/<effort> --name <project>
 --crew <name> <name> [--offline]`
 
+A vault (what only a few named people may read: HR, finance, a deal):
+`python _meta/tools/mint.py <space> --vault --name <name> --audience "<name>" "<name>"`. It
+mounts the brain; nobody outside its audience mounts it. The status routine proposes a mint
+on Needs you when a second regular reader keeps asking about one subject or the same group
+keeps sharing one; you never mint without the person's yes.
+
 ## What the tool already did
 
 Created the project space from the template (`profile: project`, `parent` this space's
