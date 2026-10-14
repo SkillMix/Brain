@@ -170,7 +170,7 @@ Otherwise each route becomes a projection, then:
 | `confidence: low` | no projection; a question on Needs you with the agent's recommendation |
 | `confidence: medium` | `window` whatever the tier |
 | a high-stakes term in the projected content | `window`, lands pending (the closed list stays a floor) |
-| first-run review mode (4.6) | `window` |
+| a review period, only when `routing.review_until` is set (off by default, 4.6) | `window` |
 | otherwise | the agent's tier: `at_once` ships with the next sync (within 15 minutes); `window` ships after 24 hours and one morning view, which shows the agent's reason |
 
 The release scrub at ship time is unchanged (never-leaves, left-out, mode, secrets scan). The
@@ -216,14 +216,14 @@ A projection is a record handed sideways: `landing.py` files it under the destin
 - A project, when it is registered or first routed to: the router searches the workspace's
   witness pages for the subject (names, aliases, domains, shortcuts) back to the first mention,
   and the export re-reads, in full, the records whose pages are shallow.
-- **Review mode** (`routing: {review_until: <date>}` in `space.yaml`): until that date every
-  projection waits the window, so the owner sees the router's choices in the morning view before
-  at-once is trusted. Onboard sets it for a new workspace (two weeks by default; the length is
-  still the owner's open answer); the owner ends it early by removing the line or moving the date.
+- **No review period by default.** The router is live from day one: its at-once choices take
+  effect at once (the owner's decision, section 7). The setting `routing: {review_until: <date>}`
+  stays available for whoever wants every projection to wait the window until a date; onboard
+  never sets it.
 - **First proof:** the owner's records about the first client project are re-exported in full
   and routed. Expected outcome: the kickoff call (its relevant transcript segments), the client
-  mail threads and their open items reach the project; review mode keeps them in the veto queue
-  for the owner's morning view. The six items the 2026-10-14 patch staged may ship as they are;
+  mail threads and their open items reach the project, at once where the router chose so and
+  after the window where a gate forces it. The six items the 2026-10-14 patch staged may ship as they are;
   the router's projections of the same records follow with the verbatim parts, and the
   destination shows each record once (same title and time).
 
@@ -248,7 +248,7 @@ whole transcripts out before any judgment.
 
 - `route.py`: one test per gate row above; verbatim-span check (exact, whitespace-collapsed,
   refused paraphrase); the `whole` audience check (crew, client domain, an outsider); tiers,
-  floors and review mode; low confidence becomes a question; `answer` and `retract`; idempotence.
+  floors and the optional review period; low confidence becomes a question; `answer` and `retract`; idempotence.
 - `sweep.py`: private records never written; page refresh keeps the id; split above 900 KB.
 - `status.py` and `distill.py`: `informs` lines, `closes`, due dates in Coming up; candidates per
   `informs` kind.
@@ -265,8 +265,10 @@ their exact-identifier feeds); changing who may read a space.
 ## 7. The owner's answers on the open points (2026-10-14)
 
 1. **Never-leaves elsewhere in a record**: the clean parts travel after the window (as in 4.3).
-2. **Review mode**: built as the `routing.review_until` setting he can end early; its default
-   length (two weeks until he says otherwise) is his open answer.
+2. **Review mode**: none. "I don't want a review mode for now. Just put it live." The router's
+   tiers apply from day one, the first proof included; medium confidence, high-stakes terms and
+   never-leaves material elsewhere still force the window, low confidence still asks. The
+   `routing.review_until` setting stays in the tool, off unless set.
 3. **Quoted history in mail**: kept whole; the router sends only the new passage when the quoted
    part already travelled.
 4. **A record the reader cannot classify**: kept out of the repository and listed in his morning
