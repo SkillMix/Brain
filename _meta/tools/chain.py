@@ -333,6 +333,35 @@ def _pairs(values) -> dict:
     return out
 
 
+PROFILE_ORDER = {"personal": 0, "project": 1, "channel": 2, "brain": 3}
+
+
+def spaces_on_machine(workspace, person: str | None = None) -> list:
+    """The roots the person's chains run over: their workspace first, then every space on this
+    machine with a sync task (`~/.spaces/spaces.yaml`) that they own, projects before
+    channels and the brain last. A crew member's checkout of someone else's project is left to
+    its owner's machine, so a space's chain runs in one place."""
+    workspace = Path(workspace).resolve()
+    person = person or spaceyaml.load(workspace).owner
+    path = Path.home() / ".spaces" / "spaces.yaml"
+    try:
+        rows = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("spaces") or []
+    except (OSError, ValueError):
+        rows = []
+    found = []
+    for row in rows:
+        root = Path(str(row.get("root") or ""))
+        if not (root / "space.yaml").exists() or root.resolve() == workspace:
+            continue
+        try:
+            other = spaceyaml.load(root)
+        except Exception:
+            continue
+        if other.owner == person:
+            found.append((PROFILE_ORDER.get(other.profile, 2), other.name, root.resolve()))
+    return [workspace] + [r for _, _, r in sorted(found)]
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="chain.py", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -344,6 +373,9 @@ def main(argv=None) -> int:
     day.add_argument("--person")
     day.add_argument("--shadow", action="store_true")
     day.add_argument("--offline", nargs="*", default=[], metavar="name=path")
+    places = sub.add_parser("spaces")
+    places.add_argument("root", nargs="?", default=".")
+    places.add_argument("--person")
     virt = sub.add_parser("virtual")
     virt.add_argument("--days", type=int, required=True)
     virt.add_argument("--roots", nargs="+", required=True)
@@ -355,6 +387,10 @@ def main(argv=None) -> int:
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     offline = {k: Path(v) for k, v in _pairs(getattr(args, "offline", [])).items()} or None
+    if args.command == "spaces":
+        for root in spaces_on_machine(Path(args.root), args.person):
+            print(root.as_posix())
+        return 0
     if args.command == "sweep":
         result = sweep_chain(Path(args.root))
     elif args.command == "daily":

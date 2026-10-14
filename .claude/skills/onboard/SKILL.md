@@ -91,6 +91,11 @@ sweep, the first status and the tests; every step recorded as `{step, done, chec
 
 ## Other cases
 
+- A checkout on this machine without a sync task (a space made by hand, a corridor from an
+  older template): `python _meta/tools/onboard.py <checkout> --register-sync`. It registers the
+  task and adds the space to `~/.spaces/spaces.yaml`; the person's chains run over every space
+  listed there that they own (`python _meta/tools/chain.py spaces <workspace>` prints them).
+
 - A shadow space going live: `onboard.py --go-live --answers <file>` (the file's `mounts:`
   maps each mount name to its live repository).
 - A project that already has a repository: `python _meta/tools/swap.py <checkout> --name
