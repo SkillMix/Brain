@@ -2,8 +2,8 @@
 
 Runs after every sweep. It takes the subjects whose evidence moved since the last
 run (`_meta/state/distill-watermark.yaml`) and that are active and either
-important, stateful or recently asked about (a `tier: evidence` line in
-`_meta/questions.log`), and writes one candidate per subject at
+important, stateful or asked about (a line in `_meta/questions.log` naming the
+subject), and writes one candidate per subject at
 `_inbound/candidates/<subject>.md`: the subject's page body (or a stub) followed by
 a `## New evidence` list, one line per evidence page. While that candidate is an
 unsigned draft the next run rewrites it in place with the merged evidence list, so
@@ -11,8 +11,9 @@ the queue grows with subjects that moved, never with runs. A witness page whose
 text starts with `Decision:` becomes its own candidate under knowledge/decisions/.
 
 Evidence for a subject = witness pages under knowledge/sources/ carrying
-`subject: <id>` or `<id>` in `mentions`, plus landed records in
-_inbound/candidates/ (frontmatter `released_from` and `subject: <id>`). A page is
+`subject: <id>` or `<id>` in `mentions`, landed records in _inbound/candidates/
+(frontmatter `released_from` and `subject: <id>`), and entries of the daily notes under
+journal/ that name the subject (a `subject: <id>` line or a desk path `work/<kind>/<id>/`). A page is
 new when `at` or `generated.at` is after the watermark.
 
 Nothing here writes `status: stable`, edits a page under knowledge/, or runs git.
@@ -161,6 +162,53 @@ def gather_evidence(root, reader: Reader) -> list:
             item = _evidence(root, path, fm, body, landed=True)
             if item:
                 found.append(item)
+    found.extend(journal_evidence(root))
+    return found
+
+
+JOURNAL = Path("journal")
+JOURNAL_FILE = re.compile(r"(\d{4}-\d{2}-\d{2})\.md$")
+ENTRY_HEAD = re.compile(r"^##\s+(?:(\d{1,2}):(\d{2})Z?)?\s*[:\-–—]*\s*(.*)$")
+SUBJECT_LINE = re.compile(r"^\s*(?:[-*]\s*)?subject:\s*`?([a-z0-9][a-z0-9-]*)`?\s*$", re.I | re.M)
+DESK_PATH = re.compile(r"work/[a-z0-9-]+/([a-z0-9][a-z0-9-]*)/")
+
+
+def journal_evidence(root) -> list:
+    """Entries of the person's daily notes as evidence, so what a session captured reaches
+    distill like a witness page. An entry joins a subject only by naming it: a `subject: <id>`
+    line or a desk path `work/<kind>/<id>/`, never by a word it merely mentions."""
+    root = Path(root)
+    base = root / JOURNAL
+    found = []
+    if not base.is_dir():
+        return found
+    for path in sorted(base.rglob("*.md")):
+        day = JOURNAL_FILE.search(path.name)
+        if not day:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+            changed = dt.datetime.fromtimestamp(path.stat().st_mtime, dt.timezone.utc)
+        except OSError:
+            continue
+        rel = path.relative_to(root).as_posix()
+        for chunk in re.split(r"(?m)^(?=## )", text):
+            if not chunk.startswith("## "):
+                continue
+            head, _, body = chunk.partition("\n")
+            match = ENTRY_HEAD.match(head.strip())
+            hour, minute, title = (match.group(1), match.group(2), match.group(3)) if match else (None, None, head[3:])
+            try:
+                at = pages.parse_iso(f"{day.group(1)}T{int(hour or 12):02d}:{int(minute or 0):02d}:00Z")
+            except (TypeError, ValueError):
+                continue
+            subjects = list(dict.fromkeys(SUBJECT_LINE.findall(body) + DESK_PATH.findall(body)))
+            if not subjects:
+                continue
+            found.append(Evidence(record=f"journal-{at:%Y%m%dT%H%M}", rel=rel, at=at,
+                                  arrived=max(at, changed), title=title.strip() or f"journal {day.group(1)}",
+                                  body=body, subjects=subjects, landed=False,
+                                  fm={"source": "journal", "audience": "owner", "subject": subjects[0]}))
     return found
 
 
@@ -187,7 +235,8 @@ class DistillReport:
 
 
 def asked_subjects(root) -> set:
-    """Subjects a question was answered about from evidence only (tier: evidence)."""
+    """Subjects someone asked about: any question-log line naming a subject, whatever the
+    tier of its answer (the query skill logs witness, working and desk answers too)."""
     path = Path(root) / QUESTIONS
     asked = set()
     if not path.exists():
@@ -200,7 +249,7 @@ def asked_subjects(root) -> set:
             entry = json.loads(line)
         except ValueError:
             continue
-        if isinstance(entry, dict) and entry.get("tier") == "evidence" and entry.get("subject"):
+        if isinstance(entry, dict) and entry.get("subject"):
             asked.add(str(entry["subject"]))
     return asked
 
@@ -227,7 +276,8 @@ def evidence_line(ev: Evidence) -> str:
     # text can hold what that space's left-out list forbids. A record without a title is
     # named by its id; the signer opens it where it lives.
     text = " ".join(ev.title.split()) or f"record {ev.record}"
-    return f"- {ev.at:%Y-%m-%d}: {text} ({'landed' if ev.landed else 'witness'}, {ev.record})"
+    kind = "landed" if ev.landed else ("journal" if ev.fm.get("source") == "journal" else "witness")
+    return f"- {ev.at:%Y-%m-%d}: {text} ({kind}, {ev.record})"
 
 
 def _draft_or_none(path: Path, reader: Reader):

@@ -43,6 +43,15 @@ Any knowledge question: "what did we decide about X", "what is going on with Har
 7. In a personal space, an answer that took more than one lookup is captured to the daily
    note with its sources (the capture skill), so the next asker starts from it.
 
+### "Prep me for the call with <subject or person>"
+
+Steps 1 to 5 for that subject, then one screen, in this order: what we owe them and what we
+wait on (the status page's open items, newest first, with their ids); the last contact (the
+newest witness page for the subject: date, channel, one line); what is coming up; anything
+signed that changed since the last contact; and an agenda of at most three points, each tied
+to an open item. Grounding lines as in step 5. Nothing is sent: a follow-up the person wants
+afterwards is drafted into `outbox/`.
+
 ## What the tool already did
 
 Nothing runs the answer. `status.py` kept the hubs, status pages and `ids.yaml` current;

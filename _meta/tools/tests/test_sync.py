@@ -228,3 +228,25 @@ def test_clean_submodule_pin_advances_as_chore_pins(repo, tmp_path):
     assert run_lines(repo)[-1]["notes"]["pins"] == ["brain"]
     assert head_files(repo) == ["brain"]  # the pins commit carries only the pin
     assert (repo / "brain" / "index.md").read_text(encoding="utf-8") == "# Brain\n\nmore\n"
+
+
+def test_protected_changes_go_to_their_own_branch_so_the_rest_lands_on_green(repo, monkeypatch):
+    """A change to space.yaml (protected) and a desk note in one run: the note's branch holds
+    only the note, the protected branch only space.yaml; a second run pushes nothing new."""
+    monkeypatch.setattr(sync.Run, "gh", lambda self, *args: None)
+    data = (repo / "space.yaml").read_text(encoding="utf-8") + "planning: personal/planning/x.md\n"
+    write(repo / "space.yaml", data, minutes_old=20)
+    write(repo / "work" / "notes.md", "# Notes\n\nline one\nline two\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    host = sync.hostname()
+    git(repo, "fetch", "-q", "origin")
+    plain = git(repo, "diff", "--name-only", "origin/main", f"origin/sync/{host}").stdout.split()
+    guarded = git(repo, "diff", "--name-only", "origin/main", f"origin/sync/{host}-protected").stdout.split()
+    assert "work/notes.md" in plain and "space.yaml" not in plain
+    assert guarded == ["space.yaml"]
+    assert sync.main(["--root", str(repo)]) == 0   # carries the first run's line along
+    git(repo, "fetch", "-q", "origin")
+    before = git(repo, "rev-parse", f"origin/sync/{host}", f"origin/sync/{host}-protected").stdout
+    assert sync.main(["--root", str(repo)]) == 0   # nothing new: neither branch moves
+    git(repo, "fetch", "-q", "origin")
+    assert git(repo, "rev-parse", f"origin/sync/{host}", f"origin/sync/{host}-protected").stdout == before

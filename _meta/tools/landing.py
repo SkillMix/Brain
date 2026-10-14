@@ -239,6 +239,17 @@ def land(root, space: spaceyaml.Space | None = None, reg=None, now: dt.datetime 
                 report.conflicts.append(str(fm.get("id") or path.stem))
             continue
         if fm.get("released_from") and not claims_signature(fm) and str(fm.get("type")) == "source":
+            # a high-stakes record waits for the domain owner's yes; it is never filed silently
+            if str(fm.get("landing") or "").startswith("pending"):
+                continue
+            term = fm.get("high_stakes") and "flagged" or release.first_term(
+                f"{fm.get('title', '')}\n{body}", space.high_stakes)
+            if term:
+                pid = str(fm.get("id") or path.stem)
+                _mark(path, fm, body, landing=f"pending: high stakes ({term})",
+                      **{"for": domain_owner(reg, space, fm.get("subject"))})
+                report.pending.append(pid)
+                continue
             _file_record(root, path, fm, body, now, report)
             continue
         if not fm.get("released_from") or not claims_signature(fm):

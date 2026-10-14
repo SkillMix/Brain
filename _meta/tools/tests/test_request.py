@@ -74,7 +74,9 @@ def test_a_status_request_is_answered_at_once_by_the_standing_choice(tmp_path):
     assert '"outcome": "answered"' in asked
     qlog = (roots["chloe"] / "_meta/questions.log").read_text(encoding="utf-8")
     assert '"answered_by_request": true' in qlog
-    assert (roots["chloe"] / "_meta" / "state" / f"answer-notice-{rid}.json").exists()
+    import owner_email
+    (notice,) = owner_email.pending(roots["chloe"])
+    assert f"answer-{rid}" in notice.read_text(encoding="utf-8")
 
 
 def test_correspondence_is_never_answered_and_detail_waits_for_the_holder(tmp_path):

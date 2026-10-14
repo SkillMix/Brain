@@ -361,7 +361,8 @@ def test_item_follows_its_subject_to_a_new_home(tmp_path):
             subject["home"] = "brain"
     reg_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
     report = release.ship(ada, now=NOW, offline_roots={"brain": brain})
-    assert report.rerouted == 1 and report.shipped == 1 and report.unreachable == 0
+    # the item and the signal its record raised both follow the subject
+    assert report.rerouted == 2 and report.shipped == 1 and report.unreachable == 0
     landed_pages = list((brain / "_inbound" / "candidates").glob("*.md"))
     assert len(landed_pages) == 1
     landed_fm, _ = pages.read(landed_pages[0])
@@ -399,3 +400,73 @@ def test_brain_destination_is_cloned_through_the_brain_mount(tmp_path, monkeypat
     assert report.shipped + report.signals == 1 and report.unreachable == 0
     assert (spaces_home / "lantern" / ".git").exists()
     assert list((spaces_home / "lantern" / "_inbound").rglob("*"))
+
+
+def test_live_source_waits_while_the_destination_looks_shadow(tmp_path):
+    """A live space never holds an item only because a destination still runs shadow: the
+    destination may be a stale view, so the item waits in the queue and ships once it is live."""
+    _, harbor, ada = build(tmp_path, ada_mode="live", harbor_mode="shadow",
+                           standing_choices=[{"destination": "harbor", "kind": "mail"}])
+    write_feed(ada, [record()])
+    sweep.run(ada, now=NOW)
+    report = release.ship(ada, now=NOW, offline_roots={"harbor": harbor})
+    assert report.held == 0 and report.shipped == 0 and report.waiting >= 1
+    assert len(queue_paths(ada)) == 1 and held_items(ada) == []
+    data = yaml.safe_load((harbor / "space.yaml").read_text(encoding="utf-8"))
+    data["mode"] = "live"
+    data.pop("time_scale", None)
+    (harbor / "space.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    report = release.ship(ada, now=NOW, offline_roots={"harbor": harbor})
+    assert report.shipped == 1 and queue_paths(ada) == []
+
+
+def test_items_held_for_a_shadow_destination_return_to_the_queue(tmp_path):
+    _, harbor, ada = build(tmp_path, standing_choices=[{"destination": "harbor", "kind": "mail"}])
+    write_feed(ada, [record()])
+    sweep.run(ada, now=NOW)
+    (item,) = queue_paths(ada)
+    fm, body = pages.read(item)
+    release.hold(ada, fm, body, "mode", "this space runs live, the destination harbor runs shadow")
+    item.unlink()
+    report = release.ship(ada, now=NOW, offline_roots={"harbor": harbor})
+    assert report.requeued == 1 and report.shipped == 1 and held_items(ada) == []
+
+
+def test_refresh_checkout_reads_the_destination_as_it_is_now(tmp_path):
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.test"]
+    origin = make_space(tmp_path / "harbor", profile="project", name="harbor", mode="shadow", time_scale=48)
+    subprocess.run(git + ["init", "--quiet", "-b", "main"], cwd=origin, check=True)
+    subprocess.run(git + ["add", "-A"], cwd=origin, check=True)
+    subprocess.run(git + ["commit", "--quiet", "-m", "x"], cwd=origin, check=True)
+    bare = tmp_path / "harbor.git"
+    subprocess.run(["git", "clone", "--quiet", "--bare", str(origin), str(bare)], check=True)
+    clone = tmp_path / "home" / "harbor"
+    subprocess.run(["git", "clone", "--quiet", str(bare), str(clone)], check=True)
+    data = yaml.safe_load((origin / "space.yaml").read_text(encoding="utf-8"))
+    data["mode"] = "live"
+    data.pop("time_scale", None)
+    (origin / "space.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    subprocess.run(git + ["commit", "--quiet", "-am", "live"], cwd=origin, check=True)
+    subprocess.run(["git", "push", "--quiet", str(bare), "main"], cwd=origin, check=True)
+    assert release.refresh_checkout(clone) is True
+    assert yaml.safe_load((clone / "space.yaml").read_text(encoding="utf-8"))["mode"] == "live"
+
+
+def test_signal_follows_its_subject_to_a_new_home(tmp_path):
+    """A signal addressed to a space that was offboarded since goes to the subject's current
+    home, like a queue item, instead of waiting forever."""
+    brain, _, ada = build(tmp_path)
+    signals = ada / "_outbound" / "signals"
+    signals.mkdir(parents=True, exist_ok=True)
+    (signals / "p-0000c001.yaml").write_text(yaml.safe_dump(
+        {"id": "p-0000c001", "destination": "harbor", "subject": "harbor", "at": pages.iso(NOW)}),
+        encoding="utf-8")
+    reg_path = brain / "_meta" / "subjects.yaml"
+    data = yaml.safe_load(reg_path.read_text(encoding="utf-8"))
+    for subject in data["subjects"]:
+        if subject["id"] == "harbor":
+            subject["home"] = "brain"
+    reg_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    report = release.ship(ada, now=NOW, offline_roots={"brain": brain})
+    assert report.rerouted == 1 and report.signals == 1
+    assert list((brain / "_inbound" / "signals").glob("*.yaml"))

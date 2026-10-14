@@ -81,3 +81,24 @@ def test_the_guarded_template_sync_puts_back_a_change_that_lowers_the_score(tmp_
     report = template_sync.guarded(root, source=str(tpl))
     assert report.reverted is False
     assert (root / "_meta" / "tools" / "sweep.py").read_text(encoding="utf-8") == "print('v2')\n"
+
+
+def test_only_a_guarded_template_sync_resets_the_weekly_clock(tmp_path, monkeypatch):
+    """Hand syncs do not count: the weekly sync guarded by the tests still comes due."""
+    tpl = tmp_path / "tpl"
+    (tpl / "_meta" / "tools").mkdir(parents=True)
+    (tpl / "_meta" / "tools" / "sweep.py").write_text("print('v2')\n", encoding="utf-8")
+    root = make_space(tmp_path / "ada")
+    prov = root / "_meta" / "state" / "template-version.yaml"
+    prov.parent.mkdir(parents=True, exist_ok=True)
+    prov.write_text("repo: x\n", encoding="utf-8")
+    runs = root / "_meta" / "state" / "runs.jsonl"
+    runs.write_text(json.dumps({"routine": "template-sync", "at": pages.iso(NOW),
+                                "notes": {"added": 0, "updated": 3}}) + "\n", encoding="utf-8")
+    space = spaceyaml.load(root)
+    assert chain._template_sync_due(space, NOW) is True
+    monkeypatch.setattr(template_sync, "_failures", lambda root: 0)
+    template_sync.guarded(root, source=str(tpl))
+    lines = [json.loads(l) for l in runs.read_text(encoding="utf-8").splitlines()]
+    assert any((l.get("notes") or {}).get("guarded") for l in lines)
+    assert chain._template_sync_due(spaceyaml.load(root), spaceyaml.load(root).now()) is False

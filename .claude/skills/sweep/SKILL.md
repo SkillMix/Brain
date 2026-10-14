@@ -58,7 +58,9 @@ it, say so in your run line, continue with the others) or a record that is not v
 - Never reclassify, move or edit a queue, held or signal item; never write into another
   space (release does that, through the sync script's release leg).
 - Never write `status: stable`; never send, post, spend or delete; never run git.
-- Never a secret in a feed file (hard rule 1): a key or password is exported as `[redacted]`.
+- Never a secret in a feed file (hard rule 1): a key or password is exported as `[redacted]`,
+  and the record carries `"redacted": true`; the sweep then queues one security notice to the
+  person (where and when, never the value).
 
 ## Scheduled invocation
 

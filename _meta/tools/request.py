@@ -315,21 +315,19 @@ def collect(root, now: dt.datetime | None = None, offline_roots: dict | None = N
 
 
 def _notice(root: Path, space, req: dict, body: str) -> None:
-    """An owner notice payload the agent sends at once (never a chat self-message)."""
+    """An owner notice the chain sends at once to the person themselves (never a chat
+    self-message), queued once per request."""
     try:
         import owner_email
     except ImportError:
         return
     notice = {"kind": "fyi", "sender": "request", "title": "One answer arrived",
               "summary": f"Your question to {req.get('to')} was answered. It waits on your list.",
-              "allow_terms": [space.name, str(req.get("to"))]}
+              "allow_terms": [space.name, str(req.get("to"))], "key": f"answer-{req.get('id')}"}
     try:
-        payload = owner_email.render(notice, [space.owner_email] if "@" in space.owner_email else [],
-                                     today=f"{space.now():%Y-%m-%d}")
-    except Exception:
+        owner_email.queue(root, notice, today=f"{space.now():%Y-%m-%d}")
+    except (Exception, SystemExit):
         return
-    out = root / "_meta" / "state" / f"answer-notice-{req.get('id')}.json"
-    out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n")
 
 
 # ----- the holder --------------------------------------------------------------------------

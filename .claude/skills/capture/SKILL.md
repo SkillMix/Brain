@@ -27,6 +27,10 @@ No tool. The instruction gives `<space root>`; then:
    to a procedure, and every action of yours with how to undo it. Start each entry with
    a `## HH:MMZ — <topic>` heading and, when you know your session's id, a marker
    `<!-- session: <id> -->`: the transcript adapter counts a session as captured by either.
+   When the entry is about a subject in the registry (this space's or a mounted
+   `_meta/subjects.yaml`), end it with a line `subject: <id>`: distill attaches the entry to
+   that subject and proposes it for signing. An entry that names a desk folder
+   `work/<kind>/<id>/` attaches the same way; one without either stays a note.
    Read the file first; append; never rewrite what is there.
 3. A question answered with more than one lookup: its answer and sources as one entry, plus
    the question log entry (the query skill).
@@ -36,7 +40,8 @@ No tool. The instruction gives `<space root>`; then:
 ## What the tool already did
 
 `onboard` installed the instruction with the space path; `sync.py` lands the journal
-(append-only, merged by union); `distill.py` reads it.
+(append-only, merged by union); `distill.py` reads every entry that names a subject and lists
+it, by title only, as evidence on that subject's candidate.
 
 ## Judgment left to you
 

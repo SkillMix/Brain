@@ -183,3 +183,36 @@ def test_cli_runs(tmp_path, capsys):
     witness(root, "rec-1", "harbor", "Hello.\n", NOW - D)
     assert distill.main([str(root)]) == 0
     assert "candidates" in capsys.readouterr().out
+
+
+def test_a_question_counts_whatever_tier_its_answer_had(tmp_path):
+    """The query skill logs witness, working or desk answers; any logged question about a
+    subject makes it 'asked about'."""
+    root = make_space(tmp_path / "ada", subjects=[
+        {"id": "ferry-notes", "kind": "topics", "stateful": False}])
+    witness(root, "rec-1", "ferry-notes", "A note.\n", NOW - D)
+    (root / "_meta" / "questions.log").write_text("# Question log\n" + json.dumps({
+        "at": pages.iso(NOW - H), "question": "what about the ferry notes?",
+        "subject": "ferry-notes", "tier": "desk", "pages": []}) + "\n", encoding="utf-8")
+    distill.run(root, now=NOW)
+    assert [p.name for p in candidates(root)] == ["ferry-notes.md"]
+
+
+def test_daily_note_entries_that_name_a_subject_become_evidence(tmp_path):
+    """What a session captured in the daily note reaches distill: an entry joins a subject by a
+    `subject:` line or a desk path, never by a word it merely mentions."""
+    root = make_space(tmp_path / "ada", subjects=[
+        {"id": "harbor", "kind": "projects", "title": "Harbor", "important": True},
+        {"id": "ferry", "kind": "projects", "title": "Ferry", "important": True}])
+    note = root / "journal" / "2026" / "10" / "2026-10-04.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    note.write_text(
+        "# 2026-10-04\n\n"
+        "## 10:00Z: go-live agreed\n\n- Agreed with Ben: Harbor goes live on 3 November.\n- subject: harbor\n\n"
+        "## 11:30Z: kickoff notes filed\n\n- Notes in `work/projects/harbor/kickoff/`.\n\n"
+        "## 12:00Z: ferry mentioned only\n\n- The ferry came up in passing.\n", encoding="utf-8")
+    distill.run(root, now=NOW)
+    assert [p.name for p in candidates(root)] == ["harbor.md"]
+    _, body = pages.read(root / "_inbound" / "candidates" / "harbor.md")
+    assert "go-live agreed" in body and "kickoff notes filed" in body and "journal" in body
+    assert "Harbor goes live" not in body   # titles only, never the entry's text

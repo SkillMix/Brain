@@ -154,3 +154,22 @@ def test_record_send_writes_the_canonical_line_and_the_cli_guard(tmp_path, monke
     assert morning_view.main([str(root), "record-send", "--failed", "no connector"]) == 0
     line = json.loads((root / "_meta/state/runs.jsonl").read_text(encoding="utf-8").splitlines()[-1])
     assert line["notes"] == {"step": "send", "failed": "no connector"}
+
+
+def test_silent_landings_count_without_a_doubt_item_and_include_the_homes_you_own(tmp_path):
+    """The count is on the briefing every day, and it counts what landed in the spaces this
+    person owns (their workspace and the mounted homes they own), not only the workspace."""
+    import yaml
+    harbor = make_space(tmp_path / "harbor", profile="project", name="harbor", owner="Ada Okafor")
+    other = make_space(tmp_path / "ferry", profile="project", name="ferry", owner="Ben Liu")
+    root = make_space(tmp_path / "ada", owner_email="ada@lantern.example")
+    data = yaml.safe_load((root / "space.yaml").read_text(encoding="utf-8"))
+    data["mounts"] = [{"name": "harbor", "path": str(harbor)}, {"name": "ferry", "path": str(other)}]
+    (root / "space.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    for space_root in (harbor, other):
+        path = space_root / "_meta/state/landed.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"at": pages.iso(NOW - dt.timedelta(days=1)), "id": "p-1"}) + "\n",
+                        encoding="utf-8")
+    report = morning_view.run(root, "Ada Okafor", now=NOW)
+    assert report.counts.get("landed_silently") == 1

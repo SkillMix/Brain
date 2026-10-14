@@ -73,3 +73,23 @@ def test_todays_meetings_say_who_is_who(tmp_path):
     assert "Ada Okafor:" not in text
     lines = morning_view._today_lines(root)
     assert lines and lines[0].startswith("- 2026-10-12 14:00")
+
+
+def test_saying_an_item_is_done_closes_it_until_the_thread_moves_again(tmp_path):
+    """"Item 2 of Harbor is done": the status verb closes that thread; the page lists it under
+    recently closed with who said so, and a newer record in the thread opens it again."""
+    root = make_space(tmp_path / "ada", subjects=[HARBOR], owner_email="ada@lantern.example")
+    page = witness(root, "m1", "2026-10-11T08:00:00Z", subject="harbor", kind="mail",
+                   title="Can you send the plan?", **{"from": "ops@tidewater.example", "to": ["ada@lantern.example"]})
+    pid = pages.read(page)[0]["id"]
+    status.run(root, now=NOW)
+    assert pid in page_text(root, "harbor").split("### We owe")[1]
+    status.close(root, "harbor", pid, as_="done", by="Ada Okafor", now=NOW)
+    status.run(root, now=NOW)
+    text = page_text(root, "harbor")
+    assert "### We owe" not in text
+    assert "Can you send the plan? (done by Ada Okafor" in text
+    witness(root, "m2", "2026-10-13T08:00:00Z", subject="harbor", kind="mail",
+            title="Re: Can you send the plan?", **{"from": "ops@tidewater.example", "to": ["ada@lantern.example"]})
+    status.run(root, now=NOW + dt.timedelta(days=1))
+    assert "### We owe" in page_text(root, "harbor")

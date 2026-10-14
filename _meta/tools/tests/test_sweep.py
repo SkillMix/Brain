@@ -267,3 +267,19 @@ def test_reattach_does_not_rehold_a_doubt_record(tmp_path):
     assert second.held_in_doubt == 0 and third.held_in_doubt == 0
     assert len(list((ada / "_outbound" / "held").glob("*.md"))) == 1
 
+
+
+def test_a_redacted_credential_raises_one_security_notice_for_the_person(tmp_path):
+    """A record exported with a key or password redacted (or one the scan still finds) queues a
+    plain security notice to the person; the value is never in it, and it is queued once."""
+    import owner_email
+    _, _, ada = build(tmp_path, owner_email="ada@lantern.example")
+    write_feed(ada, [record("m-0009", text="The login is [redacted], use it for the portal.", redacted=True)])
+    sweep.run(ada, now=NOW)
+    (notice,) = owner_email.pending(ada)
+    data = json.loads(notice.read_text(encoding="utf-8"))
+    assert data["kind"] == "security" and data["payload"]["to"] == ["ada@lantern.example"]
+    assert "[redacted]" not in json.dumps(data["notice"])
+    write_feed(ada, [record("m-0009", text="The login is [redacted], use it for the portal.", redacted=True)])
+    sweep.run(ada, now=NOW)
+    assert len(owner_email.pending(ada)) == 1
