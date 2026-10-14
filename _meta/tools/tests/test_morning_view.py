@@ -173,3 +173,12 @@ def test_silent_landings_count_without_a_doubt_item_and_include_the_homes_you_ow
                         encoding="utf-8")
     report = morning_view.run(root, "Ada Okafor", now=NOW)
     assert report.counts.get("landed_silently") == 1
+
+
+def test_a_channel_writes_no_page_where_its_profile_has_no_live_folder(tmp_path):
+    """A channel has no `live/`: its briefing still counts and queues, but leaves no page
+    behind that would fail the channel's own validation."""
+    root = make_space(tmp_path / "corridor", profile="channel", name="corridor")
+    morning_view.run(root, "Ada Okafor", now=NOW)
+    assert not (root / "live").exists()
+    assert (root / "_meta" / "state" / "morning-notice.json").exists()

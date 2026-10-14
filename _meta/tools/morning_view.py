@@ -313,7 +313,8 @@ def run(root, person: str, now: dt.datetime | None = None, shadow: bool = False,
     health = _health_lines(root)
     page_fm = {"id": _page_id(root), "type": "snapshot", "title": "Needs you", "status": "draft",
                "generated": pages.generated(ROUTINE, now), "person": person}
-    pages.write(root / PAGE, page_fm, _markdown(root, space, person, items, now, limit, health))
+    if PAGE.parts[0] not in spaceyaml.PROFILE_TABLE.get(space.profile, {}).get("forbidden", []):
+        pages.write(root / PAGE, page_fm, _markdown(root, space, person, items, now, limit, health))
     notice, base = _notice(space, items, counts, health, shadow)
     payload = _payload(space, notice, base, shadow, now)
     _write_json(root / NOTICE, notice)
