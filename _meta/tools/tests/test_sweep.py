@@ -495,10 +495,13 @@ def test_the_export_contract_asks_for_depth_and_the_attachments_of_matching_thre
     scheduled routine both ask for full mail and document text, call summaries with their action
     items and key points (never the transcript), event descriptions and matching attachments."""
     from pathlib import Path
+
+    import pytest
     root = Path(sweep.__file__).resolve().parents[2]
-    skill = (root / ".claude" / "skills" / "sweep" / "SKILL.md").read_text(encoding="utf-8")
-    chain = (root / "_meta" / "templates" / "routines" / "sweep-chain.md").read_text(encoding="utf-8")
-    for text in (skill, chain):
+    paths = (root / ".claude" / "skills" / "sweep" / "SKILL.md", root / "_meta" / "templates" / "routines" / "sweep-chain.md")
+    if not all(p.exists() for p in paths):
+        pytest.skip("this repository does not carry the skills (a project may keep .claude/skills untracked)")
+    for text in (p.read_text(encoding="utf-8") for p in paths):
         flat = " ".join(text.split())
         assert "8,000 characters" in flat and "sweep.py <root> --attachments" in flat
         assert "action items" in flat and "key points" in flat and "description" in flat
