@@ -201,8 +201,13 @@ def collect(root: Path, space, reg, now) -> dict:
     known = {s.id for s in reg.everywhere()}
     found: dict = {}
 
+    seen: set = set()
+
     def add(sid, tier, scope_, title, at, rel="", pid="", text="", section="timeline", ptype="",
             status="", arrived=None, direction=""):
+        if (sid, section, title, at) in seen:   # one record witnessed twice shows once
+            return
+        seen.add((sid, section, title, at))
         found.setdefault(sid, []).append(Evidence(sid, tier, scope_, title, at, rel, pid, text,
                                                   section, ptype, status, arrived, direction))
 
@@ -223,9 +228,11 @@ def collect(root: Path, space, reg, now) -> dict:
             add(sid, tier, scope, title, at, rel, pid, body, arrived=_stamp(fm))   # and on the timeline
             continue
         add(sid, tier, scope, title, at, rel, pid, body, arrived=_stamp(fm))
-        key = (sid, _thread_of(fm, title))
-        if key not in threads or at > threads[key][0]:
-            threads[key] = (at, tier, title, rel, pid, body, _direction(fm, own))
+        key, direction = (sid, _thread_of(fm, title)), _direction(fm, own)
+        last = threads.get(key)
+        # the newest record holds the thread; at the same moment, the one that knows who moves next
+        if last is None or at > last[0] or (at == last[0] and direction and not last[6]):
+            threads[key] = (at, tier, title, rel, pid, body, direction)
     open_since = now - space.scale(OPEN_DAYS * 24)
     for (sid, thread), (at, tier, title, rel, pid, body, direction) in threads.items():
         said = closed.get((sid, thread))

@@ -283,3 +283,52 @@ def test_a_redacted_credential_raises_one_security_notice_for_the_person(tmp_pat
     write_feed(ada, [record("m-0009", text="The login is [redacted], use it for the portal.", redacted=True)])
     sweep.run(ada, now=NOW)
     assert len(owner_email.pending(ada)) == 1
+
+
+def test_a_source_added_later_is_read_in_full_once(tmp_path):
+    """Each feed keeps its own watermark: a tracker connected after the mail has run brings its
+    older records in, instead of falling behind the mail's watermark."""
+    _, _, ada = build(tmp_path)
+    write_feed(ada, [record("m-0100", at="2026-10-12T08:00:00Z")])
+    sweep.run(ada, now=NOW)
+    data = yaml.safe_load((ada / "space.yaml").read_text(encoding="utf-8"))
+    data["sources"].append({"name": "tracker", "adapter": "files", "audience": "owner"})
+    (ada / "space.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    write_feed(ada, [record("t-0001", at="2026-10-01T08:00:00Z", source="tracker", kind="issue",
+                            subject="HAR-1: the export", issue="HAR-1", state="Todo")], source="tracker")
+    report = sweep.run(ada, now=NOW)
+    assert report.witness_written == 1
+    assert list((ada / "knowledge" / "sources" / "2026" / "10").glob("*t-0001*.md"))
+    assert sweep.run(ada, now=NOW).witness_written == 0
+
+
+def test_no_release_when_the_home_reads_that_channel_itself(tmp_path):
+    """A record from a channel the subject's home sweeps on its own stays a witness page here:
+    no queue item, no signal, no second copy at the home."""
+    _, harbor, ada = build(tmp_path)
+    data = yaml.safe_load((harbor / "space.yaml").read_text(encoding="utf-8"))
+    data["sources"] = [{"name": "chat", "adapter": "files", "audience": "crew", "channels": ["C-HARBOR"]}]
+    (harbor / "space.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    reg = harbor.parent / "brain" / "_meta" / "subjects.yaml"
+    regdata = yaml.safe_load(reg.read_text(encoding="utf-8"))
+    for s in regdata["subjects"]:
+        if s["id"] == "harbor":
+            s["match"] = dict(s.get("match") or {}, channel="C-HARBOR")
+    reg.write_text(yaml.safe_dump(regdata, sort_keys=False), encoding="utf-8")
+    write_feed(ada, [record("s-0001", source="chat", kind="message", identifiers={"channel": "C-HARBOR"})],
+               source="chat")
+    data = yaml.safe_load((ada / "space.yaml").read_text(encoding="utf-8"))
+    data["sources"].append({"name": "chat", "adapter": "files", "audience": "owner"})
+    (ada / "space.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    report = sweep.run(ada, now=NOW)
+    assert report.attached == 1 and report.queued == 0 and report.signals == 0
+
+
+def test_a_record_id_with_characters_files_cannot_hold_still_gets_its_page(tmp_path):
+    _, _, ada = build(tmp_path)
+    write_feed(ada, [record("SM-224@2026-10-02T15:46:23Z", subject="A/B: test")])
+    report = sweep.run(ada, now=NOW)
+    assert report.witness_written == 1
+    (page,) = [p for p in (ada / "knowledge" / "sources").rglob("*.md") if "SM-224" in p.name]
+    assert ":" not in page.name and pages.read(page)[0]["record"] == "SM-224@2026-10-02T15:46:23Z"
+    assert sweep.file_name("lantern/harbor#310") == "lantern-harbor-310"

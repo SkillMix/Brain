@@ -93,3 +93,24 @@ def test_saying_an_item_is_done_closes_it_until_the_thread_moves_again(tmp_path)
             title="Re: Can you send the plan?", **{"from": "ops@tidewater.example", "to": ["ada@lantern.example"]})
     status.run(root, now=NOW + dt.timedelta(days=1))
     assert "### We owe" in page_text(root, "harbor")
+
+
+def test_a_record_that_knows_its_state_wins_a_tie_in_its_thread(tmp_path):
+    """Two records of one issue at the same moment: the one carrying the issue's state decides."""
+    root = make_space(tmp_path / "ada", subjects=[HARBOR], owner_email="ada@lantern.example")
+    witness(root, "a-old", "2026-10-11T08:00:00Z", subject="harbor", kind="document", title="HAR-9: plan",
+            identifiers={"thread": "HAR-9"})
+    witness(root, "z-new", "2026-10-11T08:00:00Z", subject="harbor", kind="issue", title="HAR-9: plan",
+            identifiers={"thread": "HAR-9"}, issue="HAR-9", state="Todo")
+    status.run(root, now=NOW)
+    assert "### Internal" in page_text(root, "harbor") and "HAR-9: plan" in page_text(root, "harbor").split("### Internal")[1]
+
+
+def test_one_record_witnessed_twice_shows_once(tmp_path):
+    """An older sweep and a newer one both wrote the same issue: the page lists it once."""
+    root = make_space(tmp_path / "ada", subjects=[HARBOR], owner_email="ada@lantern.example")
+    for name in ("a-old", "z-new"):
+        witness(root, name, "2026-10-11T08:00:00Z", subject="harbor", kind="issue", title="HAR-7: ship it",
+                identifiers={"thread": "HAR-7"}, issue="HAR-7", state="Done")
+    status.run(root, now=NOW)
+    assert page_text(root, "harbor").count("HAR-7: ship it") == 2   # once closed, once on the timeline
