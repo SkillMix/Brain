@@ -21,9 +21,11 @@ Ask the person only for what `rules.md` reserves for them, with your recommendat
 When you hand the person a step to do by hand, or a guardrail stops you, add one entry to
 `{workspace_path}/_meta/friction-log.md` (the format is at its top).
 
-A tracker issue the person asks for is queued, never created by the session:
-`{python} {workspace_path}/_meta/tools/tracker.py {workspace_path} queue --title "<title>" --subject <id>`;
-the tracker step creates it. A notice the person must see now (a security warning, an action
+Agreed company work gets a tracker issue, queued, never created by the session: follow
+`{workspace_path}/.claude/skills/tracker/SKILL.md` (nothing confidential or personal, no issue for a
+brainstorm) and run `{python} {workspace_path}/_meta/tools/tracker.py {workspace_path} queue --title
+"<title>" --subject <id> --by "<person>"`; when the work moves, `... update --issue <KEY> --state
+"Done" --comment "<evidence>"`. The tracker step writes both. A notice the person must see now (a security warning, an action
 only they can take) goes through the owner-email skill, to their own address only.
 {planning}
 The toolbox is in `{workspace_path}/.claude/skills/`. When the person asks in plain words, read

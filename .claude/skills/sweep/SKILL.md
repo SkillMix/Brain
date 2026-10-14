@@ -65,6 +65,10 @@ it, say so in your run line, continue with the others) or a record that is not v
 - Never a secret in a feed file (hard rule 1): a key or password is exported as `[redacted]`,
   and the record carries `"redacted": true`; the sweep then queues one security notice to the
   person (where and when, never the value).
+- A link is not a secret: links to Google files, calendars and meetings (share keys, `usp`,
+  `resourcekey` and `token` parameters included), Zoom and Teams meeting links with their
+  passcode, and Claude artifact links stay in the record as they are; never redact one and never
+  mark its record `redacted`. Redact only the key, token or password itself.
 
 ## Scheduled invocation
 

@@ -32,6 +32,8 @@ def run_cmd(argv, dry_run=False, cwd=None):
 
 
 def remove_sync_task(report, root, state, task_name, dry_run, label="sync task removed") -> None:
+    if not dry_run and label == "sync task removed":
+        onboard.forget_space(root)   # the chains stop running over it on this machine
     """Remove one OS task onboard registered: the sync task, or a routine's (`label` names it)."""
     if onboard.SYSTEM == "Windows":
         present = run_cmd(["schtasks", "/Query", "/TN", task_name], dry_run)

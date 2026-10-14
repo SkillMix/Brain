@@ -1,6 +1,7 @@
 """Batch 4: the tracker has one writer, failed chain steps are labelled stale, and the weekly
 template sync reverts a change that lowers the test score."""
 import json
+from pathlib import Path
 
 import yaml
 
@@ -102,3 +103,52 @@ def test_only_a_guarded_template_sync_resets_the_weekly_clock(tmp_path, monkeypa
     lines = [json.loads(l) for l in runs.read_text(encoding="utf-8").splitlines()]
     assert any((l.get("notes") or {}).get("guarded") for l in lines)
     assert chain._template_sync_due(spaceyaml.load(root), spaceyaml.load(root).now()) is False
+
+
+def made_issue(root, key="HAR-7", title="Ship the export"):
+    rid = Path(tracker.queue(root, title, "Ada Okafor", subject="harbor")).stem
+    tracker.record(root, rid, key, url=f"https://tracker.example/{key}", now=NOW)
+    return rid
+
+
+def test_updates_go_only_to_issues_the_tracker_made_and_are_queued_once(tmp_path):
+    root = make_space(tmp_path / "ada")
+    made_issue(root)
+    path = tracker.update(root, "HAR-7", "Ada Okafor", state="In Progress", comment="Started on the export.",
+                          evidence="journal-20261012T0900", now=NOW)
+    assert path is not None
+    assert tracker.update(root, "HAR-7", "Ada Okafor", state="In Progress", evidence="journal-20261012T0900",
+                          now=NOW) is None
+    try:
+        tracker.update(root, "OTH-1", "Ada Okafor", state="Done", now=NOW)
+        raise AssertionError("an issue someone else made must be refused")
+    except ValueError:
+        pass
+    kinds = {(p["kind"], p.get("issue")) for p in tracker.pending(root)}
+    assert ("update", "HAR-7") in kinds
+    upd = next(p for p in tracker.pending(root) if p["kind"] == "update")
+    tracker.record(root, upd["id"], "HAR-7", now=NOW)
+    assert all(p["kind"] != "update" for p in tracker.pending(root))
+    lines = [json.loads(l) for l in (root / tracker.LOG).read_text(encoding="utf-8").splitlines()]
+    assert lines[-1]["update"] == {"state": "In Progress", "comment": "Started on the export."}
+
+
+def test_evidence_moves_the_issues_the_tracker_made(tmp_path):
+    """A merged pull request naming the key closes it; a daily-note line naming it with
+    'blocked' or 'started' queues that update; each piece of evidence is used once."""
+    root = make_space(tmp_path / "ada")
+    made_issue(root, "HAR-7")
+    made_issue(root, "HAR-8", "Fix the import")
+    page = root / "knowledge" / "sources" / "2026" / "10" / "gh-pr-41.md"
+    pages.write(page, {"id": pages.new_id(), "type": "source", "title": "Merged: export to CSV (HAR-7)",
+                       "status": "draft", "generated": pages.generated("sweep", NOW), "kind": "change",
+                       "source": "repository", "record": "gh-pr-41", "at": pages.iso(NOW)}, "Closes HAR-7.\n")
+    note = root / "journal" / "2026" / "10" / "2026-10-12.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    note.write_text("# 2026-10-12\n\n## 08:00Z: import\n\n- HAR-8 is blocked on the client's data dump.\n",
+                    encoding="utf-8")
+    queued = tracker.observe(root, now=NOW)
+    pend = {p["issue"]: p for p in tracker.pending(root) if p["kind"] == "update"}
+    assert pend["HAR-7"]["state"] == "Done" and "export to CSV" in pend["HAR-7"]["comment"]
+    assert pend["HAR-8"]["state"] is None and "blocked" in pend["HAR-8"]["comment"]
+    assert len(queued) == 2 and tracker.observe(root, now=NOW) == []
