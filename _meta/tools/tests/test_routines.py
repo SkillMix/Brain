@@ -53,6 +53,7 @@ def test_cron_times_become_daily_times():
 
 def test_on_windows_each_routine_is_a_hidden_task_at_its_times(tmp_path, monkeypatch):
     monkeypatch.setattr(onboard, "SYSTEM", "Windows")
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")   # the machine has the CLI
     calls = []
     registered = "".join(onboard.WINDOWS_TASK)   # the read-back of a task as registered
     monkeypatch.setattr(onboard, "run_cmd", world({"schtasks /Query": (0, registered)}, calls))
@@ -75,6 +76,7 @@ def test_on_windows_each_routine_is_a_hidden_task_at_its_times(tmp_path, monkeyp
 
 def test_with_cron_each_routine_is_one_marked_line(tmp_path, monkeypatch):
     monkeypatch.setattr(onboard, "SYSTEM", "Darwin")
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")   # the machine has the CLI
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
     state = {"lines": "0 9 * * * /usr/bin/true\n"}
 
@@ -98,6 +100,7 @@ def test_with_cron_each_routine_is_one_marked_line(tmp_path, monkeypatch):
 
 def test_without_cron_linux_gets_persistent_timers_at_the_routine_times(tmp_path, monkeypatch):
     monkeypatch.setattr(onboard, "SYSTEM", "Linux")
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")   # the machine has the CLI
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
     monkeypatch.setattr(onboard, "run_cmd", world({"crontab": (127, ""), "systemctl --user": (0, "")}, []))
     ws = workspace(tmp_path)
