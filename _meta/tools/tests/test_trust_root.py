@@ -65,3 +65,17 @@ def test_a_reply_pulls_back_what_left_yesterday_by_its_number(tmp_path):
     assert left == ["p-0000b721", "rq-abc123"]
     assert reply.parse_left("left 1 no\n> left 2 no", left) == ["p-0000b721"]
     assert reply.parse_left("Left 1, 2 no", left) == ["p-0000b721", "rq-abc123"]
+
+
+def test_a_project_connects_its_channel_tracker_and_repository_with_their_scope(tmp_path):
+    """A project space reads only what its sources name: the channels, the tracker project
+    and the repository; `repository` is a feed like the others."""
+    root = make_space(tmp_path / "harbor", profile="project", name="harbor")
+    assert onboard.connect(root, "chat", audience="crew", scope={"channels": ["C1", "C2"]}) is True
+    assert onboard.connect(root, "repository", audience="crew", scope={"repo": "lantern/harbor"}) is True
+    sources = {s["name"]: s for s in spaceyaml.load(root).sources}
+    assert sources["chat"]["channels"] == ["C1", "C2"] and sources["chat"]["audience"] == "crew"
+    assert sources["repository"]["repo"] == "lantern/harbor"
+    assert onboard.main([str(root), "--connect", "tracker", "--audience", "crew",
+                         "--scope", "team=HAR", "--scope", "project=p-1"]) == 0
+    assert {s["name"]: s for s in spaceyaml.load(root).sources}["tracker"]["team"] == "HAR"
