@@ -18,6 +18,13 @@ One routine owns structure. It acts on the mechanical and asks on the human.
 
 `python _meta/tools/status.py <root>`
 
+When the person says an item is settled ("item 2 of Harbor is done", "that one is not
+related", "drop the invoice question"): find the item's id on `live/subjects/<id>.md` (every
+open item ends with it), then `python _meta/tools/status.py <root> close <subject> <item id>
+--as done|unrelated|dropped --by "<person>"` and run status again. The page lists it under
+recently closed with who said so; a newer record in the same thread opens it again. The
+status page itself is never edited by hand.
+
 ## What the tool already did
 
 Registered every new `work/<kind>/<subject>/` folder as a subject (personal spaces); wrote

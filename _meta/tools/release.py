@@ -69,6 +69,7 @@ class ShipReport:
     destinations: dict = field(default_factory=dict)
     signals: int = 0
     waiting: int = 0
+    requeued: int = 0     # items held for a shadow-looking destination, back in the queue
     unreachable: int = 0  # queue items whose destination has no root on this machine
     rerouted: int = 0     # queue items re-addressed to their subject's current home
     failed: int = 0       # queue items whose online publish failed; they stay queued
@@ -164,6 +165,43 @@ def ensure_checkout(space: spaceyaml.Space, destination: str) -> Path | None:
         _discard(target)
         return None
     return target if (target / ".git").exists() else None
+
+
+def refresh_checkout(checkout: Path) -> bool:
+    """Bring a release clone to its origin's main before its settings are read: a clone is only
+    fetched when something ships, so its space.yaml can be days behind the destination."""
+    git = ["git", "-C", str(checkout)]
+    try:
+        fetched = subprocess.run(git + ["fetch", "--quiet", "origin", "--no-recurse-submodules"],
+                                 capture_output=True, text=True)
+        if fetched.returncode != 0:
+            return False
+        moved = subprocess.run(git + ["checkout", "--quiet", "--detach", "origin/main"],
+                               capture_output=True, text=True)
+        return moved.returncode == 0
+    except OSError:
+        return False
+
+
+def _requeue_mode_held(root: Path, space: spaceyaml.Space) -> int:
+    """Items a live space held only because their destination looked shadow go back to the
+    queue; the next scrub reads the destination as it is now. Held signals stay held."""
+    if space.mode != "live":
+        return 0
+    count = 0
+    for path in sorted((Path(root) / HELD).glob("*.md")):
+        try:
+            fm, body = pages.read(path)
+        except Exception:
+            continue
+        live_hold = str(fm.get("why") or "").startswith("this space runs live")
+        if fm.get("reason") != "mode" or fm.get("class") == "signal" or not live_hold:
+            continue
+        clean = {k: v for k, v in fm.items() if k not in ("reason", "why")}
+        pages.write(Path(root) / QUEUE / f"{fm['id']}.md", clean, body)
+        path.unlink()
+        count += 1
+    return count
 
 
 def destination_space(space: spaceyaml.Space, destination: str,
@@ -395,19 +433,36 @@ def ship(root, now: dt.datetime | None = None,
     now = now or space.now()
     offline_roots = {k: Path(v) for k, v in (offline_roots or {}).items()}
     report = ShipReport()
+    report.requeued = _requeue_mode_held(root, space)
     batches: dict = {}
     for path, fm, body in _ready_items(root, now, report, space):
         batches.setdefault(fm["destination"], ([], []))[0].append((path, fm, body))
+    try:
+        reg = registry_mod.Registry(root, space)
+    except Exception:
+        reg = None
     for path, data, view in _signals(root, now):
+        home = _current_home(reg, data)
+        if home and home != data["destination"] and home != space.name:
+            # a signal follows its subject to its current home, like a queue item
+            data["rerouted_from"], data["destination"] = data["destination"], home
+            view["destination"] = home
+            path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+            report.rerouted += 1
         batches.setdefault(data["destination"], ([], []))[1].append((path, data, view))
     for destination, (items, signals) in sorted(batches.items()):
         offline = offline_roots.get(destination)
         checkout = None if offline is not None else ensure_checkout(space, destination)
+        if checkout is not None:
+            refresh_checkout(checkout)
         dest_root = offline if offline is not None else checkout
         dest_space = destination_space(space, destination, dest_root)
         outgoing_items, outgoing_signals = [], []
         for path, fm, body in items:
             problem = scrub_reason(space, dest_space, fm, body, path)
+            if problem and problem[0] == "mode" and space.mode == "live":
+                report.waiting += 1   # the destination may be a stale view: wait, never hold
+                continue
             if problem:
                 hold(root, fm, body, *problem)
                 path.unlink()
@@ -416,6 +471,8 @@ def ship(root, now: dt.datetime | None = None,
                 outgoing_items.append((path, fm, body))
         for path, data, view in signals:
             problem = scrub_reason(space, dest_space, view, "")
+            if problem and problem[0] == "mode" and space.mode == "live":
+                continue
             if problem:
                 hold(root, view, "", *problem)
                 path.unlink()
@@ -472,6 +529,7 @@ def ship(root, now: dt.datetime | None = None,
         "shipped": report.shipped, "signals": report.signals, "held": report.held,
         "requests": report.requests,
         "skipped_unlisted": report.skipped_unlisted, "waiting": report.waiting,
+        "requeued": report.requeued,
         "unreachable": report.unreachable, "rerouted": report.rerouted, "failed": report.failed,
         "destinations": report.destinations})
     return report

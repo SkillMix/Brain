@@ -132,3 +132,15 @@ def test_run_never_copies_private_zones_or_the_feed(tmp_path):
                                                          "knowledge/topics/x/page.md"]})
     report = behaviour.run(root, path)
     assert report.failed == 0, report.details
+
+
+def test_run_starts_from_an_empty_question_log(tmp_path):
+    """The question log is content: a real instance's log never changes what a scenario sees."""
+    root = make_space(tmp_path / "ada")
+    (root / "_meta" / "questions.log").write_text(
+        '{"question": "q", "subject": "harbor", "needed_steering": true}\n', encoding="utf-8")
+    path = scenario(tmp_path / "log.yaml",
+                    command=py("import pathlib,sys; sys.exit(1 if pathlib.Path('_meta/questions.log').exists() else 0)"),
+                    expect={"exit": 0})
+    report = behaviour.run(root, path)
+    assert (report.passed, report.failed) == (1, 0)

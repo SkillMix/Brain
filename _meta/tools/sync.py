@@ -11,8 +11,11 @@ routines only edit files. Each run:
   4. advance the pin of every clean mount to its remote branch; commit `chore: pins`
   5. fetch origin and merge origin/main in (append-only files by union); on a
      conflict abort and record it
-  6. when local main is ahead: push HEAD to sync/<hostname> and open the pull
-     request the platform merges
+  6. when local main differs from origin/main: push it to sync/<hostname> and open the pull
+     request the platform merges. Changes under a `protected:` path go to their own branch
+     sync/<hostname>-protected (their own pull request, the owner's one click), so the
+     journal, desk and run lines never wait behind them; each branch is rebuilt on
+     origin/main and pushed only when its content changed
   7. append one run line to _meta/state/runs.jsonl when something happened, plus at
      most one heartbeat a day; the line rides along in the next run's commit
 
@@ -53,9 +56,10 @@ RUNS_PATH = Path("_meta") / "state" / "runs.jsonl"
 NOTABLE = ("committed", "pins", "conflict", "scan_hits", "errors")
 
 
-def git(root, *args, check: bool = False, input: str | None = None) -> subprocess.CompletedProcess:
+def git(root, *args, check: bool = False, input: str | None = None, env: dict | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *args], cwd=str(root), capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", input=input, check=check)
+                          encoding="utf-8", errors="replace", input=input, check=check,
+                          env=dict(os.environ, **env) if env else None)
 
 
 def hostname() -> str:
@@ -344,6 +348,63 @@ class Run:
         if git(self.root, "rev-parse", "HEAD").stdout.strip() != before:
             print("merge: origin/main brought in")
 
+    def split(self) -> tuple[list, list] | None:
+        """The paths this checkout changes against origin/main, as (plain, protected); None
+        when nothing is protected (or in the template, whose pull requests land on green)."""
+        try:
+            import gate
+        except ImportError:
+            return None
+        if gate.is_template(self.root):
+            return None
+        out = git(self.root, "diff", "--name-only", "-z", "origin/main", "HEAD").stdout
+        changed = [p for p in out.split("\x00") if p]
+        prefixes, _ = gate.protected_prefixes(self.root)
+        guarded = [p for p in changed if any(gate._under(gate._posix(p), pre) for pre in prefixes)]
+        if not guarded:
+            return None
+        return [p for p in changed if p not in guarded], guarded
+
+    def subset_commit(self, paths: list, remote_ref: str) -> str | None:
+        """A commit on top of origin/main that carries only `paths` as they are in HEAD, built in
+        a private index so the working tree and the real index are never touched."""
+        index = self.gdir / "sync-split.index"
+        env = {"GIT_INDEX_FILE": str(index)}
+        try:
+            if git(self.root, "read-tree", "origin/main", env=env).returncode != 0:
+                return None
+            lines = []
+            for path in paths:
+                entry = git(self.root, "ls-tree", "-z", "HEAD", "--", path).stdout.strip("\x00")
+                if entry:
+                    meta, _, name = entry.partition("\t")
+                    mode, _, sha = meta.split(" ")
+                    lines.append(f"{mode} {sha}\t{name}")
+                else:
+                    lines.append(f"0 {'0' * 40}\t{path}")
+            if git(self.root, "update-index", "-z", "--index-info", input="\x00".join(lines) + "\x00",
+                   env=env).returncode != 0:
+                return None
+            tree = git(self.root, "write-tree", env=env).stdout.strip()
+            base = git(self.root, "rev-parse", "origin/main").stdout.strip()
+            remote = git(self.root, "rev-parse", "-q", "--verify", f"refs/remotes/{remote_ref}").stdout.strip()
+            if remote:   # unchanged since the last run: keep the same commit, so CI does not rerun
+                same_tree = git(self.root, "rev-parse", f"{remote}^{{tree}}").stdout.strip() == tree
+                same_base = git(self.root, "rev-parse", f"{remote}^").stdout.strip() == base
+                if same_tree and same_base:
+                    return remote
+            done = git(self.root, "commit-tree", tree, "-p", base, "-m", "chore: sync")
+            return done.stdout.strip() if done.returncode == 0 else None
+        finally:
+            index.unlink(missing_ok=True)
+
+    def push_branch(self, commit: str, branch: str) -> bool:
+        current = git(self.root, "rev-parse", "-q", "--verify", f"refs/remotes/origin/{branch}").stdout.strip()
+        if current == commit:
+            return True
+        done = git(self.root, "push", "--quiet", "--force", "origin", f"{commit}:refs/heads/{branch}")
+        return done.returncode == 0
+
     def publish(self) -> None:
         if not self.has_origin_main():
             return
@@ -353,6 +414,23 @@ class Run:
         branch = f"sync/{hostname()}"
         if self.dry or self.args.no_push:
             print(f"would push {ahead} commit(s) to {branch}")
+            return
+        if git(self.root, "diff", "--quiet", "origin/main", "HEAD").returncode == 0:
+            return   # only merge commits: nothing this checkout changes, nothing to push
+        parts = self.split()
+        if parts is not None:
+            # protected paths wait for the owner's click on their own branch; the rest lands on green
+            plain, guarded = parts
+            for paths, name, note in ((plain, branch, "pushed"), (guarded, f"{branch}-protected", "pushed_protected")):
+                if not paths:
+                    continue
+                commit = self.subset_commit(paths, f"origin/{name}")
+                if commit is None or not self.push_branch(commit, name):
+                    self.error(f"push failed ({name})")
+                    continue
+                self.notes[note] = len(paths)
+                print(f"push: {len(paths)} path(s) to {name}")
+                self.open_pr(name, "chore: sync (protected)" if note == "pushed_protected" else "chore: sync")
             return
         done = git(self.root, "push", "--quiet", "--force-with-lease", "origin", f"HEAD:refs/heads/{branch}")
         if done.returncode != 0:
@@ -369,7 +447,7 @@ class Run:
         except FileNotFoundError:
             return None
 
-    def open_pr(self, branch: str) -> None:
+    def open_pr(self, branch: str, title: str = "chore: sync") -> None:
         listed = self.gh("pr", "list", "--head", branch, "--state", "open", "--json", "number")
         if listed is None:
             self.notes["gh"] = "absent"
@@ -379,7 +457,7 @@ class Run:
             return
         if json.loads(listed.stdout or "[]"):
             return
-        created = self.gh("pr", "create", "--base", "main", "--head", branch, "--title", "chore: sync",
+        created = self.gh("pr", "create", "--base", "main", "--head", branch, "--title", title,
                           "--body", "Landed by the sync script.")
         if created is None or created.returncode != 0:
             self.error("gh pr create failed")

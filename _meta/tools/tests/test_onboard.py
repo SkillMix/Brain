@@ -508,3 +508,20 @@ def test_the_workspace_is_allowed_once_and_offboard_takes_it_back(tmp_path):
     assert onboard.disallow_directory(settings, ws) is True
     assert not onboard.directory_allowed(settings, ws)
     assert json.loads(settings.read_text(encoding="utf-8"))["permissions"]["additionalDirectories"] == ["D:/other"]
+
+
+def test_the_personal_instruction_carries_the_working_rules_and_the_planning_pointer(tmp_path):
+    """The rules the old workspace kept by hand travel with the instruction: the friction log,
+    default-don't-park, queueing tracker issues, owner notices, and, when space.yaml names
+    one, the person's planning instructions."""
+    import yaml
+    root = make_space(tmp_path / "ada")
+    block = onboard.instruction_block(root)
+    assert "_meta/friction-log.md" in block and "conservative" in block
+    assert "tracker.py" in block and "owner-email" in block
+    assert "plan or review their day" not in block
+    data = yaml.safe_load((root / "space.yaml").read_text(encoding="utf-8"))
+    data["planning"] = "personal/planning/checkin-instructions.md"
+    (root / "space.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    block = onboard.instruction_block(root)
+    assert "plan or review their day" in block and "personal/planning/checkin-instructions.md" in block

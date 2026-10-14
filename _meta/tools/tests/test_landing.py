@@ -143,3 +143,38 @@ def test_trust_switch_after_enough_failed_samples(tmp_path):
     log.write_text("\n".join(lines) + "\n", encoding="utf-8")
     assert landing.recompute_trust(root, now=NOW) == ["ada"]
     assert yaml.safe_load((root / "_meta/state/trust.yaml").read_text(encoding="utf-8"))["pending"] == ["ada"]
+
+
+def test_a_high_stakes_record_lands_pending_not_filed(tmp_path):
+    """An unsigned record flagged high stakes (or carrying a high-stakes word) waits for the
+    domain owner's yes instead of being filed silently as evidence; a second run leaves it so."""
+    root = harbor_space(tmp_path)
+    write_page(root, "_inbound/candidates/p-0000a020.md", "The API errors again.\n", id="p-0000a020",
+               type="source", title="Alert", subject="harbor", released_from="ada",
+               release_class="window", at="2026-10-11T09:00:00Z", high_stakes=True)
+    write_page(root, "_inbound/candidates/p-0000a021.md", "The contract renews in March.\n",
+               id="p-0000a021", type="source", title="A mail", subject="harbor", released_from="ada",
+               release_class="window", at="2026-10-11T09:00:00Z")
+    report = landing.land(root, now=NOW)
+    assert sorted(report.pending) == ["p-0000a020", "p-0000a021"] and report.records == []
+    for pid in ("p-0000a020", "p-0000a021"):
+        fm, _ = pages.read(root / f"_inbound/candidates/{pid}.md")
+        assert fm["landing"].startswith("pending: high stakes") and fm["for"] == "Ben Liu"
+    assert not (root / "knowledge" / "sources").exists() or not list((root / "knowledge" / "sources").rglob("*.md"))
+    again = landing.land(root, now=NOW)
+    assert again.records == []
+
+
+def test_the_domain_owners_yes_files_a_pending_record_as_evidence(tmp_path):
+    import sign
+    root = harbor_space(tmp_path)
+    write_page(root, "_inbound/candidates/p-0000a022.md", "The API errors again.\n", id="p-0000a022",
+               type="source", title="Alert", subject="harbor", released_from="ada",
+               release_class="window", at="2026-10-11T09:00:00Z", high_stakes=True)
+    landing.land(root, now=NOW)
+    sign.apply(root, {"p-0000a022": "yes"}, by="Ben Liu", now=NOW)
+    filed = list((root / "knowledge" / "sources").rglob("p-0000a022.md"))
+    assert len(filed) == 1
+    fm, _ = pages.read(filed[0])
+    assert fm["status"] == "draft"
+    assert not (root / "_inbound/candidates/p-0000a022.md").exists()

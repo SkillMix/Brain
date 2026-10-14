@@ -28,10 +28,11 @@ progress; staged tracked changes and untracked UTF-8 text files under 1 MB older
 minutes, never `personal/`, `academic/`, `_scratch/` or a mount; ran the secret scan and
 unstaged every hit, counted, never quoted; committed `chore: sync`; advanced clean mount
 pins (`chore: pins`); fetched without recursing into mounts; merged `origin/main`
-(append-only files by union; a conflict aborts the merge and is recorded); pushed
-`HEAD:sync/<hostname>` and opened a pull request when none was open; one run line. The
-platform merges on green; pull requests touching `protected:` paths wait for the space
-owner's one click.
+(append-only files by union; a conflict aborts the merge and is recorded); pushed the
+changes to `sync/<hostname>` and opened a pull request when none was open, with changes under
+`protected:` paths on their own branch `sync/<hostname>-protected` and pull request; one run
+line. The platform merges the first on green; the protected one waits for the space owner's
+one click, and nothing else waits behind it.
 
 ## Judgment left to you
 

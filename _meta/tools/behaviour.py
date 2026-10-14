@@ -173,6 +173,8 @@ def _compare(temp_root: Path, before: dict, after: dict, expect: dict, code, out
 
 
 HERMETIC_ZONES = ("knowledge", "live", "_inbound", "_outbound", "work", "journal", "outbox", "_meta/state")
+# content files outside the zones: a real instance's question log would steer the librarian
+HERMETIC_FILES = ("_meta/questions.log",)
 HERMETIC_DIRS = ("knowledge/sources", "knowledge/decisions", "live/subjects", "_inbound/candidates",
                  "_inbound/checks", "_inbound/questions", "_inbound/needs-you", "_outbound/queue",
                  "_outbound/held", "_outbound/signals", "_meta/state")
@@ -209,6 +211,8 @@ def _hermetic(temp_root: Path) -> None:
             target.mkdir(parents=True, exist_ok=True)
     for sub in HERMETIC_DIRS:
         (temp_root / sub).mkdir(parents=True, exist_ok=True)
+    for rel in HERMETIC_FILES:
+        (temp_root / rel).unlink(missing_ok=True)
 
 
 def run(root, scenario_path) -> Report:

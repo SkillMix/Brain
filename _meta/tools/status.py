@@ -69,7 +69,9 @@ class Evidence:
     direction: str = ""         # for an open item: we owe | waiting on them | internal
 
     def line(self) -> str:
-        return f"- {self.title} ({self.tier}, {self.scope}, {self.at:%Y-%m-%d})"
+        # an open item shows its page id, so "item 2 is done" can name exactly that thread
+        ref = f", {self.id}" if self.section == "open" and self.id else ""
+        return f"- {self.title} ({self.tier}, {self.scope}, {self.at:%Y-%m-%d}{ref})"
 
 
 @dataclass
@@ -206,6 +208,7 @@ def collect(root: Path, space, reg, now) -> dict:
 
     own = _domain(space.owner_email)
     threads: dict = {}
+    closed = _closed(root)
     for path, fm, body in _read_pages(root / "knowledge" / "sources"):
         at = _stamp(fm, "at")
         sid = str(fm.get("subject") or "")
@@ -224,7 +227,11 @@ def collect(root: Path, space, reg, now) -> dict:
         if key not in threads or at > threads[key][0]:
             threads[key] = (at, tier, title, rel, pid, body, _direction(fm, own))
     open_since = now - space.scale(OPEN_DAYS * 24)
-    for (sid, _), (at, tier, title, rel, pid, body, direction) in threads.items():
+    for (sid, thread), (at, tier, title, rel, pid, body, direction) in threads.items():
+        said = closed.get((sid, thread))
+        if said and at <= said[0]:   # the person said so; a newer record opens it again
+            add(sid, tier, scope, f"{title} ({said[1]} by {said[2]})", said[0], rel, pid, body, "closed")
+            continue
         if direction and at >= open_since:
             add(sid, tier, scope, title, at, rel, pid, body, "open", direction=direction)
     for path, fm, body in _read_pages(root / "_inbound" / "candidates"):
@@ -255,6 +262,45 @@ def collect(root: Path, space, reg, now) -> dict:
                 rel = effort.relative_to(root).as_posix()
                 add(folder.name, "working", scope, rel, _mtime(effort, now), rel)
     return found
+
+
+CLOSED = Path("_meta") / "state" / "status-closed.jsonl"
+CLOSE_AS = ("done", "unrelated", "dropped")
+
+
+def _closed(root: Path) -> dict:
+    """(subject, thread) -> (when, as, by) for the items a person said are done."""
+    out: dict = {}
+    for row in _jsonl(Path(root) / CLOSED):
+        try:
+            key = (str(row["subject"]), str(row["thread"]))
+            out[key] = (pages.parse_iso(row["at"]), str(row.get("as") or "done"), str(row.get("by") or "the owner"))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def close(root, subject: str, page_id: str, as_: str = "done", by: str | None = None,
+          now: dt.datetime | None = None) -> str:
+    """Close the thread a status item stands for, on the person's word ("item 2 is done", "not
+    related", "drop it"). The status page is generated; this is the one way to change what it
+    lists. Returns the thread; ValueError when no evidence page has that id."""
+    root = Path(root)
+    if as_ not in CLOSE_AS:
+        raise ValueError(f"as is one of {', '.join(CLOSE_AS)}")
+    space = spaceyaml.load(root)
+    now = now or space.now()
+    for path, fm, body in _read_pages(root / "knowledge" / "sources"):
+        if str(fm.get("id") or "") == page_id or str(fm.get("record") or "") == page_id:
+            thread = _thread_of(fm, str(fm.get("title") or path.stem))
+            CLOSED.parent.mkdir(parents=True, exist_ok=True) if False else None
+            target = root / CLOSED
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("a", encoding="utf-8", newline="\n") as fh:
+                fh.write(json.dumps({"at": pages.iso(now), "subject": subject, "thread": thread,
+                                     "page": page_id, "as": as_, "by": by or space.owner or "the owner"}) + "\n")
+            return thread
+    raise ValueError(f"no evidence page with id {page_id}")
 
 
 def _see_also(root: Path) -> dict:
@@ -1115,6 +1161,11 @@ def _refresh_agents_md(root: Path, report) -> None:
 
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
+    if len(argv) >= 4 and argv[1] == "close":   # status.py <root> close <subject> <page id> [--as X] [--by NAME]
+        opts = dict(zip(argv[4::2], argv[5::2]))
+        thread = close(Path(argv[0]), argv[2], argv[3], as_=opts.get("--as", "done"), by=opts.get("--by"))
+        print(f"closed {argv[3]} on {argv[2]} ({opts.get('--as', 'done')}); thread {thread}")
+        return 0
     check = "--check" in argv
     roots = [a for a in argv if not a.startswith("--")]
     report = run(Path(roots[0]) if roots else Path("."), check=check)

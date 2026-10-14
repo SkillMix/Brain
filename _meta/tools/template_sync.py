@@ -205,7 +205,14 @@ def guarded(root, source: str | None = None) -> Report:
         with (root / "_meta" / "state" / "runs.jsonl").open("a", encoding="utf-8", newline="\n") as fh:
             fh.write(json.dumps({"routine": "template-sync", "at": spaceyaml.load(root).now().strftime(
                 "%Y-%m-%dT%H:%M:%SZ"), "space": spaceyaml.load(root).name, "cost_tokens": 0,
-                "notes": {"reverted": True, "failures_before": before, "failures_after": after}}) + "\n")
+                "notes": {"reverted": True, "guarded": True, "failures_before": before,
+                          "failures_after": after}}) + "\n")
+    else:
+        import json
+        with (root / "_meta" / "state" / "runs.jsonl").open("a", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps({"routine": "template-sync", "at": spaceyaml.load(root).now().strftime(
+                "%Y-%m-%dT%H:%M:%SZ"), "space": spaceyaml.load(root).name, "cost_tokens": 0,
+                "notes": {"guarded": True, "failures_before": before, "failures_after": after}}) + "\n")
     return report
 
 

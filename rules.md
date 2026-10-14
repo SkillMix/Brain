@@ -18,8 +18,9 @@ Section numbers are stable; tools cite them.
 5. One writer each: only the platform writes `main`; each append-only file is merged by
    union; each outside system is written by one routine, never by sessions.
 6. Agents never send, post, spend or delete. Drafts go to `outbox/`; the person fires them.
-   The one exception is the morning email: the person's own mail, sent from their own
-   account to themselves, with the payload exactly as the morning view rendered it.
+   The one exception is mail to the person themselves, from their own account, with the
+   payload exactly as the tools rendered it: the morning email and owner notices (a security
+   warning, an answer that arrived, an action only they can take; `owner_email.py`).
 7. Agents edit files; the sync script commits; the platform merges. No session runs a git
    write.
 8. `personal/`, `academic/` and `_scratch/` are outside every tool, sweep and commit. The

@@ -27,9 +27,9 @@ once, and the rest is one pre-answered item for the holder's person.
    A harness without background agents runs `python _meta/tools/request.py <root> status
    <rq-id>` on the next message instead.
 3. When it arrives, `collect` (the sync task runs it) has landed it as a dated witness page
-   with its tier and age and written an owner notice payload
-   `_meta/state/answer-notice-<rq-id>.json`: send that payload with the owner-email skill, at
-   once, from the person's own mailbox to themselves.
+   with its tier and age and queued an owner notice ("one answer arrived"); the next chain
+   sends it with the owner-email skill, from the person's own mailbox to themselves. In a
+   session, send it at once the same way.
 
 ## What the tool already did
 

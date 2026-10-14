@@ -115,7 +115,8 @@ def _template_sync_due(space: spaceyaml.Space, now: dt.datetime) -> bool:
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if path.exists() else []:
         try:
             row = json.loads(line)
-            if row.get("routine") == "template-sync":
+            # only the weekly sync guarded by the tests counts; a hand sync never resets the clock
+            if row.get("routine") == "template-sync" and (row.get("notes") or {}).get("guarded"):
                 at = pages.parse_iso(row.get("at"))
                 last = at if last is None or at > last else last
         except Exception:
@@ -159,7 +160,8 @@ def sweep_chain(root, now: dt.datetime | None = None) -> dict:
 
 def daily(root, person: str | None = None, now: dt.datetime | None = None, shadow: bool = False,
           offline_roots: dict | None = None) -> dict:
-    """status → release (listed items only) → morning view → answer and leak tests."""
+    """status → access → requests → release (listed items only) → outbox reconcile → morning
+    view → answer and leak tests."""
     root = Path(root)
     space = spaceyaml.load(root)
     now = now or space.now()
@@ -168,6 +170,7 @@ def daily(root, person: str | None = None, now: dt.datetime | None = None, shado
     if _template_sync_due(space, now):
         _step(ctx, "template_sync", "template_sync", "guarded", root)
     _step(ctx, "status", "status", "run", root, now=now)
+    _step(ctx, "access", "access", "run", root, now=now)   # readers on the host against the audience
     _step(ctx, "requests_collect", "request", "collect", root, now=now, offline_roots=offline_roots)
     _step(ctx, "requests_answer", "request", "answer", root, now=now, offline_roots=offline_roots)
     _step(ctx, "release", "release", "ship", root, now=now, offline_roots=offline_roots)

@@ -154,3 +154,29 @@ def test_cli_check_exit_code(tmp_path, capsys):
     good.write_text(json.dumps(briefing()), encoding="utf-8")
     assert oe.main(["check", str(good)]) == 0
     capsys.readouterr()
+
+
+def test_queue_pending_and_record_a_notice(tmp_path):
+    """A routine queues a notice for the person; the chain sends it to their own address and
+    records the message id; a notice with the same key is queued once."""
+    root = make_space(tmp_path / "ada", owner_email="ada@lantern.example")
+    notice = {"kind": "action", "sender": "request", "title": "One answer arrived",
+              "summary": "Your question was answered. It waits on your list.",
+              "steps": ["Open your list and read the answer."], "key": "answer-1"}
+    first = oe.queue(root, notice)
+    assert oe.queue(root, notice) is None
+    (path,) = oe.pending(root)
+    assert path == first
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["payload"]["to"] == ["ada@lantern.example"] and data["key"] == "answer-1"
+    oe.record(root, path, message_id="m-123")
+    assert oe.pending(root) == []
+    sent = json.loads(next((root / "_meta/state/notices/sent").glob("*.json")).read_text(encoding="utf-8"))
+    assert sent["message_id"] == "m-123"
+    assert oe.queue(root, notice) is None   # already sent: never twice
+
+
+def test_a_notice_that_fails_the_check_is_not_queued(tmp_path):
+    root = make_space(tmp_path / "ada", owner_email="ada@lantern.example")
+    with pytest.raises(oe.NoticeError):
+        oe.queue(root, {"kind": "security", "sender": "sweep", "title": "x", "summary": "y"})

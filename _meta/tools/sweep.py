@@ -50,6 +50,7 @@ class SweepReport:
     signals: int = 0
     held_in_doubt: int = 0
     held_other: int = 0
+    security_notices: int = 0
     watermark: str | None = None
     records_seen: int = 0
     cost_tokens: int = 0
@@ -400,6 +401,8 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
         report.plan.append(f"witness {target.relative_to(root).as_posix()}")
         if not dry_run:
             pages.write(target, fm, str(record.get("text") or ""))
+            if not record.get("_reattach") and _credential_seen(record) and _security_notice(root, space, record):
+                report.security_notices += 1
         report.witness_written += 1
         body = str(record.get("text") or "")
 
@@ -468,8 +471,48 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
         "records": report.records_seen, "witness": report.witness_written,
         "attached": report.attached, "queued": report.queued, "signals": report.signals,
         "held_in_doubt": report.held_in_doubt, "held_other": report.held_other,
-        "reattached": reattached})
+        "reattached": reattached, "security_notices": report.security_notices})
     return report
+
+
+# ----- a credential seen: one plain warning to the person ---------------------------------
+def _credential_seen(record: dict) -> bool:
+    """The export redacted a key or password, or the scan still finds one in the text."""
+    text = str(record.get("text") or "")
+    if record.get("redacted") or "[redacted]" in text:
+        return True
+    try:
+        import scan
+        return bool(scan.scan_text(text, str(record.get("id"))))
+    except Exception:
+        return False
+
+
+def _security_notice(root: Path, space: spaceyaml.Space, record: dict) -> bool:
+    """Queue a security notice for the person, once per record; it names where and when, never
+    the value (vision: private security warnings stay with the person who can act)."""
+    try:
+        import owner_email
+    except ImportError:
+        return False
+    source = {"mail": "mail", "message": "chat", "chat": "chat", "call": "calls"}.get(
+        str(record.get("kind") or record.get("source") or ""), str(record.get("source") or "feeds"))
+    try:
+        when = f"{pages.parse_iso(record.get('at')):%d %B %Y}".lstrip("0")
+    except Exception:
+        when = "recently"
+    notice = {"kind": "security", "sender": "sweep",
+              "title": f"A password or key showed up in your {source}",
+              "summary": f"Something in your {source} from {when} looks like a password or key. "
+                         "Its value was not stored anywhere.",
+              "steps": [f"Open that {source} item and check whether the key is real.",
+                        "If it is, change it where it was issued and tell whoever shared it."],
+              "reassure": "Nothing was copied: the item was kept without the value.",
+              "key": f"security-{record.get('id')}"}
+    try:
+        return owner_email.queue(root, notice) is not None
+    except (Exception, SystemExit):
+        return False
 
 
 # ----- snapshots: refresh folded into the sweep -------------------------------------

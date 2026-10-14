@@ -510,6 +510,13 @@ def write_needs_you(root, skipped, path="_inbound/needs-you/onboard.yaml", prefi
 # ----- the personal instruction ---------------------------------------------
 def instruction_block(workspace) -> str:
     text = (TEMPLATES / "personal-instruction.md").read_text(encoding="utf-8")
+    try:
+        planning = str(spaceyaml.load(workspace).data.get("planning") or "")
+    except Exception:
+        planning = ""
+    line = (f"\nWhen the person asks to plan or review their day, read "
+            f"`{Path(workspace).resolve().as_posix()}/{planning}` first and follow it.\n" if planning else "")
+    text = text.replace("{planning}\n", line).replace("{planning}", line)
     return text.replace("{workspace_path}", Path(workspace).resolve().as_posix()).replace(
         "{python}", python_cmd()).strip() + "\n"
 

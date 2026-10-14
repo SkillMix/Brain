@@ -105,8 +105,8 @@ def test_open_and_reported_lines(tmp_path):
                release_class="window", generated=pages.generated("release", NOW - dt.timedelta(days=2)))
     status.run(root, now=NOW)
     body = pages.read(root / "live" / "subjects" / "harbor.md")[1]
-    assert "- Harbor scope (pending, mine, 2026-10-11)" in body
-    assert "- Harbor go-live moved (pending, team, 2026-10-10)" in body
+    assert "- Harbor scope (pending, mine, 2026-10-11, " in body   # open items carry their id
+    assert "- Harbor go-live moved (pending, team, 2026-10-10, " in body
     assert "- Harbor go-live moved (reported, team, 2026-10-10)" in body
     open_section = body[body.index("## Open"):body.index("## Recently closed")]
     assert "Harbor scope" in open_section and "reported" not in open_section

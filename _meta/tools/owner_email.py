@@ -268,19 +268,96 @@ def recipient(root=None) -> list:
     return [email]
 
 
+# ----- the queue: notices a routine raised, sent by the chain to the person themselves -------
+NOTICES = Path("_meta") / "state" / "notices"
+
+
+def _known_keys(root: Path) -> set:
+    keys = set()
+    for folder in ("pending", "sent"):
+        for path in (Path(root) / NOTICES / folder).glob("*.json"):
+            try:
+                keys.add(json.loads(path.read_text(encoding="utf-8")).get("key"))
+            except (OSError, ValueError):
+                continue
+    return keys
+
+
+def queue(root, notice: dict, today: str | None = None) -> Path | None:
+    """Render a notice for the space's own person and leave it for the chain to send; None when
+    a notice with the same `key` was queued or sent before. A failing check raises NoticeError."""
+    root = Path(root)
+    key = notice.get("key")
+    if key and key in _known_keys(root):
+        return None
+    space = spaceyaml.load(root)
+    today = today or f"{space.now():%Y-%m-%d}"
+    payload = render(notice, recipient(root), today)
+    folder = root / NOTICES / "pending"
+    folder.mkdir(parents=True, exist_ok=True)
+    stamp = space.now().strftime("%Y%m%dT%H%M%S")
+    path = folder / f"{stamp}-{notice.get('kind')}-{len(list(folder.glob('*.json'))) + 1}.json"
+    path.write_text(json.dumps({"key": key, "kind": notice.get("kind"), "queued_at": f"{space.now():%Y-%m-%dT%H:%M:%SZ}",
+                                "notice": notice, "payload": payload}, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8", newline="\n")
+    return path
+
+
+def pending(root) -> list:
+    return sorted((Path(root) / NOTICES / "pending").glob("*.json"))
+
+
+def record(root, path, message_id: str | None = None, failed: str | None = None) -> Path:
+    """After the send: move the notice to sent/ with its message id, or note the failure and
+    leave it pending for the next chain."""
+    path = Path(path)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if failed:
+        data["failed"] = list(data.get("failed") or []) + [failed]
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
+        return path
+    data["message_id"] = message_id
+    target = Path(root) / NOTICES / "sent" / path.name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
+    path.unlink()
+    return target
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=["check", "render"])
-    ap.add_argument("notice", help="notice JSON file, or - for stdin")
+    ap.add_argument("command", choices=["check", "render", "queue", "pending", "record"])
+    ap.add_argument("notice", nargs="?", default="-",
+                    help="notice JSON file, or - for stdin (queue, check, render); the pending file (record)")
+    ap.add_argument("--id", dest="message_id", help="record: the sent message's id")
+    ap.add_argument("--failed", help="record: why the send failed; the notice stays pending")
     ap.add_argument("--root", help="the space whose owner_email is the recipient (default: the nearest space.yaml)")
     ap.add_argument("--to", action="append", help="recipient; overrides owner_email")
     ap.add_argument("--out", help="write the send payload JSON here instead of stdout")
     ap.add_argument("--preview", help="also write the HTML page here to look at")
     ap.add_argument("--date", help="footer date (default: today)")
     args = ap.parse_args(argv)
+    if args.command == "pending":
+        root = find_root(args.root)
+        for path in pending(root) if root else []:
+            print(path)
+        return 0
+    if args.command == "record":
+        root = find_root(args.root)
+        print(record(root, args.notice, message_id=args.message_id, failed=args.failed))
+        return 0
 
     raw = sys.stdin.read() if args.notice == "-" else Path(args.notice).read_text(encoding="utf-8")
     notice = json.loads(raw)
+    if args.command == "queue":
+        try:
+            path = queue(find_root(args.root), notice, args.date)
+        except NoticeError as e:
+            for p in e.problems:
+                print(f"- {p}", file=sys.stderr)
+            return 2
+        print(path or "already queued or sent")
+        return 0
     if args.command == "check":
         problems = check(notice)
         for p in problems:

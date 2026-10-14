@@ -168,6 +168,20 @@ def _today_lines(root: Path) -> list:
             and line.strip() != "- No meetings."]
 
 
+def _owned_homes(root: Path, space: spaceyaml.Space) -> list:
+    """This space and every mounted space with the same owner: where releases land without
+    asking this person (the brain and the projects they own)."""
+    homes = [Path(root)]
+    for mount in space.mounts:
+        target = space.mount_root(str(mount.get("name", "")))
+        try:
+            if target is not None and spaceyaml.load(target).owner == space.owner:
+                homes.append(target)
+        except Exception:
+            continue
+    return homes
+
+
 def _landed_this_week(root: Path, space: spaceyaml.Space, now: dt.datetime) -> int:
     """Silent landings and filed records of the last scaled week: a count, never a list."""
     import json as _json
@@ -289,12 +303,12 @@ def run(root, person: str, now: dt.datetime | None = None, shadow: bool = False,
     counts = dict(Counter(item.kind for item in items))
     if "doubt" in counts:  # one list line, but the mail counts the held pages
         counts["doubt"] = needs_you.doubt_count(root)
-        silent = _landed_this_week(root, space, now)
-        if silent:
-            counts["landed_silently"] = silent
-        meetings = sum(1 for line in _today_lines(root) if not line.startswith("  "))
-        if meetings:
-            counts["meetings"] = meetings
+    silent = sum(_landed_this_week(home, space, now) for home in _owned_homes(root, space))
+    if silent:
+        counts["landed_silently"] = silent
+    meetings = sum(1 for line in _today_lines(root) if not line.startswith("  "))
+    if meetings:
+        counts["meetings"] = meetings
     listed = _mark_listed(root, space, items, now)
     health = _health_lines(root)
     page_fm = {"id": _page_id(root), "type": "snapshot", "title": "Needs you", "status": "draft",
