@@ -342,3 +342,194 @@ def test_a_very_long_record_id_gets_a_short_stable_file_name(tmp_path):
     _, _, ada = build(tmp_path)
     write_feed(ada, [record(long_id)])
     assert sweep.run(ada, now=NOW).witness_written == 1
+
+
+# ----- inferred attachment: a client's mail domain, a meeting title -------------------------
+def set_match(tmp_path, sid, **match):
+    reg = tmp_path / "brain" / "_meta" / "subjects.yaml"
+    data = yaml.safe_load(reg.read_text(encoding="utf-8"))
+    for s in data["subjects"]:
+        if s["id"] == sid:
+            s["match"] = dict(s.get("match") or {}, **match)
+    reg.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+
+def add_people(tmp_path, *people):
+    reg = tmp_path / "brain" / "_meta" / "subjects.yaml"
+    data = yaml.safe_load(reg.read_text(encoding="utf-8"))
+    data["subjects"] += list(people)
+    reg.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+
+def client_mail(rid="m-0200", **over):
+    base = {"from": "Chloe Martin <chloe@harbor.example>", "to": ["ada@lantern.example"],
+            "cc": ["ben@lantern.example"], "subject": "Brief after the kickoff",
+            "text": "Here is the brief. We expect the first list by Friday.",
+            "identifiers": {"thread": "t-200", "labels": ["INBOX"]}}
+    base.update(over)
+    return record(rid, **base)
+
+
+def test_a_client_mail_attaches_by_domain_and_waits_the_window_despite_a_standing_choice(tmp_path):
+    """The owner's standing choice covered what they label; a mail placed by its domain was
+    never chosen, so it waits one window and one morning view."""
+    _, _, ada = build(tmp_path, standing_choices=[{"destination": "harbor", "kind": "mail"}])
+    set_match(tmp_path, "harbor", domain="harbor.example")
+    write_feed(ada, [client_mail()])
+    report = sweep.run(ada, now=NOW)
+    assert report.attached == 1 and report.queued == 1
+    (fm, body), = queue_items(ada)
+    assert fm["class"] == "window" and fm["subject"] == "harbor"
+    assert pages.parse_iso(fm["stage_after"]) == NOW + dt.timedelta(hours=24)
+    assert "first list by Friday" in body
+    witness, = list((ada / "knowledge" / "sources").rglob("m-0200.md"))
+    assert pages.read(witness)[0]["cc"] == ["ben@lantern.example"]
+
+
+def test_queue_items_carry_when_who_and_the_thread_for_the_homes_status_page(tmp_path):
+    _, _, ada = build(tmp_path)
+    set_match(tmp_path, "harbor", domain="harbor.example")
+    write_feed(ada, [client_mail()])
+    sweep.run(ada, now=NOW)
+    (fm, _), = queue_items(ada)
+    assert fm["at"] == "2026-10-12T08:14:00Z"
+    assert fm["from"] == "Chloe Martin <chloe@harbor.example>" and fm["to"] == ["ada@lantern.example"]
+    assert fm["identifiers"] == {"thread": "t-200"}, "the thread only: labels and channels stay home"
+
+
+def test_reattached_pages_wait_the_window_even_under_a_standing_choice(tmp_path):
+    """The backfill: pages swept before the domain was known attach now, and wait the window."""
+    _, _, ada = build(tmp_path, standing_choices=[{"destination": "harbor", "kind": "mail"}])
+    write_feed(ada, [client_mail(), record("m-0201", identifiers={"labels": []})])
+    first = sweep.run(ada, now=NOW)
+    assert first.attached == 0 and queue_items(ada) == []
+    set_match(tmp_path, "harbor", domain="harbor.example")
+    later = NOW + dt.timedelta(hours=3)
+    second = sweep.run(ada, now=later)
+    assert second.attached == 1 and second.queued == 1
+    (fm, body), = queue_items(ada)
+    assert fm["class"] == "window" and fm["evidence"] == ["m-0200"]
+    assert pages.parse_iso(fm["stage_after"]) == later + dt.timedelta(hours=24)
+    assert fm["from"] == "Chloe Martin <chloe@harbor.example>" and fm["identifiers"] == {"thread": "t-200"}
+    assert "first list by Friday" in body
+    assert sweep.run(ada, now=later + dt.timedelta(minutes=5)).queued == 0, "attached once"
+
+
+def test_a_reattached_labelled_record_never_ships_at_once(tmp_path):
+    brain = make_space(tmp_path / "brain", profile="brain", name="brain", subjects=[])
+    harbor = make_space(tmp_path / "harbor", profile="project", name="harbor", owner="Ben Liu",
+                        audience=["Ada Okafor", "Ben Liu"])
+    ada = make_space(tmp_path / "ada", name="ada", standing_choices=[{"destination": "harbor", "kind": "mail"}],
+                     sources=[{"name": "mail", "adapter": "gmail", "audience": "owner"}])
+    mount_brain(ada, brain)
+    mount(ada, "harbor", harbor)
+    write_feed(ada, [record()])
+    sweep.run(ada, now=NOW)
+    (brain / "_meta" / "subjects.yaml").write_text(yaml.safe_dump({"subjects": [
+        {"id": "harbor", "kind": "projects", "home": "harbor", "match": {"label": "Harbor"}}]}),
+        encoding="utf-8")
+    sweep.run(ada, now=NOW + dt.timedelta(minutes=1))
+    (fm, _), = queue_items(ada)
+    assert fm["class"] == "window"
+
+
+def _call(rid, subject, participants, text):
+    return record(rid, source="calls", kind="call", subject=subject, to=[], participants=participants,
+                  identifiers={"thread": rid}, text=text, **{"from": "ada@lantern.example"})
+
+
+def test_a_client_call_with_the_clients_own_people_travels_after_the_window(tmp_path):
+    """Participants are addresses: a registered colleague by their email or alias is crew, the
+    client's own people (the subject's domain) are its counterpart; anyone else is doubt."""
+    _, _, ada = build(tmp_path, owner_email="ada@lantern.example")
+    set_match(tmp_path, "harbor", domain="harbor.example", keywords=["Harbor"])
+    add_people(tmp_path, {"id": "ben", "kind": "people", "title": "Ben Liu", "email": "ben@lantern.example",
+                          "aliases": ["ben.liu@lantern.example"]})
+    kickoff = _call("c-0200", "Kickoff Lantern x Harbor",
+                    ["ada@lantern.example", "Ben.Liu@lantern.example", "chloe@harbor.example"],
+                    "Scope agreed. Ben sends the plan on Monday.")
+    mixed = _call("c-0201", "Harbor and the board",
+                  ["ada@lantern.example", "chloe@harbor.example", "eve@elsewhere.example"],
+                  "Pier work, then other business.")
+    write_feed(ada, [kickoff, mixed], source="calls")
+    report = sweep.run(ada, now=NOW)
+    assert report.attached == 2 and report.queued == 1 and report.held_in_doubt == 1
+    (fm, body), = queue_items(ada)
+    assert fm["evidence"] == ["c-0200"] and fm["class"] == "window" and "plan on Monday" in body
+    (held, _), = held_items(ada)
+    assert held["evidence"] == ["c-0201"] and "eve@elsewhere.example" in held["why"]
+    assert "chloe" not in held["why"]
+
+
+def test_a_call_summary_travels_without_its_transcript_line(tmp_path):
+    """A left-out term (transcript, attachment) trims its line; the summary still travels."""
+    _, _, ada = build(tmp_path, owner_email="ada@lantern.example")
+    set_match(tmp_path, "harbor", domain="harbor.example")
+    call = _call("c-0300", "Kickoff", ["ada@lantern.example", "chloe@harbor.example"],
+                 "Summary: scope agreed.\nAction items: Ada sends the plan.\nFull transcript: in the recorder.")
+    write_feed(ada, [call], source="calls")
+    sweep.run(ada, now=NOW)
+    (fm, body), = queue_items(ada)
+    assert "Action items: Ada sends the plan." in body and "transcript" not in body.lower()
+    assert fm["trimmed"] is True
+
+
+def test_attachments_lists_what_to_read_on_threads_that_belong_to_one_subject(tmp_path, capsys):
+    """The export reads a matching thread's attachments as document records of their own."""
+    _, _, ada = build(tmp_path)
+    set_match(tmp_path, "harbor", domain="harbor.example")
+    write_feed(ada, [client_mail(attachments=["brief.pdf", "plan.xlsx"]),
+                     client_mail("m-0202", attachments=["done.pdf"]),
+                     record("m-0203", identifiers={"labels": ["Harbor", "Beacon"]}, attachments=["both.pdf"]),
+                     record("m-0204", identifiers={"labels": []}, attachments=["none.pdf"]),
+                     record("m-0202/done.pdf", kind="document", subject="done.pdf", text="Done.")])
+    assert sweep.attachments(ada) == [("m-0200", "harbor", "brief.pdf"), ("m-0200", "harbor", "plan.xlsx")]
+    assert sweep.main([str(ada), "--attachments"]) == 0
+    out = capsys.readouterr().out
+    assert "m-0200\tharbor\tbrief.pdf" in out and "none.pdf" not in out
+    assert not (ada / "knowledge" / "sources" / "2026").exists(), "listing writes nothing"
+
+
+def test_the_export_contract_asks_for_depth_and_the_attachments_of_matching_threads():
+    """What the exporting agent reads decides what a project can know: the skill and the
+    scheduled routine both ask for full mail and document text, call summaries with their action
+    items and key points (never the transcript), event descriptions and matching attachments."""
+    from pathlib import Path
+    root = Path(sweep.__file__).resolve().parents[2]
+    skill = (root / ".claude" / "skills" / "sweep" / "SKILL.md").read_text(encoding="utf-8")
+    chain = (root / "_meta" / "templates" / "routines" / "sweep-chain.md").read_text(encoding="utf-8")
+    for text in (skill, chain):
+        flat = " ".join(text.split())
+        assert "8,000 characters" in flat and "sweep.py <root> --attachments" in flat
+        assert "action items" in flat and "key points" in flat and "description" in flat
+        assert "never the transcript" in flat
+        assert "each on its own line" in flat, "a line with a left-out term stays home, the rest travels"
+
+
+def test_after_the_window_the_homes_status_page_shows_the_client_thread_and_the_call(tmp_path):
+    """End to end: a client mail and a client call, placed by domain and title, wait the window
+    and a morning view, land at the project, and its status page lists the call and the thread
+    with who moves next."""
+    import release
+    import status
+    brain, harbor, ada = build(tmp_path, owner_email="ada@lantern.example")
+    mount_brain(harbor, brain)
+    set_match(tmp_path, "harbor", domain="harbor.example", keywords=["Harbor"])
+    write_feed(ada, [client_mail()])
+    write_feed(ada, [_call("c-0400", "Kickoff Lantern x Harbor", ["ada@lantern.example", "chloe@harbor.example"],
+                           "Summary: scope agreed.\nAction items: Ada sends the plan by 2026-10-20.")],
+               source="calls")
+    sweep.run(ada, now=NOW)
+    assert release.ship(ada, now=NOW, offline_roots={"harbor": harbor}).shipped == 0, "nothing at once"
+    for path in sorted((ada / "_outbound" / "queue").glob("*.md")):   # the morning view lists them
+        fm, body = pages.read(path)
+        pages.write(path, dict(fm, listed=True), body)
+    later = NOW + dt.timedelta(hours=25)
+    assert release.ship(ada, now=later, offline_roots={"harbor": harbor}).shipped == 2
+    status.run(harbor, now=later)
+    page = (harbor / "live" / "subjects" / "harbor.md").read_text(encoding="utf-8")
+    open_part = page.split("## Open", 1)[1].split("## Recently closed", 1)[0]
+    assert "### We owe" in open_part and "Brief after the kickoff" in open_part
+    assert "Kickoff Lantern x Harbor" in page.split("## Timeline", 1)[1]
+    landed = list((harbor / "knowledge" / "sources" / "2026" / "10").glob("*.md"))
+    assert len(landed) == 2 and all(pages.read(p)[0]["at"].startswith("2026-10-12") for p in landed)

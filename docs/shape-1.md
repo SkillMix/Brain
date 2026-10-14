@@ -131,7 +131,11 @@ depth, loops refused), `owner` (parts inherit their umbrella's; none means the s
 owner), `home` (the space where the subject's shared conclusions live; none means they
 stay here), `match` (the fixed identifiers by which a sweep attaches evidence; keys
 `tracker`, `repo`, `channel`, `label`, `thread`, `calendar`, `github` (a person's host
-login); a record matching none or several subjects is never attached), `aliases`,
+login), and two inferred ones: `domain` (a client's mail domain on any address of the
+record: from, to, cc, participants) and `keywords` (whole words in the title of a call or a
+calendar event); a record matching none or several subjects is never attached, and one
+placed by an inferred key alone never travels at once), `aliases` (for a person, also any
+second mail address they use: calls name people by address),
 `important`, `stateful` (status page yes or no), `added`, `added_by`. Hierarchy and
 ownership live here, never in paths.
 

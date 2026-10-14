@@ -24,7 +24,12 @@ Any knowledge question: "what did we decide about X", "what is going on with Har
 3. Walk: `index.md`, then `knowledge/<kind>/index.md`, then
    `knowledge/<kind>/<subject>/index.md` (the hub, links by id; `_meta/state/ids.yaml` maps
    an id to its file), then the pages and `live/subjects/<id>.md`. Repeat in every mounted
-   layer (`brain/`, `mounts/<name>/`): company, team, mine.
+   layer (`brain/`, `mounts/<name>/`): company, team, mine. A subject whose `home` is a mounted
+   space (`python _meta/tools/registry.py <root> find "<name>"` shows it; a project you are
+   crew on) is answered from its home first, whatever your own space has gathered so far: the
+   home's `live/subjects/<id>.md` (open items, timeline, coming up), its signed pages under
+   `knowledge/<kind>/<id>/`, and its `_inbound/candidates/` with `subject: <id>` (unsigned:
+   tier `pending`). "Status of <project>" on a first day reads exactly these.
 4. Search as the second path: `python _meta/tools/search.py <root> query "<term>"` (plain
    text over this space and every mount, or the space's index when `_meta/search.yaml`
    turned one on); each hit names its layer and subject: expand it to the hub, the status

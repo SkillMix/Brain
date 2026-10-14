@@ -6,19 +6,27 @@ Deterministic from files: an adapter exports records to `_meta/state/feed/<sourc
 
 1. writes the witness page `knowledge/sources/<yyyy>/<mm>/<record-id>.md` (a draft, never
    signed; `sensitive: true` when a never-leaves term appears);
-2. attaches the record to the one subject whose `match:` identifier it carries. None or
-   several: no attachment, the names in the text are kept as `mentions` (hints only);
+2. attaches the record to the one subject whose `match:` identifier it carries (a fixed
+   identifier, a mail domain on one of its addresses, a keyword in the title of a call or
+   event). None or several: no attachment, the names in the text are kept as `mentions`
+   (hints only);
 3. for an attached record whose subject lives elsewhere (`home` is another space), applies
    the release rule (rules.md section 6): never-leaves term -> held; the destination's
-   left-out term -> held; a call with participants outside the crew -> held in doubt;
+   left-out term -> held; a call with participants outside the crew (an address counts as the
+   registered person it belongs to; the subject's own mail domain is its counterpart, not an
+   outsider) -> held in doubt;
    a high-stakes term -> the window, landing pending; audience already covering the
-   destination, or a standing choice {destination, kind} (never for calls) -> at once;
-   anything else -> after one window and one morning view. A content-free signal goes to the
-   subject's home for every attached record that is not never-leaves. A record matching
-   several subjects with a home elsewhere is held in doubt and shown as a count;
+   destination, or a standing choice {destination, kind} (never for calls) -> at once, except
+   a record attached by inference (domain or keywords only) or re-attached from an older page,
+   which nobody chose: it waits; anything else -> after one window and one morning view. A
+   content-free signal goes to the subject's home for every attached record that is not
+   never-leaves. A record matching several subjects with a home elsewhere is held in doubt and
+   shown as a count;
 4. advances the watermark and appends one run line (cost = characters of records // 4).
 
     python sweep.py [root] [--dry-run]     --dry-run prints the plan and writes nothing
+    python sweep.py [root] --attachments   the attachments to read as document records: those
+                                           on records of exactly one subject, not read yet
 """
 from __future__ import annotations
 
@@ -140,6 +148,33 @@ def read_feed(root: Path) -> list:
     return records
 
 
+def declared_feed(root: Path, space: spaceyaml.Space) -> list:
+    """The feed records of the sources this space declared; the brain sweeps nothing of its own."""
+    declared = {str(s.get("name")) for s in space.sources if isinstance(s, dict) and s.get("name")}
+    feed = [] if space.profile == "brain" else read_feed(root)
+    return [r for r in feed if str(r.get("_feed")) in declared] if declared else feed
+
+
+def attachments(root) -> list:
+    """(record id, subject id, attachment) for every attachment on a feed record of exactly one
+    subject that has no document record `<record id>/<attachment>` yet: what the export reads
+    next, each as a document record of its own. Writes nothing."""
+    root = Path(root)
+    space = spaceyaml.load(root)
+    reg = registry.Registry(root, space)
+    feed = declared_feed(root, space)
+    have = {str(r["id"]) for r in feed}
+    out = []
+    for record in feed:
+        names = [str(a) for a in record.get("attachments") or [] if str(a).strip()]
+        hits = reg.match(record) if names else []
+        if len(hits) != 1:
+            continue
+        out += [(str(record["id"]), hits[0].id, name) for name in names
+                if f"{record['id']}/{name}" not in have]
+    return out
+
+
 def audience_of(space: spaceyaml.Space, record: dict) -> str | list:
     """The record's audience, else its source's declared audience, else owner."""
     own = record.get("audience")
@@ -188,7 +223,7 @@ def witness_frontmatter(record: dict, hits: list, mentions: list, audience, sens
           "generated": pages.generated("sweep", now), "record": str(record["id"]),
           "source": record.get("source"), "kind": kind,
           "at": pages.iso(pages.parse_iso(record["at"])), "from": record.get("from", "")}
-    for key in ("to", "participants"):
+    for key in ("to", "cc", "participants"):
         if record.get(key):
             fm[key] = list(record[key])
     if len(hits) == 1:
@@ -221,11 +256,37 @@ def crew_of(space: spaceyaml.Space, dest_space: spaceyaml.Space | None) -> set |
     return {str(n).strip().lower() for n in crew if n}
 
 
-def outsiders(space: spaceyaml.Space, dest_space, participants: list) -> list:
+def _person_name(space: spaceyaml.Space, reg, participant) -> str:
+    """A participant as the name the crew is listed by: the owner's address is the owner, a
+    registered person's email, alias or id is that person; anything else stays as given."""
+    text = str(participant).strip()
+    address = registry.address_of(text)
+    if address and address == registry.address_of(space.owner_email):
+        return space.owner
+    for person in (reg.everywhere() if reg is not None else []):
+        if person.kind != "people":
+            continue
+        names = {registry.address_of(n) for n in [person.id, person.extra.get("email"), *person.aliases] if n}
+        if address in names:
+            return person.title
+    return text
+
+
+def outsiders(space: spaceyaml.Space, dest_space, participants: list, reg=None,
+              subject: registry.Subject | None = None) -> list:
     crew = crew_of(space, dest_space)
     if crew is None:
         return []
-    return [p for p in participants if str(p).strip().lower() not in crew]
+    own = subject.match.get("domain") if subject is not None else None
+    own = {str(d).strip().lower() for d in (own if isinstance(own, list) else [own]) if d}
+    out = []
+    for p in participants:
+        domains = registry.record_domains({"from": p})
+        if domains and any(d == o or d.endswith("." + o) for d in domains for o in own):
+            continue   # the subject's own people: its counterpart on the call
+        if _person_name(space, reg, p).strip().lower() not in crew:
+            out.append(p)
+    return out
 
 
 def covers(audience, subject: registry.Subject, dest_space) -> bool:
@@ -304,7 +365,7 @@ def named_person(space: spaceyaml.Space, record: dict, text: str) -> str | None:
 
 
 def classify(space: spaceyaml.Space, record: dict, subject: registry.Subject, destination: str,
-             dest_space, audience, now: dt.datetime) -> Verdict:
+             dest_space, audience, now: dt.datetime, reg=None, inferred: bool = False) -> Verdict:
     text = record_text(record)
     term = release.first_term(text, space.never_leaves)
     if term:
@@ -317,14 +378,15 @@ def classify(space: spaceyaml.Space, record: dict, subject: registry.Subject, de
         what = f"left-out term `{term}`" if term else f"another client ({other})"
         if kept is None:
             return Verdict(hold="left_out", why=f"{what} for {destination} appears")
-        verdict = classify(space, dict(record, text=kept), subject, destination, dest_space, audience, now)
+        verdict = classify(space, dict(record, text=kept), subject, destination, dest_space, audience, now,
+                           reg, inferred)
         if not verdict.hold:   # a passage that mixes them keeps only its project facts
             verdict.extra = dict(verdict.extra or {}, trimmed_body=kept, trimmed=True)
             verdict.why += f"; {what} left out, the rest travels"
         return verdict
     kind = record.get("kind")
     if kind == "call":
-        outside = outsiders(space, dest_space, record.get("participants") or [])
+        outside = outsiders(space, dest_space, record.get("participants") or [], reg, subject)
         if outside:
             return Verdict(hold="doubt",
                            why="call with participants outside the crew: " + ", ".join(outside))
@@ -339,6 +401,10 @@ def classify(space: spaceyaml.Space, record: dict, subject: registry.Subject, de
         return Verdict(cls="window", stage_after=now + space.window(), extra={"high_stakes": True},
                        why=f"an outside party writes about {named}: a claim about a named person waits "
                            "the window and lands pending")
+    if inferred or record.get("_reattach"):
+        how = "re-attached from an older page" if record.get("_reattach") else "attached by its domain or title"
+        return Verdict(cls="window", stage_after=now + space.window(),
+                       why=f"widens who can read it; {how}, which nobody chose: never at once")
     paused_why = ""
     if covers(audience, subject, dest_space):
         path = f"audience:{record.get('source') or 'unknown'}"
@@ -364,6 +430,17 @@ def item_frontmatter(space: spaceyaml.Space, record: dict, subject_id, destinati
           "generated": pages.generated("sweep", now), "class": cls, "destination": destination,
           "subject": subject_id, "stage_after": pages.iso(stage_after), "listed": False,
           "evidence": [str(record["id"])], "from_space": space.name, "kind": kind}
+    # when, who to whom, and the thread: the home's status page threads it and knows who moves
+    try:
+        fm["at"] = pages.iso(pages.parse_iso(record["at"]))
+    except (KeyError, TypeError, ValueError):
+        pass
+    for key in ("from", "to"):
+        if record.get(key):
+            fm[key] = record[key] if key == "from" else list(record[key])
+    thread = (record.get("identifiers") or {}).get("thread")
+    if thread:
+        fm["identifiers"] = {"thread": str(thread)}
     fm.update(extra or {})
     return fm
 
@@ -391,10 +468,7 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
             dest_cache[name] = release.destination_space(space, name)
         return dest_cache[name]
 
-    declared = {str(s.get("name")) for s in space.sources if isinstance(s, dict) and s.get("name")}
-    feed = [] if space.profile == "brain" else read_feed(root)   # the brain sweeps nothing of its own
-    if declared:
-        feed = [r for r in feed if str(r.get("_feed")) in declared]   # only the feeds this space declared
+    feed = declared_feed(root, space)
     marks = read_feed_marks(root)
     records = [r for r in feed if str(r.get("_feed")) not in marks
                or pages.parse_iso(r["at"]) > marks[str(r.get("_feed"))]]
@@ -429,7 +503,7 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
             continue
         rebuilt = {"id": fm.get("record") or path.stem, "source": fm.get("source"), "kind": fm.get("kind"),
                    "at": fm.get("at") or (fm.get("generated") or {}).get("at"), "from": fm.get("from"),
-                   "to": fm.get("to") or [], "subject": fm.get("title"), "text": body,
+                   "to": fm.get("to") or [], "cc": fm.get("cc") or [], "subject": fm.get("title"), "text": body,
                    "identifiers": fm.get("identifiers") or {}, "attachments": fm.get("attachments") or [],
                    "audience": fm.get("audience"), "participants": fm.get("participants") or []}
         if not rebuilt["at"] or not reg.match(rebuilt):
@@ -485,7 +559,8 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
         if home_reads(dest_space_of(home), record):
             report.plan.append(f"keep {record['id']}: {home} reads that source itself")
             continue
-        verdict = classify(space, record, subject, home, dest_space_of(home), audience, now)
+        inferred = not (reg.matched_by(subject, record) - set(registry.INFERRED_KEYS))
+        verdict = classify(space, record, subject, home, dest_space_of(home), audience, now, reg, inferred)
         if verdict.hold:
             held = item_frontmatter(space, record, subject.id, home, verdict.hold, now, now)
             report.plan.append(f"hold {verdict.hold} {record['id']} -> {home}: {verdict.why}")
@@ -674,6 +749,10 @@ def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     dry_run = "--dry-run" in argv
     roots = [a for a in argv if not a.startswith("--")]
+    if "--attachments" in argv:
+        for rid, sid, name in attachments(Path(roots[0]) if roots else Path(".")):
+            print(f"{rid}	{sid}	{name}")
+        return 0
     report = run(Path(roots[0]) if roots else Path("."), dry_run=dry_run)
     if dry_run:
         print("plan:" if report.plan else "nothing to sweep")

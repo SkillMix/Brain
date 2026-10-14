@@ -185,6 +185,25 @@ def _walk_texts(space: spaceyaml.Space, reg: registry_mod.Registry, subject: str
     status_page = root / "live" / "subjects" / f"{sid}.md"
     if status_page.exists():
         texts[_rel(root, status_page)] = _read(status_page) or ""
+    # the subject's home, mounted here (a crew member's workspace): its status page, its signed
+    # pages and its candidates are the first answer, whatever this space has gathered so far
+    home = reg.home_of(sid) if found else None
+    home_root = space.mount_root(home) if home and home != space.name else None
+    if home_root is not None:
+        paths = [home_root / "live" / "subjects" / f"{sid}.md"]
+        for kind in kinds:
+            folder = home_root / "knowledge" / kind / sid
+            paths += sorted(folder.rglob("*.md")) if folder.is_dir() else []
+        for path in sorted((home_root / "_inbound" / "candidates").glob("*.md")):
+            try:
+                if str(pages.read(path)[0].get("subject") or "") == sid:
+                    paths.append(path)
+            except Exception:
+                continue
+        for path in paths:
+            text = _read(path) if path.exists() else None
+            if text is not None:
+                texts[_rel(home_root, path, home)] = text
     ids_cache: dict = {}
     for hub in hubs:
         for pid in pages.id_links(hub):

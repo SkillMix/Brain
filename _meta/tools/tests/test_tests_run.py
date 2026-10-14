@@ -254,3 +254,34 @@ def test_leaks_never_read_the_targets_own_mounts(tmp_path):
     files = {f.relative_to(root).as_posix() for f in tests_run._tracked_files(root)}
     assert "knowledge/plan.md" in files
     assert not any(f.startswith("brain/") for f in files)
+
+
+def test_a_crew_members_walk_reads_the_home_projects_status_signed_and_candidate_pages(tmp_path):
+    """Cold start: a colleague's workspace knows little of a project yet; their first answer
+    reads the project's own status page, its signed pages and its candidates through the mount."""
+    brain = make_space(tmp_path / "brain", profile="brain", subjects=[HARBOR])
+    harbor = make_space(tmp_path / "harbor", profile="project", name="harbor", owner="Ben Liu",
+                        audience=["Ada Okafor", "Ben Liu"])
+    write_page(harbor, "live/subjects/harbor.md", type="snapshot", title="Harbor: status",
+               body="## Open\n- Kickoff call: the client wants the first list by Friday (witness, team, 2026-10-02)\n")
+    signed(harbor, "knowledge/projects/harbor/cadence.md", "The weekly call is on Tuesdays.\n",
+           type="decision", title="Cadence", subject="harbor")
+    write_page(harbor, "_inbound/candidates/p-0000beef.md", type="source", title="Brief after the kickoff",
+               subject="harbor", body="The brief names three target markets.\n")
+    write_page(harbor, "_inbound/candidates/p-0000feed.md", type="source", title="Elsewhere",
+               subject="beacon", body="Not about this project.\n")
+    paul = make_space(tmp_path / "paul", name="paul", owner="Paul Rivera")
+    mount_brain(paul, brain)
+    data = yaml.safe_load((paul / "space.yaml").read_text(encoding="utf-8"))
+    data["mounts"].append({"name": "harbor", "path": str(harbor)})
+    (paul / "space.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    write_page(paul, "live/subjects/harbor.md", type="snapshot", title="Harbor: status", body="## Open\n- none\n")
+    path = questions_file(tmp_path / "answers.yaml", {
+        "question": "What is the status of Harbor?", "subject": "harbor",
+        "expect": ["first list by Friday", "Tuesdays", "three target markets"], "asker": "paul", "via": "walk"})
+    report = tests_run.answers(paul, path=path, now=NOW)
+    assert (report.passed, report.failed) == (1, 0), report.details
+    found = report.details[0]["found_in"]
+    assert "harbor:live/subjects/harbor.md" in found
+    assert "harbor:_inbound/candidates/p-0000beef.md" in found
+    assert not any("p-0000feed" in f for f in found)

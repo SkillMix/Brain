@@ -114,3 +114,21 @@ def test_one_record_witnessed_twice_shows_once(tmp_path):
                 identifiers={"thread": "HAR-7"}, issue="HAR-7", state="Done")
     status.run(root, now=NOW)
     assert page_text(root, "harbor").count("HAR-7: ship it") == 2   # once closed, once on the timeline
+
+
+def test_a_colleagues_other_mail_domain_is_ours_when_saying_who_moves_next(tmp_path):
+    """A company with two mail domains: a reply from a colleague's second address (a registered
+    person's email or alias) to a client waits on the client; it is not something we owe."""
+    root = make_space(tmp_path / "ada", owner_email="ada@lantern.example", subjects=[
+        HARBOR, dict(BEN, email="ben@lantern.example", aliases=["ben@lantern-works.example"])])
+    witness(root, "m1", "2026-10-11T08:00:00Z", subject="harbor", kind="mail", title="Re: the plan",
+            identifiers={"thread": "t-9"},
+            **{"from": "Ben Liu <ben@lantern-works.example>", "to": ["ops@tidewater.example"]})
+    witness(root, "m2", "2026-10-11T09:00:00Z", subject="harbor", kind="mail", title="Lunch?",
+            identifiers={"thread": "t-10"},
+            **{"from": "ben@lantern-works.example", "to": ["ada@lantern.example"]})
+    status.run(root, now=NOW)
+    text = page_text(root, "harbor")
+    assert "### We owe" not in text
+    assert "Re: the plan" in text.split("### Waiting on them")[1].split("###")[0]
+    assert "Lunch?" in text.split("### Internal")[1].split("## Recently closed")[0]
