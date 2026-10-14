@@ -45,6 +45,20 @@ def venv_python(venv: Path) -> Path:
     return Path(venv) / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
+def _pip(run, cmd) -> bool:
+    """One pip install. A certificate failure (a company proxy that re-signs traffic, a Python
+    without the machine's root certificates) is retried once with the system's own certificate
+    store: verification stays on."""
+    res = run(cmd, capture_output=True, text=True)
+    if res.returncode == 0:
+        return True
+    said = f"{res.stdout or ''}{res.stderr or ''}".upper()
+    if "CERTIFICATE" not in said and "SSL" not in said:
+        return False
+    flag = "--native-tls" if Path(str(cmd[0])).stem.lower() == "uv" else "--use-feature=truststore"
+    return run([*cmd, flag], capture_output=True, text=True).returncode == 0
+
+
 def ensure_yaml(argv, venv=VENV, run=subprocess.run, have=None, install=None) -> int | None:
     """None when PyYAML imports here. Else the agent installs it: `pip --user` first; where the
     system Python refuses that (PEP 668: Homebrew on macOS, Debian and Ubuntu), a venv at
@@ -55,7 +69,7 @@ def ensure_yaml(argv, venv=VENV, run=subprocess.run, have=None, install=None) ->
     have = have or (lambda: importlib.util.find_spec("yaml") is not None)
     if have():
         return None
-    if run([sys.executable, "-m", "pip", "install", "--quiet", "--user", "pyyaml"]).returncode == 0:
+    if _pip(run, [sys.executable, "-m", "pip", "install", "--quiet", "--user", "pyyaml"]):
         import site
         sys.path.append(site.getusersitepackages())
         importlib.invalidate_caches()
@@ -75,7 +89,7 @@ def ensure_yaml(argv, venv=VENV, run=subprocess.run, have=None, install=None) ->
                   "`sudo apt install python3-venv` (Debian, Ubuntu), then say the sentence again")
             return 1
         pip = [uv, "pip", "install", "--python", str(py), "--quiet", "pyyaml"]
-    if run(pip).returncode != 0:
+    if not _pip(run, pip):
         print(f"start: PyYAML did not install into {venv}; check the network, then say the sentence again")
         return 1
     return run([str(py), str(Path(__file__).resolve()), *argv]).returncode

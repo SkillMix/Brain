@@ -162,11 +162,26 @@ def bin_dirs(home=None) -> list:
     return found
 
 
+def system_dirs(windows=None, env=None) -> list:
+    """Where Windows' own installers put gh and git (winget, the MSI): an install made after the
+    app started is found there without restarting the app, whose PATH is older."""
+    windows = os.name == "nt" if windows is None else windows
+    env = os.environ if env is None else env
+    if not windows:
+        return []
+    found = []
+    for var, rel in (("ProgramFiles", "GitHub CLI"), ("ProgramFiles", "Git/cmd"),
+                     ("LOCALAPPDATA", "Microsoft/WinGet/Links")):
+        if env.get(var) and (Path(env[var]) / rel).is_dir():
+            found.append(Path(env[var]) / rel)
+    return found
+
+
 def use_tools(home=None) -> list:
     """Put the installed tools first on PATH for this process and what it starts (the sync
-    task, git, gh). Returns the directories added."""
+    task, git, gh), and the folders Windows' installers use. Returns the directories added."""
     current = os.environ.get("PATH", "").split(os.pathsep)
-    added = [str(d) for d in bin_dirs(home) if str(d) not in current]
+    added = [str(d) for d in [*bin_dirs(home), *system_dirs()] if str(d) not in current]
     if added:
         os.environ["PATH"] = os.pathsep.join(added + [p for p in current if p])
     return added
@@ -275,8 +290,10 @@ def _gh(m: Machine, fix: bool) -> Row:
         folder, note = install("gh", m)
         if folder and m.ok("gh", "--version"):
             return Row("gh", True, f"gh {VERSIONS['gh']}", check, fixed=note)
+    how = ("run `! winget install --id GitHub.cli -e` (no restart needed)" if m.system == "Windows"
+           else "see https://cli.github.com")
     return Row("gh", False, "not found", check, yours=(
-        f"{note}; " if note else "") + "install GitHub's command line tool once: see https://cli.github.com, "
+        f"{note}; " if note else "") + f"install GitHub's command line tool once: {how}, "
         "then say the sentence again")
 
 

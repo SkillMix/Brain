@@ -39,9 +39,11 @@ that proves it. Your first morning briefing arrives the next day.
 
 When a person asks to be set up, onboarded or to start, and names this repository:
 
-1. Clone it anywhere temporary: `gh repo clone OWNER/REPOSITORY <temporary folder>` (without
-   `gh`, install it from https://cli.github.com; not signed in, ask the person to run
-   `gh auth login --web` once).
+1. Clone it to a short folder: `gh repo clone OWNER/REPOSITORY ~/.spaces/template` (on Windows
+   run `git config --global core.longpaths true` first; without `gh`, install it from
+   https://cli.github.com, on Windows `winget install --id GitHub.cli -e`; not signed in, ask
+   the person to run `gh auth login --web` once). The person's sentence is the go-ahead for
+   every step below: say what you are doing and go on.
 2. Run `sh <temporary folder>/_meta/tools/bootstrap.sh` (Windows: `powershell -NoProfile
    -ExecutionPolicy Bypass -File <temporary folder>\_meta\tools\bootstrap.ps1`): it finds or
    installs Python 3.10+ and runs `_meta/tools/start.py`, whose doctor checks this machine first

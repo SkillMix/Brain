@@ -870,6 +870,13 @@ def register_routines(report, workspace, offline=False, dry_run=False) -> list:
     workspace = Path(workspace).resolve()
     name = spaceyaml.load(workspace).name
     records = []
+    if not offline:
+        import routine
+        if routine.find_claude() is None:   # the desktop app alone installs no `claude` command
+            report.add("routines as OS tasks", False, "claude --version",
+                       "no `claude` command on this machine, so OS tasks would never run: schedule the "
+                       "routines with the app's own scheduled tasks instead")
+            return records
     for prompt in sorted((workspace / "_meta" / "state" / "routines").glob("*.md")):
         meta = yaml.safe_load(prompt.read_text(encoding="utf-8").split("---")[1]) or {}
         routine, schedule = meta.get("name") or prompt.stem, str(meta.get("schedule") or "")
@@ -1373,6 +1380,7 @@ def check(root) -> list:
     elif task.get("check"):
         steps.append(task_step("sync task", task))
     steps.extend(task_step(f"routine task {t['name']}", t) for t in state.get("routine_tasks") or [] if t.get("check"))
+    steps.extend(routine_run_step(t["name"]) for t in state.get("routine_tasks") or [] if t.get("name"))
     if state and not state.get("offline"):
         # this machine's prerequisites, read only: what broke since onboarding is named with its fix
         for r in doctor.diagnose(doctor.Machine(run=run_cmd, reach=lambda: True), fix=False,
@@ -1402,6 +1410,20 @@ def check(root) -> list:
         if (current.get("items") or []) != owner_items:
             write_yaml(target, {"items": owner_items})
     return steps
+
+
+def routine_run_step(task: str) -> Step:
+    """An OS routine's last run, from the log routine.py keeps: a task can be registered and still
+    fail every time (no `claude` command, a sign-in gone)."""
+    log = Path.home() / ".spaces" / "logs" / f"{task.removeprefix('space-')}.log"
+    lines = log.read_text(encoding="utf-8", errors="replace").splitlines() if log.exists() else []
+    exits = [i for i, line in enumerate(lines) if line.startswith("exit ")]
+    if not exits:
+        return Step(f"routine {task} runs", True, f"cat {log}", "not run yet")
+    last = exits[-1]
+    ok = lines[last].strip() == "exit 0"
+    said = next((line for line in reversed(lines[:last]) if line.strip()), "")
+    return Step(f"routine {task} runs", ok, f"cat {log}", "last run ok" if ok else f"last run failed: {said[:160]}")
 
 
 def task_step(label: str, task: dict) -> Step:
