@@ -55,8 +55,9 @@ When a person asks to be set up, onboarded or to start, and names this repositor
    with your harness's scheduled tasks, each at its `schedule`. Without scheduled tasks, run
    `python <workspace>/_meta/tools/onboard.py <workspace> --os-routines`: the OS scheduler runs
    them through `claude -p`.
-5. Tell the person in three lines where their workspace is, what is still theirs (the
-   `yours:` lines) and that their morning briefing starts tomorrow.
+5. Follow steps 7 to 9 of `.claude/skills/onboard/SKILL.md` in the clone: quiet GitHub
+   notifications for the repositories they just got, one sweep chain now, and an answer that
+   shows the open items of the projects they are crew on.
 
 Run again, `start.py` changes nothing that is right: it adopts the repositories it made.
 

@@ -15,7 +15,9 @@ routines only edit files. Each run:
      request the platform merges. Changes under a `protected:` path go to their own branch
      sync/<hostname>-protected (their own pull request, the owner's one click), so the
      journal, desk and run lines never wait behind them; each branch is rebuilt on
-     origin/main and pushed only when its content changed
+     origin/main and pushed only when its content changed. A change that is only run lines
+     and mount pins goes out at most every QUIET_HOURS, or with the next real change, so
+     nobody watching the repository gets a pull request every 15 minutes
   7. append one run line to _meta/state/runs.jsonl when something happened, plus at
      most one heartbeat a day; the line rides along in the next run's commit
 
@@ -52,6 +54,7 @@ OK, ERROR, SKIPPED = 0, 1, 2
 PRIVATE_ZONES = ("personal/", "academic/", "_scratch/")
 IN_PROGRESS = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "rebase-merge", "rebase-apply", "index.lock")
 LOCK_HOURS = 0.5
+QUIET_HOURS = 6   # run lines and mount pins alone go out at most this often
 RUNS_PATH = Path("_meta") / "state" / "runs.jsonl"
 NOTABLE = ("committed", "pins", "conflict", "scan_hits", "errors")
 
@@ -428,6 +431,9 @@ class Run:
             return
         if git(self.root, "diff", "--quiet", "origin/main", "HEAD").returncode == 0:
             return   # only merge commits: nothing this checkout changes, nothing to push
+        if self.only_housekeeping() and not self.quiet_due():
+            self.notes["waiting"] = "run lines and pins only"
+            return
         parts = self.split()
         if parts is not None:
             # protected paths wait for the owner's click on their own branch; the rest lands on green
@@ -440,6 +446,7 @@ class Run:
                     self.error(f"push failed ({name})")
                     continue
                 self.notes[note] = len(paths)
+                self.quiet_pushed()
                 print(f"push: {len(paths)} path(s) to {name}")
                 self.open_pr(name, "chore: sync (protected)" if note == "pushed_protected" else "chore: sync")
             return
@@ -448,8 +455,29 @@ class Run:
             self.error("push failed")
             return
         self.notes["pushed"] = ahead
+        self.quiet_pushed()
         print(f"push: {ahead} commit(s) to {branch}")
         self.open_pr(branch)
+
+    def only_housekeeping(self) -> bool:
+        """Every path this checkout changes is a run line file or a mount pin."""
+        out = git(self.root, "diff", "--name-only", "-z", "origin/main", "HEAD").stdout
+        changed = [p for p in out.split("\x00") if p]
+        quiet = {RUNS_PATH.as_posix(), *self.submodules()}
+        return bool(changed) and all(p in quiet for p in changed)
+
+    def quiet_due(self) -> bool:
+        try:
+            last = float((self.gdir / "sync-quiet-pushed").read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            return True
+        return self.now.timestamp() - last >= QUIET_HOURS * 3600
+
+    def quiet_pushed(self) -> None:
+        try:
+            (self.gdir / "sync-quiet-pushed").write_text(str(self.now.timestamp()), encoding="utf-8")
+        except OSError:
+            pass
 
     def gh(self, *args: str) -> subprocess.CompletedProcess | None:
         try:

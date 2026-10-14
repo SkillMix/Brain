@@ -35,7 +35,11 @@ sweeps nothing of its own. You export; the tool decides.
    `attachments`; issue = a tracker issue created, changed or closed (`identifiers.tracker` the
    project, `issue`, `state`); change = a pull request merged or a release in the repository
    (`identifiers.repo`, `text` its title and description), never the space's own machinery
-   pull requests (`chore: sync`, `chore: pins`, `chore: release`, `chore: structure`). `audience` is the source's declared audience, copied as is. `id` is the
+   pull requests (`chore: sync`, `chore: pins`, `chore: release`, `chore: structure`). Export
+   them with `gh pr list -R <repo> --state merged --search "merged:>=<since> NOT chore in:title"
+   --limit 200 --json number,title,body,mergedAt,baseRefName,author` (the search, not a filter
+   afterwards: the machinery pull requests outnumber the rest and would fill any limit), `id`
+   `<repo>#<number>`. `audience` is the source's declared audience, copied as is. `id` is the
    system's own id, stable across runs.
 2. `python _meta/tools/sweep.py <root>` (`--dry-run` prints the plan and writes nothing).
 
