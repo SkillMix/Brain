@@ -88,7 +88,7 @@ personal/  academic/  _scratch/   gitignored in every profile; outside every too
 | `sources` | `[{name, adapter, audience}]`: connected systems and who can already read their records (`owner`, `crew`, `everyone` or names) |
 | `mounts` | `[{name, repo, branch, path}]`: read-only, pinned windows on ancestors; the brain at `./brain`, flat, never nested |
 | `routines` | UTC cron for `sweep` and `daily`; the chain is driven by dependency, not by the clocks alone |
-| `routing` | turns the judgment router on (a personal workspace): `since` the oldest witness page it reads by default, `review_until` every projection waits the window until then; without it, evidence attaches by identifier and the sweep releases |
+| `routing` | turns the judgment router on (a personal workspace): `since` the oldest witness page it reads by default, `review_until` (optional, off unless set; onboard never sets it) every projection waits the window until then; without it, evidence attaches by identifier and the sweep releases |
 | `time_scale` | fixture and shadow only; divides every duration, so a 24-hour window at `48` is 30 minutes |
 | `transcripts` | personal only: `{path, switch}`; the harness's session transcripts folder; `off` measures the capture rate only, `on` also turns missed sessions into witness pages here |
 | `request_classes`, `request_choices` | the fourth wire: classes of request and the standing choices that answer them (`[{from, class, answer}]`, answer `at_once`, `ask` or `never`) |

@@ -66,7 +66,7 @@ Where `space.yaml` turns `routing` on, an agent reads each record in full and pi
 per projection: ordinary work for the destination goes at once, anything more sensitive waits
 one window and one morning view with its reason. Never-leaves terms hold a projection; the
 high-stakes list and medium confidence force the window; low confidence asks the owner; a
-review period (`routing.review_until`) holds every projection for the window.
+review period (`routing.review_until`), when set, holds every projection for the window; it is off by default.
 Doubt about the class means the window; doubt about privacy means the item stays home and
 is shown as a count. External disclosure is not internal permission. A subject's `home` is
 the narrowest shared space whose audience covers everyone on the subject; no home means the

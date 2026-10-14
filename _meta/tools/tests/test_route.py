@@ -433,3 +433,18 @@ def test_record_refuses_where_routing_is_off(tmp_path):
     captured(root)
     with pytest.raises(route.RouteError, match="routing"):
         route.record(root, decision(), now=NOW)
+
+
+def test_retract_queued_only_leaves_what_already_shipped(tmp_path):
+    """Changing a decision that is still waiting must never retract what the owner already let go."""
+    root, harbor, _ = space_set(tmp_path)
+    captured(root)
+    route.record(root, decision(), now=NOW)
+    assert release.ship(root, now=NOW, offline_roots={"harbor": harbor}).shipped == 1
+    page = route.find_page(root, "c-1")
+    fm, body = pages.read(page)
+    pages.write(page, {k: v for k, v in fm.items() if k != "routing"}, body)   # a second, newer decision
+    route.record(root, decision(routes=route_with(tier="window")), now=NOW)
+    out = route.retract(root, "c-1", by="Ada Okafor", now=NOW, queued_only=True)
+    assert len(out["withdrawn"]) == 1 and out["retractions"] == [] and queued(root) == []
+    assert route.main([str(root), "retract", "c-1", "--by", "Ada Okafor", "--queued-only"]) == 0

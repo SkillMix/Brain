@@ -527,12 +527,14 @@ def test_the_personal_instruction_carries_the_working_rules_and_the_planning_poi
     assert "plan or review their day" in block and "personal/planning/checkin-instructions.md" in block
 
 
-def test_a_new_live_workspace_starts_routing_in_review_mode(tmp_path):
+def test_a_new_live_workspace_starts_routing_live(tmp_path):
+    """The owner chose no review period (2026-10-14): the router's tiers apply from day one; the
+    `routing.review_until` setting stays available and is off unless someone sets it."""
     values = onboard.space_values({}, "ada", "Ada Okafor", "ada@lantern.example", ["Ada Okafor"], "brain")
     onboard.fill_space(tmp_path / "ada", "personal", **values)
     space = spaceyaml.load(tmp_path / "ada")
     assert space.routing_on and not [e for e in space.errors() if "routing" in e]
-    assert (space.review_until - space.now()).days in (13, 14)
+    assert space.review_until is None and "review_until" not in space.routing
     assert 89 <= (space.now() - space.routing_since).days <= 90
     fixture = dict(values, mode="fixture", time_scale=48)
     onboard.fill_space(tmp_path / "ben", "personal", **fixture)
