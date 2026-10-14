@@ -16,7 +16,7 @@ low confidence -> a question for the owner, nothing leaves. An owner's answer co
     python route.py <root> pending [--subject ID] [--out FILE]
     python route.py <root> record FILE [FILE ...]
     python route.py <root> answer <record id> (--yes | --private) --by NAME
-    python route.py <root> retract <record id> [--space NAME] --by NAME
+    python route.py <root> retract <record id> [--space NAME] [--queued-only] --by NAME
 """
 from __future__ import annotations
 
@@ -411,15 +411,20 @@ def answer(root, record_id, yes: bool, by: str, now: dt.datetime | None = None) 
     return result if yes else {"private": True}
 
 
-def retract(root, record_id, by: str, space: str | None = None, now: dt.datetime | None = None) -> dict:
-    """Undo a routing: projections still queued are withdrawn, shipped ones retracted."""
+def retract(root, record_id, by: str, space: str | None = None, now: dt.datetime | None = None,
+            queued_only: bool = False) -> dict:
+    """Undo a routing: projections still queued are withdrawn, shipped ones retracted.
+    `queued_only` changes a decision that still waits: only the router's queued projections are
+    withdrawn, and nothing that already left (the owner's own releases included) is retracted."""
     root = Path(root)
     sp = spaceyaml.load(root)
     now = now or sp.now()
     rid = str(record_id)
-    out = {"withdrawn": _withdraw(root, rid, "withdrawn", f"withdrawn by {by}", space), "retractions": []}
+    out = {"withdrawn": _withdraw(root, rid, "withdrawn", f"withdrawn by {by}", space, router_only=queued_only),
+           "retractions": []}
     released = root / release.RELEASED
-    for line in released.read_text(encoding="utf-8").splitlines() if released.exists() else []:
+    lines = [] if queued_only or not released.exists() else released.read_text(encoding="utf-8").splitlines()
+    for line in lines:
         try:
             entry = json.loads(line)
         except ValueError:
@@ -465,6 +470,7 @@ def main(argv=None) -> int:
     p_retract.add_argument("record_id")
     p_retract.add_argument("--space")
     p_retract.add_argument("--by", required=True)
+    p_retract.add_argument("--queued-only", action="store_true")
     args = ap.parse_args(argv)
     root = Path(args.root)
     if args.cmd == "pending":
@@ -504,7 +510,7 @@ def main(argv=None) -> int:
             return 1
         print(f"{args.record_id}: answered")
         return 0
-    result = retract(root, args.record_id, by=args.by, space=args.space)
+    result = retract(root, args.record_id, by=args.by, space=args.space, queued_only=args.queued_only)
     print(f"{args.record_id}: withdrawn {len(result['withdrawn'])}, retracted {len(result['retractions'])}")
     return 0
 

@@ -57,6 +57,7 @@ routes:
    projection informs (text and owner) and your `why`.
    To undo a route: `python _meta/tools/route.py <root> retract <record> --by <name>` (queued
    projections are withdrawn, shipped ones retracted); the record can then take a new decision.
+   To change a decision that still waits without touching what already left, add `--queued-only`.
 4. Your run line in `_meta/state/runs.jsonl`: `{"routine": "route", "at": "<ISO UTC>", "space":
    "<name>", "cost_tokens": <n>, "notes": {"records": n, "routed": n, "private": n, "questions":
    n, "refused": n}}`.
