@@ -250,3 +250,21 @@ def test_protected_changes_go_to_their_own_branch_so_the_rest_lands_on_green(rep
     assert sync.main(["--root", str(repo)]) == 0   # nothing new: neither branch moves
     git(repo, "fetch", "-q", "origin")
     assert git(repo, "rev-parse", f"origin/sync/{host}", f"origin/sync/{host}-protected").stdout == before
+
+
+def test_files_the_template_manages_travel_with_the_protected_ones(repo, monkeypatch):
+    """A template update lands as one unit: a managed file outside the protected prefixes (a
+    template prompt) goes to the protected branch with the tools that expect it."""
+    monkeypatch.setattr(sync.Run, "gh", lambda self, *args: None)
+    write(repo / "_meta" / "state" / "template-version.yaml",
+          "repo: x\ncommit: abc\nfiles:\n  _meta/templates/prompt.md: a1\n", minutes_old=20)
+    write(repo / "_meta" / "templates" / "prompt.md", "v2\n", minutes_old=20)
+    write(repo / "space.yaml", (repo / "space.yaml").read_text(encoding="utf-8") + "x: 1\n", minutes_old=20)
+    write(repo / "work" / "notes.md", "# Notes\n\nline three\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    host = sync.hostname()
+    git(repo, "fetch", "-q", "origin")
+    guarded = git(repo, "diff", "--name-only", "origin/main", f"origin/sync/{host}-protected").stdout.split()
+    plain = git(repo, "diff", "--name-only", "origin/main", f"origin/sync/{host}").stdout.split()
+    assert "_meta/templates/prompt.md" in guarded and "_meta/state/template-version.yaml" in guarded
+    assert "_meta/templates/prompt.md" not in plain and "work/notes.md" in plain
