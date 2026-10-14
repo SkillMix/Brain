@@ -133,3 +133,14 @@ def test_offboard_removes_the_routine_tasks_too(tmp_path, monkeypatch):
     monkeypatch.setattr(offboard, "run_cmd", fake)
     offboard.run(root, online=True, dry_run=False)
     assert deleted == ["space-sync-ada", "space-daily-chain-ada", "space-sweep-chain-ada"]
+
+
+def test_claude_is_found_where_its_windows_installer_puts_it(tmp_path, monkeypatch):
+    """A scheduled task may start without the user's PATH: the installer's own folder still counts,
+    with the .exe Windows gives it."""
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    monkeypatch.setattr(routine.shutil, "which", lambda name: None)
+    exe = tmp_path / "home" / ".local" / "bin" / "claude.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("", encoding="utf-8")
+    assert routine.find_claude() == str(exe)
