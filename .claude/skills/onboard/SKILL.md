@@ -40,9 +40,16 @@ needed to finish.
    prompt. Without scheduled tasks (Claude Code in a terminal), run
    `python <workspace>/_meta/tools/onboard.py <workspace> --os-routines` instead: the OS
    scheduler runs each routine at its times through `claude -p`.
-7. Answer in at most four lines: where the workspace is; what is still theirs (the `yours`
-   rows, each with its check); that the morning briefing starts tomorrow; that "what needs
-   me" shows their list any time.
+7. Show value now, before the first scheduled run: follow
+   `<workspace>/_meta/state/routines/sweep-chain.md` once, as if it fired (a first run exports
+   the last 14 days of every connected feed). Then read the Open section of each status page
+   the person can already see: `live/subjects/*.md` in their workspace and in every mounted
+   project (the mounts in `space.yaml`).
+8. Answer in at most six lines: where the workspace is; what is still theirs (the `yours`
+   rows, each with its check); per project they are crew on, its open items in one line
+   each (at most three); two sentences to try, "status of <a project>" and "prep me for the
+   call with <a project>"; that the morning briefing starts tomorrow; that "what needs me"
+   shows their list any time.
 
 Run again on the same person, `start.py` adopts what it made and repairs what is missing.
 A failed row names its fix; do that fix, never a different workaround.
@@ -59,8 +66,10 @@ not in the registry yet, add them as a `people` subject first (the status routin
 
 `python _meta/tools/onboard.py <workspace> --connect <feed>` adds it to the workspace's
 sources and the register of connected systems. The person signs in to the connector in their
-own harness (the claude.ai connector settings, say); the next sweep reads it. Read-back: the
-feed file `_meta/state/feed/<feed>.jsonl` fills after the next sweep chain.
+own harness (the claude.ai connector settings, say); the next sweep reads it. When this
+session already has the connector, do not wait: export its last 14 days as the sweep skill
+says and run `python <workspace>/_meta/tools/chain.py sweep <workspace>`, then show what it
+added. Read-back: the feed file `_meta/state/feed/<feed>.jsonl` has records.
 
 ## "Schedule my routines"
 

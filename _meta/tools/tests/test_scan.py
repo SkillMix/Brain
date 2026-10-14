@@ -163,3 +163,28 @@ def test_a_change_that_only_deletes_files_passes(tmp_path, monkeypatch):
     monkeypatch.setattr(scan, "changed_since", lambda root, ref: [])
     assert scan.main(["--changed-since", "origin/main", "--root", str(tmp_path)]) == 0
     assert scan.main(["--root", str(tmp_path)]) == 2
+
+
+ORDINARY_LINKS = [
+    "https://docs.google.com/document/d/1Xy2AbC3dEf4GhI5jKl6MnO7pQr8StU9vWx0YzAbCdE/edit?usp=sharing",
+    "https://drive.google.com/file/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/view?resourcekey=0-AbCdEfGhIjKlMnOp",
+    "https://docs.google.com/document/d/1AbC/edit?usp=sharing&token=AHk9fL2xQpR7mN3vB8cZ1wE5tY6uI0oP",
+    "https://calendar.google.com/calendar/event?eid=NnRhMmNkZXJ0eWJ6dWFzZGZnaGprbCB4&ctz=Europe/Brussels",
+    "https://us02web.zoom.us/j/81234567890?" + "p" + "wd=QWErtyUIopASdfGHjkLZxcVBnm1234.1",
+    "https://accounts.google.com/o/oauth2/auth?state=" + "eyJ" + "hbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dQw4w9WgXcQabcdefghij",
+    "https://claude.ai/artifact/LCaZpkmrGMvhECJSfcebZK",
+    "https://claude.ai/code/artifact/9b7b8072-39ae-4461-839e-320a8bb98092",
+]
+
+
+@pytest.mark.parametrize("link", ORDINARY_LINKS)
+def test_share_meeting_and_artifact_links_are_not_secrets(link):
+    assert scan.scan_text(f"See {link} for the plan.", "x") == []
+
+
+def test_real_secrets_are_still_found_inside_and_outside_links():
+    token = "gh" + "p_" + "A" * 36
+    assert [f.kind for f in scan.scan_text(f"https://docs.google.com/d/1/edit?x={token}", "x")] == ["github_token"]
+    assert [f.kind for f in scan.scan_text("https://reset.example/?pass" + "word=hunter2tall", "x")] == ["password"]
+    jwt = "eyJ" + "hbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dQw4w9WgXcQabcdefghij"
+    assert [f.kind for f in scan.scan_text(f"https://api.example.com/cb#id_token={jwt}", "x")] == ["jwt"]

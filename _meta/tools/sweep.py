@@ -76,6 +76,44 @@ def read_watermark(root: Path) -> dt.datetime | None:
     return pages.parse_iso(data["at"]) if isinstance(data, dict) and data.get("at") else None
 
 
+def read_feed_marks(root: Path) -> dict:
+    """feed name -> the newest record time swept from it. A feed without a mark (a source
+    connected later, or a watermark file from before the marks) is read in full once: a record
+    whose witness page exists is skipped anyway."""
+    path = root / WATERMARK
+    if not path.exists():
+        return {}
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    marks = data.get("feeds") if isinstance(data, dict) else None
+    out = {}
+    for name, at in (marks or {}).items():
+        try:
+            out[str(name)] = pages.parse_iso(at)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def home_reads(dest_space, record: dict) -> bool:
+    """The subject's home sweeps this record's channel, tracker project or repository itself:
+    it gets the record on its own, so nothing is released to it."""
+    if dest_space is None:
+        return False
+    ident = record.get("identifiers") or {}
+    for source in dest_space.sources:
+        if not isinstance(source, dict):
+            continue
+        channels = source.get("channels") or []
+        channels = channels if isinstance(channels, list) else [channels]
+        if ident.get("channel") and str(ident["channel"]) in {str(c) for c in channels}:
+            return True
+        if ident.get("tracker") and str(ident["tracker"]) in {str(source.get("project") or ""), str(source.get("team") or "")}:
+            return True
+        if ident.get("repo") and str(ident["repo"]).lower() == str(source.get("repo") or "").lower():
+            return True
+    return False
+
+
 def read_feed(root: Path) -> list:
     records = []
     feed = root / FEED
@@ -120,9 +158,16 @@ def audience_of(space: spaceyaml.Space, record: dict) -> str | list:
     return "owner"
 
 
+def file_name(record_id) -> str:
+    """A record id as a file name every system and every link accepts (no colon, slash, hash or
+    other reserved sign)."""
+    import re as _re
+    return _re.sub(r'[<>:"/\\|?*#%\s]+', "-", str(record_id)).strip("-.") or "record"
+
+
 def witness_path(root: Path, record: dict) -> Path:
     at = pages.parse_iso(record["at"])
-    return root / WITNESS_ROOT / f"{at:%Y}" / f"{at:%m}" / f"{record['id']}.md"
+    return root / WITNESS_ROOT / f"{at:%Y}" / f"{at:%m}" / f"{file_name(record['id'])}.md"
 
 
 def record_text(record: dict) -> str:
@@ -345,7 +390,14 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
     feed = [] if space.profile == "brain" else read_feed(root)   # the brain sweeps nothing of its own
     if declared:
         feed = [r for r in feed if str(r.get("_feed")) in declared]   # only the feeds this space declared
-    records = [r for r in feed if watermark is None or pages.parse_iso(r["at"]) > watermark]
+    marks = read_feed_marks(root)
+    records = [r for r in feed if str(r.get("_feed")) not in marks
+               or pages.parse_iso(r["at"]) > marks[str(r.get("_feed"))]]
+    newest_by_feed = dict(marks)
+    for r in records:
+        at, name = pages.parse_iso(r["at"]), str(r.get("_feed"))
+        if name not in newest_by_feed or at > newest_by_feed[name]:
+            newest_by_feed[name] = at
     # Re-attach: a witness page written while the registry could not place its record (no
     # subject, not held in doubt) is tried again now that the registry may have caught up.
     # The page is rewritten from its own frontmatter and body, never from the feed.
@@ -425,6 +477,9 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
         home = reg.home_of(subject.id)
         if not home or home == space.name:
             continue
+        if home_reads(dest_space_of(home), record):
+            report.plan.append(f"keep {record['id']}: {home} reads that source itself")
+            continue
         verdict = classify(space, record, subject, home, dest_space_of(home), audience, now)
         if verdict.hold:
             held = item_frontmatter(space, record, subject.id, home, verdict.hold, now, now)
@@ -459,10 +514,12 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
         report.watermark = pages.iso(newest)
     if dry_run:
         return report
-    if newest is not None and newest != watermark:
+    if (newest is not None and newest != watermark) or newest_by_feed != marks:
         path = root / WATERMARK
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(yaml.safe_dump({"at": pages.iso(newest)}), encoding="utf-8", newline="\n")
+        data = {"at": pages.iso(newest)} if newest is not None else {}
+        data["feeds"] = {name: pages.iso(at) for name, at in sorted(newest_by_feed.items())}
+        path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8", newline="\n")
     try:
         write_today(root, space, now)
     except Exception:  # a snapshot never stops the sweep

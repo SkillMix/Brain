@@ -24,7 +24,9 @@ sweeps nothing of its own. You export; the tool decides.
    `{"id", "source", "kind": mail|call|message|event|document, "at": ISO, "from",
    "to": [...], "subject", "text", "identifiers": {"thread", "channel", "labels": [...],
    "repo", "tracker", "calendar"}, "attachments": [...], "audience": owner|crew|everyone,
-   "participants": [...]}`; a tracker record adds `"issue"` (its key) and `"state"`.
+   "participants": [...]}`; a tracker record adds `"issue"` (its key) and `"state"`, and its `id`
+   is the key with the issue's last update (`SM-224@2026-10-02T15:46:23Z`), so each change to an
+   issue is a record of its own and the newest one decides its state.
    Per kind: mail = messages sent, received or copied to the person (`thread`, `labels`);
    Mail and messages always carry `from` and `to` as addresses: without them no status page
    knows who owes whom. call = a recorded meeting, `text` its transcript or summary, `participants` everyone on
