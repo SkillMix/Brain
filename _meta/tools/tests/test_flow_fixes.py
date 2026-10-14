@@ -93,7 +93,7 @@ def test_a_signal_flags_the_homes_status_page(tmp_path):
                                                     "from": "ada"}), encoding="utf-8")
     status.run(root, now=NOW)
     text = (root / "live/subjects/harbor.md").read_text(encoding="utf-8")
-    assert "Moved: ada signals that an open item moved" in text
+    assert "News from ada: something here moved; the details follow" in text
 
 
 def test_disagreeing_releases_carry_a_disagreements_line(tmp_path):
