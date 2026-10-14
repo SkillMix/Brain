@@ -228,6 +228,7 @@ def channel(root, other_root, online=False, org=None, home=None, dry_run=False,
         added = mount_space(space_root, name, url, rel, online, dry_run)
         report.add(f"mount {name} in {space_root.name}", True, f"grep -c {name} {space_root / 'space.yaml'}",
                    "added" if added else "already there")
+    onboard.register_sync(report, dst, name, 15, not online, dry_run)   # the corridor lands like any space
     report.spaces[name] = dst
     return report
 
@@ -263,6 +264,7 @@ def vault(root, name: str, audience: list, online=False, org=None, home=None, dr
         onboard.commit_fill(report, dst, True, dry_run)
     report.add("vault", True, f"grep -c 'vault: true' {dst / 'space.yaml'}",
                f"{name}: read by {', '.join(names)} only; nobody else mounts it")
+    onboard.register_sync(report, dst, name, 15, not online, dry_run)
     report.spaces[name] = dst
     return report
 
@@ -389,6 +391,7 @@ def run(root, seed, name, crew, online, org=None, home=None, dry_run=False,
     mount_in_crew(report, dst, name, f"https://github.com/{repo}" if online and repo else None,
                   crew_of(spaceyaml.load(dst)), near=(root,), home=home, online=online, dry_run=dry_run)
     onboard.finish_space(report, dst)
+    onboard.register_sync(report, dst, spaceyaml.load(dst).name, 15, not online, dry_run)
     report.spaces[name] = dst
     receipt()
     return report

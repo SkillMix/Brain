@@ -808,6 +808,27 @@ def register_systemd(report, label, record, root, py, args, path, calendars, dry
     return record
 
 
+MACHINE_SPACES = Path(".spaces") / "spaces.yaml"
+
+
+def remember_space(root, task: dict | None = None) -> Path:
+    """Note a checkout that has a sync task in `~/.spaces/spaces.yaml`, outside every
+    repository: the person's chains run over the spaces on this machine that they own."""
+    root = Path(root).resolve()
+    path = Path.home() / MACHINE_SPACES
+    data = read_yaml(path, {}) or {}
+    rows = [r for r in (data.get("spaces") or []) if Path(str(r.get("root"))).resolve() != root]
+    try:
+        space = spaceyaml.load(root)
+        name, owner, profile = space.name, space.owner, space.profile
+    except Exception:
+        name, owner, profile = root.name, "", ""
+    rows.append({"name": name, "root": root.as_posix(), "owner": owner, "profile": profile,
+                 "task": (task or {}).get("name")})
+    write_yaml(path, {"spaces": rows})
+    return path
+
+
 def register_sync(report, root, name, minutes, offline, dry_run) -> dict:
     """Register `sync.py` every `minutes`. Offline: recorded, not registered."""
     root = Path(root)
@@ -824,7 +845,10 @@ def register_sync(report, root, name, minutes, offline, dry_run) -> dict:
         report.add(f"sync task {name}", True, "cat _meta/state/sync-task.txt", "offline: command recorded")
         return {"name": task, "kind": "schtasks" if SYSTEM == "Windows" else "cron", "line": line,
                 "create": create, "check": check, "root": str(root)}
-    return register_task(report, f"sync task {name}", task, root, args, minutes=minutes, dry_run=dry_run)
+    record = register_task(report, f"sync task {name}", task, root, args, minutes=minutes, dry_run=dry_run)
+    if not dry_run:
+        remember_space(root, record)
+    return record
 
 
 def register_routines(report, workspace, offline=False, dry_run=False) -> list:
@@ -1721,6 +1745,9 @@ def main(argv=None) -> int:
                     help="switch this shadow space to live (mounts by name from --answers `mounts:`)")
     ap.add_argument("--with-projects", action="store_true",
                     help="company case: also create the project spaces listed in the answers")
+    ap.add_argument("--register-sync", action="store_true", dest="register_sync",
+                    help="register this checkout's sync task (every 15 minutes) and add it to the "
+                         "spaces on this machine, which the chains run over")
     ap.add_argument("--os-routines", action="store_true",
                     help="a harness without scheduled tasks: the OS runs this workspace's routines via `claude -p`")
     args = ap.parse_args(argv)
@@ -1738,6 +1765,11 @@ def main(argv=None) -> int:
     if args.invite:
         print(f"invitation: {invite(root, args.invite, org=args.org)}")
         return 0
+    if args.register_sync:
+        report = Report(case="sync")
+        register_sync(report, root, spaceyaml.load(root).name, 15, args.offline, args.dry_run)
+        print_steps(report.steps)
+        return 1 if report.failed() else 0
     if args.os_routines:
         report = Report(case="routines")
         register_routines(report, root, offline=args.offline, dry_run=args.dry_run)
