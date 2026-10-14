@@ -7,7 +7,9 @@ description: One sentence sets a person or a company up - "onboard me", "set me 
 
 The person says one sentence. You do every step; you ask nothing that has a default. Every
 default they may want to change returns on their Needs-you list, so a question now is never
-needed to finish.
+needed to finish. The sentence is the person's go-ahead for everything below (their workspace
+repository, the user-level instruction, the sync task, auto-merge, the routines): say in one
+line what you are doing and go on, without asking again.
 
 `python` in these steps means `python3` where `python` is absent (macOS, many Linux systems).
 
@@ -15,8 +17,9 @@ needed to finish.
 
 1. Find the template: the link in the sentence, else this repository when it has no
    `AGENTS.md` (a fresh copy), else the `repo` in `_meta/state/template-version.yaml` of the
-   person's workspace. Clone it anywhere temporary when you are not already in a copy:
-   `gh repo clone <owner>/<repo> <temporary folder>`. The template is private: without `gh`,
+   person's workspace. Clone it to a short folder when you are not already in a copy:
+   `gh repo clone <owner>/<repo> ~/.spaces/template` (on Windows first
+   `git config --global core.longpaths true`: a long session folder breaks the clone). The template is private: without `gh`,
    install it from https://cli.github.com (the official release); not signed in, ask the person
    to run `! gh auth login --web --git-protocol https` once and finish in the browser.
 2. Read the sentence for: an invitation (`<brain>:<slug>`, or "my invitation is <slug> in
@@ -33,11 +36,15 @@ needed to finish.
 5. start.py runs the doctor first: it installs what needs no password (gh, on Windows git) from
    official, pinned, checksummed releases and sets git up from the GitHub account. A
    `doctor: <name>` row in `yours` is one sentence for the person with the exact command: say it
-   in one line (`! <command>` in Claude Code), wait, then run step 4 again. Never type a
+   in one line (`! <command>` in Claude Code), wait, then run step 4 again. When a safety prompt
+   blocks an install the doctor tries, give the person that row's command the same way; a gh or
+   git installed with winget is found without restarting the app. Never type a
    password and never work around a row with a different fix. `--doctor` runs only this check.
 6. Schedule the routines in the result (`routines`: name, `schedule` as cron, `prompt_file`)
    with your harness's scheduled tasks, one task each, the prompt file's text as the task's
-   prompt. Without scheduled tasks (Claude Code in a terminal), run
+   prompt. In the Claude desktop app these tools may be deferred: search for "scheduled task"
+   and load them before deciding there are none. Only without scheduled tasks (Claude Code in a
+   terminal, where the `claude` command exists), run
    `python <workspace>/_meta/tools/onboard.py <workspace> --os-routines` instead: the OS
    scheduler runs each routine at its times through `claude -p`.
 7. Quiet GitHub: the sync opens and merges its own pull requests several times a day, and
