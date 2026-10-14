@@ -665,3 +665,17 @@ def test_a_refresh_takes_the_deeper_exports_people_too(tmp_path):
     sweep.run(ada, now=NOW + dt.timedelta(hours=1))
     page, = list((ada / "knowledge" / "sources").rglob("m-0200.md"))
     assert pages.read(page)[0]["cc"] == ["eve@elsewhere.example"]
+
+
+def test_a_backfill_re_export_deepens_old_pages_behind_the_mark(tmp_path):
+    """A backfill re-reads older records in full: they are behind the feed's mark, yet the sweep
+    reads them, so their shallow pages deepen in place."""
+    _, _, ada = build(tmp_path, routing={})
+    write_feed(ada, [record("m-0500", at="2026-10-01T08:00:00Z", text="Preview."),
+                     record("m-0501", at="2026-10-12T08:30:00Z")])
+    sweep.run(ada, now=NOW)
+    write_feed(ada, [record("m-0500", at="2026-10-01T08:00:00Z", text="Preview. The whole message.", backfill=True),
+                     record("m-0501", at="2026-10-12T08:30:00Z")])
+    sweep.run(ada, now=NOW + dt.timedelta(hours=1))
+    page, = list((ada / "knowledge" / "sources").rglob("m-0500.md"))
+    assert "The whole message." in pages.read(page)[1]

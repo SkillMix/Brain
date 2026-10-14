@@ -46,7 +46,9 @@ sweeps nothing of its own. You export; the tool decides.
    --limit 200 --json number,title,body,mergedAt,baseRefName,author` (the search, not a filter
    afterwards: the machinery pull requests outnumber the rest and would fill any limit), `id`
    `<repo>#<number>`. `audience` is the source's declared audience, copied as is. `id` is the
-   system's own id, stable across runs.
+   system's own id, stable across runs. A backfill (a person's first 90 days, or a project's
+   history back to its first mention) re-reads older records in full with the same `id` and
+   adds `"backfill": true`: the sweep reads them behind the feed's mark and deepens their pages.
    Private at the door: before writing a record decide whether it is `company`, `personal`,
    `academic` or `unsure`. Only a `company` record is written to the feed. Count `personal` and
    `academic` records per source in your run line (`notes.skipped`) and write them nowhere. Write

@@ -472,7 +472,7 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
 
     feed = declared_feed(root, space)
     marks = read_feed_marks(root)
-    records = [r for r in feed if str(r.get("_feed")) not in marks or r.get("admitted")   # the owner's yes
+    records = [r for r in feed if str(r.get("_feed")) not in marks or r.get("admitted") or r.get("backfill")
                or pages.parse_iso(r["at"]) > marks[str(r.get("_feed"))]]
     newest_by_feed = dict(marks)
     for r in records:
