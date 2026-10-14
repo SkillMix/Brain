@@ -33,6 +33,20 @@ PATTERNS = {
     "api_key_sk": re.compile(EDGE + r"sk-[A-Za-z0-9]{20,}"),
     "jwt": re.compile(EDGE + r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
 }
+# Links to shared files, meetings and artifacts carry ids, share keys and passcodes, not secrets:
+# inside such a link the loose shapes (a token-like `state`, a meeting `pwd`, an id that passes a
+# bank checksum) are no finding. Cloud and platform tokens are found everywhere, links included.
+URL_RE = re.compile(r"https?://[^\s<>\"')\]]+")
+QUIET_HOSTS = re.compile(r"(?i)^https?://(?:[a-z0-9-]+\.)*(?:google\.com|googleusercontent\.com|googleapis\.com|"
+                         r"claude\.ai|claude\.com|zoom\.us|teams\.microsoft\.com|teams\.live\.com)(?:[/:?#]|$)")
+LOOSE_KINDS = ("jwt",)
+
+
+def _quiet(line: str) -> str:
+    """The line without its links to shared files, meetings and artifacts."""
+    return URL_RE.sub(lambda m: " " if QUIET_HOSTS.match(m.group(0)) else m.group(0), line)
+
+
 PASSWORD_RE = re.compile(r"(?i)(?:password|passwd|pwd)\s*[:=]\s*(\S+)")
 IBAN_RE = re.compile(r"(?<![A-Z0-9])[A-Z]{2}\d{2}(?:[ ]?[A-Z0-9]){11,30}(?![A-Z0-9])")
 CODE_RE = re.compile(r"(?i)(?:os\.|env|process\.|config|settings|self\.|get|read|input|[A-Za-z_]\w*\()")
@@ -94,12 +108,13 @@ def scan_text(text: str, label: str) -> list[Finding]:
     found: list[Finding] = []
     for line_no, line in enumerate(text.splitlines(), start=1):
         kinds = []
+        quiet = _quiet(line)
         for kind, pattern in PATTERNS.items():
-            if pattern.search(line):
+            if pattern.search(quiet if kind in LOOSE_KINDS else line):
                 kinds.append(kind)
-        if any(not _is_placeholder(m.group(1)) for m in PASSWORD_RE.finditer(line)):
+        if any(not _is_placeholder(m.group(1)) for m in PASSWORD_RE.finditer(quiet)):
             kinds.append("password")
-        if any(_iban_ok(m.group(0)) for m in IBAN_RE.finditer(line)):
+        if any(_iban_ok(m.group(0)) for m in IBAN_RE.finditer(quiet)):
             kinds.append("iban")
         found.extend(Finding(kind, label, line_no) for kind in kinds)
     return found

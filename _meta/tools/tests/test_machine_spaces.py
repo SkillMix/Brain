@@ -41,3 +41,12 @@ def test_minting_a_corridor_registers_its_sync_task(tmp_path, monkeypatch):
     corridor = report.spaces[next(iter(report.spaces))]
     assert (Path(corridor) / "_meta" / "state" / "sync-task.txt").exists()
     assert any(step.name.startswith("sync task") for step in report.steps)
+
+
+def test_forgetting_a_space_takes_it_off_the_machine_list(tmp_path, monkeypatch):
+    fake = home(tmp_path, monkeypatch)
+    harbor = make_space(tmp_path / "harbor", profile="project", name="harbor", owner="Ada Okafor")
+    onboard.remember_space(harbor, {"name": "space-sync-harbor"})
+    assert onboard.forget_space(harbor) is True and onboard.forget_space(harbor) is False
+    data = yaml.safe_load((fake / ".spaces" / "spaces.yaml").read_text(encoding="utf-8"))
+    assert data["spaces"] == []

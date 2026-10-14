@@ -829,6 +829,18 @@ def remember_space(root, task: dict | None = None) -> Path:
     return path
 
 
+def forget_space(root) -> bool:
+    """Take a checkout off `~/.spaces/spaces.yaml` (offboard, or a checkout moved away)."""
+    root = Path(root).resolve()
+    path = Path.home() / MACHINE_SPACES
+    data = read_yaml(path, {}) or {}
+    rows = data.get("spaces") or []
+    keep = [r for r in rows if Path(str(r.get("root"))).resolve() != root]
+    if len(keep) != len(rows):
+        write_yaml(path, {"spaces": keep})
+    return len(keep) != len(rows)
+
+
 def register_sync(report, root, name, minutes, offline, dry_run) -> dict:
     """Register `sync.py` every `minutes`. Offline: recorded, not registered."""
     root = Path(root)

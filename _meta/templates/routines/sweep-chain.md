@@ -21,9 +21,9 @@ and lands every file. For each root <root>:
    improve each new candidate's body in plain language from its listed evidence only, and
    sharpen each check hit's recommendation. Never write `status: stable`; never edit a signed
    page; never read `personal/`, `academic/` or `_scratch/`.
-3. In the workspace only: follow `.claude/skills/tracker/SKILL.md`: create what
+3. In the workspace only: follow `.claude/skills/tracker/SKILL.md`: create or update what
    `{python} {workspace}/_meta/tools/tracker.py {workspace} pending` lists with the tracker
-   connector, and record each. Create nothing else.
+   connector, and record each. Write nothing else to the tracker.
 4. Follow `<root>/.claude/skills/owner-email/SKILL.md`: send each notice that
    `{python} <root>/_meta/tools/owner_email.py pending --root <root>` lists, exactly as rendered,
    from {person}'s own mailbox to that same address, then record it with

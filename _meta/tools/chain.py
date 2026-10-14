@@ -154,6 +154,8 @@ def sweep_chain(root, now: dt.datetime | None = None) -> dict:
         _step(ctx, "reply", "reply", "run", root, now=now)
     _step(ctx, "distill", "distill", "run", root, now=now)
     _step(ctx, "check", "check", "run", root, now=now)
+    if space.profile == "personal":   # evidence moves the issues this person's tracker made
+        _step(ctx, "tracker_observe", "tracker", "observe", root, now=now)
     _run_line(space, ctx, now)
     return ctx
 

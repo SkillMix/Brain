@@ -70,7 +70,7 @@ def test_sweep_chain_runs_sweep_distill_check_in_order(tmp_path, fakes):
     assert all(call[2] == NOW for call in fakes.calls)
     assert result["errors"] == []
     # a personal space also reads email replies to its briefing (no fake here: skipped)
-    assert set(result["steps"]) == {"sweep", "reply", "distill", "check"}
+    assert set(result["steps"]) == {"sweep", "reply", "distill", "check", "tracker_observe"}
     lines = (root / "_meta" / "state" / "runs.jsonl").read_text(encoding="utf-8").splitlines()
     line = json.loads(lines[-1])
     assert line["routine"] == "sweep_chain" and line["at"] == "2026-10-12T09:00:00Z"
