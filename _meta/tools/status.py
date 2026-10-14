@@ -1089,8 +1089,8 @@ def run(root, now=None, check: bool = False) -> StatusReport:
             text = _render_status(space, subject, evs or [], now, template)
             if subject.id in moved:
                 at, origin = moved[subject.id]
-                flag = (f"- Moved: {origin} signals that an open item moved; the content follows "
-                        f"within its window (reported, team, {at:%Y-%m-%d})\n")
+                flag = (f"- News from {origin}: something here moved; the details follow once "
+                        f"its review window ends (reported, team, {at:%Y-%m-%d})\n")
                 text = text.replace("## Open\n\n", "## Open\n\n" + flag, 1)
             outputs[rel] = pages.render(fm, text)
             report.status_pages.append(rel)
