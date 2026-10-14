@@ -107,8 +107,10 @@ def _mark_stale(space: spaceyaml.Space, ctx: dict, now: dt.datetime) -> None:
 
 
 def _template_sync_due(space: spaceyaml.Space, now: dt.datetime) -> bool:
-    """Once a scaled week, where a provenance file names the template; never in the fixture."""
-    if space.mode == "fixture" or not (space.root / "_meta" / "state" / "template-version.yaml").exists():
+    """Once a scaled week, where a provenance file names the template or onboarding made the
+    space from it (it stamps no provenance; the first sync does); never in the fixture."""
+    state = space.root / "_meta" / "state"
+    if space.mode == "fixture" or not ((state / "template-version.yaml").exists() or (state / "onboard.yaml").exists()):
         return False
     path = space.root / RUNS_LOG
     last = None

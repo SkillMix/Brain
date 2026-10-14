@@ -29,9 +29,10 @@ def find_claude() -> str | None:
     found = shutil.which("claude")
     if found:
         return found
-    for candidate in (Path.home() / ".local" / "bin" / "claude", Path.home() / ".claude" / "local" / "claude"):
-        if candidate.exists():
-            return str(candidate)
+    for folder in (Path.home() / ".local" / "bin", Path.home() / ".claude" / "local"):
+        for name in ("claude", "claude.exe"):   # a scheduled task may start without the user's PATH
+            if (folder / name).exists():
+                return str(folder / name)
     return None
 
 

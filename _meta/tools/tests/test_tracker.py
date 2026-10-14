@@ -152,3 +152,13 @@ def test_evidence_moves_the_issues_the_tracker_made(tmp_path):
     assert pend["HAR-7"]["state"] == "Done" and "export to CSV" in pend["HAR-7"]["comment"]
     assert pend["HAR-8"]["state"] is None and "blocked" in pend["HAR-8"]["comment"]
     assert len(queued) == 2 and tracker.observe(root, now=NOW) == []
+
+
+def test_a_workspace_onboarding_made_gets_the_template_without_a_provenance_file(tmp_path):
+    """Onboarding makes a workspace from the template and stamps no provenance: the weekly sync
+    still counts it as due, or that workspace would never receive a template fix."""
+    root = make_space(tmp_path / "ada")
+    assert chain._template_sync_due(spaceyaml.load(root), NOW) is False   # not made by onboarding
+    (root / "_meta" / "state").mkdir(parents=True, exist_ok=True)
+    (root / "_meta" / "state" / "onboard.yaml").write_text("case: person\n", encoding="utf-8")
+    assert chain._template_sync_due(spaceyaml.load(root), NOW) is True
