@@ -44,7 +44,7 @@ TEMPLATES = TEMPLATE_ROOT / "_meta" / "templates"
 FIXTURE = TEMPLATE_ROOT / "_meta" / "tests" / "fixture"
 MARK_OPEN = "<!-- space:personal-instruction -->"
 MARK_CLOSE = "<!-- /space:personal-instruction -->"
-FEEDS = ("mail", "calendar", "chat", "calls", "documents", "tracker")
+FEEDS = ("mail", "calendar", "chat", "calls", "documents", "tracker", "repository")
 PROFILE_CASE = {"brain": "company", "personal": "person", "project": "project", "channel": "person"}
 SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", "personal", "academic", "_scratch"}
 # Where a space mounts other spaces: a new space mounts them itself, it never copies them.
@@ -545,16 +545,18 @@ def instruction_present(path, workspace) -> bool:
     return MARK_OPEN in text and Path(workspace).resolve().as_posix() in text
 
 
-def connect(root, feed: str, audience: str = "owner") -> bool:
+def connect(root, feed: str, audience: str = "owner", scope: dict | None = None) -> bool:
     """Add one connector to this space's sources (and the register of connected systems);
-    the person's sign-in to the connector itself happens in their harness."""
+    the person's sign-in to the connector itself happens in their harness. `scope` names what
+    the sweep reads from it (`channels`, `team`, `project`, `repo`), for a project's own sources."""
     root = Path(root)
     if feed not in FEEDS:
         raise ValueError(f"a feed is one of {', '.join(FEEDS)}")
     space = spaceyaml.load(root)
     if any(isinstance(s, dict) and s.get("name") == feed for s in space.sources):
         return False
-    space.data["sources"] = space.sources + [{"name": feed, "adapter": "files", "audience": audience}]
+    space.data["sources"] = space.sources + [{"name": feed, "adapter": "files", "audience": audience,
+                                              **(scope or {})}]
     spaceyaml.save(space)
     reg = root / "_meta" / "access" / "resources.yaml"
     data = read_yaml(reg, {}) or {}
@@ -1708,8 +1710,11 @@ def main(argv=None) -> int:
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--fixture", metavar="DIR")
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--connect", metavar="FEED", help="add one connector (mail, calendar, chat, calls, ...) "
-                    "to this space's sources")
+    ap.add_argument("--connect", metavar="FEED", help="add one connector (mail, calendar, chat, calls, "
+                    "documents, tracker, repository) to this space's sources")
+    ap.add_argument("--audience", default="owner", help="with --connect: owner, crew or everyone")
+    ap.add_argument("--scope", action="append", default=[], metavar="KEY=VALUE[,VALUE]",
+                    help="with --connect: what to read (channels=C1,C2, team=KEY, project=ID, repo=owner/name)")
     ap.add_argument("--invite", metavar="SLUG", help="in the brain: write a colleague's invitation answers "
                     "and the owner's Needs-you item")
     ap.add_argument("--go-live", action="store_true",
@@ -1723,7 +1728,12 @@ def main(argv=None) -> int:
         return fixture(args.fixture)
     root = Path(args.root).resolve()
     if args.connect:
-        print(f"{args.connect}: {'added to the sources' if connect(root, args.connect) else 'already a source'}")
+        scope = {}
+        for item in args.scope:
+            key, _, value = item.partition("=")
+            scope[key] = value.split(",") if key == "channels" else value
+        added = connect(root, args.connect, audience=args.audience, scope=scope)
+        print(f"{args.connect}: {'added to the sources' if added else 'already a source'}")
         return 0
     if args.invite:
         print(f"invitation: {invite(root, args.invite, org=args.org)}")

@@ -10,7 +10,8 @@ task on this machine merges, pins the mounts and lands every file.
 1. Read `{workspace}/AGENTS.md` and `{workspace}/.claude/skills/sweep/SKILL.md`, and export
    as the skill says: for every source in `space.yaml` `sources`, the records newer than the
    feed file's last `at` (14 days on a first run) with the connectors this session has
-   (mail, calendar, chat, calls, tracker, documents: whichever are connected) into
+   (mail, calendar, chat, calls, tracker, documents: whichever are connected; a repository
+   through `gh`) into
    `_meta/state/feed/<source>.jsonl`, one JSON object per line in the record shape the skill
    gives, with `from` and `to` on every mail record.
 2. Run `{python} {workspace}/_meta/tools/chain.py sweep {workspace}` (sweep, distill, check).

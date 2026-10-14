@@ -16,20 +16,24 @@ sweeps nothing of its own. You export; the tool decides.
 
 ## Run
 
-1. For each entry in `space.yaml: sources` (`name`, `adapter`, `audience`), read with your
-   connector for that system the records newer than the last `at` already in
+1. For each entry in `space.yaml: sources` (`name`, `adapter`, `audience`, and for a project's
+   own sources what to read: `channels`, `team` and `project`, `repo`; read only those), read
+   with your connector for that system the records newer than the last `at` already in
    `_meta/state/feed/<name>.jsonl` (no file yet: the last 14 days) and append one JSON
    object per line:
    `{"id", "source", "kind": mail|call|message|event|document, "at": ISO, "from",
    "to": [...], "subject", "text", "identifiers": {"thread", "channel", "labels": [...],
    "repo", "tracker", "calendar"}, "attachments": [...], "audience": owner|crew|everyone,
-   "participants": [...]}`.
+   "participants": [...]}`; a tracker record adds `"issue"` (its key) and `"state"`.
    Per kind: mail = messages sent, received or copied to the person (`thread`, `labels`);
    Mail and messages always carry `from` and `to` as addresses: without them no status page
    knows who owes whom. call = a recorded meeting, `text` its transcript or summary, `participants` everyone on
    it; message = chat DMs and channels (`channel`); event = calendar entries (`calendar`);
    document = a new or changed file, `text` an excerpt, the file only as a pointer in
-   `attachments`. `audience` is the source's declared audience, copied as is. `id` is the
+   `attachments`; issue = a tracker issue created, changed or closed (`identifiers.tracker` the
+   project, `issue`, `state`); change = a pull request merged or a release in the repository
+   (`identifiers.repo`, `text` its title and description), never the space's own machinery
+   pull requests (`chore: sync`, `chore: pins`, `chore: release`, `chore: structure`). `audience` is the source's declared audience, copied as is. `id` is the
    system's own id, stable across runs.
 2. `python _meta/tools/sweep.py <root>` (`--dry-run` prints the plan and writes nothing).
 
