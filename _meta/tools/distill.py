@@ -22,6 +22,7 @@ Nothing here writes `status: stable`, edits a page under knowledge/, or runs git
 """
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import json
 import re
@@ -118,23 +119,28 @@ class Evidence:
         return str(value) if value else None
 
 
-def _evidence(root: Path, path: Path, fm: dict, body: str, landed: bool) -> Evidence | None:
+def _evidence(root: Path, path: Path, fm: dict, body: str, landed: bool, space_name: str = "") -> Evidence | None:
     gen = fm.get("generated") or {}
     gen_at = stamp_of(gen.get("at")) if isinstance(gen, dict) else None
     at = stamp_of(fm.get("at")) or gen_at
     if at is None:
         return None
     arrived = max(at, gen_at) if gen_at else at
-    # evidence attaches by identifier: a record joins only the subject it matched, never one
-    # it merely mentions (vision section 7)
-    subjects = [str(fm["subject"])] if fm.get("subject") else []
+    # evidence attaches by identifier or by a routing decision: a record joins the subjects it
+    # matched or was routed to here, never one it merely mentions; a person the router named
+    # (`informs` kind person) is a subject too
+    subjects = registry_mod.routed_subjects(fm, space_name)
+    for item in fm.get("informs") or []:
+        if isinstance(item, dict) and item.get("kind") == "person" and item.get("person") \
+                and str(item["person"]) not in subjects:
+            subjects.append(str(item["person"]))
     return Evidence(record=str(fm.get("record") or path.stem),
                     rel=path.relative_to(root).as_posix(), at=at, arrived=arrived,
                     title=str(fm.get("title") or ""), body=body, subjects=subjects,
                     landed=landed, fm=fm)
 
 
-def gather_evidence(root, reader: Reader) -> list:
+def gather_evidence(root, reader: Reader, space_name: str = "") -> list:
     """Every witness page and landed record in this space, oldest path first."""
     root = Path(root)
     found = []
@@ -147,7 +153,7 @@ def gather_evidence(root, reader: Reader) -> list:
                 fm, body = reader.read(path)
             except Exception:
                 continue
-            item = _evidence(root, path, fm, body, landed=False) if fm else None
+            item = _evidence(root, path, fm, body, landed=False, space_name=space_name) if fm else None
             if item:
                 found.append(item)
     base = root / CANDIDATES
@@ -159,7 +165,7 @@ def gather_evidence(root, reader: Reader) -> list:
                 continue
             if not fm or not fm.get("released_from"):
                 continue
-            item = _evidence(root, path, fm, body, landed=True)
+            item = _evidence(root, path, fm, body, landed=True, space_name=space_name)
             if item:
                 found.append(item)
     found.extend(journal_evidence(root))
@@ -367,7 +373,7 @@ def run(root, now: dt.datetime | None = None) -> DistillReport:
     reader = Reader()
     report = DistillReport()
     since = stamp_of(read_watermark(root, ROUTINE).get("at"))
-    evidence = gather_evidence(root, reader)
+    evidence = gather_evidence(root, reader, space.name)
     index = {ev.record: ev for ev in evidence}
     new = new_since(evidence, since)
     asked = asked_subjects(root)
@@ -398,6 +404,10 @@ def run(root, now: dt.datetime | None = None) -> DistillReport:
     for ev in new:
         if not ev.landed and decision_title(ev.body):
             count(write_decision(root, space, reg, ev, now, reader), None)
+        for item in ev.fm.get("informs") or []:   # a decision the router saw in the record
+            if isinstance(item, dict) and item.get("kind") == "decision" and str(item.get("text") or "").strip():
+                said = dataclasses.replace(ev, body=f"Decision: {str(item['text']).strip()}\n\n{ev.body}")
+                count(write_decision(root, space, reg, said, now, reader), None)
     write_watermark(root, ROUTINE, {"at": pages.iso(now)})
     report.cost_tokens = reader.cost_tokens
     append_run(root, ROUTINE, space, now, report.cost_tokens,

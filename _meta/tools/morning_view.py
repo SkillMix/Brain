@@ -25,12 +25,18 @@ import needs_you  # noqa: E402
 import owner_email  # noqa: E402
 import pages  # noqa: E402
 import spaceyaml  # noqa: E402
+import unsure  # noqa: E402
 
 ROUTINE = "morning-view"
 PAGE = Path("live") / "needs-you.md"
 HEALTH = Path("live") / "health.md"
-NOTICE = Path("_meta") / "state" / "morning-notice.json"
-PAYLOAD = Path("_meta") / "state" / "morning-payload.json"
+# The notice and the payload may list records kept out of the repository (unsure ones): they
+# live in the private zone the sync never stages.
+NOTICE = spaceyaml.PRIVATE_STATE / "morning-notice.json"
+PAYLOAD = spaceyaml.PRIVATE_STATE / "morning-payload.json"
+UNSURE_TITLE = "Is this work?"
+UNSURE_TAIL = "Reply with the code and yes or no."
+LEGACY = (Path("_meta") / "state" / "morning-notice.json", Path("_meta") / "state" / "morning-payload.json")
 RUNS = Path("_meta") / "state" / "runs.jsonl"
 
 # One plain label per item kind for the email's counts (they pass the plain-language check).
@@ -262,6 +268,39 @@ def _notice(space: spaceyaml.Space, items: list, counts: dict, health: list, sha
     return notice, base
 
 
+def _unsure_also(notice: dict, waiting: list) -> list:
+    """Add the records the reader could not classify to the email (never to the page), each by
+    its code, as many as fit; returns the records listed."""
+    if not waiting:
+        return []
+    limit = owner_email.LIMITS["also_text"]
+
+    def text_of(lines: list, rest: int) -> str:
+        return " ".join(lines + [UNSURE_TAIL]) + (f" {rest} more tomorrow." if rest else "")
+
+    kept = []
+    for record in waiting:
+        line = f"{unsure.code_of(record)}: {unsure.line_for(record)}."
+        if len(text_of([l for _, l in kept] + [line], len(waiting) - len(kept) - 1)) > limit:
+            break
+        kept.append((record, line))
+    if not kept:
+        return []
+    entry = {"title": UNSURE_TITLE, "text": text_of([l for _, l in kept], len(waiting) - len(kept))}
+
+    def fails(candidate: dict) -> bool:   # the entry on its own: the rest of the notice has its own fallback
+        return bool(owner_email.check({"kind": "fyi", "title": UNSURE_TITLE, "summary": UNSURE_TITLE,
+                                       "also": [candidate]}))
+    if fails(entry):
+        plain = [f"{unsure.code_of(r)}: a {r.get('kind') or 'record'} from {str(r.get('at') or '')[:10]}."
+                 for r, _ in kept]
+        entry["text"] = text_of(plain, len(waiting) - len(kept))
+        if fails(entry):
+            return []
+    notice["also"] = list(notice.get("also") or []) + [entry]
+    return [r for r, _ in kept]
+
+
 def _payload(space: spaceyaml.Space, notice: dict, base: str, shadow: bool, now: dt.datetime) -> dict:
     to = [space.owner_email.strip()] if "@" in space.owner_email else []
     today = now.date().isoformat()
@@ -270,7 +309,13 @@ def _payload(space: spaceyaml.Space, notice: dict, base: str, shadow: bool, now:
     except owner_email.NoticeError:
         # The health line did not pass the plain-language check: leave it to the page.
         notice["summary"] = f"{base} The health line is on your health page."
-        payload = owner_email.render(notice, to, today=today)
+        try:
+            payload = owner_email.render(notice, to, today=today)
+        except owner_email.NoticeError:   # the unsure list waits a day rather than the briefing
+            notice["also"] = [a for a in notice.get("also") or [] if a.get("title") != UNSURE_TITLE]
+            if not notice["also"]:
+                notice.pop("also")
+            payload = owner_email.render(notice, to, today=today)
     if shadow:
         payload["subject"] = "[shadow] " + payload["subject"].replace("[shadow] ", "")
     return payload
@@ -316,7 +361,14 @@ def run(root, person: str, now: dt.datetime | None = None, shadow: bool = False,
     if PAGE.parts[0] not in spaceyaml.PROFILE_TABLE.get(space.profile, {}).get("forbidden", []):
         pages.write(root / PAGE, page_fm, _markdown(root, space, person, items, now, limit, health))
     notice, base = _notice(space, items, counts, health, shadow)
+    unsure.expire(root, now)
+    asked = _unsure_also(notice, unsure.waiting(root))
     payload = _payload(space, notice, base, shadow, now)
+    if not any(a.get("title") == UNSURE_TITLE for a in notice.get("also") or []):
+        asked = []
+    unsure.mark_listed(root, [r["key"] for r in asked], now)
+    for legacy in LEGACY:   # before the private zone these were tracked: never send a stale copy
+        (root / legacy).unlink(missing_ok=True)
     _write_json(root / NOTICE, notice)
     _write_json(root / PAYLOAD, payload)
     # the day's numbering, so a reply ("1-4 yes, 5 later") maps to the items as listed
@@ -325,7 +377,7 @@ def run(root, person: str, now: dt.datetime | None = None, shadow: bool = False,
                                                        "fingerprint": i.fingerprint} for i in items],
                  "left": _left_ids(_left_yesterday(root, space, now))})
     line = {"routine": ROUTINE, "at": pages.iso(now), "space": space.name, "cost_tokens": 0,
-            "notes": {"items": len(items), "listed": len(listed), "shadow": shadow,
+            "notes": {"items": len(items), "listed": len(listed), "unsure_asked": len(asked), "shadow": shadow,
                       "recipient": bool(payload["to"])}}
     runs = root / RUNS
     runs.parent.mkdir(parents=True, exist_ok=True)

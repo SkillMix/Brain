@@ -373,6 +373,17 @@ def _question(root, space, entry: Found, item_id, verb, note, by, now, report: A
         pages.write(path, fm, body)
         report.deferred.append(item_id)
         return
+    if path.name.startswith("route-") and fm.get("record") and verb in ("yes", "always", "no"):
+        import route   # a routing question: the owner's word applies the route or keeps it private
+        try:
+            route.answer(root, fm["record"], yes=verb != "no", by=by, now=now)
+        except route.RouteError as exc:
+            _log(root, f"- {pages.iso(now)} routing answer for {item_id} by {by} not applied: {exc}")
+            report.deferred.append(item_id)
+            return
+        _log(root, f"- {pages.iso(now)} routing answer {verb} for {fm['record']} by {by}")
+        report.verdicts_recorded += 1
+        return
     if note.strip():
         _log(root, f"- {pages.iso(now)} note {item_id} by {by}: {' '.join(note.split())}")
     path.unlink()

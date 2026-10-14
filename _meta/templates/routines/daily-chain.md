@@ -20,7 +20,7 @@ root <root>:
 Then, for the workspace `{workspace}` only, the briefing: follow
 `{workspace}/.claude/skills/morning-view/SKILL.md` for the send. When
 `{python} {workspace}/_meta/tools/morning_view.py {workspace} sent-today` exits 0, a briefing
-went out today already; skip the send. Otherwise send `{workspace}/_meta/state/morning-payload.json`
+went out today already; skip the send. Otherwise send `{workspace}/_meta/state/private/morning-payload.json`
 exactly as rendered (its to, subject and body) with the mail connector from {person}'s own
 mailbox to that same address, then
 `{python} {workspace}/_meta/tools/morning_view.py {workspace} record-send --id <message id>`.

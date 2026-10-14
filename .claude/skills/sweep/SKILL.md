@@ -19,7 +19,7 @@ sweeps nothing of its own. You export; the tool decides.
 1. For each entry in `space.yaml: sources` (`name`, `adapter`, `audience`, and for a project's
    own sources what to read: `channels`, `team` and `project`, `repo`; read only those), read
    with your connector for that system the records newer than the last `at` already in
-   `_meta/state/feed/<name>.jsonl` (no file yet: the last 14 days) and append one JSON
+   `_meta/state/feed/<name>.jsonl` (no file yet: the last 90 days) and append one JSON
    object per line:
    `{"id", "source", "kind": mail|call|message|event|document, "at": ISO, "from",
    "to": [...], "cc": [...], "subject", "text", "identifiers": {"thread", "channel", "labels": [...],
@@ -27,21 +27,19 @@ sweeps nothing of its own. You export; the tool decides.
    "participants": [...]}`; a tracker record adds `"issue"` (its key) and `"state"`, and its `id`
    is the key with the issue's last update (`SM-224@2026-10-02T15:46:23Z`), so each change to an
    issue is a record of its own and the newest one decides its state.
-   Depth: `text` is what a colleague needs to act on, never a preview or a snippet; cap it at
-   8,000 characters (cut at a line, end with `[cut]`). Per kind: mail = messages sent, received
-   or copied to the person (`thread`, `labels`), `text` the full body of the message (quoted
-   replies below it left out), the file names in `attachments`. Mail and messages always carry
-   `from`, `to` and `cc` as addresses: without them no status page knows who owes whom and no
-   client mail attaches by its domain. call = a recorded meeting, `subject` the meeting's own
-   title, `text` its summary, then its action items and its key points as the recorder lists
-   them (each owner and date kept), each on its own line, never the transcript, `participants`
-   everyone on it by address (a project release drops a line with a left-out term such as
-   a fee or the transcript and keeps the rest, so one paragraph for the whole call would stay
-   home whole); message = chat DMs and channels (`channel`); event = calendar entries (`calendar`),
-   `subject` the title, `text` the description, `participants` the guests by address;
-   document = a new or changed file, `text` its content (cap 8,000 characters), the file only as
-   a pointer in `attachments`; issue = a tracker issue created, changed or closed (`identifiers.tracker` the
-   project, `issue`, `state`); change = a pull request merged or a release in the repository
+   Capture is lossless: no character cap, no preview, no snippet. Per kind: mail = one
+   message sent, received or copied to the person (`thread`, `labels`), `text` its full body
+   (quoted history included), the file names in `attachments`. Mail and messages always carry
+   `from`, `to` and `cc` as addresses: without them no status page knows who owes whom. call =
+   one recorded meeting, `subject` the meeting's own title, `text` the recorder's summary, action
+   items and key points (each owner and date kept), then the full transcript, one line per
+   utterance `[hh:mm:ss] Speaker: words`, `participants` everyone on it by address; message =
+   one chat thread (`channel`), every message with its author and time, its files read with the
+   chat connector's file reader, and AI notes and canvases as `document` records of their own;
+   event = one calendar entry (`calendar`), `subject` the title, `text` the description,
+   `participants` the guests by address; document = one new or changed file, `text` its full
+   text, the file only as a pointer in `attachments`; issue = a tracker issue created,
+   changed or closed (`identifiers.tracker` the project, `issue`, `state`); change = a pull request merged or a release in the repository
    (`identifiers.repo`, `text` its title and description), never the space's own machinery
    pull requests (`chore: sync`, `chore: pins`, `chore: release`, `chore: structure`). Export
    them with `gh pr list -R <repo> --state merged --search "merged:>=<since> NOT chore in:title"
@@ -49,18 +47,34 @@ sweeps nothing of its own. You export; the tool decides.
    afterwards: the machinery pull requests outnumber the rest and would fill any limit), `id`
    `<repo>#<number>`. `audience` is the source's declared audience, copied as is. `id` is the
    system's own id, stable across runs.
+   Private at the door: before writing a record decide whether it is `company`, `personal`,
+   `academic` or `unsure`. Only a `company` record is written to the feed. Count `personal` and
+   `academic` records per source in your run line (`notes.skipped`) and write them nowhere. Write
+   an `unsure` record, with `"feed": "<source name>"` added, to
+   `_meta/state/private/unsure.jsonl`: a local private zone the sync never stages; the owner's
+   morning email asks about it and one word brings it in. The workspace's own briefings and
+   notices (from the owner to the owner) stay in the feed for the reply reader; the sweep never
+   makes pages of them.
 2. Attachments: `python _meta/tools/sweep.py <root> --attachments` lists, one per line,
-   `<record id> <subject> <file name>` for every attachment on a thread that belongs to exactly
-   one subject and has not been read yet. Read each with the same connector and append it to the
-   same feed file as a document record of its own: `id` `<record id>/<file name>`, `subject` the
-   file name as it is, `text` its content (cap 8,000 characters; a file you cannot read as text,
-   such as an image: empty `text`, so it is not listed again), `from`, `to`, `cc`, `at` and
-   `identifiers` copied from its mail. Attachments on other threads stay names only.
+   `<record id> <subject> <file name>` for every attachment not read yet (with `routing:` in
+   `space.yaml`, on every company record; without it, on threads of exactly one subject). Read
+   each, in this order: the mail connector's attachment reader; else the browser, opening the
+   message in the mail web app and reading the attachment in its preview, never downloading;
+   else leave it for the daily list the owner approves. Append it to the same feed file as a
+   document record of its own: `id` `<record id>/<file name>`, `subject` the file name as it is,
+   `text` its full text (a file with no text, such as an image: empty `text`, so it is not listed
+   again), `read_via: connector | preview | approved_batch`, and `from`, `to`, `cc`, `at` and
+   `identifiers` copied from its mail.
 3. `python _meta/tools/sweep.py <root>` (`--dry-run` prints the plan and writes nothing).
+4. With `routing:` in `space.yaml`: route what the sweep wrote, as
+   `.claude/skills/route/SKILL.md` says. The sweep itself then releases nothing.
 
 ## What the tool already did
 
-Witness pages `knowledge/sources/<yyyy>/<mm>/<record-id>.md` (drafts, never signed);
+Witness pages `knowledge/sources/<yyyy>/<mm>/<record-id>.md` (drafts, never signed; a deeper
+re-export refreshes a page in place, a page over 900 KB is split into parts, the workspace's
+own notices never become pages). With `routing:` in `space.yaml` that is all: attachment by
+identifier stays a suggestion for the router and nothing is queued. Without it, as before:
 attachment to the one subject whose `match:` identifier the record carries (a fixed
 identifier, a client's mail domain on any address, a keyword in a call's or event's title;
 none or several: no attachment, names in the text kept as hints), and the same again for older

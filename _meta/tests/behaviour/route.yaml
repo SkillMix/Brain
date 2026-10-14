@@ -1,0 +1,73 @@
+# The router's tool over one decision: a projection in the queue, a stamp on the witness page,
+# a line in the routing log. Never a signature, never a write outside those zones.
+name: route records a decision into the queue and the log only, never a signature
+command: [python, _meta/tools/route.py, "{root}", record, "{root}/_meta/state/private/decisions/c-scenario-1.yaml"]
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1440
+      name: ada
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience: [Ada Okafor]
+      parent: brain
+      routing: {since: "2026-09-01"}
+      sources: [{name: calls, adapter: files, audience: owner}]
+    work/.gitkeep: ""
+    journal/.gitkeep: ""
+    outbox/.gitkeep: ""
+    _meta/subjects.yaml:
+      subjects:
+        - id: harbor
+          kind: projects
+          title: Harbor
+          state: active
+          owner: Ada Okafor
+          home: harbor
+          match: {domain: harbor.example}
+    knowledge/sources/2026/10/c-scenario-1.md: |
+      ---
+      id: p-5ce0a001
+      type: source
+      title: Kickoff
+      status: draft
+      generated: {by: sweep, at: '2026-10-02T09:30:00Z'}
+      record: c-scenario-1
+      source: calls
+      kind: call
+      at: '2026-10-02T09:15:00Z'
+      from: ada@lantern.example
+      participants: [ada@lantern.example, chloe@harbor.example]
+      mentions: [harbor]
+      audience: owner
+      identifiers: {thread: c-scenario-1}
+      ---
+      Summary: the pilot scope.
+      [00:01:00] Chloe: The first list should hold forty leads.
+      [00:02:00] Ada: We send it by Friday.
+    _meta/state/private/decisions/c-scenario-1.yaml: |
+      record: c-scenario-1
+      decision: route
+      confidence: high
+      why: the client's kickoff
+      routes:
+        - space: harbor
+          subject: harbor
+          tier: at_once
+          why: pilot work
+          content: parts
+          parts:
+            - text: "[00:01:00] Chloe: The first list should hold forty leads."
+          informs:
+            - {kind: open_item, text: Send the first list, owner: Ada Okafor, direction: we owe}
+env: {SPACE_NOW: "2026-10-05T09:00:00Z"}
+expect:
+  exit: 0
+  writes_only_under: [knowledge/sources/, _outbound/]
+  never_contains:
+    "knowledge/sources/**": ["status: stable"]
+    "_outbound/**": ["status: stable"]
+  must_exist: ["_outbound/queue/*.md", "_meta/state/routing.jsonl"]

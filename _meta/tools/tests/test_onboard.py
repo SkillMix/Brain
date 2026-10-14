@@ -525,3 +525,17 @@ def test_the_personal_instruction_carries_the_working_rules_and_the_planning_poi
     (root / "space.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
     block = onboard.instruction_block(root)
     assert "plan or review their day" in block and "personal/planning/checkin-instructions.md" in block
+
+
+def test_a_new_live_workspace_starts_routing_in_review_mode(tmp_path):
+    values = onboard.space_values({}, "ada", "Ada Okafor", "ada@lantern.example", ["Ada Okafor"], "brain")
+    onboard.fill_space(tmp_path / "ada", "personal", **values)
+    space = spaceyaml.load(tmp_path / "ada")
+    assert space.routing_on and not [e for e in space.errors() if "routing" in e]
+    assert (space.review_until - space.now()).days in (13, 14)
+    assert 89 <= (space.now() - space.routing_since).days <= 90
+    fixture = dict(values, mode="fixture", time_scale=48)
+    onboard.fill_space(tmp_path / "ben", "personal", **fixture)
+    assert spaceyaml.load(tmp_path / "ben").routing_on is False, "the fixture keeps the identifier path"
+    onboard.fill_space(tmp_path / "harbor", "project", **values)
+    assert spaceyaml.load(tmp_path / "harbor").routing_on is False, "a project routes nothing of its own"

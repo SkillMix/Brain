@@ -132,3 +132,49 @@ def test_a_colleagues_other_mail_domain_is_ours_when_saying_who_moves_next(tmp_p
     assert "### We owe" not in text
     assert "Re: the plan" in text.split("### Waiting on them")[1].split("###")[0]
     assert "Lunch?" in text.split("### Internal")[1].split("## Recently closed")[0]
+
+
+def test_routed_records_and_their_open_items_reach_the_status_page(tmp_path):
+    root = make_space(tmp_path / "ada", subjects=[HARBOR], owner_email="ada@lantern.example")
+    witness(root, "c1", "2026-10-11T08:00:00Z", kind="call", title="Kickoff",
+            routing={"decision": "route", "routes": ["ada/harbor"]})
+    witness(root, "c2", "2026-10-11T08:30:00Z", kind="call", title="Elsewhere only",
+            routing={"decision": "route", "routes": ["beacon/harbor"]})
+    witness(root, "p1", "2026-10-11T09:00:00Z", kind="call", title="Kickoff (projection)", subject="harbor",
+            informs=[{"kind": "open_item", "text": "Send the first list", "owner": "Ada Okafor",
+                      "due": "2026-10-23", "direction": "we owe"}])
+    status.run(root, now=NOW)
+    text = page_text(root, "harbor")
+    owe = text.split("### We owe")[1].split("##")[0]
+    assert "Send the first list (owner Ada Okafor, due 2026-10-23)" in owe
+    timeline = text.split("## Timeline")[1]
+    assert "Kickoff" in timeline and "Elsewhere only" not in timeline, "a route to another space attaches there"
+    assert "2026-10-23" in text.split("## Coming up")[1]
+
+
+def test_an_informs_closes_line_closes_the_earlier_item(tmp_path):
+    root = make_space(tmp_path / "ada", subjects=[HARBOR], owner_email="ada@lantern.example")
+    witness(root, "p1", "2026-10-11T09:00:00Z", kind="call", title="Kickoff", subject="harbor", id="p-0000aa01",
+            informs=[{"kind": "open_item", "text": "Send the first list", "direction": "we owe"}])
+    witness(root, "p2", "2026-10-11T12:00:00Z", kind="mail", title="List sent", subject="harbor",
+            informs=[{"kind": "open_item", "text": "Wait for feedback", "direction": "waiting on them",
+                      "closes": "p-0000aa01"}])
+    status.run(root, now=NOW)
+    text = page_text(root, "harbor")
+    assert "Send the first list" not in text.split("## Open")[1].split("## Recently closed")[0]
+    assert "Send the first list" in text.split("## Recently closed")[1].split("## Timeline")[0]
+    assert "Wait for feedback" in text.split("### Waiting on them")[1]
+
+
+def test_the_owner_closes_a_routed_open_item_and_old_ones_age_out(tmp_path):
+    root = make_space(tmp_path / "ada", subjects=[HARBOR], owner_email="ada@lantern.example")
+    witness(root, "p1", "2026-10-11T09:00:00Z", kind="call", title="Kickoff", subject="harbor", id="p-0000aa01",
+            informs=[{"kind": "open_item", "text": "Send the first list", "direction": "we owe"}])
+    witness(root, "p0", "2026-09-01T09:00:00Z", kind="call", title="Old call", subject="harbor",
+            informs=[{"kind": "open_item", "text": "Long forgotten", "direction": "we owe"}])
+    status.close(root, "harbor", "p-0000aa01", as_="done", by="Ada Okafor", now=NOW)
+    status.run(root, now=NOW)
+    text = page_text(root, "harbor")
+    open_part = text.split("## Open")[1].split("## Recently closed")[0]
+    assert "Send the first list" not in open_part and "Long forgotten" not in open_part
+    assert "Send the first list" in text.split("## Recently closed")[1]

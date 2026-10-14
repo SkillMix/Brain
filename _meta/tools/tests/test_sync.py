@@ -301,3 +301,8 @@ def test_run_lines_and_pins_alone_wait_until_the_quiet_window_passes(repo, monke
     stamp.write_text(str(time.time() - (sync.QUIET_HOURS + 1) * 3600), encoding="utf-8")
     assert sync.main(["--root", str(repo)]) == 0
     assert branch() != second   # the window passed: the lines go out
+
+
+def test_the_private_state_zone_is_never_staged():
+    import sync
+    assert "_meta/state/private/" in sync.PRIVATE_ZONES

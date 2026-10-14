@@ -21,6 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pages  # noqa: E402
 import spaceyaml  # noqa: E402
+import unsure  # noqa: E402
 
 FEED = Path("_meta") / "state" / "feed" / "mail.jsonl"
 MORNING = Path("_meta") / "state" / "morning"
@@ -60,6 +61,25 @@ def parse(text: str, count: int) -> dict:
 
 
 LEFT = re.compile(r"^\s*left\s+(\d+(?:\s*,\s*\d+)*)\s+no\b", re.I)
+UNSURE_CODE = re.compile(r"\b([0-9a-f]{5})\s+(yes|no)\b", re.I)
+
+
+def unsure_answers(root: Path, text: str) -> dict:
+    """`3fa2c yes` / `3fa2c no` in the reply's own lines: a record the reader could not classify
+    is brought in or let go, at once (it is capture, never a release or a signature). Only its
+    code names it, so `all yes` or a range never reaches one."""
+    settled = {"admitted": 0, "dropped": 0}
+    by_code = {unsure.code_of(r): r["key"] for r in unsure.waiting(root)}
+    for raw in str(text or "").splitlines():
+        if QUOTED.match(raw):
+            break
+        for code, verb in UNSURE_CODE.findall(raw):
+            key = by_code.get(code.lower())
+            if key and verb.lower() == "yes" and unsure.admit(root, key):
+                settled["admitted"] += 1
+            elif key and verb.lower() == "no" and unsure.drop(root, key):
+                settled["dropped"] += 1
+    return settled
 
 
 def parse_left(text: str, left: list) -> list:
@@ -90,6 +110,13 @@ def _seen(root: Path) -> set:
     return out
 
 
+def _mark_seen(root: Path, seen: set, rec: dict, now, answers: int, settled: dict) -> None:
+    with (root / SEEN).open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps({"record": rec.get("id"), "at": pages.iso(now), "answers": answers,
+                             "unsure": settled}) + "\n")
+    seen.add(str(rec.get("id")))
+
+
 def run(root, now: dt.datetime | None = None) -> list:
     root = Path(root)
     space = spaceyaml.load(root)
@@ -113,14 +140,19 @@ def run(root, now: dt.datetime | None = None) -> list:
             continue
         at = pages.parse_iso(rec["at"])
         day = f"{at:%Y-%m-%d}"
+        settled = unsure_answers(root, rec.get("text"))
         listing = root / MORNING / f"{day}.json"
         if not listing.exists():
+            if any(settled.values()):
+                _mark_seen(root, seen, rec, now, 0, settled)
             continue
         day_list = json.loads(listing.read_text(encoding="utf-8"))
         items = day_list.get("items") or []
         verdicts = parse(rec.get("text"), len(items))
         pulled = parse_left(rec.get("text"), day_list.get("left") or [])
         if not verdicts and not pulled:
+            if any(settled.values()):
+                _mark_seen(root, seen, rec, now, 0, settled)
             continue
         chosen = {items[n - 1]["id"]: ([v, note] if note else v) for n, (v, note) in sorted(verdicts.items())}
         chosen.update({pid: "no" for pid in pulled})
@@ -134,8 +166,7 @@ def run(root, now: dt.datetime | None = None) -> list:
         body = ("# Your email reply\n\nRead back before anything is applied; say submit to apply these, "
                 "or correct any line first.\n\n" + "\n".join(lines) + "\n")
         target = pages.write(root / ANSWERS / f"reply-{day}-{str(rec.get('id'))[-6:]}.md", fm, body)
-        with (root / SEEN).open("a", encoding="utf-8", newline="\n") as fh:
-            fh.write(json.dumps({"record": rec.get("id"), "at": pages.iso(now), "answers": len(chosen)}) + "\n")
+        _mark_seen(root, seen, rec, now, len(chosen), settled)
         written.append(target.relative_to(root).as_posix())
     return written
 

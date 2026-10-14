@@ -120,6 +120,18 @@ def record_domains(record: dict) -> set:
     return {address_of(p).rsplit("@", 1)[1] for p in people if "@" in address_of(p)}
 
 
+def routed_subjects(fm: dict, space_name: str) -> list:
+    """The subject ids a page is evidence for in this space: its own `subject`, and every route
+    of its routing decision that names this space (a routed record attaches by judgment)."""
+    out = [str(fm["subject"])] if fm.get("subject") else []
+    routing = fm.get("routing") if isinstance(fm.get("routing"), dict) else {}
+    for entry in routing.get("routes") or []:
+        where, _, sid = str(entry).partition("/")
+        if sid and where == space_name and sid not in out:
+            out.append(sid)
+    return out
+
+
 def _word_in(text: str, needle: str) -> bool:
     if len(needle) < 3:
         return False

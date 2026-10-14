@@ -461,16 +461,16 @@ def test_a_client_call_with_the_clients_own_people_travels_after_the_window(tmp_
     assert "chloe" not in held["why"]
 
 
-def test_a_call_summary_travels_without_its_transcript_line(tmp_path):
-    """A left-out term (transcript, attachment) trims its line; the summary still travels."""
+def test_a_call_summary_travels_without_its_day_rate_line(tmp_path):
+    """A left-out term (a day rate, a fee) trims its line; the summary still travels."""
     _, _, ada = build(tmp_path, owner_email="ada@lantern.example")
     set_match(tmp_path, "harbor", domain="harbor.example")
     call = _call("c-0300", "Kickoff", ["ada@lantern.example", "chloe@harbor.example"],
-                 "Summary: scope agreed.\nAction items: Ada sends the plan.\nFull transcript: in the recorder.")
+                 "Summary: scope agreed.\nAction items: Ada sends the plan.\nDay rate: 950 for the extension.")
     write_feed(ada, [call], source="calls")
     sweep.run(ada, now=NOW)
     (fm, body), = queue_items(ada)
-    assert "Action items: Ada sends the plan." in body and "transcript" not in body.lower()
+    assert "Action items: Ada sends the plan." in body and "day rate" not in body.lower()
     assert fm["trimmed"] is True
 
 
@@ -490,10 +490,11 @@ def test_attachments_lists_what_to_read_on_threads_that_belong_to_one_subject(tm
     assert not (ada / "knowledge" / "sources" / "2026").exists(), "listing writes nothing"
 
 
-def test_the_export_contract_asks_for_depth_and_the_attachments_of_matching_threads():
+def test_the_export_contract_is_lossless_and_keeps_private_records_out():
     """What the exporting agent reads decides what a project can know: the skill and the
-    scheduled routine both ask for full mail and document text, call summaries with their action
-    items and key points (never the transcript), event descriptions and matching attachments."""
+    scheduled routine both ask for every record in full (mail bodies, call transcripts, document
+    and attachment text), keep personal and academic records out, park unsure ones privately,
+    and hand over to the router."""
     from pathlib import Path
 
     import pytest
@@ -503,10 +504,11 @@ def test_the_export_contract_asks_for_depth_and_the_attachments_of_matching_thre
         pytest.skip("this repository does not carry the skills (a project may keep .claude/skills untracked)")
     for text in (p.read_text(encoding="utf-8") for p in paths):
         flat = " ".join(text.split())
-        assert "8,000 characters" in flat and "sweep.py <root> --attachments" in flat
-        assert "action items" in flat and "key points" in flat and "description" in flat
-        assert "never the transcript" in flat
-        assert "each on its own line" in flat, "a line with a left-out term stays home, the rest travels"
+        assert "8,000" not in flat and "never the transcript" not in flat, "capture is lossless"
+        assert "full transcript" in flat and "full body" in flat and "full text" in flat
+        assert "personal" in flat and "academic" in flat and "unsure.jsonl" in flat
+        assert "sweep.py <root> --attachments" in flat and "read_via" in flat
+        assert "route/SKILL.md" in flat
 
 
 def test_after_the_window_the_homes_status_page_shows_the_client_thread_and_the_call(tmp_path):
@@ -536,3 +538,130 @@ def test_after_the_window_the_homes_status_page_shows_the_client_thread_and_the_
     assert "Kickoff Lantern x Harbor" in page.split("## Timeline", 1)[1]
     landed = list((harbor / "knowledge" / "sources" / "2026" / "10").glob("*.md"))
     assert len(landed) == 2 and all(pages.read(p)[0]["at"].startswith("2026-10-12") for p in landed)
+
+
+# ----- judgment routing: the sweep captures, the router releases ---------------------------
+def test_with_routing_on_the_sweep_writes_pages_and_releases_nothing(tmp_path):
+    _, _, ada = build(tmp_path, standing_choices=[{"destination": "harbor", "kind": "mail"}],
+                      routing={"since": "2026-07-01"})
+    write_feed(ada, [record()])
+    report = sweep.run(ada, now=NOW)
+    assert report.witness_written == 1 and report.attached == 1
+    assert report.queued == 0 and report.signals == 0 and queue_items(ada) == []
+    assert not list((ada / "_outbound" / "signals").glob("*.yaml"))
+
+
+def test_a_deeper_export_refreshes_the_page_and_keeps_its_id(tmp_path):
+    _, _, ada = build(tmp_path, routing={})
+    write_feed(ada, [record(text="Short preview.")])
+    sweep.run(ada, now=NOW)
+    page, = list((ada / "knowledge" / "sources").rglob("m-0001.md"))
+    fm, body = pages.read(page)
+    first_id = fm["id"]
+    pages.write(page, dict(fm, routing={"decision": "private"}), body)
+    write_feed(ada, [record(text="Short preview. And the whole rest of the message, in full.")])
+    (ada / "_meta" / "state" / "sweep-watermark.yaml").unlink()   # the export re-read an old record
+    sweep.run(ada, now=NOW + dt.timedelta(hours=1))
+    fm, body = pages.read(page)
+    assert fm["id"] == first_id and "whole rest of the message" in body
+    assert fm.get("refreshed_at") and "routing" not in fm, "a refreshed page is routed again"
+    write_feed(ada, [record(text="Short.")])
+    (ada / "_meta" / "state" / "sweep-watermark.yaml").unlink()
+    sweep.run(ada, now=NOW + dt.timedelta(hours=2))
+    assert "whole rest of the message" in pages.read(page)[1], "a shorter export never shrinks a page"
+
+
+def test_a_page_over_the_size_limit_is_split_on_lines(tmp_path, monkeypatch):
+    monkeypatch.setattr(sweep, "PART_BYTES", 60)
+    _, _, ada = build(tmp_path, routing={})
+    lines = [f"[00:00:{i:02d}] Ada: line {i} of the meeting" for i in range(6)]
+    write_feed(ada, [record("c-0900", source="calls", kind="call", subject="Long call", to=[],
+                            text="\n".join(lines))], source="calls")
+    sweep.run(ada, now=NOW)
+    found = sorted((ada / "knowledge" / "sources").rglob("c-0900*.md"))
+    assert len(found) >= 3
+    texts = "".join(pages.read(p)[1] for p in found)
+    assert all(line in texts for line in lines), "nothing lost in the split"
+    fms = [pages.read(p)[0] for p in found]
+    assert {fm["parts"] for fm in fms} == {len(found)} and sorted(fm["part"] for fm in fms) == list(range(1, len(found) + 1))
+    assert all(len(pages.read(p)[1].encode("utf-8")) <= 60 for p in found)
+
+
+def test_the_workspaces_own_briefing_and_its_reply_never_become_pages(tmp_path):
+    _, _, ada = build(tmp_path, owner_email="ada@lantern.example", routing={})
+    write_feed(ada, [record("m-brief", subject="Morning briefing: 3 items need you", to=["ada@lantern.example"],
+                            text="7. Is this work? Dinner on Friday", **{"from": "ada@lantern.example"}),
+                     record("m-reply", subject="Re: Morning briefing: 3 items need you", to=["ada@lantern.example"],
+                            text="7 no", **{"from": "Ada Okafor <ada@lantern.example>"})])
+    report = sweep.run(ada, now=NOW)
+    assert report.witness_written == 0
+    assert not list((ada / "knowledge" / "sources").rglob("m-*.md"))
+
+
+def test_with_routing_on_every_unread_attachment_is_listed(tmp_path):
+    _, _, ada = build(tmp_path, routing={})
+    write_feed(ada, [record("m-0300", identifiers={"labels": []}, attachments=["notes.pdf"]),
+                     record("m-0301", identifiers={"labels": ["Harbor", "Beacon"]}, attachments=["both.pdf"])])
+    assert sweep.attachments(ada) == [("m-0300", "", "notes.pdf"), ("m-0301", "", "both.pdf")]
+
+
+def test_a_record_the_owner_admitted_gets_its_page_however_old(tmp_path):
+    """A record brought in from the unsure list is older than the feed's mark: still swept."""
+    _, _, ada = build(tmp_path, routing={})
+    write_feed(ada, [record("m-0400", at="2026-10-12T08:30:00Z")])
+    sweep.run(ada, now=NOW)
+    write_feed(ada, [record("m-0400", at="2026-10-12T08:30:00Z"),
+                     record("m-0401", at="2026-10-01T08:00:00Z", admitted=True)])
+    assert sweep.run(ada, now=NOW).witness_written == 1
+    assert list((ada / "knowledge" / "sources").rglob("m-0401.md"))
+
+
+# ----- the final review's findings ---------------------------------------------------------
+def test_with_routing_on_the_sweep_never_rewrites_a_routed_page(tmp_path):
+    _, _, ada = build(tmp_path, routing={})
+    write_feed(ada, [client_mail()])
+    sweep.run(ada, now=NOW)
+    page, = list((ada / "knowledge" / "sources").rglob("m-0200.md"))
+    fm, body = pages.read(page)
+    pages.write(page, dict(fm, routing={"decision": "private"}), body)
+    set_match(tmp_path, "harbor", domain="harbor.example")
+    sweep.run(ada, now=NOW + dt.timedelta(hours=1))
+    after = pages.read(page)[0]
+    assert after["id"] == fm["id"] and after["routing"] == {"decision": "private"}
+
+
+def test_parts_of_a_split_page_are_never_re_attached(tmp_path, monkeypatch):
+    monkeypatch.setattr(sweep, "PART_BYTES", 60)
+    _, _, ada = build(tmp_path, standing_choices=[{"destination": "harbor", "kind": "mail"}])
+    text = "\n".join(f"Line {i} of a long message about the pier." for i in range(6))
+    write_feed(ada, [record("m-0901", text=text)])
+    sweep.run(ada, now=NOW)
+    before = sorted(p.name for p in (ada / "knowledge" / "sources").rglob("*.md"))
+    queued_before = len(queue_items(ada))
+    sweep.run(ada, now=NOW + dt.timedelta(hours=1))
+    assert sorted(p.name for p in (ada / "knowledge" / "sources").rglob("*.md")) == before
+    assert len(queue_items(ada)) == queued_before
+
+
+def test_without_routing_a_call_transcript_never_leaves_by_identifier(tmp_path):
+    _, _, ada = build(tmp_path, owner_email="ada@lantern.example")
+    set_match(tmp_path, "harbor", domain="harbor.example")
+    call = _call("c-0950", "Kickoff", ["ada@lantern.example", "chloe@harbor.example"],
+                 "Summary: scope agreed.\nAction items: Ada sends the plan.\n"
+                 "[00:01:00] Chloe: our internal numbers are bad.\n" + "More words. " * 900)
+    write_feed(ada, [call], source="calls")
+    sweep.run(ada, now=NOW)
+    (fm, body), = queue_items(ada)
+    assert "Action items: Ada sends the plan." in body and "[00:01:00]" not in body
+    assert len(body) <= sweep.CAP_WITHOUT_ROUTING + 10
+
+
+def test_a_refresh_takes_the_deeper_exports_people_too(tmp_path):
+    _, _, ada = build(tmp_path, routing={})
+    write_feed(ada, [client_mail(text="Short.", cc=[])])
+    sweep.run(ada, now=NOW)
+    write_feed(ada, [client_mail(text="Short. And the rest of the message in full.", cc=["eve@elsewhere.example"])])
+    (ada / "_meta" / "state" / "sweep-watermark.yaml").unlink()
+    sweep.run(ada, now=NOW + dt.timedelta(hours=1))
+    page, = list((ada / "knowledge" / "sources").rglob("m-0200.md"))
+    assert pages.read(page)[0]["cc"] == ["eve@elsewhere.example"]

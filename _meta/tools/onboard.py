@@ -295,6 +295,12 @@ def fill_space(dst, profile, **values) -> dict:
     extra = []
     if values.get("time_scale") is not None and values.get("mode") in ("shadow", "fixture"):
         extra.append(f"time_scale: {values['time_scale']}")
+    if profile == "personal" and values.get("mode", "live") == "live":
+        # the judgment router reads the last 90 days; for two weeks every projection waits the
+        # window so the owner sees its choices first (the owner may end that early)
+        today = dt.datetime.now(dt.timezone.utc).date()
+        extra.append(f"routing: {{since: '{today - dt.timedelta(days=90)}', "
+                     f"review_until: '{today + dt.timedelta(days=14)}'}}")
     fields["extra"] = "\n".join(extra)
     text = text.format(**fields).rstrip("\n") + "\n"
     write_text(Path(dst) / "space.yaml", text)
