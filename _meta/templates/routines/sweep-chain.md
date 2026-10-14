@@ -15,7 +15,12 @@ and lands every file. For each root <root>:
    chat, calls, tracker, documents: whichever are connected; a repository through `gh`) into
    `<root>/_meta/state/feed/<source>.jsonl`, one JSON object per line in the record shape the
    skill gives. A source that names `channels`, `team`, `project` or `repo` is read for exactly
-   those. A space without sources exports nothing.
+   those. A space without sources exports nothing. Export in depth, each `text` capped at
+   8,000 characters: a mail's full body (never the snippet) with `from`, `to` and `cc` as
+   addresses; a document's content; a call's summary, action items and key points, each on
+   its own line, never the transcript; an event's description with its guests as `participants`. Then read every
+   attachment that `{python} <root>/_meta/tools/sweep.py <root> --attachments` lists into the
+   same feed file as a document record of its own, as the skill says.
 2. Run `{python} <root>/_meta/tools/chain.py sweep <root>` (sweep, distill, check). Then follow
    `.claude/skills/distill/SKILL.md` and `.claude/skills/check/SKILL.md` for the judgment only:
    improve each new candidate's body in plain language from its listed evidence only, and

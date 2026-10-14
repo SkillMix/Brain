@@ -22,17 +22,25 @@ sweeps nothing of its own. You export; the tool decides.
    `_meta/state/feed/<name>.jsonl` (no file yet: the last 14 days) and append one JSON
    object per line:
    `{"id", "source", "kind": mail|call|message|event|document, "at": ISO, "from",
-   "to": [...], "subject", "text", "identifiers": {"thread", "channel", "labels": [...],
+   "to": [...], "cc": [...], "subject", "text", "identifiers": {"thread", "channel", "labels": [...],
    "repo", "tracker", "calendar"}, "attachments": [...], "audience": owner|crew|everyone,
    "participants": [...]}`; a tracker record adds `"issue"` (its key) and `"state"`, and its `id`
    is the key with the issue's last update (`SM-224@2026-10-02T15:46:23Z`), so each change to an
    issue is a record of its own and the newest one decides its state.
-   Per kind: mail = messages sent, received or copied to the person (`thread`, `labels`);
-   Mail and messages always carry `from` and `to` as addresses: without them no status page
-   knows who owes whom. call = a recorded meeting, `text` its transcript or summary, `participants` everyone on
-   it; message = chat DMs and channels (`channel`); event = calendar entries (`calendar`);
-   document = a new or changed file, `text` an excerpt, the file only as a pointer in
-   `attachments`; issue = a tracker issue created, changed or closed (`identifiers.tracker` the
+   Depth: `text` is what a colleague needs to act on, never a preview or a snippet; cap it at
+   8,000 characters (cut at a line, end with `[cut]`). Per kind: mail = messages sent, received
+   or copied to the person (`thread`, `labels`), `text` the full body of the message (quoted
+   replies below it left out), the file names in `attachments`. Mail and messages always carry
+   `from`, `to` and `cc` as addresses: without them no status page knows who owes whom and no
+   client mail attaches by its domain. call = a recorded meeting, `subject` the meeting's own
+   title, `text` its summary, then its action items and its key points as the recorder lists
+   them (each owner and date kept), each on its own line, never the transcript, `participants`
+   everyone on it by address (a project release drops a line with a left-out term such as
+   a fee or the transcript and keeps the rest, so one paragraph for the whole call would stay
+   home whole); message = chat DMs and channels (`channel`); event = calendar entries (`calendar`),
+   `subject` the title, `text` the description, `participants` the guests by address;
+   document = a new or changed file, `text` its content (cap 8,000 characters), the file only as
+   a pointer in `attachments`; issue = a tracker issue created, changed or closed (`identifiers.tracker` the
    project, `issue`, `state`); change = a pull request merged or a release in the repository
    (`identifiers.repo`, `text` its title and description), never the space's own machinery
    pull requests (`chore: sync`, `chore: pins`, `chore: release`, `chore: structure`). Export
@@ -41,14 +49,24 @@ sweeps nothing of its own. You export; the tool decides.
    afterwards: the machinery pull requests outnumber the rest and would fill any limit), `id`
    `<repo>#<number>`. `audience` is the source's declared audience, copied as is. `id` is the
    system's own id, stable across runs.
-2. `python _meta/tools/sweep.py <root>` (`--dry-run` prints the plan and writes nothing).
+2. Attachments: `python _meta/tools/sweep.py <root> --attachments` lists, one per line,
+   `<record id> <subject> <file name>` for every attachment on a thread that belongs to exactly
+   one subject and has not been read yet. Read each with the same connector and append it to the
+   same feed file as a document record of its own: `id` `<record id>/<file name>`, `subject` the
+   file name as it is, `text` its content (cap 8,000 characters; a file you cannot read as text,
+   such as an image: empty `text`, so it is not listed again), `from`, `to`, `cc`, `at` and
+   `identifiers` copied from its mail. Attachments on other threads stay names only.
+3. `python _meta/tools/sweep.py <root>` (`--dry-run` prints the plan and writes nothing).
 
 ## What the tool already did
 
 Witness pages `knowledge/sources/<yyyy>/<mm>/<record-id>.md` (drafts, never signed);
-attachment to the one subject whose `match:` identifier the record carries (none or several:
-no attachment, names in the text kept as hints); the release class for records whose subject
-has a `home` elsewhere (at once, window, or held: doubt, left_out, never_leaves); queue
+attachment to the one subject whose `match:` identifier the record carries (a fixed
+identifier, a client's mail domain on any address, a keyword in a call's or event's title;
+none or several: no attachment, names in the text kept as hints), and the same again for older
+pages once the registry learns a new identifier; the release class for records whose subject
+has a `home` elsewhere (at once, window, or held: doubt, left_out, never_leaves; a record
+placed by domain or title, or placed late, always waits the window and a morning view); queue
 items in `_outbound/queue/`, held items in `_outbound/held/` with a reason; content-free
 signals in `_outbound/signals/`; the watermark; one run line.
 
@@ -82,7 +100,8 @@ it, say so in your run line, continue with the others) or a record that is not v
 Run the sweep chain for the space at <root> as <person>.
 1. Read <root>/AGENTS.md and <root>/rules.md, then <root>/.claude/skills/sweep/SKILL.md
    and follow it exactly: export new records for every source in space.yaml into
-   _meta/state/feed/<source>.jsonl with the record shape, then run
+   _meta/state/feed/<source>.jsonl with the record shape and its depth, read what
+   `python _meta/tools/sweep.py <root> --attachments` lists, then run
    `python _meta/tools/sweep.py <root>`.
 2. Then follow <root>/.claude/skills/distill/SKILL.md and <root>/.claude/skills/check/SKILL.md
    in that order (they read what the sweep wrote).

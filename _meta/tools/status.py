@@ -211,7 +211,7 @@ def collect(root: Path, space, reg, now) -> dict:
         found.setdefault(sid, []).append(Evidence(sid, tier, scope_, title, at, rel, pid, text,
                                                   section, ptype, status, arrived, direction))
 
-    own = _domain(space.owner_email)
+    own = _own_domains(space, reg)
     threads: dict = {}
     closed = _closed(root)
     for path, fm, body in _read_pages(root / "knowledge" / "sources"):
@@ -350,8 +350,20 @@ def _thread_of(fm: dict, title: str) -> str:
     return re.sub(r"^(\s*(re|fwd?|aw|wg)\s*:\s*)+", "", title.strip().lower())
 
 
-def _direction(fm: dict, own: str) -> str:
+def _own_domains(space, reg) -> set:
+    """Our mail domains: the owner's and every registered colleague's (email and any address
+    among their aliases), so a reply from a second company domain is still ours."""
+    own = {_domain(space.owner_email)}
+    for person in reg.everywhere():
+        if person.kind == "people":
+            own |= {_domain(a) for a in [person.extra.get("email"), *person.aliases] if a}
+    return own - {""}
+
+
+def _direction(fm: dict, own) -> str:
     """Who holds the next move on a thread, from its last record."""
+    own = {own} if isinstance(own, str) else set(own or ())
+    own.discard("")
     if fm.get("issue"):
         return "internal"
     if fm.get("kind") not in ("mail", "message") or not own:
@@ -359,10 +371,10 @@ def _direction(fm: dict, own: str) -> str:
     sender = _domain(fm.get("from"))
     if not sender:
         return ""
-    if sender != own:
+    if sender not in own:
         return "we owe"
     others = [_domain(t) for t in (fm.get("to") or [])]
-    return "waiting on them" if any(d and d != own for d in others) else "internal"
+    return "waiting on them" if any(d and d not in own for d in others) else "internal"
 
 
 def _open_text(evs: list) -> str:

@@ -63,3 +63,44 @@ def test_unknown_kind_against_space(tmp_path):
         {"id": "x", "kind": "departments"}])
     errs = registry.Registry(root, spaceyaml.load(root)).check()
     assert any("unknown kind" in e for e in errs)
+
+
+def _harbor_with(tmp_path, **match):
+    root = make_space(tmp_path / "s", subjects=[
+        {"id": "harbor", "kind": "projects", "title": "Harbor", "match": match},
+        {"id": "beacon", "kind": "projects", "title": "Beacon", "match": {"label": "Beacon"}}])
+    reg = registry.Registry(root)
+    return reg, lambda record: [s.id for s in reg.match(record)]
+
+
+def test_match_by_mail_domain_on_any_address_of_the_record(tmp_path):
+    """A client's mail domain attaches mail, calls and events by their addresses, never by text."""
+    reg, hit = _harbor_with(tmp_path, domain="harbor.example")
+    assert hit({"kind": "mail", "from": "Chloe <chloe@harbor.example>", "to": ["ada@lantern.example"]}) == ["harbor"]
+    assert hit({"kind": "mail", "from": "ada@lantern.example", "to": [], "cc": ["Ben@Harbor.Example"]}) == ["harbor"]
+    assert hit({"kind": "call", "participants": ["ada@lantern.example", "chloe@eu.harbor.example"]}) == ["harbor"]
+    assert hit({"kind": "mail", "from": "eve@notharbor.example", "to": ["harbor.example@lantern.example"]}) == []
+    assert hit({"kind": "mail", "from": "ada@lantern.example", "text": "write to chloe@harbor.example"}) == []
+    assert reg.check() == []
+
+
+def test_match_by_title_keyword_for_calls_and_events_only(tmp_path):
+    reg, hit = _harbor_with(tmp_path, keywords=["Harbor", "pier work"])
+    assert hit({"kind": "call", "subject": "Weekly: Lantern x Harbor"}) == ["harbor"]
+    assert hit({"kind": "event", "subject": "Pier work alignment"}) == ["harbor"]
+    assert hit({"kind": "event", "title": "Harbor - Lantern"}) == ["harbor"]
+    assert hit({"kind": "mail", "subject": "Harbor go-live"}) == [], "mail attaches by domain or label"
+    assert hit({"kind": "call", "subject": "Lunch", "text": "Harbor came up"}) == [], "the title only"
+    assert hit({"kind": "call", "subject": "Harborview offsite"}) == [], "whole words only"
+    reg, hit = _harbor_with(tmp_path / "one", keywords="Harbor")
+    assert hit({"kind": "call", "subject": "Harbor weekly"}) == ["harbor"]
+    assert reg.check() == []
+
+
+def test_matched_by_names_how_a_record_attached(tmp_path):
+    reg, _ = _harbor_with(tmp_path, label="Harbor", domain="harbor.example")
+    harbor = reg.get("harbor")
+    both = {"kind": "mail", "from": "chloe@harbor.example", "identifiers": {"labels": ["Harbor"]}}
+    assert reg.matched_by(harbor, both) == {"label", "domain"}
+    assert reg.matched_by(harbor, dict(both, identifiers={})) == {"domain"}
+    assert reg.matched_by(harbor, {"kind": "mail", "from": "x@lantern.example"}) == set()

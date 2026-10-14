@@ -54,12 +54,15 @@ line what you are doing and go on, without asking again.
    answer; "watch <repo>" in GitHub undoes it.
 8. Show value now, before the first scheduled run: follow
    `<workspace>/_meta/state/routines/sweep-chain.md` once, as if it fired (a first run exports
-   the last 14 days of every connected feed). Then read the Open section of each status page
-   the person can already see: `live/subjects/*.md` in their workspace and in every mounted
-   project (the mounts in `space.yaml`).
+   the last 14 days of every connected feed). Then, for every project they are crew on (the
+   mounts in `space.yaml`), read what the project already knows, never only what their own
+   new workspace gathered: its status page `mounts/<name>/live/subjects/<id>.md` (Open first),
+   its signed pages under `mounts/<name>/knowledge/<kind>/<id>/` and its candidates in
+   `mounts/<name>/_inbound/candidates/` that carry `subject: <id>`.
 9. Answer in at most six lines: where the workspace is; what is still theirs (the `yours`
    rows, each with its check); per project they are crew on, its open items in one line
-   each (at most three); two sentences to try, "status of <a project>" and "prep me for the
+   each (at most three) and how many signed and candidate pages it holds, with the status
+   page's path; two sentences to try, "status of <a project>" and "prep me for the
    call with <a project>"; that the morning briefing starts tomorrow; that "what needs me"
    shows their list any time.
 

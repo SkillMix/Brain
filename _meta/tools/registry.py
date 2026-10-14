@@ -4,7 +4,9 @@ A subject is anything people ask about by name. Hierarchy lives here (`part_of`)
 never in paths; owners live on subjects and parts inherit their umbrella's owner;
 `home` names the space where the subject's shared conclusions live; `match` holds
 the fixed identifiers (tracker, repo, channel, label, thread, calendar, github) by which a
-sweep attaches evidence. Ids are shared up the ladder: a space reuses an ancestor's
+sweep attaches evidence, plus two inferred ones: `domain`, a mail domain on any address of the
+record (from, to, cc, participants), and `keywords`, whole words in the title of a call or a
+calendar event. Ids are shared up the ladder: a space reuses an ancestor's
 id (read through its mount) and mints a new one only when no space above has one.
 
     python registry.py <root> check     report loops, duplicates, unknown kinds
@@ -26,7 +28,10 @@ import spaceyaml  # noqa: E402
 
 REGISTRY_PATH = Path("_meta") / "subjects.yaml"
 STATES = ("active", "dormant", "archived")
-MATCH_KEYS = ("tracker", "repo", "channel", "label", "thread", "calendar", "github")
+MATCH_KEYS = ("tracker", "repo", "channel", "label", "thread", "calendar", "github",
+              "domain", "keywords")
+INFERRED_KEYS = ("domain", "keywords")   # attach by inference: never released at once
+TITLED_KINDS = ("call", "event")
 
 
 @dataclass
@@ -98,6 +103,21 @@ def same_repo(a, b) -> bool:
         url = repo_url(value)
         return url.lower().rstrip("/").removesuffix(".git") if url else None
     return key(a) is not None and key(a) == key(b)
+
+
+def address_of(value) -> str:
+    """`Name <a@b>` or `a@b` as a lower-case address; anything else as lower-case text."""
+    text = str(value or "").strip().lower()
+    return text.split("<")[-1].rstrip(">").strip() if "<" in text else text
+
+
+def record_domains(record: dict) -> set:
+    """The mail domains of everyone on a record: from, to, cc and participants."""
+    people = [record.get("from")]
+    for key in ("to", "cc", "participants"):
+        value = record.get(key) or []
+        people += value if isinstance(value, list) else [value]
+    return {address_of(p).rsplit("@", 1)[1] for p in people if "@" in address_of(p)}
 
 
 def _word_in(text: str, needle: str) -> bool:
@@ -176,22 +196,34 @@ class Registry:
         return None
 
     def match(self, record: dict) -> list:
-        """Subjects whose fixed identifiers the record carries. Identifiers only."""
+        """Subjects whose identifiers the record carries: its fixed identifiers, the mail
+        domain of one of its addresses, a keyword in the title of a call or event."""
+        return [s for s in self.everywhere() if self.matched_by(s, record)]
+
+    def matched_by(self, subject: Subject, record: dict) -> set:
+        """The `match` keys by which the record belongs to the subject (empty: it does not)."""
         identifiers = record.get("identifiers") or {}
-        hits = []
-        for subject in self.everywhere():
-            for key, wanted in (subject.match or {}).items():
-                have = identifiers.get(key)
-                if have is None and key == "label":
-                    have = identifiers.get("labels")
-                if have is None:
-                    continue
-                values = have if isinstance(have, list) else [have]
-                wanted_values = wanted if isinstance(wanted, list) else [wanted]
-                if any(str(v).lower() == str(w).lower() for v in values for w in wanted_values):
-                    hits.append(subject)
-                    break
-        return hits
+        keys = set()
+        for key, wanted in (subject.match or {}).items():
+            wanted_values = [str(w).strip().lower() for w in (wanted if isinstance(wanted, list) else [wanted])]
+            if key == "domain":
+                if any(d == w or d.endswith("." + w) for d in record_domains(record) for w in wanted_values):
+                    keys.add(key)
+                continue
+            if key == "keywords":
+                title = str(record.get("subject") or record.get("title") or "")
+                if record.get("kind") in TITLED_KINDS and any(_word_in(title, w) for w in wanted_values):
+                    keys.add(key)
+                continue
+            have = identifiers.get(key)
+            if have is None and key == "label":
+                have = identifiers.get("labels")
+            if have is None:
+                continue
+            values = have if isinstance(have, list) else [have]
+            if any(str(v).lower() in wanted_values for v in values):
+                keys.add(key)
+        return keys
 
     def mentions(self, record: dict) -> list:
         """Subjects named in the record's text: hints for evidence, never attachment."""
