@@ -55,7 +55,8 @@ RUNS = Path("_meta") / "state" / "runs.jsonl"
 RELEASED = Path("_meta") / "state" / "released.jsonl"
 PAUSED = Path("_meta") / "state" / "paused.jsonl"
 PAUSE_HOURS = 4 * 7 * 24
-QUEUE_ONLY_KEYS = ("class", "stage_after", "listed", "destination", "from_space")
+QUEUE_ONLY_KEYS = ("class", "stage_after", "listed", "destination", "from_space",
+                   "why", "confidence", "routed_by", "content")   # the router's reasons stay home
 NEEDS_NO_LISTING = ("at_once", "signal", "retraction")
 COMMANDS = ("ship", "retract", "pull-back")
 
@@ -285,7 +286,9 @@ def slug_of(name: str) -> str:
 def scrub_reason(space: spaceyaml.Space, dest_space: spaceyaml.Space | None, fm: dict,
                  body: str, path: Path | None = None) -> tuple[str, str] | None:
     """Why an item may not leave: (reason, why) or None when it is clean."""
-    text = f"{fm.get('title', '')}\n{body}"
+    informs = " ".join(f"{i.get('text', '')} {i.get('owner', '')}" for i in fm.get("informs") or []
+                       if isinstance(i, dict))
+    text = f"{fm.get('title', '')}\n{body}\n{informs}"
     term = first_term(text, space.never_leaves)
     if term:
         return "never_leaves", f"never-leaves term `{term}` appears"
@@ -295,6 +298,9 @@ def scrub_reason(space: spaceyaml.Space, dest_space: spaceyaml.Space | None, fm:
     if dest_space is not None and dest_space.mode != space.mode:
         return "mode", (f"this space runs {space.mode}, the destination "
                         f"{fm.get('destination')} runs {dest_space.mode}")
+    if path is not None and scan is not None and Path(path).is_file() and \
+            Path(path).stat().st_size > getattr(scan, "MAX_BYTES", 1024 * 1024):
+        return "scan", "too large for the secrets scan to read"
     if path is not None and scan is not None and hasattr(scan, "scan_paths"):
         try:
             findings = scan.scan_paths([Path(path)])

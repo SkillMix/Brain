@@ -59,3 +59,25 @@ def test_save_round_trip(tmp_path):
     space.data["standing_choices"] = [{"destination": "harbor", "kind": "mail"}]
     spaceyaml.save(space)
     assert spaceyaml.load(root).standing_choices == [{"destination": "harbor", "kind": "mail"}]
+
+
+def test_routing_setting_is_off_by_default_and_read_when_present(tmp_path):
+    import datetime as dt
+    root = make_space(tmp_path / "ada")
+    space = spaceyaml.load(root)
+    assert space.routing_on is False and space.review_until is None and space.routing_since is None
+    root2 = make_space(tmp_path / "ben", routing={"review_until": "2026-10-28", "since": "2026-07-16"})
+    space2 = spaceyaml.load(root2)
+    assert space2.routing_on is True
+    assert space2.review_until == dt.datetime(2026, 10, 28, tzinfo=dt.timezone.utc)
+    assert space2.routing_since == dt.datetime(2026, 7, 16, tzinfo=dt.timezone.utc)
+    assert space2.errors() == []
+    root3 = make_space(tmp_path / "eve", routing={"review_until": "soon"})
+    assert any("routing" in e for e in spaceyaml.load(root3).errors())
+
+
+def test_left_out_defaults_name_information_not_its_form():
+    """The owner decided verbatim transcript parts and attachment text may travel: the left-out
+    list keeps the kinds of information, not the forms they arrive in."""
+    assert not {"attachment", "attachments", "transcript", "transcripts"} & set(spaceyaml.DEFAULTS["left_out"])
+    assert {"price", "fee", "day rate", "salary", "password", "client data"} <= set(spaceyaml.DEFAULTS["left_out"])

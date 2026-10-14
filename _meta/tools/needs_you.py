@@ -192,8 +192,10 @@ def _queue(root: Path, space: spaceyaml.Space, now: dt.datetime) -> list:
                             recommendation=_text(fm.get("recommendation"), "yes"),
                             default="waits for the domain owner", deadline=None, **common))
         elif fm.get("class") == "window" and stage_after is not None and stage_after <= horizon:
+            reason = _text(fm.get("why"), "")   # the router's reason it waits, when it gave one
             out.append(Item(kind="leaving",
-                            text=f"{title} leaves for {destination} at {pages.iso(stage_after)}",
+                            text=f"{title} leaves for {destination} at {pages.iso(stage_after)}"
+                                 + (f" ({reason})" if reason else ""),
                             recommendation=_text(fm.get("recommendation"), "yes"), default="leaves",
                             deadline=stage_after, **common))
     return out

@@ -214,25 +214,47 @@ def collect(root: Path, space, reg, now) -> dict:
     own = _own_domains(space, reg)
     threads: dict = {}
     closed = _closed(root)
+    informed = []   # pages whose router said what they inform: their open items replace the thread's
     for path, fm, body in _read_pages(root / "knowledge" / "sources"):
         at = _stamp(fm, "at")
-        sid = str(fm.get("subject") or "")
-        # evidence attaches by identifier only: a page that merely mentions a subject stays out
-        if sid not in known or at is None:
+        # evidence attaches by identifier or by a routing decision; a mention alone stays out
+        sids = [s for s in registry_mod.routed_subjects(fm, space.name) if s in known]
+        if not sids or at is None:
             continue
         rel, pid, title = path.relative_to(root).as_posix(), str(fm.get("id") or ""), str(fm.get("title") or path.stem)
         tier = "system" if _is_system(fm, space) else "witness"
         state = str(fm.get("state") or "").lower()
-        if fm.get("issue") and state in DONE_STATES:
-            add(sid, tier, scope, title, at, rel, pid, body, "closed", arrived=_stamp(fm))
-            add(sid, tier, scope, title, at, rel, pid, body, arrived=_stamp(fm))   # and on the timeline
-            continue
-        add(sid, tier, scope, title, at, rel, pid, body, arrived=_stamp(fm))
-        key, direction = (sid, _thread_of(fm, title)), _direction(fm, own)
-        last = threads.get(key)
-        # the newest record holds the thread; at the same moment, the one that knows who moves next
-        if last is None or at > last[0] or (at == last[0] and direction and not last[6]):
-            threads[key] = (at, tier, title, rel, pid, body, direction)
+        informs = [i for i in fm.get("informs") or [] if isinstance(i, dict)]
+        if informs:
+            informed.append((sids, at, tier, rel, pid, body, informs, _thread_of(fm, title)))
+        for sid in sids:
+            if fm.get("issue") and state in DONE_STATES:
+                add(sid, tier, scope, title, at, rel, pid, body, "closed", arrived=_stamp(fm))
+                add(sid, tier, scope, title, at, rel, pid, body, arrived=_stamp(fm))   # and on the timeline
+                continue
+            add(sid, tier, scope, title, at, rel, pid, body, arrived=_stamp(fm))
+            if informs:
+                continue
+            key, direction = (sid, _thread_of(fm, title)), _direction(fm, own)
+            last = threads.get(key)
+            # the newest record holds the thread; at the same moment, the one that knows who moves next
+            if last is None or at > last[0] or (at == last[0] and direction and not last[6]):
+                threads[key] = (at, tier, title, rel, pid, body, direction)
+    closes = {str(i["closes"]) for *_, informs, _ in informed for i in informs if i.get("closes")}
+    routed_since = now - space.scale(OPEN_DAYS * 24)
+    for sids, at, tier, rel, pid, body, informs, thread in informed:
+        for item in informs:
+            if item.get("kind") != "open_item":
+                continue
+            label = _informs_label(item)
+            direction = str(item.get("direction") or "internal")
+            direction = direction if direction in DIRECTIONS else "internal"
+            for sid in sids:
+                said = closed.get((sid, thread))
+                if pid in closes or (said and at <= said[0]):   # a later record, or the person, closed it
+                    add(sid, tier, scope, label, at, rel, pid, body, "closed")
+                elif at >= routed_since:
+                    add(sid, tier, scope, label, at, rel, pid, body, "open", direction=direction)
     open_since = now - space.scale(OPEN_DAYS * 24)
     for (sid, thread), (at, tier, title, rel, pid, body, direction) in threads.items():
         said = closed.get((sid, thread))
@@ -324,6 +346,13 @@ def _see_also(root: Path) -> dict:
 OPEN_DAYS = 14
 DONE_STATES = {"done", "closed", "completed", "canceled", "cancelled", "duplicate", "merged"}
 DIRECTIONS = ("we owe", "waiting on them", "internal")
+
+
+def _informs_label(item: dict) -> str:
+    """An open item as the router wrote it, with its owner and due date when it has them."""
+    extra = [f"owner {item['owner']}" if item.get("owner") else "", f"due {item['due']}" if item.get("due") else ""]
+    extra = ", ".join(x for x in extra if x)
+    return str(item.get("text") or "").strip() + (f" ({extra})" if extra else "")
 
 
 def _domain(address) -> str:

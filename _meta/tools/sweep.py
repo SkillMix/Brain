@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -168,9 +169,10 @@ def attachments(root) -> list:
     for record in feed:
         names = [str(a) for a in record.get("attachments") or [] if str(a).strip()]
         hits = reg.match(record) if names else []
-        if len(hits) != 1:
+        if len(hits) != 1 and not space.routing_on:   # with routing on, capture reads them all
             continue
-        out += [(str(record["id"]), hits[0].id, name) for name in names
+        sid = hits[0].id if len(hits) == 1 else ""
+        out += [(str(record["id"]), sid, name) for name in names
                 if f"{record['id']}/{name}" not in have]
     return out
 
@@ -470,7 +472,7 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
 
     feed = declared_feed(root, space)
     marks = read_feed_marks(root)
-    records = [r for r in feed if str(r.get("_feed")) not in marks
+    records = [r for r in feed if str(r.get("_feed")) not in marks or r.get("admitted")   # the owner's yes
                or pages.parse_iso(r["at"]) > marks[str(r.get("_feed"))]]
     newest_by_feed = dict(marks)
     for r in records:
@@ -490,15 +492,18 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
                 continue
             for rid in item_fm.get("evidence") or []:
                 settled.add(str(rid))
-    for path in sorted((root / "knowledge" / "sources").rglob("*.md")):
+    # With routing on the router decides where a page belongs: nothing is re-attached here.
+    for path in [] if space.routing_on else sorted((root / "knowledge" / "sources").rglob("*.md")):
         if not pages.is_page_path(path):
             continue
         try:
             fm, body = pages.read(path)
         except Exception:
             continue
-        if fm.get("type") != "source" or fm.get("subject") or fm.get("candidates"):
+        if fm.get("type") != "source" or fm.get("subject") or fm.get("candidates") or int(fm.get("part") or 1) > 1:
             continue
+        if int(fm.get("parts") or 1) > 1:   # a split page is re-attached whole, never part by part
+            body = _existing_text(root, fm, body, {"id": str(fm.get("record") or path.stem), "at": fm.get("at")})
         if str(fm.get("record") or path.stem) in settled:
             continue
         rebuilt = {"id": fm.get("record") or path.stem, "source": fm.get("source"), "kind": fm.get("kind"),
@@ -519,9 +524,13 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
         report.records_seen += 1
         if not record.get("_reattach"):
             newest = at if newest is None or at > newest else newest
+        if is_own_notice(space, record):
+            report.plan.append(f"skip {record['id']}: the workspace's own notice")
+            continue
         target = witness_path(root, record)
         if target.exists():
-            report.plan.append(f"skip {record['id']}: witness page exists")
+            if not _refresh(root, target, record, now, dry_run, report):
+                report.plan.append(f"skip {record['id']}: witness page exists")
             continue
         chars += len(json.dumps({k: v for k, v in record.items() if not str(k).startswith('_')}))
         audience = audience_of(space, record)
@@ -531,12 +540,15 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
         fm = witness_frontmatter(record, hits, mentions, audience, sensitive, now)
         report.plan.append(f"witness {target.relative_to(root).as_posix()}")
         if not dry_run:
-            pages.write(target, fm, str(record.get("text") or ""))
+            _write_parts(root, target, record, fm, str(record.get("text") or ""))
             if not record.get("_reattach") and _credential_seen(record) and _security_notice(root, space, record):
                 report.security_notices += 1
         report.witness_written += 1
         body = str(record.get("text") or "")
 
+        if space.routing_on:   # the router decides where it goes; identifiers only suggested it
+            report.attached += len(hits) == 1
+            continue
         if len(hits) > 1:
             elsewhere = [(s, reg.home_of(s.id)) for s in hits]
             elsewhere = [(s, h) for s, h in elsewhere if h and h != space.name]
@@ -572,7 +584,7 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
                 report.held_other += 1
         else:
             extra = dict(verdict.extra or {})
-            sent_body = extra.pop("trimmed_body", body)
+            sent_body = shallow(extra.pop("trimmed_body", body))   # without the router: never in full
             item = item_frontmatter(space, record, subject.id, home, verdict.cls,
                                     verdict.stage_after, now, extra)
             report.plan.append(f"queue {verdict.cls} {record['id']} -> {home}: {verdict.why}")
@@ -610,6 +622,127 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
         "held_in_doubt": report.held_in_doubt, "held_other": report.held_other,
         "reattached": reattached, "security_notices": report.security_notices})
     return report
+
+
+# ----- without the router, what leaves by identifier stays shallow -----------------------------
+CAP_WITHOUT_ROUTING = 8_000
+UTTERANCE = re.compile(r"^\s*\[\d{1,2}:\d{2}(?::\d{2})?\]")
+
+
+def shallow(text: str) -> str:
+    """What the identifier path may release now that capture is lossless: no transcript lines
+    (`[hh:mm:ss] Speaker: words`), at most CAP_WITHOUT_ROUTING characters, cut at a line. Only the
+    judgment router sends verbatim parts of a record."""
+    kept, size = [], 0
+    for line in str(text or "").splitlines():
+        if UTTERANCE.match(line):
+            continue
+        if size + len(line) + 1 > CAP_WITHOUT_ROUTING:
+            kept.append("[cut]")
+            break
+        kept.append(line)
+        size += len(line) + 1
+    return "\n".join(kept) + ("\n" if kept else "")
+
+
+# ----- lossless pages: refresh in place, split on lines, the workspace's own notices out ----
+PART_BYTES = 900_000   # the sync never lands a file over 1 MB
+OWN_NOTICE = re.compile(r"^\s*((re|aw|sv|fwd?)\s*:\s*)*(\[shadow\]\s*)?(morning briefing|security check|"
+                        r"action needed|for your info)\b", re.I)
+
+
+def is_own_notice(space: spaceyaml.Space, record: dict) -> bool:
+    """The workspace's own briefings and notices, and replies to them: the reply reader takes
+    them from the feed; they never become pages (they may list records kept out)."""
+    own = registry.address_of(space.owner_email)
+    if not own or "@" not in own or registry.address_of(record.get("from")) != own:
+        return False
+    to = [registry.address_of(t) for t in record.get("to") or []]
+    return own in to and bool(OWN_NOTICE.match(str(record.get("subject") or "")))
+
+
+def split_text(text: str, limit: int) -> list:
+    """Line-boundary chunks of at most `limit` bytes; a single longer line is cut by bytes."""
+    parts, current, size = [], [], 0
+    for line in text.splitlines(keepends=True):
+        data = line.encode("utf-8")
+        while len(data) > limit:   # one line over the limit: cut it, never drop it
+            if current:
+                parts.append("".join(current))
+                current, size = [], 0
+            cut = data[:limit].decode("utf-8", errors="ignore")
+            parts.append(cut)
+            data = data[len(cut.encode("utf-8")):]
+        if current and size + len(data) > limit:
+            parts.append("".join(current))
+            current, size = [], 0
+        if data:
+            current.append(data.decode("utf-8"))
+            size += len(data)
+    if current:
+        parts.append("".join(current))
+    return parts or [""]
+
+
+def _part_paths(root: Path, record: dict, count: int) -> list:
+    return [witness_path(root, record)] + [witness_path(root, dict(record, id=f"{record['id']}#{k}"))
+                                           for k in range(2, count + 1)]
+
+
+def _write_parts(root: Path, target: Path, record: dict, fm: dict, text: str) -> None:
+    """One page, or a page per part when the text is over PART_BYTES (part 1 is the record's own
+    page and carries the attachment; every part says which it is)."""
+    chunks = split_text(text, PART_BYTES) if len(text.encode("utf-8")) > PART_BYTES else [text]
+    if len(chunks) == 1:
+        pages.write(target, fm, text)
+        return
+    for k, (path, chunk) in enumerate(zip(_part_paths(root, record, len(chunks)), chunks), start=1):
+        part_fm = dict(fm, part=k, parts=len(chunks))
+        if k > 1:
+            part_fm = dict(part_fm, id=pages.new_id(), record=f"{record['id']}#{k}")
+            part_fm.pop("subject", None)
+        pages.write(path, part_fm, chunk)
+
+
+def _existing_text(root: Path, fm: dict, body: str, record: dict) -> str:
+    parts = int(fm.get("parts") or 1)
+    if parts == 1:
+        return body
+    texts = [body]
+    for path in _part_paths(root, record, parts)[1:]:
+        texts.append(pages.read(path)[1] if path.exists() else "")
+    return "".join(texts)
+
+
+def _refresh(root: Path, target: Path, record: dict, now: dt.datetime, dry_run: bool, report) -> bool:
+    """A deeper re-export of a record whose page exists: the page keeps its id and frontmatter,
+    takes the longer text, and loses its routing decision so the router reads it again."""
+    if record.get("_reattach"):
+        return False
+    try:
+        old_fm, old_body = pages.read(target)
+    except Exception:
+        return False
+    new_text = str(record.get("text") or "")
+    if old_fm.get("status") == "stable" or len(new_text) <= len(_existing_text(root, old_fm, old_body, record)):
+        return False
+    fm = {k: v for k, v in old_fm.items() if k not in ("routing", "part", "parts")}
+    # the deeper export knows the people and the thread better than the shallow one did
+    if record.get("from"):
+        fm["from"] = record["from"]
+    for key in ("to", "cc", "participants", "attachments"):
+        if key in record:
+            fm.pop(key, None)
+            if record.get(key):
+                fm[key] = [str(x) for x in record[key]] if key == "attachments" else list(record[key])
+    if record.get("identifiers"):
+        fm["identifiers"] = dict(record["identifiers"])
+    fm["refreshed_at"] = pages.iso(now)
+    report.plan.append(f"refresh {target.relative_to(root).as_posix()}")
+    if not dry_run:
+        _write_parts(root, target, record, fm, new_text)
+    report.witness_written += 1
+    return True
 
 
 # ----- a credential seen: one plain warning to the person ---------------------------------

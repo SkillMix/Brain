@@ -46,9 +46,10 @@ item through); every other level is lowered or raised only by a person in `space
 ## 4. Left-out defaults for a project destination
 
 Prices, fees and other commercial terms; a person's employment, role, pay or immigration;
-credentials and access links; client data files; attachments and raw transcripts; other
-clients. A passage that mixes these keeps only its project facts. The list is a setting in
-the destination's `space.yaml`.
+credentials and access links; client data files; other clients. A passage that mixes these
+keeps only its project facts. The list is a setting in the destination's `space.yaml`. A
+transcript or an attachment is a form, not a kind of information: its verbatim parts travel
+when what they say may (the judgment router's projections).
 
 ## 5. Freshness windows (days)
 
@@ -61,6 +62,11 @@ confidence low, derived from its dates.
 A release waits only when it widens who can see something. At once: content its audience
 can already read, content its holder approved (by name or by a standing choice for that
 destination), retractions and signals. Otherwise after one window and one morning view.
+Where `space.yaml` turns `routing` on, an agent reads each record in full and picks the tier
+per projection: ordinary work for the destination goes at once, anything more sensitive waits
+one window and one morning view with its reason. Never-leaves terms hold a projection; the
+high-stakes list and medium confidence force the window; low confidence asks the owner; a
+review period (`routing.review_until`) holds every projection for the window.
 Doubt about the class means the window; doubt about privacy means the item stays home and
 is shown as a count. External disclosure is not internal permission. A subject's `home` is
 the narrowest shared space whose audience covers everyone on the subject; no home means the

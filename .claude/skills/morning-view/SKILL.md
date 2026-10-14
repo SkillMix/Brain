@@ -18,7 +18,7 @@ send in the system, and it is the person's own mail to themselves.
 
 `python _meta/tools/morning_view.py <root> --person "<name>" [--shadow]`
 
-Then send: read `_meta/state/morning-payload.json` (`to`, `subject`, `htmlBody`, `body`)
+Then send: read `_meta/state/private/morning-payload.json` (`to`, `subject`, `htmlBody`, `body`)
 and send it with your mail connector from the person's own mailbox to `to` (their
 `owner_email` in `space.yaml`), subject and both bodies as rendered. Read the sent message
 back (fetch it by id, or search the sent folder for the subject) and record its id.
@@ -29,7 +29,11 @@ Wrote `live/needs-you.md` (the full list: deadline first, then how much depends 
 about seven shown, the rest counted); stamped every queue item leaving within the next 24
 hours `listed: true` with the date, which is what lets release ship it tomorrow; wrote the
 notice and rendered the payload: counts with plain labels, the health line, `[shadow]` in
-the subject when asked; never a title, name, date or path from the items counted.
+the subject when asked; never a title, name, date or path from the items counted. The one
+exception, in the email only: the records the export could not classify as work or personal
+(`_meta/state/private/unsure.jsonl`), each a plain one-line label numbered after the list, so a
+reply's `yes` brings one in and `no` lets it go (`reply.py` applies those at once). The notice
+and the payload live in `_meta/state/private/`, which the sync never stages.
 
 ## Judgment left to you
 
@@ -56,7 +60,7 @@ Run the morning view for the space at <root> as <person> (daily chain, after rel
    and follow it exactly: run `python _meta/tools/morning_view.py <root> --person "<person>"`
    (add --shadow when space.yaml says mode: shadow).
 2. Run `python _meta/tools/morning_view.py <root> sent-today`; exit 0 means skip the send.
-   Otherwise send _meta/state/morning-payload.json exactly as rendered with the mail
+   Otherwise send _meta/state/private/morning-payload.json exactly as rendered with the mail
    connector, from <person>'s own mailbox to its `to` address, read the sent message back
    and run `python _meta/tools/morning_view.py <root> record-send --id <message id>`. One
    briefing per day; send even when the list is empty.

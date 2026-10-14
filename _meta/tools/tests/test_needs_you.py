@@ -182,3 +182,12 @@ def test_an_unreadable_items_file_is_itself_an_item(tmp_path):
     assert "b" in items
     assert items["unreadable-broken"].payload == "_inbound/needs-you/broken.yaml"
     assert "line 3" in items["unreadable-broken"].text
+
+
+def test_a_leaving_item_shows_why_it_waits(tmp_path):
+    root = make_space(tmp_path / "ada")
+    write_page(root, "_outbound/queue/p-0000ab01.md", id="p-0000ab01", type="source", title="Kickoff",
+               **{"class": "window", "destination": "harbor", "stage_after": "2026-10-12T20:00:00Z",
+                  "why": "pilot work; review mode until 2026-10-28"})
+    items = [i for i in needs_you.collect(root, now=NOW) if i.kind == "leaving"]
+    assert items[0].text.endswith("(pilot work; review mode until 2026-10-28)")

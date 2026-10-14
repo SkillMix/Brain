@@ -5,7 +5,7 @@ routines only edit files. Each run:
 
   1. take `.git/sync.lock`; skip if another run holds it or git is mid-operation
   2. stage tracked changes and settled untracked text files, never under personal/,
-     academic/, _scratch/ or inside a mount
+     academic/, _scratch/, _meta/state/private/ or inside a mount
   3. scan the staged paths; unstage every file with a finding (count recorded, never
      the match); commit `chore: sync`
   4. advance the pin of every clean mount to its remote branch; commit `chore: pins`
@@ -51,7 +51,7 @@ import scan  # noqa: E402
 import spaceyaml  # noqa: E402
 
 OK, ERROR, SKIPPED = 0, 1, 2
-PRIVATE_ZONES = ("personal/", "academic/", "_scratch/")
+PRIVATE_ZONES = ("personal/", "academic/", "_scratch/", "_meta/state/private/")
 IN_PROGRESS = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "rebase-merge", "rebase-apply", "index.lock")
 LOCK_HOURS = 0.5
 QUIET_HOURS = 6   # run lines and mount pins alone go out at most this often

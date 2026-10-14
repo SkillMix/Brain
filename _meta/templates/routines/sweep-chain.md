@@ -11,16 +11,19 @@ and lands every file. For each root <root>:
 
 1. Read `<root>/AGENTS.md` and `<root>/.claude/skills/sweep/SKILL.md`, and export as the skill
    says: for every source in `space.yaml` `sources`, the records newer than the feed file's
-   last `at` (14 days on a first run) with the connector for that system (mail, calendar,
+   last `at` (90 days on a first run) with the connector for that system (mail, calendar,
    chat, calls, tracker, documents: whichever are connected; a repository through `gh`) into
    `<root>/_meta/state/feed/<source>.jsonl`, one JSON object per line in the record shape the
    skill gives. A source that names `channels`, `team`, `project` or `repo` is read for exactly
-   those. A space without sources exports nothing. Export in depth, each `text` capped at
-   8,000 characters: a mail's full body (never the snippet) with `from`, `to` and `cc` as
-   addresses; a document's content; a call's summary, action items and key points, each on
-   its own line, never the transcript; an event's description with its guests as `participants`. Then read every
-   attachment that `{python} <root>/_meta/tools/sweep.py <root> --attachments` lists into the
-   same feed file as a document record of its own, as the skill says.
+   those. A space without sources exports nothing. Capture is lossless, with no character cap:
+   a mail's full body with `from`, `to` and `cc` as addresses; a call's summary, action items
+   and key points, then the full transcript with speakers; a chat thread with its files and AI
+   notes; a document's full text; an event's description with its guests as `participants`.
+   Keep personal and academic records out (count them in your run line) and park an unsure one
+   in `<root>/_meta/state/private/unsure.jsonl`, as the skill says. Then read every attachment
+   that `{python} <root>/_meta/tools/sweep.py <root> --attachments` lists into the same feed
+   file as a document record of its own with its `read_via`, run `sweep.py`, and, when
+   `space.yaml` has `routing:`, route as `<root>/.claude/skills/route/SKILL.md` says.
 2. Run `{python} <root>/_meta/tools/chain.py sweep <root>` (sweep, distill, check). Then follow
    `.claude/skills/distill/SKILL.md` and `.claude/skills/check/SKILL.md` for the judgment only:
    improve each new candidate's body in plain language from its listed evidence only, and

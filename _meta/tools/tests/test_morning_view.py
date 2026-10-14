@@ -99,7 +99,7 @@ def test_cli(tmp_path, monkeypatch, capsys):
     assert morning_view.main([str(root), "--person", "Ada Okafor", "--shadow"]) == 0
     out = capsys.readouterr().out
     assert "live/needs-you.md" in out
-    payload = json.loads((root / "_meta/state/morning-payload.json").read_text(encoding="utf-8"))
+    payload = json.loads((root / "_meta/state/private/morning-payload.json").read_text(encoding="utf-8"))
     assert payload["subject"].startswith("[shadow]")
 
 
@@ -181,4 +181,49 @@ def test_a_channel_writes_no_page_where_its_profile_has_no_live_folder(tmp_path)
     root = make_space(tmp_path / "corridor", profile="channel", name="corridor")
     morning_view.run(root, "Ada Okafor", now=NOW)
     assert not (root / "live").exists()
-    assert (root / "_meta" / "state" / "morning-notice.json").exists()
+    assert (root / "_meta" / "state" / "private" / "morning-notice.json").exists()
+
+
+def test_unsure_records_are_listed_in_the_email_only(tmp_path):
+    import unsure
+    root = make_space(tmp_path / "ada", owner_email="ada@lantern.example")
+    path = root / unsure.STORE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rec = {"id": "m-77", "feed": "mail", "kind": "mail", "at": "2026-10-11T08:00:00Z",
+           "subject": "Dinner on Friday", "text": "Body."}
+    path.write_text(json.dumps(rec) + "\n", encoding="utf-8")
+    report = morning_view.run(root, person="Ada Okafor", now=NOW)
+    payload = json.loads(Path(report.payload_path).read_text(encoding="utf-8"))
+    assert "Dinner on Friday" in payload["body"]
+    assert Path(report.payload_path).relative_to(root).as_posix().startswith("_meta/state/private/")
+    assert Path(report.notice_path).relative_to(root).as_posix().startswith("_meta/state/private/")
+    day = json.loads((root / "_meta" / "state" / "morning" / "2026-10-12.json").read_text(encoding="utf-8"))
+    assert "Dinner" not in json.dumps(day)
+    assert "Dinner" not in (root / "live" / "needs-you.md").read_text(encoding="utf-8")
+    assert unsure.waiting(root)[0]["first_listed"] == "2026-10-12T09:00:00Z"
+
+
+def test_unsure_records_are_asked_by_code_and_survive_a_failing_health_line(tmp_path):
+    import unsure
+    root = setup(tmp_path, owner_email="ada@lantern.example")
+    write_page(root, "live/health.md", id="p-00000002", type="snapshot", title="Health",
+               body="# Health\n\nsee _meta/state/runs.jsonl for the raw lines\n")
+    rec = {"id": "m-80", "feed": "mail", "kind": "mail", "at": "2026-10-11T08:00:00Z", "subject": "Gym plan",
+           "text": "B."}
+    (root / unsure.STORE).parent.mkdir(parents=True, exist_ok=True)
+    (root / unsure.STORE).write_text(json.dumps(rec) + "\n", encoding="utf-8")
+    report = morning_view.run(root, person="Ada Okafor", now=NOW)
+    payload = json.loads(Path(report.payload_path).read_text(encoding="utf-8"))
+    assert f"{unsure.code_of(rec)}: Gym plan" in payload["body"]
+    day = json.loads((root / "_meta" / "state" / "morning" / "2026-10-12.json").read_text(encoding="utf-8"))
+    assert all(i["kind"] != "unsure" for i in day["items"]), "unsure records are never numbered"
+    assert unsure.waiting(root)[0]["first_listed"]
+
+
+def test_the_old_tracked_briefing_files_are_removed(tmp_path):
+    root = setup(tmp_path)
+    for name in ("morning-payload.json", "morning-notice.json"):
+        (root / "_meta" / "state" / name).write_text("{}", encoding="utf-8")
+    morning_view.run(root, person="Ada Okafor", now=NOW)
+    assert not (root / "_meta" / "state" / "morning-payload.json").exists()
+    assert not (root / "_meta" / "state" / "morning-notice.json").exists()

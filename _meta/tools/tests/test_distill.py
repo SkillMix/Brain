@@ -216,3 +216,24 @@ def test_daily_note_entries_that_name_a_subject_become_evidence(tmp_path):
     _, body = pages.read(root / "_inbound" / "candidates" / "harbor.md")
     assert "go-live agreed" in body and "kickoff notes filed" in body and "journal" in body
     assert "Harbor goes live" not in body   # titles only, never the entry's text
+
+
+def test_an_informs_decision_becomes_a_decision_candidate(tmp_path):
+    root = make_space(tmp_path / "ada", subjects=[{"id": "harbor", "kind": "projects", "title": "Harbor"}])
+    write_page(root, "knowledge/sources/2026/10/p1.md", type="source", title="Kickoff", subject="harbor",
+               at="2026-10-11T09:00:00Z", record="p1", body="[00:01:00] Chloe: forty leads.\n",
+               informs=[{"kind": "decision", "text": "The first list holds forty leads"}])
+    distill.run(root, now=NOW)
+    cands = list((root / "_inbound" / "candidates").glob("*forty-leads*.md"))
+    assert len(cands) == 1
+    fm, body = pages.read(cands[0])
+    assert fm["type"] == "decision" and fm["subject"] == "harbor" and "forty leads." in body
+
+
+def test_a_routed_page_is_evidence_for_its_subject_here(tmp_path):
+    root = make_space(tmp_path / "ada", subjects=[{"id": "harbor", "kind": "projects", "title": "Harbor",
+                                                   "important": True}])
+    write_page(root, "knowledge/sources/2026/10/c1.md", type="source", title="Kickoff", at="2026-10-11T09:00:00Z",
+               record="c1", body="Scope agreed.\n", routing={"decision": "route", "routes": ["ada/harbor"]})
+    distill.run(root, now=NOW)
+    assert (root / "_inbound" / "candidates" / "harbor.md").exists()

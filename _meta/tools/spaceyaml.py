@@ -46,6 +46,7 @@ REQUEST_DEFAULTS = {
 }
 AUDIENCE_WORDS = ("owner", "crew", "everyone")
 TEMPLATE_MARKER = Path(".github") / "template-marker"
+PRIVATE_STATE = Path("_meta") / "state" / "private"   # never staged (sync.PRIVATE_ZONES)
 SLUG = re.compile(r"^[a-z][a-z0-9-]*$")
 
 DEFAULTS = {
@@ -57,8 +58,7 @@ DEFAULTS = {
     "left_out": ["price", "prices", "pricing", "fee", "fees", "commercial terms",
                  "day rate", "hourly rate", "margin", "salary", "pay", "employment",
                  "immigration", "visa", "password", "credential", "credentials",
-                 "access link", "api key", "client data", "attachment", "attachments",
-                 "transcript", "transcripts"],
+                 "access link", "api key", "client data"],
     "never_leaves": ["equity", "settlement", "termination", "legal position", "medical",
                      "salary"],
     "high_stakes": ["pricing", "price list", "contract", "commitment", "policy",
@@ -144,6 +144,36 @@ class Space:
     @property
     def window_hours(self) -> float:
         return float(self.data.get("window_hours") or DEFAULTS["window_hours"])
+
+    @property
+    def routing(self) -> dict:
+        """`routing:` turns the judgment router on (`since`, `review_until`)."""
+        value = self.data.get("routing")
+        return dict(value) if isinstance(value, dict) else {}
+
+    @property
+    def routing_on(self) -> bool:
+        return isinstance(self.data.get("routing"), dict)
+
+    def _routing_date(self, key: str) -> dt.datetime | None:
+        value = self.routing.get(key)
+        if not value:
+            return None
+        try:
+            day = dt.date.fromisoformat(str(value)[:10])
+        except ValueError:
+            return None
+        return dt.datetime(day.year, day.month, day.day, tzinfo=dt.timezone.utc)
+
+    @property
+    def review_until(self) -> dt.datetime | None:
+        """Until then every projection waits the window (the owner's review period)."""
+        return self._routing_date("review_until")
+
+    @property
+    def routing_since(self) -> dt.datetime | None:
+        """The oldest witness page the router reads by default."""
+        return self._routing_date("since")
 
     @property
     def authority(self) -> dict:
@@ -412,6 +442,12 @@ class Space:
             if not (audience in AUDIENCE_WORDS or isinstance(audience, list)):
                 errs.append(f"sources.{source['name']}: audience must be owner, crew, "
                             "everyone or a list of names")
+        if "routing" in data and not isinstance(data.get("routing"), dict):
+            errs.append("routing: must be a mapping (since, review_until)")
+        for key in ("since", "review_until"):
+            value = self.routing.get(key)
+            if value and self._routing_date(key) is None:
+                errs.append(f"routing: {key} must be a date (YYYY-MM-DD)")
         return errs
 
     def resolved(self) -> dict:

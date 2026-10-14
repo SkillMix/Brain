@@ -470,3 +470,15 @@ def test_signal_follows_its_subject_to_a_new_home(tmp_path):
     report = release.ship(ada, now=NOW, offline_roots={"brain": brain})
     assert report.rerouted == 1 and report.signals == 1
     assert list((brain / "_inbound" / "signals").glob("*.yaml"))
+
+
+def test_the_ship_scrub_holds_a_file_too_large_to_scan(tmp_path, monkeypatch):
+    import scan
+    space_root = make_space(tmp_path / "ada", name="ada")
+    path = space_root / "_outbound" / "queue" / "p-0000ff01.md"
+    fm = {"id": "p-0000ff01", "title": "Big", "destination": "harbor"}
+    pages.write(path, fm, "word " * 200)
+    monkeypatch.setattr(scan, "MAX_BYTES", 100)
+    import spaceyaml
+    reason = release.scrub_reason(spaceyaml.load(space_root), None, fm, "word " * 200, path)
+    assert reason and reason[0] == "scan"
