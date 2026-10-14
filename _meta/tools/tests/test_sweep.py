@@ -332,3 +332,13 @@ def test_a_record_id_with_characters_files_cannot_hold_still_gets_its_page(tmp_p
     (page,) = [p for p in (ada / "knowledge" / "sources").rglob("*.md") if "SM-224" in p.name]
     assert ":" not in page.name and pages.read(page)[0]["record"] == "SM-224@2026-10-02T15:46:23Z"
     assert sweep.file_name("lantern/harbor#310") == "lantern-harbor-310"
+
+
+def test_a_very_long_record_id_gets_a_short_stable_file_name(tmp_path):
+    long_id = "gcal-" + "e9im6r31d5miqobjedkn6t1dcdnmspj2" * 12
+    name = sweep.file_name(long_id)
+    assert len(name) <= 80 and name == sweep.file_name(long_id) and name.startswith("gcal-e9im6r31")
+    assert name != sweep.file_name(long_id + "x")
+    _, _, ada = build(tmp_path)
+    write_feed(ada, [record(long_id)])
+    assert sweep.run(ada, now=NOW).witness_written == 1

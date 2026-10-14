@@ -268,3 +268,36 @@ def test_files_the_template_manages_travel_with_the_protected_ones(repo, monkeyp
     plain = git(repo, "diff", "--name-only", "origin/main", f"origin/sync/{host}").stdout.split()
     assert "_meta/templates/prompt.md" in guarded and "_meta/state/template-version.yaml" in guarded
     assert "_meta/templates/prompt.md" not in plain and "work/notes.md" in plain
+
+
+def test_run_lines_and_pins_alone_wait_until_the_quiet_window_passes(repo, monkeypatch):
+    """A space whose only change is its own run lines (or a mount pin) opens no pull request
+    every 15 minutes: it publishes once, then waits QUIET_HOURS or until real content comes."""
+    monkeypatch.setattr(sync.Run, "gh", lambda self, *args: None)
+    host = sync.hostname()
+    runs = repo / "_meta" / "state" / "runs.jsonl"
+
+    def add_line(n):
+        old = runs.read_text(encoding="utf-8") if runs.exists() else ""
+        write(runs, old + json.dumps({"routine": "daily", "at": f"2026-10-14T0{n}:00:00Z"}) + "\n", minutes_old=20)
+
+    def branch():
+        git(repo, "fetch", "-q", "origin")
+        return git(repo, "rev-parse", "-q", "--verify", f"origin/sync/{host}", check=False).stdout.strip()
+
+    add_line(1)
+    assert sync.main(["--root", str(repo)]) == 0
+    first = branch()
+    assert first   # nothing published from this checkout yet: it goes out
+    add_line(2)
+    assert sync.main(["--root", str(repo)]) == 0
+    assert branch() == first   # only run lines, inside the window: it waits
+    write(repo / "work" / "notes.md", "# Notes\n\nline one\nline two\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    second = branch()
+    assert second != first   # real content goes out at once, the waiting lines with it
+    add_line(3)
+    stamp = repo / ".git" / "sync-quiet-pushed"
+    stamp.write_text(str(time.time() - (sync.QUIET_HOURS + 1) * 3600), encoding="utf-8")
+    assert sync.main(["--root", str(repo)]) == 0
+    assert branch() != second   # the window passed: the lines go out

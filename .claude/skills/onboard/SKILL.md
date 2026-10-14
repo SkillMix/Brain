@@ -40,12 +40,17 @@ needed to finish.
    prompt. Without scheduled tasks (Claude Code in a terminal), run
    `python <workspace>/_meta/tools/onboard.py <workspace> --os-routines` instead: the OS
    scheduler runs each routine at its times through `claude -p`.
-7. Show value now, before the first scheduled run: follow
+7. Quiet GitHub: the sync opens and merges its own pull requests several times a day, and
+   GitHub emails everyone watching. For the brain and each mounted project repository the
+   person did not have before, `gh api -X DELETE repos/<owner>/<repo>/subscription` (watch
+   becomes "participating and mentions": reviews and mentions still arrive). Say so in the
+   answer; "watch <repo>" in GitHub undoes it.
+8. Show value now, before the first scheduled run: follow
    `<workspace>/_meta/state/routines/sweep-chain.md` once, as if it fired (a first run exports
    the last 14 days of every connected feed). Then read the Open section of each status page
    the person can already see: `live/subjects/*.md` in their workspace and in every mounted
    project (the mounts in `space.yaml`).
-8. Answer in at most six lines: where the workspace is; what is still theirs (the `yours`
+9. Answer in at most six lines: where the workspace is; what is still theirs (the `yours`
    rows, each with its check); per project they are crew on, its open items in one line
    each (at most three); two sentences to try, "status of <a project>" and "prep me for the
    call with <a project>"; that the morning briefing starts tomorrow; that "what needs me"

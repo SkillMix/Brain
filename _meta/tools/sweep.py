@@ -160,9 +160,14 @@ def audience_of(space: spaceyaml.Space, record: dict) -> str | list:
 
 def file_name(record_id) -> str:
     """A record id as a file name every system and every link accepts (no colon, slash, hash or
-    other reserved sign)."""
+    other reserved sign), short enough for every path limit: a long id keeps its start and
+    a hash of the whole."""
+    import hashlib
     import re as _re
-    return _re.sub(r'[<>:"/\\|?*#%\s]+', "-", str(record_id)).strip("-.") or "record"
+    name = _re.sub(r'[<>:"/\\|?*#%\s]+', "-", str(record_id)).strip("-.") or "record"
+    if len(name) > 80:
+        name = f"{name[:68].rstrip('-.')}-{hashlib.sha1(str(record_id).encode('utf-8')).hexdigest()[:10]}"
+    return name
 
 
 def witness_path(root: Path, record: dict) -> Path:
