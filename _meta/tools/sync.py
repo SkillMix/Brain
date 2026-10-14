@@ -360,10 +360,21 @@ class Run:
         out = git(self.root, "diff", "--name-only", "-z", "origin/main", "HEAD").stdout
         changed = [p for p in out.split("\x00") if p]
         prefixes, _ = gate.protected_prefixes(self.root)
-        guarded = [p for p in changed if any(gate._under(gate._posix(p), pre) for pre in prefixes)]
+        managed = self.template_managed()   # a template update lands as one unit, with its tools
+        guarded = [p for p in changed if p in managed or any(gate._under(gate._posix(p), pre) for pre in prefixes)]
         if not guarded:
             return None
         return [p for p in changed if p not in guarded], guarded
+
+    def template_managed(self) -> set:
+        """Paths the template sync manages (its provenance file and every file it lists)."""
+        prov = self.root / "_meta" / "state" / "template-version.yaml"
+        try:
+            import yaml
+            files = (yaml.safe_load(prov.read_text(encoding="utf-8")) or {}).get("files") or {}
+        except Exception:
+            return set()
+        return {"_meta/state/template-version.yaml", *(str(k) for k in files)}
 
     def subset_commit(self, paths: list, remote_ref: str) -> str | None:
         """A commit on top of origin/main that carries only `paths` as they are in HEAD, built in
