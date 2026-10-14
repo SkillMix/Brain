@@ -1517,9 +1517,11 @@ def _replace_paths(value, old: str, new: str):
     return value
 
 
-def go_live(root, answers=None, offline=False, org=None, dry_run=False) -> Report:
+def go_live(root, answers=None, offline=False, org=None, dry_run=False, platform=False) -> Report:
     """Switch a shadow space to live: mode, time_scale, mounts by name, onboard state paths,
-    the sync task and the platform settings. Each step is a row; a live space is unchanged."""
+    the sync task and the platform settings. Each step is a row; a live space is unchanged.
+    The platform settings follow a switch; `platform` applies them anyway (a space filled live
+    from the start, as a swap fills it, has nothing to switch)."""
     root = Path(root).resolve()
     answers = answers or {}
     report = Report(case="go-live")
@@ -1573,7 +1575,7 @@ def go_live(root, answers=None, offline=False, org=None, dry_run=False) -> Repor
     else:
         report.add(f"sync task {space.name}", True, "cat _meta/state/onboard.yaml", "already for this checkout")
     repo = state.get("repo") or git_remote(root)
-    if not offline and changed:
+    if not offline and (changed or platform):
         platform_settings(report, root, repo, org, dry_run)
     elif not offline:
         report.add("platform settings", True, f"gh api repos/{repo} -q .allow_auto_merge", "unchanged")

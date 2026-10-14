@@ -137,7 +137,7 @@ def go_live(repo, offline=False, org=None, home=None, dry_run=False) -> onboard.
     """The swapped project goes live: onboard's go-live, then the project mounted in every crew
     member's workspace (on this machine directly, elsewhere through a Needs-you item in the brain)."""
     repo = Path(repo).resolve()
-    report = onboard.go_live(repo, {}, offline=offline, org=org, dry_run=dry_run)
+    report = onboard.go_live(repo, {}, offline=offline, org=org, dry_run=dry_run, platform=True)
     space = spaceyaml.load(repo)
     remote = onboard.git_remote(repo)
     mint.mount_in_crew(report, repo, space.name, f"https://github.com/{remote}" if remote else None,

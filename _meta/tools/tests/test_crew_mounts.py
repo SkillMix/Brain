@@ -139,6 +139,29 @@ def test_swap_go_live_mounts_the_project_for_its_crew(tmp_path, monkeypatch):
     assert ((ada / "space.yaml").read_text(encoding="utf-8"), brain_items(brain)) == before
 
 
+def test_swap_go_live_applies_the_platform_settings_online(tmp_path, monkeypatch):
+    """A swapped project is live from the start, so onboard's go-live switches nothing; the
+    swap's go-live still arms auto-merge and the required check on its repository."""
+    calls = []
+
+    def fake(argv, dry_run=False, cwd=None):
+        calls.append([str(a) for a in argv])
+        out = "lantern-bot\n" if argv[:3] == ["gh", "api", "user"] else ""
+        return subprocess.CompletedProcess(argv, 0, out, "")
+
+    monkeypatch.setattr(onboard, "run_cmd", fake)
+    monkeypatch.setattr(mint, "run_cmd", fake)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))  # the sync task's wrapper
+    brain = make_space(tmp_path / "brain", profile="brain", name="lantern")
+    repo = code_repo(tmp_path / "harbor")
+    set_origin(repo, "https://github.com/lantern/harbor.git")
+    swap.run(repo, "harbor", "Ada Okafor", ["Ada Okafor"], brain_path=str(brain))
+    swap.go_live(repo, home=tmp_path / "spaces-home")
+    patch = [c for c in calls if c[:5] == ["gh", "api", "-X", "PATCH", "repos/lantern/harbor"]]
+    assert len(patch) == 1 and "allow_auto_merge=true" in patch[0]
+    assert ["gh", "api", "-X", "PUT", "repos/lantern/harbor/branches/main/protection"] in [c[:5] for c in calls]
+
+
 def test_mint_mounts_the_new_project_for_its_crew(tmp_path, monkeypatch):
     monkeypatch.setattr(onboard, "run_cmd", never)
     monkeypatch.setattr(mint, "run_cmd", never)
