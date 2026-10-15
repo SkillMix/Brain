@@ -98,6 +98,16 @@ def test_pending_for_a_subject_reaches_back_past_the_horizon(tmp_path):
     assert route.pending(root, subject="beacon", now=NOW)["records"] != [], "named in the text"
 
 
+def test_a_record_research_found_for_a_subject_waits_for_that_subject(tmp_path):
+    """Research exports what answers a subject's open questions; the record may not name the
+    subject at all (a first enquiry, a thread about the next step), yet it is decided for it."""
+    root, _, _ = space_set(tmp_path)
+    captured(root, text="Summary: a new lead asked for a call.", participants=["ada@lantern.example"],
+             title="New lead", research="beacon")
+    rec, = route.pending(root, subject="beacon", now=NOW)["records"]
+    assert rec["record"] == "c-1" and "beacon" in rec["suggested"]
+
+
 def test_record_queues_one_projection_per_route_with_verbatim_parts(tmp_path):
     root, _, _ = space_set(tmp_path)
     captured(root)

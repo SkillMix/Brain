@@ -102,7 +102,9 @@ A private working understanding of one subject, kept by the space that understan
   new. No fixed number of searches.
 - **Lossless:** every record a search finds is exported into its feed in the sweep's record
   shape (and gets a witness page from the next `sweep.py`); what was looked up is kept, not only
-  consulted.
+  consulted. Each carries `research: <subject id>`, kept on its page: `route.py pending` lists it
+  for that subject and `brief.py pack` counts it as evidence (`researched`), because what answers
+  a subject's question often never names the subject (the first enquiry, a thread on next steps).
 - **Questions last:** a gap that stays open goes to the brief's Open questions; it becomes a
   question to the owner only when a page cannot be written without it, pre-answered with the
   agent's best guess.

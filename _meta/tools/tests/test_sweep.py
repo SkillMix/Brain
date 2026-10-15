@@ -711,6 +711,14 @@ def test_a_refresh_takes_the_deeper_exports_people_too(tmp_path):
     assert pages.read(page)[0]["cc"] == ["eve@elsewhere.example"]
 
 
+def test_a_record_found_by_research_keeps_the_subject_it_was_found_for(tmp_path):
+    _, _, ada = build(tmp_path, routing={})
+    write_feed(ada, [record(research="harbor", text="A lead came in through the form.")])
+    sweep.run(ada, now=NOW)
+    page, = list((ada / "knowledge" / "sources").rglob("m-0001.md"))
+    assert pages.read(page)[0].get("research") == "harbor"
+
+
 def test_an_upcoming_event_does_not_move_the_mark_past_the_run(tmp_path):
     """A calendar export holds events that have not happened yet; the feed's mark stops at the
     run's own time, so an event added later that starts sooner is still swept."""

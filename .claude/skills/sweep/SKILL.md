@@ -49,6 +49,8 @@ sweeps nothing of its own. You export; the tool decides.
    system's own id, stable across runs. A backfill (a person's first 90 days, or a project's
    history back to its first mention) re-reads older records in full with the same `id` and
    adds `"backfill": true`: the sweep reads them behind the feed's mark and deepens their pages.
+   A record exported by research for a subject carries `"research": "<subject id>"`; its page
+   keeps it, so the router decides it for that subject even when the text never names it.
    Private at the door: before writing a record decide whether it is `company`, `personal`,
    `academic` or `unsure`. Only a `company` record is written to the feed. Count `personal` and
    `academic` records per source in your run line (`notes.skipped`) and write them nowhere. Write

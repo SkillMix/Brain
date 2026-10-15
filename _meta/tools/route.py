@@ -278,14 +278,17 @@ def pending(root, subject: str | None = None, now: dt.datetime | None = None, li
         except (TypeError, ValueError):
             continue
         shaped = _as_record(rec)
+        researched = str(fm.get("research") or "")
         if subject:
-            if (history and at < oldest) or wanted is None or \
-                    not (wanted in reg.mentions(shaped) or reg.matched_by(wanted, shaped)):
+            if (history and at < oldest) or wanted is None or not (
+                    wanted in reg.mentions(shaped) or reg.matched_by(wanted, shaped) or researched == wanted.id):
                 continue
         elif at < oldest:
             continue
         rec["history"] = bool(history) and at < since
         rec["suggested"] = [s.id for s in reg.match(shaped)]
+        if researched and researched not in rec["suggested"]:
+            rec["suggested"].append(researched)
         rec["mentions"] = list(fm.get("mentions") or [])
         rec["path"] = path.relative_to(root).as_posix()
         if decided:

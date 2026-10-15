@@ -64,6 +64,14 @@ def test_evidence_by_route_mention_and_name_for_the_subject_and_its_parts(tmp_pa
     assert narrow["subject"]["umbrella"]["id"] == "tidewater"
 
 
+def test_a_record_research_found_for_the_subject_is_evidence(tmp_path):
+    root = ada(tmp_path)
+    witness(root, "r-found", "A lead asked for a call.\n", title="New lead", research="harbor")
+    pack = brief.pack(root, "harbor")
+    entry = next(e for e in pack["evidence"] if e["record"] == "r-found")
+    assert entry["why"] == ["researched harbor"]
+
+
 def test_a_split_record_comes_whole(tmp_path):
     root = make_space(tmp_path / "ada", subjects=[HARBOR, TIDEWATER])
     witness(root, "r-long", "Harbor scope, part one.\n", title="Long thread", part=1, parts=2)
