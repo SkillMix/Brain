@@ -124,6 +124,18 @@ def test_record_queues_one_projection_per_route_with_verbatim_parts(tmp_path):
     assert route.pending(root, now=NOW)["records"] == []
 
 
+def test_a_record_id_may_differ_only_in_whitespace(tmp_path):
+    """A file name can carry a narrow no-break space (a screenshot's `4.48 PM`) that an agent
+    writes as a plain space: the decision still finds its record, and the log keeps the true id."""
+    root, _, _ = space_set(tmp_path)
+    true_id = "c-1/Shot 4.48 PM.png"
+    captured(root, rid=true_id)
+    out = route.record(root, decision(record="c-1/Shot 4.48 PM.png"), now=NOW)
+    assert len(out["queued"]) == 1
+    log = [json.loads(line) for line in (root / route.LOG).read_text(encoding="utf-8").splitlines()]
+    assert log[-1]["record"] == true_id
+
+
 def test_a_part_may_differ_only_in_whitespace(tmp_path):
     root, _, _ = space_set(tmp_path)
     captured(root)

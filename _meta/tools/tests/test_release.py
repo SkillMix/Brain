@@ -7,6 +7,7 @@ import yaml
 
 import pages
 import release
+import spaceyaml
 import sweep
 from conftest import NOW, make_space, mount_brain
 from test_sweep import BRAIN_SUBJECTS, mount, record, write_feed
@@ -230,6 +231,21 @@ def test_online_destination_goes_through_publish(tmp_path, monkeypatch):
     assert len(list((checkout / "_inbound" / "candidates").glob("*.md"))) == 1
     assert len(list((checkout / "_inbound" / "signals").glob("*.yaml"))) == 1
     assert queue_paths(ada) == []
+
+
+def test_settings_come_from_the_mount_before_a_release_clone(tmp_path, monkeypatch):
+    """A release clone is refreshed only when something ships; a mount moves with every sync
+    run. Without a given root, a destination's settings come from its mount."""
+    _, harbor, ada = build(tmp_path)
+    checkout = tmp_path / "spaces-home" / "harbor"
+    (checkout / ".git").mkdir(parents=True)
+    stale = yaml.safe_load((harbor / "space.yaml").read_text(encoding="utf-8"))
+    stale["left_out"] = ["transcript"]
+    (checkout / "space.yaml").write_text(yaml.safe_dump(stale), encoding="utf-8")
+    monkeypatch.setenv("SPACES_HOME", str(tmp_path / "spaces-home"))
+    space = spaceyaml.load(ada)
+    assert "transcript" not in release.left_out_of(release.destination_space(space, "harbor"))
+    assert "transcript" in release.left_out_of(release.destination_space(space, "harbor", checkout))
 
 
 def test_publish_failure_keeps_the_queue(tmp_path, monkeypatch):
