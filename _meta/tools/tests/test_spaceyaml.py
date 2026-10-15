@@ -76,6 +76,23 @@ def test_routing_setting_is_off_by_default_and_read_when_present(tmp_path):
     assert any("routing" in e for e in spaceyaml.load(root3).errors())
 
 
+def test_routing_history_since_and_archives(tmp_path):
+    """The history window starts at `history_since`; archive-derived pages stay out unless
+    `archives` is on (history spec 4.1, understand-first spec 2.3)."""
+    space = spaceyaml.load(make_space(tmp_path / "ada", routing={}))
+    assert space.routing_history_since is None and space.routing_archives is False
+    root2 = make_space(tmp_path / "ben", routing={"since": "2026-07-16", "history_since": "2025-10-01",
+                                                   "archives": True})
+    space2 = spaceyaml.load(root2)
+    assert space2.routing_history_since == dt.datetime(2025, 10, 1, tzinfo=dt.timezone.utc)
+    assert space2.routing_archives is True and space2.errors() == []
+    errs = spaceyaml.load(make_space(tmp_path / "eve", routing={"history_since": "a year back"})).errors()
+    assert any("history_since" in e for e in errs)
+    errs = spaceyaml.load(make_space(tmp_path / "fay", routing={"archives": "yes"})).errors()
+    assert any("archives" in e for e in errs)
+    assert spaceyaml.load(make_space(tmp_path / "gus", routing={"archives": "yes"})).routing_archives is False
+
+
 def test_left_out_defaults_name_information_not_its_form():
     """The owner decided verbatim transcript parts and attachment text may travel: the left-out
     list keeps the kinds of information, not the forms they arrive in."""

@@ -13,6 +13,12 @@ term of the destination in it -> held; a never-leaves term elsewhere in the reco
 confidence, a high-stakes term, or the review period (`routing.review_until`) -> the window;
 low confidence -> a question for the owner, nothing leaves. An owner's answer counts as approval.
 
+History (docs/superpowers/specs/2026-10-14-history-backfill-design.md, 4.3): with
+`routing.history_since` set, a record older than `routing.since` is background. It opens no
+items, and a low-confidence call on it is recorded as private (counted, `history_low`), never a
+question. `pending` groups the records into episodes, one event read as one
+(docs/superpowers/specs/2026-10-15-understand-first-design.md, 4.4).
+
     python route.py <root> pending [--subject ID] [--out FILE]
     python route.py <root> record FILE [FILE ...]
     python route.py <root> answer <record id> (--yes | --private) --by NAME
@@ -21,6 +27,7 @@ low confidence -> a question for the owner, nothing leaves. An owner's answer co
 from __future__ import annotations
 
 import argparse
+import bisect
 import datetime as dt
 import glob
 import json
@@ -40,7 +47,11 @@ LOG = Path("_meta") / "state" / "routing.jsonl"
 PACK = spaceyaml.PRIVATE_STATE / "route-pending.json"
 QUESTIONS = Path("_inbound") / "questions"
 SOURCES = Path("knowledge") / "sources"
+LESSONS = Path("_meta") / "lessons.md"
+BRIEFS = spaceyaml.PRIVATE_STATE / "briefs"
 DEFAULT_SINCE_DAYS = 90
+CALL_MINUTES = 60   # a call joins an event that starts within the hour, on the same day
+MAIL_DAYS = 3       # a mail joins an event from its start to three days after
 CONFIDENCE = ("high", "medium", "low")
 TIERS = ("at_once", "window")
 INFORMS = ("open_item", "decision", "person", "page")
@@ -125,15 +136,122 @@ def _as_record(rec: dict) -> dict:
             "participants": rec["participants"], "identifiers": rec["identifiers"]}
 
 
+def _since(space, now: dt.datetime) -> dt.datetime:
+    """The start of the recent window, full judgment: `routing.since`, or 90 days back."""
+    return space.routing_since or (now - dt.timedelta(days=DEFAULT_SINCE_DAYS))
+
+
+def _is_history(space, at, now: dt.datetime) -> bool:
+    """A record older than the recent window while a history window is set: background."""
+    if space.routing_history_since is None:
+        return False
+    try:
+        return pages.parse_iso(at) < _since(space, now)
+    except (TypeError, ValueError):
+        return False
+
+
+def own_addresses(space, reg) -> set:
+    """The owner's own addresses, which never join two records: `owner_email` (as the sweep
+    knows the workspace's own notices) and every address of the registered person who owns the
+    space (their email, and any address among their aliases)."""
+    own = {registry.address_of(space.owner_email)}
+    owner = space.owner.strip().lower()
+    for person in reg.everywhere():
+        if owner and person.kind == "people" and person.title.strip().lower() == owner:
+            own |= {registry.address_of(a) for a in [person.extra.get("email"), *person.aliases] if a}
+    return {a for a in own if "@" in a}
+
+
+def _addresses(rec: dict, own: set) -> set:
+    """Everyone on a record by address (from, to, cc, participants), the owner's own left out."""
+    people = [rec.get("from")] + list(rec.get("to") or []) + list(rec.get("cc") or []) + \
+        list(rec.get("participants") or [])
+    return {a for a in (registry.address_of(p) for p in people if p) if "@" in a} - own
+
+
+def episodes(records: list, own: set) -> list:
+    """Every record with its `episode` and `same_meeting`, listed per episode (episodes by their
+    earliest record), then by time. One thread is one episode; a call joins the event it records
+    (its calendar id is the event's, or it starts within the hour of the event on the same day
+    with a participant in common); a mail joins the event it follows within three days with two
+    participants in common; two calls in one episode are one meeting recorded twice. The owner's
+    own addresses are never in common."""
+    at = [pages.parse_iso(r["at"]).astimezone(dt.timezone.utc) for r in records]
+    people = [_addresses(r, own) for r in records]
+    parent = list(range(len(records)))
+
+    def top(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def join(i, j):
+        parent[top(j)] = top(i)
+
+    threads = {}
+    for i, r in enumerate(records):
+        if r.get("thread"):
+            join(threads.setdefault(str(r["thread"]), i), i)
+    events = sorted((i for i, r in enumerate(records) if r.get("kind") == "event"), key=lambda i: at[i])
+    starts = [at[i] for i in events]
+    ids = {}   # an event by its id: the record id without the gcal- prefix, or its thread
+    for i in events:
+        for key in (records[i]["record"].removeprefix("gcal-"), records[i].get("thread")):
+            if key:
+                ids.setdefault(str(key), i)
+    hour, days = dt.timedelta(minutes=CALL_MINUTES), dt.timedelta(days=MAIL_DAYS)
+    for i, r in enumerate(records):
+        if r.get("kind") == "call":
+            calendar = str((r.get("identifiers") or {}).get("calendar") or "")
+            if calendar in ids:
+                join(ids[calendar], i)
+                continue
+            window = events[bisect.bisect_left(starts, at[i] - hour):bisect.bisect_right(starts, at[i] + hour)]
+            near = [e for e in window if at[e].date() == at[i].date() and people[e] & people[i]]
+            if near:
+                join(min(near, key=lambda e: abs(at[e] - at[i])), i)
+        elif r.get("kind") == "mail":
+            window = events[bisect.bisect_left(starts, at[i] - days):bisect.bisect_right(starts, at[i])]
+            near = [e for e in window if len(people[e] & people[i]) >= 2]
+            if near:
+                join(near[-1], i)   # the latest event the mail follows
+    groups = {}
+    for i in range(len(records)):
+        groups.setdefault(top(i), []).append(i)
+    first = {}
+    for members in groups.values():
+        members.sort(key=lambda i: (at[i], records[i]["record"]))
+        kinds = [records[i].get("kind") for i in members]
+        thread = next((records[i]["thread"] for i in members if records[i].get("thread")), None)
+        if "event" in kinds:
+            episode = f"ep-{records[members[kinds.index('event')]]['record']}"
+        else:
+            episode = f"th-{thread}" if thread else f"rec-{records[members[0]]['record']}"
+        first[episode], recordings = at[members[0]], kinds.count("call")
+        for i, kind in zip(members, kinds):
+            records[i]["episode"] = episode
+            records[i]["same_meeting"] = kind == "call" and recordings > 1
+    order = sorted(range(len(records)), key=lambda i: (first[records[i]["episode"]], records[i]["episode"],
+                                                       at[i], records[i]["record"]))
+    return [records[i] for i in order]
+
+
 def pending(root, subject: str | None = None, now: dt.datetime | None = None, limit: int | None = None) -> dict:
     """What waits for a decision, with the context to decide it: unrouted witness pages since
-    `routing.since` (90 days by default), or, for a project's backfill, every unrouted page that
-    names the subject or carries one of its identifiers, however old."""
+    `routing.since` (90 days by default), and back to `routing.history_since` when it is set
+    (those flagged `history`); or, for a project's backfill, every unrouted page that names the
+    subject or carries one of its identifiers, however old (no older than `history_since`).
+    Records come per episode; the lessons, the briefs of the suggested subjects and the archive
+    switch come with them."""
     root = Path(root)
     space = spaceyaml.load(root)
     now = now or space.now()
     reg = registry.Registry(root, space)
-    since = space.routing_since or (now - dt.timedelta(days=DEFAULT_SINCE_DAYS))
+    since = _since(space, now)
+    history = space.routing_history_since
+    oldest = min(since, history) if history else since
     wanted = reg.get(subject) if subject else None
     asked = _questioned(root)
     records = []
@@ -147,17 +265,26 @@ def pending(root, subject: str | None = None, now: dt.datetime | None = None, li
             continue
         shaped = _as_record(rec)
         if subject:
-            if wanted is None or not (wanted in reg.mentions(shaped) or reg.matched_by(wanted, shaped)):
+            if (history and at < oldest) or wanted is None or \
+                    not (wanted in reg.mentions(shaped) or reg.matched_by(wanted, shaped)):
                 continue
-        elif at < since:
+        elif at < oldest:
             continue
+        rec["history"] = bool(history) and at < since
         rec["suggested"] = [s.id for s in reg.match(shaped)]
         rec["mentions"] = list(fm.get("mentions") or [])
         rec["path"] = path.relative_to(root).as_posix()
         records.append(rec)
-    records.sort(key=lambda r: (str(r.get("thread") or r["record"]), str(r["at"])))
+    records = episodes(records, own_addresses(space, reg))
     if limit:
         records = records[:limit]
+    briefs = {}
+    for sid in sorted({sid for r in records for sid in r["suggested"]}):
+        if (root / BRIEFS / f"{sid}.md").exists():
+            briefs[sid] = (BRIEFS / f"{sid}.md").as_posix()
+    lessons_file = root / LESSONS
+    lessons = [line.rstrip() for line in lessons_file.read_text(encoding="utf-8").splitlines()
+               if line.strip()] if lessons_file.exists() else []
     homes = sorted({h for h in (reg.home_of(s.id) for s in reg.everywhere()) if h and h != space.name})
     spaces = []
     for name in homes:
@@ -174,7 +301,8 @@ def pending(root, subject: str | None = None, now: dt.datetime | None = None, li
         page = base / "live" / "subjects" / f"{s.id}.md" if base is not None else None
         if page is not None and page.exists():
             status_pages[s.id] = page.read_text(encoding="utf-8")
-    return {"records": records, "spaces": spaces, "subjects": subjects, "status_pages": status_pages}
+    return {"records": records, "spaces": spaces, "subjects": subjects, "status_pages": status_pages,
+            "lessons": lessons, "briefs": briefs, "archives": space.routing_archives}
 
 
 def _outside(space, reg, dest_space, subject, rec: dict) -> list:
@@ -200,9 +328,10 @@ def _projection(rec: dict, route_: dict) -> str:
     return "\n\n".join(chunks) + "\n"
 
 
-def _validate(root: Path, space, reg, decision: dict, strict: bool = True) -> tuple:
+def _validate(root: Path, space, reg, decision: dict, now: dt.datetime, strict: bool = True) -> tuple:
     """The decision against the record; `strict` False (a question for the owner) checks only
-    that the record exists, waits for a decision and the decision is well formed."""
+    that the record exists, waits for a decision and the decision is well formed. The record
+    comes back with `history` set: a history record opens no items."""
     rid = str(decision.get("record") or "")
     path = find_page(root, rid)
     if path is None:
@@ -216,6 +345,7 @@ def _validate(root: Path, space, reg, decision: dict, strict: bool = True) -> tu
     if decision.get("confidence") not in CONFIDENCE:
         raise RouteError(f"{rid}: confidence must be one of {', '.join(CONFIDENCE)}")
     rec = _record_of(root, fm, body)
+    rec["history"] = _is_history(space, rec["at"], now)
     if not strict:
         return path, fm, body, rec
     flat_body = _flat(rec["text"])
@@ -236,6 +366,8 @@ def _validate(root: Path, space, reg, decision: dict, strict: bool = True) -> tu
         for item in r.get("informs") or []:
             if not isinstance(item, dict) or item.get("kind") not in INFORMS or not str(item.get("text") or "").strip():
                 raise RouteError(f"{rid}: each informs item needs a kind ({', '.join(INFORMS)}) and a text")
+            if rec["history"] and item["kind"] == "open_item":
+                raise RouteError(f"{rid}: history opens no items (an open_item for {subject.id})")
         if home == space.name:
             continue
         if r.get("content") == "whole":
@@ -302,11 +434,18 @@ def record(root, decision: dict, now: dt.datetime | None = None, by: str | None 
                          "by identifier, and two paths must never release the same record")
     reg = registry.Registry(root, space)
     asks = decision.get("confidence") == "low" and not by
-    path, fm, body, rec = _validate(root, space, reg, decision, strict=not asks)
-    out = {"queued": [], "held": [], "question": None, "attached": []}
+    path, fm, body, rec = _validate(root, space, reg, decision, now, strict=not asks)
+    history_low = asks and rec["history"]
+    if history_low:   # history asks no question: a low-confidence call keeps it here, counted
+        decision, asks = dict(decision, decision="private", routes=[]), False
+    out = {"queued": [], "held": [], "question": None, "attached": [], "history_low": history_low}
     row = {"at": pages.iso(now), "record": rec["record"], "decision": decision["decision"],
            "confidence": decision["confidence"], "why": decision.get("why", ""), "by": by or "router",
            "routes": []}
+    if rec["history"]:
+        row["history"] = True
+    if history_low:
+        row["outcome"] = "history_low"
     if asks:
         out["question"] = _question(root, decision, fm, path, now)
         _log(root, dict(row, outcome="question"))
@@ -495,7 +634,8 @@ def main(argv=None) -> int:
                     print(f"refused: {exc}")
                     continue
                 print(f"{decision.get('record')}: queued {len(result['queued'])}, held {len(result['held'])}, "
-                      f"attached {len(result['attached'])}" + (", question" if result["question"] else ""))
+                      f"attached {len(result['attached'])}" + (", question" if result["question"] else "")
+                      + (", history_low (kept private)" if result["history_low"] else ""))
             refused += failed
             if not failed and source.parent.name != "done":   # recorded: filed, never re-read
                 done = source.parent / "done"

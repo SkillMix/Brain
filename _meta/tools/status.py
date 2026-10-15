@@ -961,9 +961,29 @@ def mint_signals(root: Path, space, reg, now) -> list:
     return items
 
 
+REGISTER_KINDS = (("projects", "Projects"), ("clients", "Clients"), ("deals", "Deals"))
+
+
+def _period(period) -> str:
+    if not isinstance(period, dict):
+        return str(period or "")
+    start, end = period.get("from"), period.get("to")
+    if start and end:
+        return f"{start} to {end}"
+    return f"since {start}" if start else (f"until {end}" if end else "")
+
+
+def _signed(root: Path, subject) -> bool:
+    """A page with `status: stable` under the subject's knowledge/<kind>/<id>/."""
+    folder = root / "knowledge" / subject.kind / subject.id
+    return any(str(fm.get("status") or "") == "stable" for _, fm, _ in _read_pages(folder))
+
+
 def _projects_page(root: Path, space, reg, moved: dict, now) -> str:
-    """The brain's roll-up of every project, generated from each home: its state, owner and
-    home from the registry, the last signal and the last landing. Nothing is kept by hand."""
+    """The brain's register of every project, client and deal, generated from the registry and
+    each home: state, period, client, crew and work when known, "unconfirmed" while the subject
+    has no signed page, owner and home, the last signal and the last landing. Nothing is kept
+    by hand."""
     landed: dict = {}
     for row in _jsonl(root / "_meta" / "state" / "landed.jsonl"):
         sid = str(row.get("subject") or "")
@@ -973,19 +993,41 @@ def _projects_page(root: Path, space, reg, moved: dict, now) -> str:
             continue
         if sid and (sid not in landed or at > landed[sid]):
             landed[sid] = at
-    lines = []
-    for s in sorted((s for s in reg.all() if s.kind == "projects" and s.state != "archived"),
-                    key=lambda s: s.title.lower()):
-        bits = [f"{s.state}", f"owner {reg.owner_of(s.id) or space.owner}", f"home {reg.home_of(s.id) or space.name}"]
-        if s.id in moved:
-            bits.append(f"last signal {moved[s.id][0]:%Y-%m-%d} from {moved[s.id][1]}")
-        if s.id in landed:
-            bits.append(f"last landing {landed[s.id]:%Y-%m-%d}")
-        lines.append(f"- {s.title} (`{s.id}`): " + "; ".join(bits))
+
+    def name(sid) -> str:
+        known = reg.get(str(sid))
+        return known.title if known is not None and known.title else str(sid)
+
+    sections = []
+    for kind, heading in REGISTER_KINDS:
+        lines = []
+        for s in sorted((s for s in reg.all() if s.kind == kind and s.state != "archived"),
+                        key=lambda s: s.title.lower()):
+            bits = [f"{s.state}"]
+            if not _signed(root, s):
+                bits.append("unconfirmed")
+            if _period(s.period):
+                bits.append(_period(s.period))
+            if s.client:
+                bits.append(f"client {name(s.client)}")
+            if s.crew:
+                bits.append("crew " + ", ".join(name(p) for p in s.crew))
+            if s.work:
+                bits.append(f"work: {s.work}")
+            bits += [f"owner {reg.owner_of(s.id) or space.owner}", f"home {reg.home_of(s.id) or space.name}"]
+            if s.id in moved:
+                bits.append(f"last signal {moved[s.id][0]:%Y-%m-%d} from {moved[s.id][1]}")
+            if s.id in landed:
+                bits.append(f"last landing {landed[s.id]:%Y-%m-%d}")
+            lines.append(f"- {s.title} (`{s.id}`): " + "; ".join(bits))
+        if lines:
+            sections.append(f"## {heading}\n\n" + "\n".join(lines) + "\n")
     fm = _snapshot_fm(root, "live/projects.md", "Projects", now)
-    body = ("# Projects\n\nOne line per project, generated from the registry and what each home "
-            "sent: signals and landings. Status lives at each project's home.\n\n"
-            + "\n".join(lines or ["- No projects yet."]) + "\n")
+    body = ("# Projects\n\nThe register: one line per project, client and deal, generated from the "
+            "registry and what each home sent (signals and landings): state, period, client, crew "
+            "and work when known; unconfirmed until the subject has a signed page. Status lives at "
+            "each subject's home.\n\n"
+            + ("\n".join(sections) if sections else "- No projects, clients or deals yet.\n"))
     return pages.render(fm, body)
 
 

@@ -23,12 +23,19 @@ and lands every file. For each root <root>:
    in `<root>/_meta/state/private/unsure.jsonl`, as the skill says. Then read every attachment
    that `{python} <root>/_meta/tools/sweep.py <root> --attachments` lists into the same feed
    file as a document record of its own with its `read_via`, run `sweep.py`, and, when
-   `space.yaml` has `routing:`, route as `<root>/.claude/skills/route/SKILL.md` says.
+   `space.yaml` has `routing:`, route as `<root>/.claude/skills/route/SKILL.md` says: understand
+   each subject first (its brief in `_meta/state/private/briefs/`, built with `brief.py` when
+   missing), research what the records leave open (what a search finds is exported too), then
+   place each record; a second agent checks the decisions before `route.py record`.
 2. Run `{python} <root>/_meta/tools/chain.py sweep <root>` (sweep, distill, check). Then follow
-   `.claude/skills/distill/SKILL.md` and `.claude/skills/check/SKILL.md` for the judgment only:
-   improve each new candidate's body in plain language from its listed evidence only, and
-   sharpen each check hit's recommendation. Never write `status: stable`; never edit a signed
-   page; never read `personal/`, `academic/` or `_scratch/`.
+   `.claude/skills/distill/SKILL.md` and `.claude/skills/check/SKILL.md` for the judgment: for
+   each new or refreshed candidate read `_meta/lessons.md` and the subject's brief, read every
+   evidence record in full, set aside what is not about the subject, research the gaps, write
+   the page in its kind's shape with a source on every line, run `distill.py <root> verify`,
+   and have a second agent check it (`distill.py <root> checked`); sharpen each check hit's
+   recommendation. Quality over token cost. Never write `status: stable`; never edit a signed
+   page; never read `personal/`, `academic/` or `_scratch/`, nor the archive while
+   `routing.archives` is off.
 3. In the workspace only: follow `.claude/skills/tracker/SKILL.md`: create or update what
    `{python} {workspace}/_meta/tools/tracker.py {workspace} pending` lists with the tracker
    connector, and record each. Write nothing else to the tracker.

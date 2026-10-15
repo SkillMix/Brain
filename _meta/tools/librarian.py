@@ -400,7 +400,7 @@ def umbrellas(reg) -> list:
     for key in ("client", "theme"):
         groups: dict = {}
         for subject in reg.all():
-            value = subject.extra.get(key)
+            value = getattr(subject, key, None) or subject.extra.get(key)   # `client` is a field
             if value and not subject.part_of and subject.state == "active":
                 groups.setdefault(str(value), []).append(subject)
         for value, members in sorted(groups.items()):

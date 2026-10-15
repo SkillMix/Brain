@@ -18,10 +18,17 @@ Any knowledge question: "what did we decide about X", "what is going on with Har
 1. The log first: `python _meta/tools/questions_log.py <root> lookup --question
    "<question>" --subject <id>`. Start from its pointers (the pages that answered, the path
    that worked after someone steered); they are pointers, never the answer.
-2. A "what did we decide" question asks the decisions index first:
+2. Start from understanding when it exists. "Status of <subject>", "prep me for the call with
+   <subject>" and "what is <subject>": read the subject's brief
+   (`_meta/state/private/briefs/<id>.md`, private to this space, never quoted beyond what the
+   asker may read) and the newest records about it, then the pages below. "What projects have
+   we done", "who worked on X", "have we done <kind of work>": read the brain's
+   `live/projects.md` first (state, period, client, crew, work; "unconfirmed" means no signed
+   page yet), then the project pages. A history line is background: say so.
+3. A "what did we decide" question asks the decisions index first:
    `python _meta/tools/decisions.py <root> find --subject <id> --text "<question>"` (this
    space and every mount, decisions in force first, superseded ones marked); then walk.
-3. Walk: `index.md`, then `knowledge/<kind>/index.md`, then
+4. Walk: `index.md`, then `knowledge/<kind>/index.md`, then
    `knowledge/<kind>/<subject>/index.md` (the hub, links by id; `_meta/state/ids.yaml` maps
    an id to its file), then the pages and `live/subjects/<id>.md`. Repeat in every mounted
    layer (`brain/`, `mounts/<name>/`): company, team, mine. A subject whose `home` is a mounted
@@ -30,11 +37,11 @@ Any knowledge question: "what did we decide about X", "what is going on with Har
    home's `live/subjects/<id>.md` (open items, timeline, coming up), its signed pages under
    `knowledge/<kind>/<id>/`, and its `_inbound/candidates/` with `subject: <id>` (unsigned:
    tier `pending`). "Status of <project>" on a first day reads exactly these.
-4. Search as the second path: `python _meta/tools/search.py <root> query "<term>"` (plain
+5. Search as the second path: `python _meta/tools/search.py <root> query "<term>"` (plain
    text over this space and every mount, or the space's index when `_meta/search.yaml`
    turned one on); each hit names its layer and subject: expand it to the hub, the status
    page and every layer above it.
-5. Answer, then ground it: `python _meta/tools/ground.py <root> <id or path> ...` prints one
+6. Answer, then ground it: `python _meta/tools/ground.py <root> <id or path> ...` prints one
    line per page you used (tier, scope, date, age, and "past window", "confidence low" or
    "contested") plus the company view's date and the index's age; end the answer with them.
    Every grounding line carries tier and age, like `(signed, company, 2026-10-02, 10 days)`;
@@ -42,19 +49,19 @@ Any knowledge question: "what did we decide about X", "what is going on with Har
    is "unverified"; a page past its freshness window is named as such; "company view as of
    <the brain mount's pin date>"; where layers disagree, show both and say which is signed.
    An answer from evidence alone says so.
-6. Log it: `python _meta/tools/questions_log.py <root> append --question "<question>"
+7. Log it: `python _meta/tools/questions_log.py <root> append --question "<question>"
    --subject <id> --tier <lowest tier used> --page <relpath> [--page <relpath> ...]`; add
    `--steering` when the person had to redirect you. The log never leaves the space.
-7. In a personal space, an answer that took more than one lookup is captured to the daily
+8. In a personal space, an answer that took more than one lookup is captured to the daily
    note with its sources (the capture skill), so the next asker starts from it.
 
 ### "Prep me for the call with <subject or person>"
 
-Steps 1 to 5 for that subject, then one screen, in this order: what we owe them and what we
+Steps 1 to 6 for that subject (the brief first: who is who, how it started, what is sensitive), then one screen, in this order: what we owe them and what we
 wait on (the status page's open items, newest first, with their ids); the last contact (the
 newest witness page for the subject: date, channel, one line); what is coming up; anything
 signed that changed since the last contact; and an agenda of at most three points, each tied
-to an open item. Grounding lines as in step 5. Nothing is sent: a follow-up the person wants
+to an open item. Grounding lines as in step 6. Nothing is sent: a follow-up the person wants
 afterwards is drafted into `outbox/`.
 
 ## What the tool already did

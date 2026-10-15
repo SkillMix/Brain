@@ -14,11 +14,23 @@ Evidence for a subject = witness pages under knowledge/sources/ carrying
 `subject: <id>` or `<id>` in `mentions`, landed records in _inbound/candidates/
 (frontmatter `released_from` and `subject: <id>`), and entries of the daily notes under
 journal/ that name the subject (a `subject: <id>` line or a desk path `work/<kind>/<id>/`). A page is
-new when `at` or `generated.at` is after the watermark.
+new when `at` or `generated.at` is after the watermark. With `routing.archives` off (the
+default) a page `provenance.is_archive_derived` flags is no evidence, and an archive-derived
+target page lends no body.
+
+Evidence the agent found to be about something else moves from `evidence` to
+`set_aside: [{id, why}]`; every refresh keeps those ids out and the list as it is. `--rebuild`
+writes a candidate from scratch: the stub, the subject's evidence as it is now, no set-aside
+list, only the candidate's id kept (with `--subject`, that one subject, whether it moved or not;
+the watermark stays). `verify` lists what keeps a candidate from the signer (a line without
+`[src: ...]`, a source not in `evidence`, a never-leaves term, a left-out term of the
+destination, a bracketed placeholder); `checked` stamps `checked: {by, at}` once it is clean.
 
 Nothing here writes `status: stable`, edits a page under knowledge/, or runs git.
 
-    python distill.py [root]
+    python distill.py [root] [--rebuild [--subject <id>]]
+    python distill.py [root] verify <candidate>
+    python distill.py [root] checked <candidate> --by <name>
 """
 from __future__ import annotations
 
@@ -34,7 +46,9 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pages  # noqa: E402
+import provenance  # noqa: E402
 import registry as registry_mod  # noqa: E402
+import release  # noqa: E402
 import spaceyaml  # noqa: E402
 
 ROUTINE = "distill"
@@ -46,6 +60,7 @@ SOURCES = Path("knowledge") / "sources"
 EVIDENCE_HEADING = "## New evidence"
 MENTION_BLIND_KINDS = ("people", "domains")
 DECISION_RE = re.compile(r"^\s*decision\s*:\s*(.*)$", re.I)
+COMMANDS = ("verify", "checked")
 
 
 # ----- shared helpers (check.py imports these) ---------------------------------
@@ -261,7 +276,7 @@ def asked_subjects(root) -> set:
 
 
 def in_scope(subject: registry_mod.Subject, asked: set) -> bool:
-    if subject.state != "active":
+    if subject.state not in registry_mod.LIVE_STATES:
         return False
     return bool(subject.important or subject.stateful or subject.id in asked)
 
@@ -301,23 +316,44 @@ def _with_evidence(base: str, lines: list) -> str:
     return f"{base}\n\n{EVIDENCE_HEADING}\n" + "\n".join(lines) + "\n"
 
 
+def archives_on(space) -> bool:
+    """`routing.archives`: archive-derived pages count as evidence only when it is on."""
+    return bool(getattr(space, "routing_archives", False))
+
+
+def set_aside_of(fm: dict) -> list:
+    """The candidate's `set_aside: [{id, why}]` entries, as the agent wrote them."""
+    return [item for item in fm.get("set_aside") or [] if isinstance(item, dict) and item.get("id")]
+
+
 def write_candidate(root: Path, space, reg, subject, new: list, index: dict,
-                    now: dt.datetime, reader: Reader) -> str:
+                    now: dt.datetime, reader: Reader, rebuild: bool = False,
+                    ignored: frozenset = frozenset()) -> str:
+    """Refresh (or create) the subject's candidate with `new` folded in. With `rebuild`, `new` is
+    the subject's whole evidence and nothing of the old candidate but its id survives. `ignored`
+    record ids (archive-derived, with archives off) never enter the evidence list."""
     path = root / CANDIDATES / f"{subject.id}.md"
     existing = _draft_or_none(path, reader)
     if existing is None:
         return "skipped"
     old_fm, old_body = existing
     target, page_fm, page_body = target_for(root, subject, reader)
-    merged = [str(r) for r in (old_fm.get("evidence") or [])]
+    if page_fm is not None and not archives_on(space) and provenance.is_archive_derived(page_fm):
+        page_body = None   # an archive draft lends no text with archives off
+    aside = [] if rebuild else set_aside_of(old_fm)
+    out = set(ignored) | {str(item["id"]) for item in aside}
+    merged = [] if rebuild else [str(r) for r in (old_fm.get("evidence") or [])]
     merged += [ev.record for ev in new if ev.record not in merged]
+    merged = [r for r in merged if r not in out]
     merged.sort(key=lambda r: (index[r].at if r in index else now, r))
-    base = old_body if old_fm else (page_body if page_body is not None
-                                    else f"# {subject.title or subject.id}\n")
+    keep = bool(old_fm) and not rebuild
+    base = old_body if keep else (page_body if page_body is not None
+                                  else f"# {subject.title or subject.id}\n")
     body = _with_evidence(base, [evidence_line(index[r]) for r in merged if r in index])
-    title = (page_fm or {}).get("title") or old_fm.get("title") or subject.title or subject.id
+    prior = old_fm if keep else {}
+    title = (page_fm or {}).get("title") or prior.get("title") or subject.title or subject.id
     fm = {"id": old_fm.get("id") or pages.new_id(),
-          "type": (page_fm or {}).get("type") or old_fm.get("type") or "entity",
+          "type": (page_fm or {}).get("type") or prior.get("type") or "entity",
           "title": title, "status": "draft", "generated": pages.generated(ROUTINE, now),
           "subject": subject.id, "kind": subject.kind}
     home = reg.home_of(subject.id)
@@ -325,6 +361,8 @@ def write_candidate(root: Path, space, reg, subject, new: list, index: dict,
         fm["destination"] = home
     fm["target"] = target
     fm["evidence"] = merged
+    if aside:
+        fm["set_aside"] = aside
     pages.write(path, fm, body)
     return "refreshed" if old_fm else "new"
 
@@ -365,7 +403,10 @@ def write_decision(root: Path, space, reg, ev: Evidence, now: dt.datetime, reade
     return "refreshed" if old_fm else "new"
 
 
-def run(root, now: dt.datetime | None = None) -> DistillReport:
+def run(root, now: dt.datetime | None = None, rebuild: bool = False,
+        subject_id: str | None = None) -> DistillReport:
+    """One distill pass. `rebuild` writes each subject candidate from scratch; with a
+    `subject_id` only that subject's candidate is rebuilt and the watermark stays."""
     root = Path(root)
     space = spaceyaml.load(root)
     now = now or space.now()
@@ -374,9 +415,14 @@ def run(root, now: dt.datetime | None = None) -> DistillReport:
     report = DistillReport()
     since = stamp_of(read_watermark(root, ROUTINE).get("at"))
     evidence = gather_evidence(root, reader, space.name)
+    ignored: frozenset = frozenset()
+    if not archives_on(space):
+        ignored = frozenset(ev.record for ev in evidence if provenance.is_archive_derived(ev.fm))
+        evidence = [ev for ev in evidence if not provenance.is_archive_derived(ev.fm)]
     index = {ev.record: ev for ev in evidence}
     new = new_since(evidence, since)
     asked = asked_subjects(root)
+    everything = by_subject(evidence) if rebuild or subject_id else {}
 
     def count(outcome: str, sid: str | None) -> None:
         if outcome == "new":
@@ -389,6 +435,29 @@ def run(root, now: dt.datetime | None = None) -> DistillReport:
         if sid and sid not in report.subjects:
             report.subjects.append(sid)
 
+    def notes() -> dict:
+        out = {"candidates_written": report.candidates_written, "refreshed": report.refreshed,
+               "skipped": report.skipped, "subjects": report.subjects}
+        if rebuild or subject_id:
+            out["rebuild"] = subject_id or True
+        return out
+
+    if subject_id:
+        # one subject on request: rebuilt from what it has now, whether it moved or not; the
+        # rest of the queue and the watermark wait for the next ordinary run
+        subject = reg.get(subject_id)
+        if subject is None:
+            raise LookupError(f"{subject_id} is not in the registry")
+        items = everything.get(subject_id, [])
+        if subject.kind in MENTION_BLIND_KINDS and not any(ev.subject == subject_id for ev in items):
+            report.skipped += 1
+        else:
+            count(write_candidate(root, space, reg, subject, items, index, now, reader,
+                                  rebuild=True, ignored=ignored), subject_id)
+        report.cost_tokens = reader.cost_tokens
+        append_run(root, ROUTINE, space, now, report.cost_tokens, notes())
+        return report
+
     for sid, items in sorted(by_subject(new).items()):
         subject = reg.get(sid)
         if subject is None or not in_scope(subject, asked):
@@ -400,7 +469,9 @@ def run(root, now: dt.datetime | None = None) -> DistillReport:
             # finance) are ordinary words. Only attached records count for these kinds.
             report.skipped += 1
             continue
-        count(write_candidate(root, space, reg, subject, items, index, now, reader), sid)
+        chosen = everything.get(sid, items) if rebuild else items
+        count(write_candidate(root, space, reg, subject, chosen, index, now, reader,
+                              rebuild=rebuild, ignored=ignored), sid)
     for ev in new:
         if not ev.landed and decision_title(ev.body):
             count(write_decision(root, space, reg, ev, now, reader), None)
@@ -410,16 +481,125 @@ def run(root, now: dt.datetime | None = None) -> DistillReport:
                 count(write_decision(root, space, reg, said, now, reader), None)
     write_watermark(root, ROUTINE, {"at": pages.iso(now)})
     report.cost_tokens = reader.cost_tokens
-    append_run(root, ROUTINE, space, now, report.cost_tokens,
-               {"candidates_written": report.candidates_written, "refreshed": report.refreshed,
-                "skipped": report.skipped, "subjects": report.subjects})
+    append_run(root, ROUTINE, space, now, report.cost_tokens, notes())
     return report
 
 
+# ----- verify and checked (understand-first design 4.7) --------------------------------------
+SRC_RE = re.compile(r"\[src:\s*([^\]]*)\]", re.I)
+SRC_CLOSES = re.compile(r"\[src:\s*[^\]\s][^\]]*\]\s*$", re.I)
+HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})(?:\s|$)")
+BULLET_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
+PLACEHOLDERS = ("[unknown", "[?", "?]", "[todo", "[tbd")
+
+
+def body_units(body: str) -> list:
+    """(line number, heading?, text) for every heading, bullet and paragraph outside
+    `## New evidence`. A paragraph's lines (and a bullet's continuation lines) are joined, so
+    the source marker has to close the paragraph; each bullet starts a unit of its own."""
+    units, current, in_evidence = [], None, False
+    for number, line in enumerate(body.splitlines(), 1):
+        head = HEADING_RE.match(line)
+        if head:
+            current = None
+            if len(head.group(1)) <= 2:   # the section runs to the next heading of its level
+                in_evidence = line.strip() == EVIDENCE_HEADING
+            if not in_evidence:
+                units.append([number, True, line.strip()])
+            continue
+        if in_evidence:
+            continue
+        if not line.strip():
+            current = None
+        elif current is None or BULLET_RE.match(line):
+            current = [number, False, line.strip()]
+            units.append(current)
+        else:
+            current[2] += " " + line.strip()
+    return units
+
+
+def candidate_path(root: Path, candidate) -> Path:
+    path = Path(candidate)
+    return path if path.is_absolute() or path.exists() else Path(root) / path
+
+
+def verify(root, candidate) -> list:
+    """Every problem that keeps a candidate from the signer, one line each; [] when clean."""
+    root = Path(root)
+    space = spaceyaml.load(root)
+    text = candidate_path(root, candidate).read_text(encoding="utf-8")
+    fm, body = pages.split(text)
+    offset = text[:len(text) - len(body)].count("\n")   # report lines of the file, not the body
+    evidence = {str(r) for r in fm.get("evidence") or []}
+    destination = str(fm.get("destination") or "")
+    left_out = release.left_out_of(release.destination_space(space, destination)) if destination else []
+    problems = []
+    for number, heading, unit in body_units(body):
+        where = f"line {number + offset}"
+        if not heading and not SRC_CLOSES.search(unit):
+            short = unit if len(unit) <= 80 else unit[:77] + "..."
+            problems.append(f"{where}: no source: {short}")
+        for marker in SRC_RE.findall(unit):
+            for rid in (r.strip() for r in marker.split(",")):
+                if rid and rid not in evidence:
+                    problems.append(f"{where}: source {rid} is not in evidence")
+        problems += [f"{where}: never-leaves term `{term}`" for term in space.never_leaves
+                     if release.term_in(unit, str(term))]
+        problems += [f"{where}: left-out term `{term}` for {destination}" for term in left_out
+                     if release.term_in(unit, str(term))]
+        mark = next((m for m in PLACEHOLDERS if m in unit.lower()), None)
+        if mark:
+            problems.append(f"{where}: placeholder `{mark}`")
+    return problems
+
+
+def checked(root, candidate, by: str, now: dt.datetime | None = None) -> list:
+    """Stamp `checked: {by, at}` on a clean candidate; the problems, and no stamp, otherwise."""
+    problems = verify(root, candidate)
+    if problems:
+        return problems
+    path = candidate_path(Path(root), candidate)
+    fm, body = pages.read(path)
+    now = now or spaceyaml.load(root).now()
+    fm["checked"] = {"by": by, "at": pages.iso(now)}
+    pages.write(path, fm, body)
+    return []
+
+
 def main(argv=None) -> int:
-    argv = sys.argv[1:] if argv is None else argv
-    root = Path(argv[0]) if argv else Path(".")
-    report = run(root)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    flags: dict = {}
+    positional = []
+    while argv:
+        arg = argv.pop(0)
+        if arg == "--rebuild":
+            flags["rebuild"] = True
+        elif arg in ("--subject", "--by") and argv:
+            flags[arg[2:]] = argv.pop(0)
+        else:
+            positional.append(arg)
+    root = Path(positional.pop(0)) if positional and positional[0] not in COMMANDS else Path(".")
+    if positional:
+        command, args = positional[0], positional[1:]
+        if command not in COMMANDS or len(args) != 1 or (command == "checked" and not flags.get("by")):
+            print(__doc__)
+            return 2
+        try:
+            problems = verify(root, args[0]) if command == "verify" else checked(root, args[0], flags["by"])
+        except OSError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print("\n".join(problems) if problems else ("clean" if command == "verify" else "checked"))
+        return 1 if problems else 0
+    if flags.get("subject") and not flags.get("rebuild"):
+        print(__doc__)
+        return 2
+    try:
+        report = run(root, rebuild=bool(flags.get("rebuild")), subject_id=flags.get("subject"))
+    except LookupError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     print(f"distill: {report.candidates_written} candidates written, {report.refreshed} refreshed, "
           f"{report.skipped} skipped, {report.cost_tokens} tokens; subjects: "
           f"{', '.join(report.subjects) or 'none'}")

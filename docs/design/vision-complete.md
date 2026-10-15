@@ -234,8 +234,10 @@ folder in `space.yaml` `transcripts: {path, switch: off}`, lists each session (i
 working directory) into `_meta/state/sessions.jsonl` (ids and times only, never content).
 With `switch: on`, every session not captured in the daily notes becomes a feed record
 (`kind: session`) in `_meta/state/feed/sessions.jsonl`, and the sweep turns it into a
-witness page in this personal space only. Transcripts never travel: `transcript` is on
-every destination's left-out list.
+witness page in this personal space only. Since 2026-10-14 (judgment routing) a session note
+is routed like any record: the router decides what, if anything, informs a subject's home, as
+verbatim parts; `transcript` is no longer on the left-out lists, because it names a form, not a
+kind of information (`docs/superpowers/specs/2026-10-14-judgment-routing-design.md`).
 
 **The capture rate.** A session is captured when a daily-note entry carries its marker
 (`<!-- session: <id> -->`, written by the capture skill). The health line shows captured

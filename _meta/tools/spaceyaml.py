@@ -147,7 +147,8 @@ class Space:
 
     @property
     def routing(self) -> dict:
-        """`routing:` turns the judgment router on (`since`, `review_until`)."""
+        """`routing:` turns the judgment router on (`since`, `history_since`, `review_until`,
+        `archives`)."""
         value = self.data.get("routing")
         return dict(value) if isinstance(value, dict) else {}
 
@@ -174,6 +175,17 @@ class Space:
     def routing_since(self) -> dt.datetime | None:
         """The oldest witness page the router reads by default."""
         return self._routing_date("since")
+
+    @property
+    def routing_history_since(self) -> dt.datetime | None:
+        """The start of the history window: older than `since`, judged as background; None
+        means no history window."""
+        return self._routing_date("history_since")
+
+    @property
+    def routing_archives(self) -> bool:
+        """Archive-derived pages count in briefs and pages only when this is on (default off)."""
+        return self.routing.get("archives") is True
 
     @property
     def authority(self) -> dict:
@@ -443,11 +455,13 @@ class Space:
                 errs.append(f"sources.{source['name']}: audience must be owner, crew, "
                             "everyone or a list of names")
         if "routing" in data and not isinstance(data.get("routing"), dict):
-            errs.append("routing: must be a mapping (since, review_until)")
-        for key in ("since", "review_until"):
+            errs.append("routing: must be a mapping (since, history_since, review_until, archives)")
+        for key in ("since", "history_since", "review_until"):
             value = self.routing.get(key)
             if value and self._routing_date(key) is None:
                 errs.append(f"routing: {key} must be a date (YYYY-MM-DD)")
+        if "archives" in self.routing and not isinstance(self.routing["archives"], bool):
+            errs.append("routing: archives must be true or false")
         return errs
 
     def resolved(self) -> dict:

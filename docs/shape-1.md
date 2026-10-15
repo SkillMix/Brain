@@ -44,7 +44,9 @@ _inbound/requests/  _inbound/answers/     in a channel: what crosses the corrido
 _meta/subjects.yaml               the registry (fields below)
 _meta/access/resources.yaml       connected systems, each with the audience that can already read its records
 _meta/questions.log               the question log, one JSON object per line; never leaves the space
+_meta/lessons.md                  corrections the person made once, one line each; read by the router, distill and the brief
 _meta/state/                      watermarks, ids.yaml, runs.jsonl, payloads; feed/ is local and never committed
+_meta/state/private/briefs/       one private brief per subject the space understands (and its pack); local, disposable, never travels
 _meta/tests/                      answers.yaml, leaks.yaml, behaviour/<skill>.yaml, fixture/, forbidden-names.sha256
 _meta/tools/  _meta/templates/    the tools (stdlib plus PyYAML) and the page templates
 .github/                          the checks and auto-merge workflows; template-marker only in the template
@@ -88,7 +90,7 @@ personal/  academic/  _scratch/   gitignored in every profile; outside every too
 | `sources` | `[{name, adapter, audience}]`: connected systems and who can already read their records (`owner`, `crew`, `everyone` or names) |
 | `mounts` | `[{name, repo, branch, path}]`: read-only, pinned windows on ancestors; the brain at `./brain`, flat, never nested |
 | `routines` | UTC cron for `sweep` and `daily`; the chain is driven by dependency, not by the clocks alone |
-| `routing` | turns the judgment router on (a personal workspace): `since` the oldest witness page it reads by default, `review_until` (optional, off unless set; onboard never sets it) every projection waits the window until then; without it, evidence attaches by identifier and the sweep releases |
+| `routing` | turns the judgment router on (a personal workspace): `since` the oldest witness page it reads with full judgment, `history_since` (optional, at most 365 days back) the start of the history window before it (background only, no open items, no question per record), `archives` (default false) whether archive-derived pages count as evidence for briefs and distill, `review_until` (optional, off unless set; onboard never sets it) every projection waits the window until then; without it, evidence attaches by identifier and the sweep releases |
 | `time_scale` | fixture and shadow only; divides every duration, so a 24-hour window at `48` is 30 minutes |
 | `transcripts` | personal only: `{path, switch}`; the harness's session transcripts folder; `off` measures the capture rate only, `on` also turns missed sessions into witness pages here |
 | `request_classes`, `request_choices` | the fourth wire: classes of request and the standing choices that answer them (`[{from, class, answer}]`, answer `at_once`, `ask` or `never`) |

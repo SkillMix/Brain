@@ -15,8 +15,8 @@ marks a session captured when a daily note carries its marker (`<!-- session: <i
 an entry heading (`## HH:MMZ`) falls inside the session's span. The health line shows the
 share captured over four scaled weeks. With `switch: on`, each finished session that capture
 missed becomes a witness page under `knowledge/sources/` in this personal space only: what
-the person asked and how the session ended, no attachment, no subject, so it never travels
-(`transcript` is on every destination's left-out list).
+the person asked and how the session ended, no attachment, no subject. With `routing:` the
+router reads it like any record and decides what, if anything, informs a subject's home.
 
     python transcripts.py [root] scan
 """

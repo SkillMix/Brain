@@ -31,7 +31,13 @@ Only a person signs. The read-back shows the exact text that will land and its f
    directory, or `_scratch/verdicts-<ISO>.yaml`), one key per item: `p-1a2b3c4d: yes`,
    `c-7f: [edit, "<complete corrected body>"]`, `q-02: no`, `l-19: later`, `k-33: always`.
    Then `python _meta/tools/sign.py <root> apply --by "<the person's name>" --verdicts <file>`.
-6. Receipt in one line: signed, edited, declined, deferred, standing choices added.
+6. Lessons: for every `edit` or `no` that corrects content with a reason ("that is not about
+   this project", "you can find that yourself", "never put prices on the project page"), and
+   for any pushback on how an agent did its work, append one line to `_meta/lessons.md`:
+   `- <YYYY-MM-DD> <route|distill|all> [<subject>]: <the lesson, as a rule> (from: <the
+   person's words, short>)`. The router, distill and the brief read it every run, so the same
+   correction is never needed twice.
+7. Receipt in one line: signed, edited, declined, deferred, standing choices added, lessons.
 
 ## What the tool already did
 
@@ -65,7 +71,7 @@ the verdicts the person gave; an unanswered item stays where it is.
 
 - Never run `apply` without the exact word `submit`, never with a routine's name or your
   own as `--by`; never write `status: stable` yourself.
-- Never touch disk before `submit`; the verdicts file is the first write.
+- Never touch disk before `submit`; the verdicts file is the first write (lessons come after).
 - Never reword the read-back text: the fingerprint is of that text.
 - Never invent or embellish a brief; never a verdict for an item the person did not answer.
 - Never run git; the sync script lands the signed pages.

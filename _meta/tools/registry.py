@@ -7,7 +7,9 @@ the fixed identifiers (tracker, repo, channel, label, thread, calendar, github) 
 sweep attaches evidence, plus two inferred ones: `domain`, a mail domain on any address of the
 record (from, to, cc, participants), and `keywords`, whole words in the title of a call or a
 calendar event. Ids are shared up the ladder: a space reuses an ancestor's
-id (read through its mount) and mints a new one only when no space above has one.
+id (read through its mount) and mints a new one only when no space above has one. The register
+fields say what an engagement was (the brain's projects page shows them): `period` (`from`,
+`to`, months `YYYY-MM`), `client` (a subject id), `crew` (people subject ids) and `work` (one line).
 
     python registry.py <root> check     report loops, duplicates, unknown kinds
     python registry.py <root> find <x>  show a subject by id or alias
@@ -27,7 +29,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import spaceyaml  # noqa: E402
 
 REGISTRY_PATH = Path("_meta") / "subjects.yaml"
-STATES = ("active", "dormant", "archived")
+STATES = ("active", "dormant", "archived",
+          "delivered", "stopped",        # a project that ended (history spec 4.4)
+          "open", "won", "lost")          # a deal
+# states that still move: distill proposes for them and status keeps their pages
+LIVE_STATES = ("active", "open")
 MATCH_KEYS = ("tracker", "repo", "channel", "label", "thread", "calendar", "github",
               "domain", "keywords")
 INFERRED_KEYS = ("domain", "keywords")   # attach by inference: never released at once
@@ -45,6 +51,10 @@ class Subject:
     home: str | None = None
     match: dict = field(default_factory=dict)
     aliases: list = field(default_factory=list)
+    period: dict = field(default_factory=dict)   # {from, to}: months, YYYY-MM
+    client: str | None = None                    # the client's subject id
+    crew: list = field(default_factory=list)     # people subject ids
+    work: str | None = None                      # the kind of work, one line
     important: bool = False
     stateful: bool = True
     added: str | None = None
@@ -60,6 +70,9 @@ class Subject:
         kwargs.setdefault("title", kwargs.get("id", ""))
         kwargs["match"] = dict(kwargs.get("match") or {})
         kwargs["aliases"] = list(kwargs.get("aliases") or [])
+        kwargs["crew"] = list(kwargs.get("crew") or [])
+        period = kwargs.get("period") or {}
+        kwargs["period"] = dict(period) if isinstance(period, dict) else period
         return cls(space=space, extra=extra, **kwargs)
 
     def to_dict(self) -> dict:
@@ -68,6 +81,12 @@ class Subject:
             value = getattr(self, key)
             if value:
                 out[key] = value
+        if self.period:
+            out["period"] = dict(self.period) if isinstance(self.period, dict) else self.period
+        for key in ("client", "crew", "work"):
+            value = getattr(self, key)
+            if value:
+                out[key] = list(value) if isinstance(value, list) else value
         if self.match:
             out["match"] = dict(self.match)
         if self.aliases:
