@@ -733,8 +733,9 @@ def _refresh(root: Path, target: Path, record: dict, now: dt.datetime, dry_run: 
     new_text = str(record.get("text") or "")
     # an archive page's retelling gives way to the record itself, however short the record is
     original = old_fm.get("imported_from") and not (record.get("imported_from") or record.get("witness_page"))
-    if old_fm.get("status") == "stable" or not new_text.strip() or (
-            not original and len(new_text) <= len(_existing_text(root, old_fm, old_body, record))):
+    flat = new_text.replace("\r\n", "\n")   # a page stores bare newlines: compare like with like
+    if old_fm.get("status") == "stable" or not new_text.strip() or (not original and len(flat) <= len(
+            _existing_text(root, old_fm, old_body, record).replace("\r\n", "\n"))):
         return False
     fm = {k: v for k, v in old_fm.items() if k not in ("routing", "part", "parts", "imported_from")}
     # the deeper export knows the people and the thread better than the shallow one did
