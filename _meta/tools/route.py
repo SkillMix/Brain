@@ -83,6 +83,12 @@ def _pages(root: Path):
             yield path, fm, body
 
 
+def _same_id(a, b) -> bool:
+    """Exact, or equal with every run of whitespace read as one space: a file name can carry a
+    narrow no-break space (a screenshot's `4.48 PM`) that an agent writes as a plain space."""
+    return str(a) == str(b) or " ".join(str(a).split()) == " ".join(str(b).split())
+
+
 def find_page(root, record_id) -> Path | None:
     """The witness page of a record: by its file name first (no full scan), else by a scan."""
     root = Path(root)
@@ -90,12 +96,12 @@ def find_page(root, record_id) -> Path | None:
     name = glob.escape(f"{sweep.file_name(record_id)}.md")
     for path in sorted(base.glob(f"*/*/{name}")) if base.is_dir() else []:
         try:
-            if str(pages.read(path)[0].get("record")) == str(record_id):
+            if _same_id(pages.read(path)[0].get("record"), record_id):
                 return path
         except Exception:
             continue
     for path, fm, _ in _pages(root):
-        if str(fm.get("record")) == str(record_id):
+        if _same_id(fm.get("record"), record_id):
             return path
     return None
 
@@ -357,6 +363,7 @@ def _validate(root: Path, space, reg, decision: dict, now: dt.datetime, strict: 
     if path is None:
         raise RouteError(f"{rid}: no witness page for that record")
     fm, body = pages.read(path)
+    decision["record"] = rid = str(fm.get("record") or rid)   # the record's own id, as captured
     routing = fm.get("routing") if isinstance(fm.get("routing"), dict) else {}
     scope = [str(x) for x in decision.get("scope") or []]
     if routing and routing.get("decision") != "retracted":

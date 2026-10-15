@@ -224,8 +224,9 @@ def _requeue_mode_held(root: Path, space: spaceyaml.Space) -> int:
 
 def destination_space(space: spaceyaml.Space, destination: str,
                       dest_root: Path | None = None) -> spaceyaml.Space | None:
-    """The destination's settings: its given root, else its checkout, else its mount."""
-    for root in (dest_root, checkout_of(destination), space.mount_root(destination)):
+    """The destination's settings: its given root, else its mount (moved by every sync run),
+    else its release checkout (refreshed only when something ships)."""
+    for root in (dest_root, space.mount_root(destination), checkout_of(destination)):
         if root is not None and (Path(root) / "space.yaml").exists():
             try:
                 return spaceyaml.load(root)
