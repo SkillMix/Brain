@@ -77,7 +77,8 @@ routes:
         owner: <name>            # open items, when known
         due: <YYYY-MM-DD>        # when the record says
         direction: we owe | waiting on them | internal
-        closes: <open item id from the status page, when this record settles it>
+        closes: <the id ending an item's line on the status page, when this record settles it>
+        replaces: <that id, when this open item is a listed one again in its current form>
         person: <person subject id>   # kind person
 ```
 
@@ -129,7 +130,13 @@ routes:
   could not settle, never for what you did not look up.
 - **Informs.** What the destination's pages should say now: the open items with owner, due date
   and who moves next (`we owe`, `waiting on them`, `internal`), a decision taken, a fact about a
-  person, an update to a page. Close an item the status page shows when this record settles it.
+  person, an update to a page. Each open item is written once: on the newest record of this run
+  that carries it, in its current form. An item the status page already lists is not written
+  again when the record only repeats it; when the record changes it (a new date, owner or next
+  step), write it as it now stands with `replaces:` set to the id that ends its line, and the old
+  line leaves the page. When the record settles an item, set `closes:` to that id on what settled
+  it (a decision, or the next open item); the item moves to recently closed. An id with a
+  `.<n>` names one item of several from one record; a bare id names all of them.
 - **History** (`history: true`: before `routing.since`). Background only: route it to the
   subject's home for its timeline, or keep it private. Never an `open_item` (the tool refuses
   one); `closes`, decisions (dated, historical) and people are fine. Low confidence on history
