@@ -65,7 +65,7 @@ sweeps nothing of its own. You export; the tool decides.
    else leave it for the daily list the owner approves. Append it to the same feed file as a
    document record of its own: `id` `<record id>/<file name>`, `subject` the file name as it is,
    `text` its full text (a file with no text, such as an image: empty `text`, so it is not listed
-   again), `read_via: connector | preview | approved_batch`, and `from`, `to`, `cc`, `at` and
+   again; it gets no witness page), `read_via: connector | preview | approved_batch`, and `from`, `to`, `cc`, `at` and
    `identifiers` copied from its mail.
 3. `python _meta/tools/sweep.py <root>` (`--dry-run` prints the plan and writes nothing).
 4. With `routing:` in `space.yaml`: route what the sweep wrote, as

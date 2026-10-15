@@ -530,6 +530,9 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
         if is_own_notice(space, record):
             report.plan.append(f"skip {record['id']}: the workspace's own notice")
             continue
+        if record.get("kind") == "document" and not str(record.get("text") or "").strip():
+            report.plan.append(f"skip {record['id']}: a file with no text")   # its feed record settles it
+            continue
         target = witness_path(root, record)
         if target.exists():
             if not _refresh(root, target, record, now, dry_run, report):
