@@ -176,7 +176,7 @@ def test_routed_records_and_their_open_items_reach_the_status_page(tmp_path):
     owe = text.split("### We owe")[1].split("##")[0]
     assert "Send the first list (owner Ada Okafor, due 2026-10-23)" in owe
     timeline = text.split("## Timeline")[1]
-    assert "Kickoff" in timeline and "Elsewhere only" not in timeline, "a route to another space attaches there"
+    assert "Kickoff" in timeline and "Elsewhere only" in timeline, "every subject it was routed to, wherever"
     assert "2026-10-23" in text.split("## Coming up")[1]
 
 

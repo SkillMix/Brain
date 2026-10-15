@@ -128,6 +128,16 @@ def test_recently_closed_and_coming_up(tmp_path):
     assert "2026-09-01" not in body
 
 
+def test_a_record_routed_elsewhere_stays_on_its_owners_status_page(tmp_path):
+    """The router sent it to the brain; the person whose record it is still sees it here."""
+    root = make_space(tmp_path / "ada", subjects=[HARBOR])
+    witness(root, "m-1", None, "2026-10-02T10:00:00Z", title="Harbor scope mail",
+            routing={"decision": "route", "routes": ["brain/harbor"]})
+    status.run(root, now=NOW)
+    assert "- Harbor scope mail (witness, mine, 2026-10-02)" in pages.read(
+        root / "live" / "subjects" / "harbor.md")[1]
+
+
 def test_a_record_dated_ahead_is_coming_up_not_history(tmp_path):
     """A calendar event is captured before it happens; it is not part of the timeline yet."""
     root = make_space(tmp_path / "ada", subjects=[HARBOR])
