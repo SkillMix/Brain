@@ -128,6 +128,16 @@ def test_recently_closed_and_coming_up(tmp_path):
     assert "2026-09-01" not in body
 
 
+def test_a_record_dated_ahead_is_coming_up_not_history(tmp_path):
+    """A calendar event is captured before it happens; it is not part of the timeline yet."""
+    root = make_space(tmp_path / "ada", subjects=[HARBOR])
+    witness(root, "e-1", "harbor", "2026-10-20T13:00:00Z", title="Harbor go-live call")
+    status.run(root, now=NOW)
+    body = pages.read(root / "live" / "subjects" / "harbor.md")[1]
+    assert "Harbor go-live call" not in body[body.index("## Timeline"):body.index("## Coming up")]
+    assert "- 2026-10-20: Harbor go-live call (witness, mine, 2026-10-20)" in body[body.index("## Coming up"):]
+
+
 def test_hub_links_by_id_and_ids_resolve(tmp_path):
     root = make_space(tmp_path / "ada", subjects=[
         {"id": "sales", "kind": "domains", "title": "Sales"},
