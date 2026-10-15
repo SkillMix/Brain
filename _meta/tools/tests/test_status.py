@@ -138,6 +138,73 @@ def test_a_record_routed_elsewhere_stays_on_its_owners_status_page(tmp_path):
         root / "live" / "subjects" / "harbor.md")[1]
 
 
+def test_a_routed_records_open_items_come_from_its_routing_decision(tmp_path):
+    """The router read the record: its reading says who moves next, not the mail's direction."""
+    root = make_space(tmp_path / "ada", subjects=[HARBOR], owner_email="ada@lantern.example")
+    client = {"from": "ops@tidewater.example", "to": ["ada@lantern.example"]}
+    witness(root, "m-1", None, "2026-10-11T08:00:00Z", title="Draft agreement attached",
+            routing={"decision": "route", "routes": ["brain/harbor"],
+                     "informs": [{"subject": "harbor", "kind": "open_item", "text": "Their legal team reviews it",
+                                  "owner": "Ops", "direction": "waiting on them"},
+                                 {"subject": "beacon", "kind": "open_item", "text": "Not for Harbor",
+                                  "direction": "we owe"}]}, **client)
+    witness(root, "m-2", None, "2026-10-11T09:00:00Z", title="Thanks, noted",
+            routing={"decision": "route", "routes": ["brain/harbor"]}, **client)
+    status.run(root, now=NOW)
+    body = pages.read(root / "live" / "subjects" / "harbor.md")[1]
+    assert "### We owe" not in body, "a routed record's direction is the router's, never the guess"
+    assert "Their legal team reviews it (owner Ops" in body.split("### Waiting on them")[1].split("##")[0]
+    assert "Not for Harbor" not in body
+    assert "Thanks, noted" in body.split("## Timeline")[1]
+
+
+def test_a_later_route_closes_an_item_by_the_projection_it_names(tmp_path):
+    """The router closes items by the ids on the destination's page: its projections' ids."""
+    root = make_space(tmp_path / "ada", subjects=[HARBOR], owner_email="ada@lantern.example")
+    witness(root, "m-1", None, "2026-10-11T08:00:00Z", title="Draft agreement attached",
+            routing={"decision": "route", "routes": ["brain/harbor"], "items": ["p-0000ee01"],
+                     "informs": [{"subject": "harbor", "kind": "open_item", "text": "Their legal team reviews it",
+                                  "direction": "waiting on them"}]})
+    witness(root, "m-2", None, "2026-10-11T12:00:00Z", title="Agreement signed",
+            routing={"decision": "route", "routes": ["brain/harbor"], "items": ["p-0000ee02"],
+                     "informs": [{"subject": "harbor", "kind": "decision", "text": "The agreement is signed",
+                                  "closes": "p-0000ee01"}]})
+    status.run(root, now=NOW)
+    body = pages.read(root / "live" / "subjects" / "harbor.md")[1]
+    assert "Their legal team reviews it" not in body.split("## Open")[1].split("## Recently closed")[0]
+    assert "Their legal team reviews it" in body.split("## Recently closed")[1].split("## Timeline")[0]
+
+
+def test_an_automated_mail_is_not_something_we_owe(tmp_path):
+    """Without a routing decision the direction is a guess; a no-reply sender holds no next move."""
+    root = make_space(tmp_path / "ada", subjects=[HARBOR], owner_email="ada@lantern.example")
+    to_ada = {"to": ["ada@lantern.example"]}
+    witness(root, "m-1", "harbor", "2026-10-11T08:00:00Z", title="Your verification code",
+            **{"from": "Harbor Portal <no-reply@portal.example>"}, **to_ada)
+    witness(root, "m-2", "harbor", "2026-10-11T08:30:00Z", title="New comment on HAR-3",
+            **{"from": "notifications@tracker.example"}, **to_ada)
+    witness(root, "m-3", "harbor", "2026-10-11T09:00:00Z", title="Can you send the plan?",
+            **{"from": "ops@tidewater.example"}, **to_ada)
+    status.run(root, now=NOW)
+    body = pages.read(root / "live" / "subjects" / "harbor.md")[1]
+    owe = body.split("### We owe")[1].split("##")[0]
+    assert "Can you send the plan?" in owe
+    assert "Your verification code" not in owe and "New comment on HAR-3" not in owe
+    assert "Your verification code" in body.split("## Timeline")[1]
+
+
+def test_distill_takes_no_decision_from_a_routing_decisions_informs(tmp_path):
+    """What a route informs elsewhere becomes a candidate at its destination, never a second one here."""
+    import distill
+    root = make_space(tmp_path / "ada", subjects=[HARBOR])
+    witness(root, "m-1", None, "2026-10-11T08:00:00Z", title="Kickoff",
+            routing={"decision": "route", "routes": ["brain/harbor"],
+                     "informs": [{"subject": "harbor", "kind": "decision",
+                                  "text": "The first list holds forty leads"}]})
+    distill.run(root, now=NOW)
+    assert not list((root / "_inbound" / "candidates").glob("*forty-leads*.md"))
+
+
 def test_a_record_dated_ahead_is_coming_up_not_history(tmp_path):
     """A calendar event is captured before it happens; it is not part of the timeline yet."""
     root = make_space(tmp_path / "ada", subjects=[HARBOR])

@@ -440,6 +440,26 @@ def test_a_route_to_this_space_keeps_what_it_informs_here(tmp_path):
     assert "Send the first list (owner Ada Okafor, due 2026-10-23)" in page.split("### We owe")[1]
 
 
+def test_what_a_route_informs_elsewhere_stays_on_the_page_under_routing(tmp_path):
+    """The owner's own status page shows the router's open items for a record that went
+    elsewhere; they sit under `routing`, so distill never makes a second decision candidate here."""
+    import distill
+    import status
+    root, _, _ = space_set(tmp_path)
+    captured(root)
+    informs = decision()["routes"][0]["informs"] + [{"kind": "decision", "text": "The first list holds forty leads"}]
+    route.record(root, decision(routes=route_with(informs=informs)), now=NOW)
+    fm = pages.read(route.find_page(root, "c-1"))[0]
+    assert "informs" not in fm
+    assert [(i["subject"], i["kind"]) for i in fm["routing"]["informs"]] == [("harbor", "open_item"),
+                                                                             ("harbor", "decision")]
+    status.run(root, now=NOW)
+    page = (root / "live" / "subjects" / "harbor.md").read_text(encoding="utf-8")
+    assert "Send the first list (owner Ada Okafor, due 2026-10-23)" in page.split("### We owe")[1]
+    distill.run(root, now=NOW)
+    assert not list((root / "_inbound" / "candidates").glob("*forty-leads*.md"))
+
+
 def test_after_a_retraction_a_corrected_decision_can_be_recorded(tmp_path):
     root, _, _ = space_set(tmp_path)
     captured(root)
