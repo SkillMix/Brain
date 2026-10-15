@@ -389,6 +389,20 @@ def test_another_clients_name_holds_and_a_named_person_waits(tmp_path):
     assert fm["class"] == "window" and fm["high_stakes"] is True
 
 
+def test_a_route_may_title_its_projection_under_the_same_gates(tmp_path):
+    """A record's title speaks for all of it; parts may leave out what it names."""
+    root, _, _ = space_set(tmp_path)
+    captured(root, title="Kickoff, then the day rate")
+    assert route.record(root, decision(), now=NOW)["held"][0][1] == "left_out"
+    captured(root, rid="c-2", title="Kickoff, then the day rate")
+    route.record(root, decision(record="c-2", routes=route_with(title="Harbor kickoff: the first list")), now=NOW)
+    (fm, _), = queued(root)
+    assert fm["title"] == "Harbor kickoff: the first list"
+    captured(root, rid="c-3")
+    out = route.record(root, decision(record="c-3", routes=route_with(title="Kickoff and the day rate")), now=NOW)
+    assert out["held"][0][1] == "left_out"
+
+
 def test_a_projection_too_large_for_one_release_is_refused(tmp_path, monkeypatch):
     root, _, _ = space_set(tmp_path)
     captured(root)
