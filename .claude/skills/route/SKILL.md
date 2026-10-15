@@ -103,7 +103,8 @@ routes:
   refuses `whole` otherwise. Else `parts`: the relevant passages and transcript segments verbatim,
   whole lines, never a summary in their place. Leave out every passage with a left-out term of
   the destination (prices, fees, pay, credentials, client data, other clients) or a never-leaves
-  term: the tool holds a projection that carries one.
+  term: the tool holds a projection that carries one. A phrase in the destination's
+  `left_out_except` (a practice's or product's name that holds a left-out word) does not count.
 - **Tier.** `at_once` for ordinary work of that space (a client writing to the team about the
   work, a meeting of the crew). `window` when it is more sensitive: a person's situation, money,
   a disagreement, anything the owner may want to see leave. Say why in `why`: the morning view

@@ -39,6 +39,8 @@ standing_choices: []       # [{destination: <space name>, kind: mail|call|messag
 left_out: [price, prices, pricing, fee, fees, commercial terms, day rate, hourly rate, margin,
            salary, pay, employment, immigration, visa, password, credential, credentials,
            access link, api key, client data, attachment, attachments, transcript, transcripts]
+# Phrases that hold a left-out word but are not about it (a practice's or product's name).
+left_out_except: []
 
 # What never leaves this space (whole-word terms). The charter explains these in words.
 never_leaves: [equity, settlement, termination, legal position, medical, salary]

@@ -78,19 +78,36 @@ class ShipReport:
 
 
 # ----- shared helpers (sweep.py imports these) -----------------------------
+def _term_re(term: str):
+    words = [re.escape(w) for w in str(term).split()]
+    return re.compile(r"(?<!\w)" + r"\s+".join(words) + r"(?!\w)", re.IGNORECASE) if words else None
+
+
 def term_in(text: str, term: str) -> bool:
     """Whole-word, case-insensitive; a multi-word term matches across any whitespace."""
-    words = [re.escape(w) for w in str(term).split()]
-    if not words:
-        return False
-    return re.search(r"(?<!\w)" + r"\s+".join(words) + r"(?!\w)", text, re.IGNORECASE) is not None
+    pattern = _term_re(term)
+    return pattern is not None and pattern.search(text) is not None
+
+
+class Terms(list):
+    """A destination's left-out terms with the phrases it declares are not about them
+    (`left_out_except`: a practice's or product's name that holds a left-out word)."""
+
+    def __init__(self, terms=(), excepted=()):
+        super().__init__(terms or [])
+        self.excepted = [str(p) for p in excepted or [] if str(p).strip()]
+
+
+def terms_found(text: str, terms) -> list:
+    """Every term in `text`, after blanking the phrases `terms` excepts."""
+    for phrase in getattr(terms, "excepted", ()):
+        text = _term_re(phrase).sub(" ", text)
+    return [str(term) for term in terms or [] if term_in(text, str(term))]
 
 
 def first_term(text: str, terms) -> str | None:
-    for term in terms or []:
-        if term_in(text, str(term)):
-            return str(term)
-    return None
+    found = terms_found(text, terms)
+    return found[0] if found else None
 
 
 def spaces_home() -> Path:
@@ -217,8 +234,10 @@ def destination_space(space: spaceyaml.Space, destination: str,
     return None
 
 
-def left_out_of(dest_space: spaceyaml.Space | None) -> list:
-    return dest_space.left_out if dest_space is not None else list(spaceyaml.DEFAULTS["left_out"])
+def left_out_of(dest_space: spaceyaml.Space | None) -> Terms:
+    if dest_space is None:
+        return Terms(spaceyaml.DEFAULTS["left_out"])
+    return Terms(dest_space.left_out, dest_space.left_out_except)
 
 
 def hold(root: Path, fm: dict, body: str, reason: str, why: str) -> Path:
