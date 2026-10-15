@@ -34,7 +34,8 @@ search until the gap is closed, and let a second agent check.
    5. **Research** every gap a page of this kind needs filled (what it is, who is who and in
       which role, how it started, what was agreed): this space's pages and journal, the spaces
       you can read, then the connectors within `space.yaml` sources. Export what a search finds
-      into its feed (sweep record shape); it becomes evidence after the next `sweep.py`, and you
+      into its feed (sweep record shape, `"research": "<subject id>"`); it becomes evidence after
+      the next `sweep.py`, and you
       add its id to `evidence`. No "[unknown]" and no question until every source is exhausted;
       what stays open goes to the brief's Open questions, and only a gap that blocks the page
       becomes a question, with your best guess.

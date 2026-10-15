@@ -126,6 +126,8 @@ def _about(ev, targets: dict) -> list:
             why.append(f"attached {sid}")
         elif sid in mentions:
             why.append(f"mentioned {sid}")
+        elif str(ev.fm.get("research") or "") == sid:
+            why.append(f"researched {sid}")
         elif any(registry_mod._word_in(text, name) for name in [subject.title] + list(subject.aliases) if name):
             why.append(f"named {sid}")
     return why

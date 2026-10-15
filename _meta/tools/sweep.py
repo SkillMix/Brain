@@ -238,6 +238,8 @@ def witness_frontmatter(record: dict, hits: list, mentions: list, audience, sens
     for key in ("issue", "state"):  # a tracker record's issue and its state: spec state reads them
         if record.get(key):
             fm[key] = str(record[key])
+    if record.get("research"):   # exported by research for this subject: the router decides it for it
+        fm["research"] = str(record["research"])
     if sensitive:
         fm["sensitive"] = True
     imported = record.get("imported_from") or record.get("witness_page")

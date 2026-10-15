@@ -42,7 +42,8 @@ can be retracted.
    witness pages and journal, the spaces you can read (their signed and status pages), then the
    connectors within `space.yaml` sources (mail by sender, domain and terms; chat search; the
    call recorder's search; documents). Export every record a search finds into its feed in the
-   sweep's record shape (it gets a witness page from the next `sweep.py`). Keep going until the
+   sweep's record shape with `"research": "<subject id>"` (it gets a witness page from the next
+   `sweep.py` and waits for that subject even when it never names it). Keep going until the
    gap is closed or a search finds nothing new; there is no fixed number of searches. Fold what
    you learned into the brief, and log the searches in its Research log. The archive is read only
    when `archives` is true.
