@@ -129,7 +129,7 @@ def read_feed(root: Path) -> list:
     if not feed.is_dir():
         return records
     for path in sorted(feed.glob("*.jsonl")):
-        for line in path.read_text(encoding="utf-8").splitlines():
+        for line in path.read_text(encoding="utf-8").split("\n"):   # a record's text may hold U+2028
             line = line.strip()
             if not line:
                 continue
@@ -240,6 +240,9 @@ def witness_frontmatter(record: dict, hits: list, mentions: list, audience, sens
             fm[key] = str(record[key])
     if sensitive:
         fm["sensitive"] = True
+    imported = record.get("imported_from") or record.get("witness_page")
+    if imported:   # the text is an archive page's retelling, not the record: kept out while archives are off
+        fm["imported_from"] = str(imported)
     return fm
 
 
@@ -716,7 +719,8 @@ def _existing_text(root: Path, fm: dict, body: str, record: dict) -> str:
 
 def _refresh(root: Path, target: Path, record: dict, now: dt.datetime, dry_run: bool, report) -> bool:
     """A deeper re-export of a record whose page exists: the page keeps its id and frontmatter,
-    takes the longer text, and loses its routing decision so the router reads it again."""
+    takes the longer text (or the record's own text, when the page held an archive's retelling),
+    and loses its routing decision so the router reads it again."""
     if record.get("_reattach"):
         return False
     try:
@@ -724,9 +728,12 @@ def _refresh(root: Path, target: Path, record: dict, now: dt.datetime, dry_run: 
     except Exception:
         return False
     new_text = str(record.get("text") or "")
-    if old_fm.get("status") == "stable" or len(new_text) <= len(_existing_text(root, old_fm, old_body, record)):
+    # an archive page's retelling gives way to the record itself, however short the record is
+    original = old_fm.get("imported_from") and not (record.get("imported_from") or record.get("witness_page"))
+    if old_fm.get("status") == "stable" or not new_text.strip() or (
+            not original and len(new_text) <= len(_existing_text(root, old_fm, old_body, record))):
         return False
-    fm = {k: v for k, v in old_fm.items() if k not in ("routing", "part", "parts")}
+    fm = {k: v for k, v in old_fm.items() if k not in ("routing", "part", "parts", "imported_from")}
     # the deeper export knows the people and the thread better than the shallow one did
     if record.get("from"):
         fm["from"] = record["from"]

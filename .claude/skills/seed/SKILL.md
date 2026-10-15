@@ -36,7 +36,9 @@ background, never a question per record and never an open item.
    sweep skill says, then `sweep.py` again.
 6. **Route**, as `.claude/skills/route/SKILL.md` says: triage, a brief per subject, research,
    placement per episode, the second agent's check, `route.py record`. History records follow the
-   history rules there. For a pilot: `route.py pending --subject <id>`.
+   history rules there. For a pilot: `route.py pending --subject <id>` for each of its
+   subjects, and every decision carries `scope:` with the pilot's subjects, so a record that also
+   informs other subjects is decided for them by the full backfill.
 7. **Distill from scratch:** `python _meta/tools/distill.py <root> --rebuild [--subject <id>]`,
    then every candidate as `.claude/skills/distill/SKILL.md` says (brief, full evidence, set
    aside, research, the page shape, a source per line, verify, checked by a second agent).

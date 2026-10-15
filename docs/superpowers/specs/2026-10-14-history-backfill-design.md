@@ -36,7 +36,10 @@ projects we did".
 4. **Count before reading.** A metadata-only count decides how far back activity goes; history
    starts there, never more than a year back.
 5. **The archive stays out for now** (`routing.archives` off): the owner wants to measure the
-   space on its own records first.
+   space on its own records first. That includes witness pages whose text was imported from an
+   archive's pages (a feed record carrying `witness_page`): the sweep marks them
+   `imported_from`, they count as archive-derived (kept out of routing, briefs and distill), and
+   the backfill's re-export of the record replaces their text, however short the original is.
 6. **Look for context, quality over cost**; **session notes included** (understand-first spec).
 7. **A pilot first:** one client with two projects (understand-first spec, section 4.10).
 
