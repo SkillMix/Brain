@@ -594,6 +594,16 @@ def test_a_record_whose_text_holds_a_unicode_line_separator_is_read_whole(tmp_pa
     assert sweep.run(ada, now=NOW).witness_written == 1
 
 
+def test_a_file_with_no_text_settles_its_attachment_without_a_page(tmp_path):
+    _, _, ada = build(tmp_path, routing={})
+    write_feed(ada, [record(attachments=["image001.png"]),
+                     record("m-0001/image001.png", kind="document", subject="image001.png", text="",
+                            attachments=[])])
+    sweep.run(ada, now=NOW)
+    assert not list((ada / "knowledge" / "sources").rglob("image001*.md")), "no page for an empty file"
+    assert sweep.attachments(ada) == [], "the feed record alone settles the attachment"
+
+
 def test_a_page_over_the_size_limit_is_split_on_lines(tmp_path, monkeypatch):
     monkeypatch.setattr(sweep, "PART_BYTES", 60)
     _, _, ada = build(tmp_path, routing={})
