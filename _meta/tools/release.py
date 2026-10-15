@@ -78,13 +78,17 @@ class ShipReport:
 
 
 # ----- shared helpers (sweep.py imports these) -----------------------------
+_START, _END = r"(?<![^\W_])", r"(?![^\W_])"   # a letter or digit, never `_`: `_fee_` is italics
+
+
 def _term_re(term: str):
     words = [re.escape(w) for w in str(term).split()]
-    return re.compile(r"(?<!\w)" + r"\s+".join(words) + r"(?!\w)", re.IGNORECASE) if words else None
+    return re.compile(_START + r"\s+".join(words) + _END, re.IGNORECASE) if words else None
 
 
 def term_in(text: str, term: str) -> bool:
-    """Whole-word, case-insensitive; a multi-word term matches across any whitespace."""
+    """Whole-word, case-insensitive; a multi-word term matches across any whitespace; an
+    underscore is markdown, not part of a word."""
     pattern = _term_re(term)
     return pattern is not None and pattern.search(text) is not None
 
@@ -98,11 +102,23 @@ class Terms(list):
         self.excepted = [str(p) for p in excepted or [] if str(p).strip()]
 
 
+# A money amount is a price: a currency code or symbol next to a number, either order
+# (EUR 600, €1.200,-, 600 EUR, $1,200.50). A number followed by % is a percentage.
+_NUMBER = r"(?:\d{1,3}(?:[.,]\d{3})+|\d+)(?:[.,](?:\d{1,2}|-{1,2}))?"
+_CODE, _SYMBOL = r"(?:EUR|USD|GBP|CHF)", r"[€$£¥]"
+AMOUNT = re.compile(rf"(?:{_START}{_CODE}\s?|{_SYMBOL}\s?){_NUMBER}(?![\d.,]*\s?%)"
+                    rf"|{_START}(?<![.,]){_NUMBER}[km]?\s?(?:{_SYMBOL}|{_CODE}{_END})", re.IGNORECASE)
+
+
 def terms_found(text: str, terms) -> list:
-    """Every term in `text`, after blanking the phrases `terms` excepts."""
+    """Every term in `text`, after blanking the phrases `terms` excepts; a money amount is
+    found as `amount` wherever `price` is one of the terms."""
     for phrase in getattr(terms, "excepted", ()):
         text = _term_re(phrase).sub(" ", text)
-    return [str(term) for term in terms or [] if term_in(text, str(term))]
+    found = [str(term) for term in terms or [] if term_in(text, str(term))]
+    if any(str(term).strip().lower() == "price" for term in terms or []) and AMOUNT.search(text):
+        found.append("amount")
+    return found
 
 
 def first_term(text: str, terms) -> str | None:
