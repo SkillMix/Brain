@@ -225,25 +225,31 @@ def collect(root: Path, space, reg, now) -> dict:
         rel, pid, title = path.relative_to(root).as_posix(), str(fm.get("id") or ""), str(fm.get("title") or path.stem)
         tier = "system" if _is_system(fm, space) else "witness"
         state = str(fm.get("state") or "").lower()
-        informs = [i for i in fm.get("informs") or [] if isinstance(i, dict)]
+        routing = fm.get("routing") if isinstance(fm.get("routing"), dict) else {}
+        # the router's reading: what it informs here (`informs`) and elsewhere (`routing.informs`,
+        # kept apart so distill never turns it into a second candidate); its projections' ids
+        # stand for the record when a later route closes one
+        informs = [i for i in list(fm.get("informs") or []) + list(routing.get("informs") or [])
+                   if isinstance(i, dict)]
         if informs:
-            informed.append((sids, at, tier, rel, pid, body, informs, _thread_of(fm, title)))
+            refs = {pid} | {str(x) for x in routing.get("items") or []}
+            informed.append((sids, at, tier, rel, pid, body, informs, _thread_of(fm, title), refs))
+        # a record the router decided holds its thread with no guessed direction
+        read = bool(informs) or routing.get("decision") in ("route", "private")
         for sid in sids:
             if fm.get("issue") and state in DONE_STATES:
                 add(sid, tier, scope, title, at, rel, pid, body, "closed", arrived=_stamp(fm))
                 add(sid, tier, scope, title, at, rel, pid, body, arrived=_stamp(fm))   # and on the timeline
                 continue
             add(sid, tier, scope, title, at, rel, pid, body, arrived=_stamp(fm))
-            if informs:
-                continue
-            key, direction = (sid, _thread_of(fm, title)), _direction(fm, own)
+            key, direction = (sid, _thread_of(fm, title)), "" if read else _direction(fm, own)
             last = threads.get(key)
             # the newest record holds the thread; at the same moment, the one that knows who moves next
             if last is None or at > last[0] or (at == last[0] and direction and not last[6]):
                 threads[key] = (at, tier, title, rel, pid, body, direction)
-    closes = {str(i["closes"]) for *_, informs, _ in informed for i in informs if i.get("closes")}
+    closes = {str(i["closes"]) for *_, informs, _, _ in informed for i in informs if i.get("closes")}
     routed_since = now - space.scale(OPEN_DAYS * 24)
-    for sids, at, tier, rel, pid, body, informs, thread in informed:
+    for sids, at, tier, rel, pid, body, informs, thread, refs in informed:
         for item in informs:
             if item.get("kind") != "open_item":
                 continue
@@ -251,8 +257,10 @@ def collect(root: Path, space, reg, now) -> dict:
             direction = str(item.get("direction") or "internal")
             direction = direction if direction in DIRECTIONS else "internal"
             for sid in sids:
+                if item.get("subject") and str(item["subject"]) != sid:   # informs one subject only
+                    continue
                 said = closed.get((sid, thread))
-                if pid in closes or (said and at <= said[0]):   # a later record, or the person, closed it
+                if refs & closes or (said and at <= said[0]):   # a later record, or the person, closed it
                     add(sid, tier, scope, label, at, rel, pid, body, "closed")
                 elif at >= routed_since:
                     add(sid, tier, scope, label, at, rel, pid, body, "open", direction=direction)
@@ -347,6 +355,7 @@ def _see_also(root: Path) -> dict:
 OPEN_DAYS = 14
 DONE_STATES = {"done", "closed", "completed", "canceled", "cancelled", "duplicate", "merged"}
 DIRECTIONS = ("we owe", "waiting on them", "internal")
+AUTOMATED = re.compile(r"^(no[-_.]?reply|do[-_.]?not[-_.]?reply|notifications?|mailer-daemon|postmaster|bounces?)[-_.+@]")
 
 
 def _informs_label(item: dict) -> str:
@@ -397,6 +406,8 @@ def _direction(fm: dict, own) -> str:
     if fm.get("issue"):
         return "internal"
     if fm.get("kind") not in ("mail", "message") or not own:
+        return ""
+    if AUTOMATED.match(registry_mod.address_of(fm.get("from"))):   # a notice holds no next move
         return ""
     sender = _domain(fm.get("from"))
     if not sender:

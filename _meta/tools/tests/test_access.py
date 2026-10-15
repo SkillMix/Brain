@@ -33,6 +33,53 @@ def test_audience_names_without_a_login_are_named_and_unknown_readers_not_guesse
     assert report.unverified == ["Ben Liu"] and report.extra == ["chloe-gh"]
 
 
+def a_space(tmp_path, audience, people=PEOPLE, profile="project"):
+    root = make_space(tmp_path / "lantern", profile=profile, name="lantern", owner="Ada Okafor",
+                      audience=audience, subjects=people)
+    (root / ".git").mkdir()
+    (root / ".git" / "config").write_text('[remote "origin"]\n\turl = https://github.com/lantern/brain.git\n',
+                                          encoding="utf-8")
+    return root
+
+
+def test_everyone_is_every_registered_person_so_colleagues_are_not_flagged(tmp_path):
+    root = a_space(tmp_path, "everyone", profile="brain")
+    report = access.check(root, readers_fn=lambda repo: ["ada-gh", "Ben-GH", "chloe-gh"])
+    assert report.extra == [] and report.unverified == []
+
+
+def test_everyone_still_flags_a_reader_nobody_registered(tmp_path):
+    root = a_space(tmp_path, "everyone", profile="brain")
+    report = access.check(root, readers_fn=lambda repo: ["ada-gh", "ben-gh", "stranger"])
+    assert report.extra == ["stranger"]
+
+
+def test_everyone_leaves_out_an_archived_person(tmp_path):
+    people = PEOPLE[:2] + [dict(PEOPLE[2], state="archived")]
+    root = a_space(tmp_path, "everyone", people=people, profile="brain")
+    report = access.check(root, readers_fn=lambda repo: ["ada-gh", "ben-gh", "chloe-gh"])
+    assert report.extra == ["chloe-gh"]
+
+
+def test_everyone_names_a_registered_person_without_a_login(tmp_path):
+    people = PEOPLE[:2] + [{k: v for k, v in PEOPLE[2].items() if k != "match"}]
+    root = a_space(tmp_path, "everyone", people=people, profile="brain")
+    report = access.check(root, readers_fn=lambda repo: ["ada-gh", "ben-gh"])
+    assert report.unverified == ["Chloe Martin"] and report.extra == []
+
+
+def test_crew_is_the_owner_when_the_space_lists_no_one_else(tmp_path):
+    root = a_space(tmp_path, "crew")
+    report = access.check(root, readers_fn=lambda repo: ["ada-gh", "ben-gh"])
+    assert report.extra == ["ben-gh"] and report.unverified == []
+
+
+def test_owner_is_the_owner_alone(tmp_path):
+    root = a_space(tmp_path, "owner")
+    report = access.check(root, readers_fn=lambda repo: ["ada-gh", "ben-gh"])
+    assert report.extra == ["ben-gh"] and report.unverified == []
+
+
 def test_nothing_is_written_when_the_host_cannot_list_readers(tmp_path):
     root = harbor(tmp_path)
     report = access.check(root, readers_fn=lambda repo: None)

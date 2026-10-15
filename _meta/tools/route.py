@@ -3,7 +3,8 @@
 An agent reads each new witness page in full and decides where it belongs: it stays private, or
 it informs a subject in a space, at once or after the window, whole or as verbatim parts. This
 tool lists what waits, validates a decision, applies the gates, writes the projections into
-`_outbound/queue/`, logs every decision and stamps the witness page. It never decides a route.
+`_outbound/queue/`, logs every decision and stamps the witness page (what a route informs elsewhere
+under `routing.informs`, which this space's status page reads). It never decides a route.
 
 Gates (refused: nothing written, the reason printed): the destination must be the subject's
 home; every part must be a verbatim span of the record (whitespace aside); `whole` only when
@@ -496,7 +497,7 @@ def record(root, decision: dict, now: dt.datetime | None = None, by: str | None 
         _withdraw(root, rec["record"], "superseded", "replaced by the projection of the refreshed page",
                   router_only=True)
     elsewhere = release.first_term(f"{rec['title']}\n{rec['text']}", space.never_leaves)
-    items, here_informs = [], []
+    items, here_informs, away_informs = [], [], []
     for r in decision.get("routes") or []:
         dest_name, sid = str(r["space"]), str(r["subject"])
         if dest_name == space.name:
@@ -504,6 +505,7 @@ def record(root, decision: dict, now: dt.datetime | None = None, by: str | None 
             row["routes"].append({"space": dest_name, "subject": sid, "outcome": "attached"})
             here_informs += [dict(i) for i in r.get("informs") or []]
             continue
+        away_informs += [dict(i, subject=sid) for i in r.get("informs") or []]
         dest_space = release.destination_space(space, dest_name)
         content = _projection(rec, r)
         shown = dict(rec, title=str(r.get("title") or "").strip() or rec["title"])   # the route's own title, if it gives one
@@ -571,6 +573,9 @@ def record(root, decision: dict, now: dt.datetime | None = None, by: str | None 
                 "items": list(prior.get("items") or []) + items, "by": by or "router"}
     if decision.get("scope"):   # a subject backfill: the record still waits for its other subjects
         stamping["scope"] = sorted(set(_decided_for(fm)) | {str(x) for x in decision["scope"]})
+    away_informs = list(prior.get("informs") or []) + away_informs
+    if away_informs:   # what it informs elsewhere, for this space's status page; never `informs`, which distill reads
+        stamping["informs"] = away_informs
     stamped = dict(fm, routing=stamping)
     if here_informs:   # what it informs in this space stays on the page itself
         stamped["informs"] = list(fm.get("informs") or []) + here_informs
