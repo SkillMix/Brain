@@ -478,8 +478,8 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
     records = [r for r in feed if str(r.get("_feed")) not in marks or r.get("admitted") or r.get("backfill")
                or pages.parse_iso(r["at"]) > marks[str(r.get("_feed"))]]
     newest_by_feed = dict(marks)
-    for r in records:
-        at, name = pages.parse_iso(r["at"]), str(r.get("_feed"))
+    for r in records:   # an upcoming event never moves a mark past this run
+        at, name = min(pages.parse_iso(r["at"]), now), str(r.get("_feed"))
         if name not in newest_by_feed or at > newest_by_feed[name]:
             newest_by_feed[name] = at
     # Re-attach: a witness page written while the registry could not place its record (no
@@ -526,7 +526,7 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
         at = pages.parse_iso(record["at"])
         report.records_seen += 1
         if not record.get("_reattach"):
-            newest = at if newest is None or at > newest else newest
+            newest = min(at, now) if newest is None or at > newest else newest
         if is_own_notice(space, record):
             report.plan.append(f"skip {record['id']}: the workspace's own notice")
             continue

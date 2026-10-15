@@ -711,6 +711,18 @@ def test_a_refresh_takes_the_deeper_exports_people_too(tmp_path):
     assert pages.read(page)[0]["cc"] == ["eve@elsewhere.example"]
 
 
+def test_an_upcoming_event_does_not_move_the_mark_past_the_run(tmp_path):
+    """A calendar export holds events that have not happened yet; the feed's mark stops at the
+    run's own time, so an event added later that starts sooner is still swept."""
+    _, _, ada = build(tmp_path, routing={})
+    write_feed(ada, [record("e-0001", at=(NOW + dt.timedelta(days=5)).strftime("%Y-%m-%dT%H:%M:%SZ"))])
+    sweep.run(ada, now=NOW)
+    write_feed(ada, [record("e-0001", at=(NOW + dt.timedelta(days=5)).strftime("%Y-%m-%dT%H:%M:%SZ")),
+                     record("e-0002", at=(NOW + dt.timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ"))])
+    sweep.run(ada, now=NOW + dt.timedelta(hours=1))
+    assert list((ada / "knowledge" / "sources").rglob("e-0002.md")), "the sooner event is swept"
+
+
 def test_a_backfill_re_export_deepens_old_pages_behind_the_mark(tmp_path):
     """A backfill re-reads older records in full: they are behind the feed's mark, yet the sweep
     reads them, so their shallow pages deepen in place."""
