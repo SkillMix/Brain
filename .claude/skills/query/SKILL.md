@@ -81,6 +81,8 @@ and how old the ground is.
 - Never state a witness or working line as fact; never drop the tier or the age.
 - Never quote never-leaves material or anything from a space the asker cannot read; a
   subject whose home the asker cannot read gets "ask <owner>", not a guess.
+  Left-out terms (prices, fees, terms) limit what travels between spaces, not what an asker
+  reads in a space of their own: answer its owner with them, marked as staying home.
 - Never write the answer into `knowledge/` (capture it; distill proposes; a person signs).
 
 ## Scheduled invocation

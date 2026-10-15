@@ -217,8 +217,9 @@ def collect(root: Path, space, reg, now) -> dict:
     informed = []   # pages whose router said what they inform: their open items replace the thread's
     for path, fm, body in _read_pages(root / "knowledge" / "sources"):
         at = _stamp(fm, "at")
-        # evidence attaches by identifier or by a routing decision; a mention alone stays out
-        sids = [s for s in registry_mod.routed_subjects(fm, space.name) if s in known]
+        # evidence attaches by identifier or by a routing decision, wherever the route went (the
+        # record is this space's own); a mention alone stays out
+        sids = [s for s in registry_mod.routed_subjects(fm, None) if s in known]
         if not sids or at is None:
             continue
         rel, pid, title = path.relative_to(root).as_posix(), str(fm.get("id") or ""), str(fm.get("title") or path.stem)
