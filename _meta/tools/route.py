@@ -500,11 +500,12 @@ def record(root, decision: dict, now: dt.datetime | None = None, by: str | None 
             continue
         dest_space = release.destination_space(space, dest_name)
         content = _projection(rec, r)
+        shown = dict(rec, title=str(r.get("title") or "").strip() or rec["title"])   # the route's own title, if it gives one
         # everything that would travel or explain the projection is checked: its parts, what it
         # informs (text and owner) and the router's reason
         said = " ".join([str(r.get("why") or "")] + [f"{i.get('text', '')} {i.get('owner', '')}"
                                                      for i in r.get("informs") or []])
-        projected = f"{rec['title']}\n{content}\n{said}"
+        projected = f"{shown['title']}\n{content}\n{said}"
         term = release.first_term(projected, space.never_leaves)
         hold_reason = "never_leaves" if term else None
         if not hold_reason:
@@ -539,7 +540,7 @@ def record(root, decision: dict, now: dt.datetime | None = None, by: str | None 
         extra.update({"why": "; ".join(x for x in reasons if x), "informs": list(r.get("informs") or []),
                       "confidence": decision["confidence"], "routed_by": by or "router",
                       "content": r.get("content")})
-        item = sweep.item_frontmatter(space, _as_record(rec), sid, dest_name, hold_reason or tier,
+        item = sweep.item_frontmatter(space, _as_record(shown), sid, dest_name, hold_reason or tier,
                                       stage_after, now, extra)
         if hold_reason:
             release.hold(root, item, content, hold_reason,

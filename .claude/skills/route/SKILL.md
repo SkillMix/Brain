@@ -63,6 +63,7 @@ routes:
     tier: at_once | window
     why: <why this space; why this tier>
     content: whole | parts
+    title: <optional: this projection's title, when the record's own names what the parts leave out>
     parts:
       - text: <a passage or transcript segment copied exactly, whole lines>
         note: <optional: why this part is here, one line>
@@ -103,7 +104,8 @@ routes:
   refuses `whole` otherwise. Else `parts`: the relevant passages and transcript segments verbatim,
   whole lines, never a summary in their place. Leave out every passage with a left-out term of
   the destination (prices, fees, pay, credentials, client data, other clients) or a never-leaves
-  term: the tool holds a projection that carries one. A phrase in the destination's
+  term: the tool holds a projection that carries one. The record's title travels too: when it
+  names what the parts leave out, give the route a plain `title` of your own. A phrase in the destination's
   `left_out_except` (a practice's or product's name that holds a left-out word) does not count.
 - **Tier.** `at_once` for ordinary work of that space (a client writing to the team about the
   work, a meeting of the crew). `window` when it is more sensitive: a person's situation, money,
