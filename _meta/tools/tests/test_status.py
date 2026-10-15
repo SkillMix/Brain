@@ -175,6 +175,28 @@ def test_a_later_route_closes_an_item_by_the_projection_it_names(tmp_path):
     assert "Their legal team reviews it" in body.split("## Recently closed")[1].split("## Timeline")[0]
 
 
+def test_a_later_route_replaces_one_item_of_several_it_restates(tmp_path):
+    """A record holding several items names each one; restating one replaces it, the others stand."""
+    root = make_space(tmp_path / "ada", subjects=[HARBOR], owner_email="ada@lantern.example")
+    witness(root, "m-1", None, "2026-10-08T08:00:00Z", title="Check-up call", id="p-0000ee11",
+            routing={"decision": "route", "routes": ["brain/harbor"], "items": ["p-0000ee01"],
+                     "informs": [{"subject": "harbor", "kind": "open_item", "text": "Board approval expected Friday",
+                                  "direction": "waiting on them"},
+                                 {"subject": "harbor", "kind": "open_item", "text": "Send the retention periods",
+                                  "direction": "we owe"}]})
+    witness(root, "m-2", None, "2026-10-11T12:00:00Z", title="Invite for the follow-up", id="p-0000ee12",
+            routing={"decision": "route", "routes": ["brain/harbor"], "items": ["p-0000ee02"],
+                     "informs": [{"subject": "harbor", "kind": "open_item", "text": "Board approval moved to Monday",
+                                  "direction": "waiting on them", "replaces": "p-0000ee01.1"}]})
+    status.run(root, now=NOW)
+    body = pages.read(root / "live" / "subjects" / "harbor.md")[1]
+    assert "Board approval expected Friday" not in body, "a restated item is replaced, not listed again"
+    assert "- Board approval moved to Monday (witness, mine, 2026-10-11, p-0000ee12)" in body
+    assert "- Send the retention periods (witness, mine, 2026-10-08, p-0000ee11.2)" in body
+    assert status.close(root, "harbor", "p-0000ee11.2", by="Ada Okafor", now=NOW) == "check-up call"
+    assert errors(root) == []
+
+
 def test_an_automated_mail_is_not_something_we_owe(tmp_path):
     """Without a routing decision the direction is a guess; a no-reply sender holds no next move."""
     root = make_space(tmp_path / "ada", subjects=[HARBOR], owner_email="ada@lantern.example")

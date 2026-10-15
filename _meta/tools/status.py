@@ -67,10 +67,12 @@ class Evidence:
     status: str = ""
     arrived: dt.datetime | None = None   # when this space saw it (generated.at), for dormancy
     direction: str = ""         # for an open item: we owe | waiting on them | internal
+    item: int = 0               # its place among its record's open items, when the record holds several
 
     def line(self) -> str:
-        # an open item shows its page id, so "item 2 is done" can name exactly that thread
-        ref = f", {self.id}" if self.section == "open" and self.id else ""
+        # an open item shows its page id, so "item 2 is done" can name exactly that thread; one of
+        # several from one record adds its place, so a later route can replace that one alone
+        ref = f", {self.id}{f'.{self.item}' if self.item else ''}" if self.section == "open" and self.id else ""
         return f"- {self.title} ({self.tier}, {self.scope}, {self.at:%Y-%m-%d}{ref})"
 
 
@@ -204,12 +206,12 @@ def collect(root: Path, space, reg, now) -> dict:
     seen: set = set()
 
     def add(sid, tier, scope_, title, at, rel="", pid="", text="", section="timeline", ptype="",
-            status="", arrived=None, direction=""):
+            status="", arrived=None, direction="", item=0):
         if (sid, section, title, at) in seen:   # one record witnessed twice shows once
             return
         seen.add((sid, section, title, at))
         found.setdefault(sid, []).append(Evidence(sid, tier, scope_, title, at, rel, pid, text,
-                                                  section, ptype, status, arrived, direction))
+                                                  section, ptype, status, arrived, direction, item))
 
     own = _own_domains(space, reg)
     threads: dict = {}
@@ -247,23 +249,28 @@ def collect(root: Path, space, reg, now) -> dict:
             # the newest record holds the thread; at the same moment, the one that knows who moves next
             if last is None or at > last[0] or (at == last[0] and direction and not last[6]):
                 threads[key] = (at, tier, title, rel, pid, body, direction)
-    closes = {str(i["closes"]) for *_, informs, _, _ in informed for i in informs if i.get("closes")}
+    # a later route names an item by the id on its line: `closes` when it settled the item,
+    # `replaces` when it restates the item (a new date, owner or step) and takes its place
+    closes, replaces = ({str(i[key]) for *_, informs, _, _ in informed for i in informs if i.get(key)}
+                        for key in ("closes", "replaces"))
     routed_since = now - space.scale(OPEN_DAYS * 24)
     for sids, at, tier, rel, pid, body, informs, thread, refs in informed:
-        for item in informs:
-            if item.get("kind") != "open_item":
-                continue
-            label = _informs_label(item)
-            direction = str(item.get("direction") or "internal")
-            direction = direction if direction in DIRECTIONS else "internal"
-            for sid in sids:
-                if item.get("subject") and str(item["subject"]) != sid:   # informs one subject only
-                    continue
+        for sid in sids:
+            items = [i for i in informs if i.get("kind") == "open_item"
+                     and not (i.get("subject") and str(i["subject"]) != sid)]   # informs one subject only
+            for n, item in enumerate(items, 1):
+                names = refs | {f"{r}.{n}" for r in refs}   # the whole record, or this item of it
+                label = _informs_label(item)
+                direction = str(item.get("direction") or "internal")
+                direction = direction if direction in DIRECTIONS else "internal"
                 said = closed.get((sid, thread))
-                if refs & closes or (said and at <= said[0]):   # a later record, or the person, closed it
+                if names & closes or (said and at <= said[0]):   # a later record, or the person, closed it
                     add(sid, tier, scope, label, at, rel, pid, body, "closed")
+                elif names & replaces:
+                    continue
                 elif at >= routed_since:
-                    add(sid, tier, scope, label, at, rel, pid, body, "open", direction=direction)
+                    add(sid, tier, scope, label, at, rel, pid, body, "open", direction=direction,
+                        item=n if len(items) > 1 else 0)
     open_since = now - space.scale(OPEN_DAYS * 24)
     for (sid, thread), (at, tier, title, rel, pid, body, direction) in threads.items():
         said = closed.get((sid, thread))
@@ -328,6 +335,7 @@ def close(root, subject: str, page_id: str, as_: str = "done", by: str | None = 
         raise ValueError(f"as is one of {', '.join(CLOSE_AS)}")
     space = spaceyaml.load(root)
     now = now or space.now()
+    page_id = re.sub(r"\.\d+$", "", page_id)   # one item of several (`<id>.<n>`): the person closes its thread
     for path, fm, body in _read_pages(root / "knowledge" / "sources"):
         if str(fm.get("id") or "") == page_id or str(fm.get("record") or "") == page_id:
             thread = _thread_of(fm, str(fm.get("title") or path.stem))
