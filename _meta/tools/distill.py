@@ -29,8 +29,8 @@ destination, a bracketed placeholder); `checked` stamps `checked: {by, at}` once
 Nothing here writes `status: stable`, edits a page under knowledge/, or runs git.
 
     python distill.py [root] [--rebuild [--subject <id>]]
-    python distill.py [root] verify <candidate>
-    python distill.py [root] checked <candidate> --by <name>
+    python distill.py [root] verify <candidate path or subject id>
+    python distill.py [root] checked <candidate path or subject id> --by <name>
 """
 from __future__ import annotations
 
@@ -521,7 +521,10 @@ def body_units(body: str) -> list:
 
 def candidate_path(root: Path, candidate) -> Path:
     path = Path(candidate)
-    return path if path.is_absolute() or path.exists() else Path(root) / path
+    if path.is_absolute() or path.exists():
+        return path
+    named = Path(root) / CANDIDATES / f"{candidate}.md"   # a subject id names its candidate
+    return named if path.suffix != ".md" and named.exists() else Path(root) / path
 
 
 def verify(root, candidate) -> list:

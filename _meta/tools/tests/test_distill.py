@@ -368,6 +368,12 @@ def test_verify_passes_a_clean_candidate(tmp_path, capsys):
     assert capsys.readouterr().out.strip() == "clean"
 
 
+def test_a_candidate_is_named_by_its_path_or_its_subject(tmp_path):
+    root = make_space(tmp_path / "ada")
+    candidate_file(root, CLEAN, destination="harbor")
+    assert distill.verify(root, "_inbound/candidates/harbor.md") == distill.verify(root, "harbor") == []
+
+
 def test_verify_flags_a_line_without_a_source(tmp_path, capsys):
     root = make_space(tmp_path / "ada")
     body = CLEAN.replace("## People and roles\n\n",
