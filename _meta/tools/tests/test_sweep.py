@@ -604,6 +604,17 @@ def test_a_file_with_no_text_settles_its_attachment_without_a_page(tmp_path):
     assert sweep.attachments(ada) == [], "the feed record alone settles the attachment"
 
 
+def test_a_record_with_windows_line_endings_is_not_refreshed_again_and_again(tmp_path):
+    _, _, ada = build(tmp_path, routing={})
+    write_feed(ada, [record(text="Line one.\r\nLine two.\r\nLine three.", backfill=True)])
+    sweep.run(ada, now=NOW)
+    page, = list((ada / "knowledge" / "sources").rglob("m-0001.md"))
+    fm, body = pages.read(page)
+    pages.write(page, dict(fm, routing={"decision": "private"}), body)
+    report = sweep.run(ada, now=NOW + dt.timedelta(hours=1))
+    assert report.witness_written == 0 and pages.read(page)[0].get("routing"), "same text, no refresh"
+
+
 def test_a_page_over_the_size_limit_is_split_on_lines(tmp_path, monkeypatch):
     monkeypatch.setattr(sweep, "PART_BYTES", 60)
     _, _, ada = build(tmp_path, routing={})
