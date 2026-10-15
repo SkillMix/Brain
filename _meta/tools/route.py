@@ -447,14 +447,20 @@ def _question(root: Path, decision: dict, fm: dict, path: Path, now: dt.datetime
 def _withdraw(root: Path, record_id: str, reason: str, why: str, space_name: str | None = None,
               router_only: bool = False) -> list:
     out = []
-    for qp in sorted((root / release.QUEUE).glob("*.md")):
+    held = []   # what the router's own gates held: withdrawn too, so nobody lets it go by mistake
+    for hp in sorted((root / release.HELD).glob("*.md")):
+        hfm = pages.read(hp)[0]
+        if hfm.get("routed_by") and hfm.get("reason") in ("left_out", "never_leaves"):
+            held.append(hp)
+    for qp in sorted((root / release.QUEUE).glob("*.md")) + held:
         qfm, qbody = pages.read(qp)
         if router_only and not qfm.get("routed_by"):
             continue   # an item of the identifier path: the owner's own word decides it
         if record_id in [str(e) for e in qfm.get("evidence") or []] and \
                 (space_name is None or qfm.get("destination") == space_name):
             release.hold(root, qfm, qbody, reason, why)
-            qp.unlink()
+            if qp not in held:
+                qp.unlink()
             out.append(qfm["id"])
     return out
 
@@ -592,7 +598,7 @@ def answer(root, record_id, yes: bool, by: str, now: dt.datetime | None = None) 
 
 def retract(root, record_id, by: str, space: str | None = None, now: dt.datetime | None = None,
             queued_only: bool = False) -> dict:
-    """Undo a routing: projections still queued are withdrawn, shipped ones retracted.
+    """Undo a routing: projections still queued or held by the router are withdrawn, shipped ones retracted.
     `queued_only` changes a decision that still waits: only the router's queued projections are
     withdrawn, and nothing that already left (the owner's own releases included) is retracted."""
     root = Path(root)
