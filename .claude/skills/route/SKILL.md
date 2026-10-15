@@ -103,7 +103,8 @@ routes:
   destination's audience (its crew, and the client's own people for a client project); the tool
   refuses `whole` otherwise. Else `parts`: the relevant passages and transcript segments verbatim,
   whole lines, never a summary in their place. Leave out every passage with a left-out term of
-  the destination (prices, fees, pay, credentials, client data, other clients) or a never-leaves
+  the destination (prices, fees, pay, credentials, client data, other clients; a money amount such
+  as `EUR 600` counts as a price) or a never-leaves
   term: the tool holds a projection that carries one. The record's title travels too: when it
   names what the parts leave out, give the route a plain `title` of your own. A phrase in the destination's
   `left_out_except` (a practice's or product's name that holds a left-out word) does not count.
