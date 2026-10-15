@@ -720,6 +720,11 @@ def _existing_text(root: Path, fm: dict, body: str, record: dict) -> str:
     return "".join(texts)
 
 
+def _as_stored(text: str) -> str:
+    """Text as a page keeps it (bare newlines, no trailing spaces): a refresh compares like with like."""
+    return "\n".join(line.rstrip() for line in str(text).replace("\r\n", "\n").split("\n")).strip()
+
+
 def _refresh(root: Path, target: Path, record: dict, now: dt.datetime, dry_run: bool, report) -> bool:
     """A deeper re-export of a record whose page exists: the page keeps its id and frontmatter,
     takes the longer text (or the record's own text, when the page held an archive's retelling),
@@ -733,9 +738,8 @@ def _refresh(root: Path, target: Path, record: dict, now: dt.datetime, dry_run: 
     new_text = str(record.get("text") or "")
     # an archive page's retelling gives way to the record itself, however short the record is
     original = old_fm.get("imported_from") and not (record.get("imported_from") or record.get("witness_page"))
-    flat = new_text.replace("\r\n", "\n")   # a page stores bare newlines: compare like with like
-    if old_fm.get("status") == "stable" or not new_text.strip() or (not original and len(flat) <= len(
-            _existing_text(root, old_fm, old_body, record).replace("\r\n", "\n"))):
+    if old_fm.get("status") == "stable" or not new_text.strip() or (not original and len(_as_stored(new_text))
+            <= len(_as_stored(_existing_text(root, old_fm, old_body, record)))):
         return False
     fm = {k: v for k, v in old_fm.items() if k not in ("routing", "part", "parts", "imported_from")}
     # the deeper export knows the people and the thread better than the shallow one did
