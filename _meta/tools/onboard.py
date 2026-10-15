@@ -144,12 +144,13 @@ def humanize(slug) -> str:
     return " ".join(w.capitalize() for w in re.split(r"[-_\s]+", str(slug)) if w)
 
 
-def parse_list(value, default=None) -> list:
+def parse_list(value, default=None, sep=",") -> list:
+    """A list answer; categories (sentences that hold commas) are split on `;`."""
     if value is None or value == "" or (isinstance(value, str) and value.strip().lower() == "default"):
         return list(default or [])
     if isinstance(value, list):
         return list(value)
-    items = [v.strip() for v in str(value).split(",") if v.strip()]
+    items = [v.strip() for v in str(value).split(sep) if v.strip()]
     return [] if [i.lower() for i in items] == ["none"] else items
 
 
@@ -281,7 +282,7 @@ def space_values(answers, name, owner, owner_email, audience, parent, brain_repo
             "audience": audience, "parent": parent, "mode": answers.get("mode") or "live",
             "time_scale": answers.get("time_scale"),
             "kinds": parse_list(answers.get("kinds"), spaceyaml.DEFAULTS["kinds"]),
-            "never_leaves": parse_list(answers.get("never_leaves"), spaceyaml.DEFAULTS["never_leaves"]),
+            "never_leaves": parse_list(answers.get("never_leaves"), spaceyaml.DEFAULTS["never_leaves"], ";"),
             "left_out": list(spaceyaml.DEFAULTS["left_out"]),
             "protected": list(spaceyaml.DEFAULTS["protected"]),
             "standing_choices": list(standing_choices or []), "sources": sources_of(feeds),
@@ -476,13 +477,14 @@ def fill_registry(report, root, answers, top_owner, brain_name, now) -> None:
 
 
 def write_identity(root, company, owner, domains, never_leaves, now) -> None:
-    terms = ", ".join(never_leaves) or "nothing beyond the hard rules"
+    terms = "; ".join(never_leaves) or "nothing beyond the hard rules"
     owners = "\n".join(f"- {humanize(d['id'])}: {d['owner']}" for d in domains) or "- none declared yet"
     drafts = {
         "identity/charter.md": ("policy", "Charter",
             f"# Charter\n\nThis space is the brain of {company}. Everyone in the company reads it; "
-            f"{owner} signs for it.\n\n## What never leaves\n\nThese terms mark what stays in the space "
-            f"that holds it, whatever the release class: {terms}. The list itself is the `never_leaves` "
+            f"{owner} signs for it.\n\n## What never leaves\n\nMatter of these kinds stays in the space "
+            f"that holds it, whatever the release class: {terms}. An agent reads each record against "
+            f"them; they are not words to match. The list itself is the `never_leaves` "
             f"setting in `space.yaml`; this page explains it in words.\n\n## Domains and their owners\n\n"
             f"{owners}\n\nDrafted by onboard from the interview; the owner signs it.\n"),
         "identity/spine.md": ("concept", "Spine",
@@ -505,7 +507,7 @@ def write_needs_you(root, skipped, path="_inbound/needs-you/onboard.yaml", prefi
     existing = (read_yaml(target, {}) or {}).get("items") or []
     kept = [i for i in existing if not str(i.get("id", "")).startswith(prefix + "-")]
     items = kept + [{"id": f"{prefix}-{q['key']}", "kind": "question", "text": q["ask"],
-                     "recommendation": ", ".join(map(str, q["default"])) if isinstance(q["default"], list)
+                     "recommendation": joiner(q).join(map(str, q["default"])) if isinstance(q["default"], list)
                      else str(q["default"]), "default": "the default stays", "deadline": None,
                      "depends": 1, "payload": "space.yaml", "fingerprint": ""} for q in skipped]
     if items or target.exists():
@@ -1039,6 +1041,11 @@ def default_of(question, root=None):
     return default
 
 
+def joiner(q) -> str:
+    """Categories are sentences that may hold commas: they are shown and split on `;`."""
+    return "; " if q.get("kind") == "categories" else ", "
+
+
 def interview(answers, interactive, case, root=None) -> dict:
     """Fill the questions for `case` from `answers`, then defaults; ask on stdin when interactive."""
     out, skipped = dict(answers or {}), []
@@ -1052,7 +1059,7 @@ def interview(answers, interactive, case, root=None) -> dict:
             out[key] = default
             skipped.append({**q, "default": default})
             continue
-        shown = ", ".join(map(str, default)) if isinstance(default, list) else (str(default) or "none")
+        shown = joiner(q).join(map(str, default)) if isinstance(default, list) else (str(default) or "none")
         try:
             raw = input(f"{q['ask']} [{shown}; `skip` to decide later] ").strip()
         except EOFError:  # stdin closed: every remaining default stands
@@ -1060,7 +1067,7 @@ def interview(answers, interactive, case, root=None) -> dict:
         if raw.lower() == "skip":
             skipped.append({**q, "default": default})
         out[key] = default if raw == "" or raw.lower() == "skip" else (
-            parse_list(raw) if q.get("kind") in ("list", "choice") else raw)
+            parse_list(raw, sep=joiner(q).strip()) if q.get("kind") in ("list", "choice", "categories") else raw)
     out["_skipped"] = skipped
     return out
 
@@ -1120,7 +1127,7 @@ def run(root, answers, offline=False, org=None, dry_run=False, home=None, user_i
         for d in domains:
             d["owner"] = names.get(d["owner"], d["owner"])
         write_identity(root, company, top["name"], domains,
-                       parse_list(answers.get("never_leaves"), spaceyaml.DEFAULTS["never_leaves"]), now)
+                       parse_list(answers.get("never_leaves"), spaceyaml.DEFAULTS["never_leaves"], ";"), now)
         skipped = list(skipped) + [{"key": "identity", "ask": (
             f"The identity of {company} is drafted (identity/charter.md and the spine): read it and "
             "sign it, or say what to change"), "default": "sign it when it reads right"}]

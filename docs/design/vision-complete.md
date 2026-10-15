@@ -427,3 +427,15 @@ and a reply `left 2 no` pulls back what the briefing listed under Left yesterday
 connector permissions stay per person; combined answers and hit expansion live in the query
 skill; the narrowest-shared-space rule is stated in `rules.md`; a corridor to a project
 includes its crew; the project case starts from a seed or a mint signal.
+## 13. Judged gates (2026-10-15)
+
+The word rules above (a client mail naming a registered person is high-stakes, the default
+high-stakes words, left-out and never-leaves terms matched in the text, phrase exceptions,
+money-amount patterns) are replaced by one rule: topics are judged by the agent that reads the
+whole record, facts are checked by the tools. The never-leaves, left-out and high-stakes lists
+stay in `space.yaml` as categories an agent reads against. The router marks `never_leaves` and
+`high_stakes` with a one-line why, a second agent checks every decision that sends anything
+out, and the tools keep the secrets scan, verbatim parts, destination, audience and mode. A
+space without the router sends a record at once only when its destination already reads the
+source; everything else waits for its person's yes. Spec:
+`docs/superpowers/specs/2026-10-15-judged-gates-design.md`.

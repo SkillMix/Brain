@@ -14,32 +14,33 @@ from conftest import NOW
 from test_release import build, landed, queue_paths
 from test_sweep import record, write_feed
 
-CHOICE = [{"destination": "harbor", "kind": "mail"}]
+from test_sweep import CREW_MAIL
 
 
 def _shipped(tmp_path):
-    _, harbor, ada = build(tmp_path, standing_choices=CHOICE)
+    _, harbor, ada = build(tmp_path, sources=CREW_MAIL)
     write_feed(ada, [record()])
     sweep.run(ada, now=NOW)
     (path,) = queue_paths(ada)
     fm, _ = pages.read(path)
-    assert fm["path"] == "standing_choice:harbor:mail"
+    assert fm["path"] == "audience:mail"
     release.ship(ada, now=NOW, offline_roots={"harbor": harbor})
     (shipped, _), = landed(harbor)
     row = json.loads((ada / "_meta/state/released.jsonl").read_text(encoding="utf-8").splitlines()[-1])
-    assert row["path"] == "standing_choice:harbor:mail"
+    assert row["path"] == "audience:mail"
     return harbor, ada, shipped["id"]
 
 
 def test_a_retraction_pauses_the_path_and_the_next_record_waits(tmp_path):
     harbor, ada, item_id = _shipped(tmp_path)
     release.retract(ada, item_id, now=NOW + dt.timedelta(hours=1))
-    assert release.is_paused(ada, "standing_choice:harbor:mail", NOW + dt.timedelta(days=27))
-    assert not release.is_paused(ada, "standing_choice:harbor:mail", NOW + dt.timedelta(days=29))
+    assert release.is_paused(ada, "audience:mail", NOW + dt.timedelta(days=27))
+    assert not release.is_paused(ada, "audience:mail", NOW + dt.timedelta(days=29))
     write_feed(ada, [record(), record("m-0002", at="2026-10-12T09:30:00Z")])
     sweep.run(ada, now=NOW + dt.timedelta(hours=2))
-    newest = [pages.read(p)[0] for p in queue_paths(ada) if pages.read(p)[0].get("evidence") == ["m-0002"]]
-    assert newest and newest[0]["class"] == "window"
+    held = [pages.read(p)[0] for p in sorted((ada / "_outbound" / "held").glob("*.md"))]
+    newest = [fm for fm in held if fm.get("evidence") == ["m-0002"]]
+    assert newest and newest[0]["reason"] == "doubt" and "paused" in newest[0]["why"]
 
 
 def test_no_on_an_item_that_already_left_retracts_it_and_pauses(tmp_path):
@@ -47,7 +48,7 @@ def test_no_on_an_item_that_already_left_retracts_it_and_pauses(tmp_path):
     report = sign.apply(ada, {item_id: "no"}, by="Ada Okafor", now=NOW + dt.timedelta(hours=1))
     assert item_id in report.retracted
     assert any(pages.read(p)[0].get("retracts") == item_id for p in queue_paths(ada))
-    assert release.is_paused(ada, "standing_choice:harbor:mail", NOW + dt.timedelta(days=1))
+    assert release.is_paused(ada, "audience:mail", NOW + dt.timedelta(days=1))
 
 
 def test_a_failed_sample_signal_pauses_the_path_in_the_releasing_space(tmp_path):
@@ -58,7 +59,7 @@ def test_a_failed_sample_signal_pauses_the_path_in_the_releasing_space(tmp_path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(yaml.safe_dump(signal), encoding="utf-8")
     status.run(ada, now=NOW + dt.timedelta(hours=1))
-    assert release.is_paused(ada, "standing_choice:harbor:mail", NOW + dt.timedelta(days=2))
+    assert release.is_paused(ada, "audience:mail", NOW + dt.timedelta(days=2))
     rows = [json.loads(l) for l in (ada / "_meta/state/paused.jsonl").read_text(encoding="utf-8").splitlines()]
     assert rows[-1]["reason"] == "failed sample" and rows[-1]["item"] == item_id
     status.run(ada, now=NOW + dt.timedelta(hours=2))

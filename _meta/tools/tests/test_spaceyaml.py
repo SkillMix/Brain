@@ -93,8 +93,17 @@ def test_routing_history_since_and_archives(tmp_path):
     assert spaceyaml.load(make_space(tmp_path / "gus", routing={"archives": "yes"})).routing_archives is False
 
 
-def test_left_out_defaults_name_information_not_its_form():
-    """The owner decided verbatim transcript parts and attachment text may travel: the left-out
-    list keeps the kinds of information, not the forms they arrive in."""
-    assert not {"attachment", "attachments", "transcript", "transcripts"} & set(spaceyaml.DEFAULTS["left_out"])
-    assert {"price", "fee", "day rate", "salary", "password", "client data"} <= set(spaceyaml.DEFAULTS["left_out"])
+def test_the_lists_are_categories_an_agent_reads():
+    """Never matched as words: each default entry is a short sentence naming a kind of
+    information, never the form it arrives in (verbatim transcript parts and attachments travel)."""
+    for key in ("left_out", "never_leaves", "high_stakes"):
+        entries = spaceyaml.DEFAULTS[key]
+        assert entries and all(len(e.split()) >= 3 for e in entries), key
+    left_out = " ".join(spaceyaml.DEFAULTS["left_out"]).lower()
+    assert "transcript" not in left_out and "attachment" not in left_out
+    assert all(word in left_out for word in ("price", "pay", "password", "client"))
+
+
+def test_an_exception_list_is_accepted_and_ignored(tmp_path):
+    space = spaceyaml.load(make_space(tmp_path / "ada", left_out_except=["transfer pricing"]))
+    assert space.errors() == [] and not hasattr(space, "left_out_except")

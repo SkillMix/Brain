@@ -176,8 +176,9 @@ candidate when it is being rebuilt (`--rebuild`). `path` prints the brief's path
   candidate from scratch: no old body, the evidence as it is now, no inherited set-aside list.
   Used after a backfill, or when a candidate's evidence is known to be wrong.
 - **Check.** `python _meta/tools/distill.py <root> verify <candidate>` lists every problem: a
-  line without a source, a source not in `evidence`, a never-leaves term, a left-out term of the
-  destination, a bracketed unknown or question mark placeholder. Then a second agent reads the
+  line without a source, a source not in `evidence`, a bracketed unknown or question mark
+  placeholder (never-leaves and left-out matter is the second agent's judgement since
+  2026-10-15, judged gates). Then a second agent reads the
   candidate against each cited record and fixes or removes any line its source does not
   support; `python _meta/tools/distill.py <root> checked <candidate> --by <name>` stamps
   `checked: {by, at}`. A candidate reaches Needs you only when `verify` is clean and it is
@@ -233,8 +234,8 @@ decided for the pilot's subjects only and stays pending for the rest.
   with two shared participants); `same_meeting` on two recordings; lessons, briefs and archives
   in the output.
 - `distill.py`: set-aside ids stay out after a refresh; `--rebuild` drops the old body and the
-  merged list; `verify` flags a line without a source, an unknown source, a never-leaves term, a
-  destination's left-out term and a bracketed placeholder, and passes a clean page; `checked`
+  merged list; `verify` flags a line without a source, an unknown source and a bracketed
+  placeholder, and passes a clean page; `checked`
   stamps; archive-derived evidence is ignored with archives off.
 - Behaviour scenarios for distill and route gain: a placeholder question is researched, not
   asked; a sensitive fact stays in the brief.

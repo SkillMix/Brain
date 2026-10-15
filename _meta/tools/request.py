@@ -29,6 +29,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import re
 import secrets
 import subprocess
 import sys
@@ -53,6 +54,7 @@ ASKER_LOG = Path("_meta") / "state" / "requests-asked.jsonl"
 EXPIRE_HOURS = 24
 PROPOSE_AFTER = 5
 PROPOSE_DAYS = 30
+DATED = re.compile(r"^- (\d{4}-\d{2}-\d{2}):")   # a status page's coming-up line, its date first
 
 
 @dataclass
@@ -182,9 +184,10 @@ def _status_lines(root: Path, subject: str) -> dict:
     return out
 
 
-def render(root: Path, request: dict, now: dt.datetime, asker_left_out: list | None = None) -> tuple:
-    """(covered lines, what was left out) for a class the standing choice answers."""
-    import release
+def render(root: Path, request: dict, now: dt.datetime, at_once: bool = True) -> tuple:
+    """(covered lines, what was left out) for a class the standing choice answers. At once only
+    facts travel (state, dates): a record's wording, which nobody here has judged, waits for the
+    holder's person, who sees it all."""
     holder = spaceyaml.load(root)
     reg = registry_mod.Registry(root, holder)
     subject = str(request.get("subject") or "")
@@ -197,7 +200,14 @@ def render(root: Path, request: dict, now: dt.datetime, asker_left_out: list | N
     if cls == "status" and found is not None:
         lines.append(f"- status: {found.state} (system, {holder.name}, {now:%Y-%m-%d})")
     if cls in ("status", "milestones"):
-        lines += sections.get("coming up", [])[:5]
+        coming = sections.get("coming up", [])[:5]
+        if not at_once:
+            lines += coming
+        else:
+            dates = [m.group(1) for m in (DATED.match(line) for line in coming) if m]
+            lines += [f"- coming up: {day} (system, {holder.name}, {now:%Y-%m-%d})" for day in dates]
+            if coming:
+                left.append("the wording of what is coming up (the holder's person may send it)")
     if cls in ("status", "contact"):
         timeline = sections.get("timeline", [])
         if timeline:
@@ -206,15 +216,7 @@ def render(root: Path, request: dict, now: dt.datetime, asker_left_out: list | N
             lines.append(f"- last contact: {date} (witness, {holder.name}, {date})")
     if cls in ("detail", "correspondence"):
         left.append(f"{cls}: not covered by a standing choice")
-    kept = []
-    for line in lines:
-        term = release.first_term(line, holder.never_leaves) or release.first_term(
-            line, asker_left_out if asker_left_out is not None else spaceyaml.DEFAULTS["left_out"])
-        if term:
-            left.append("a line the asker's space leaves out")
-        else:
-            kept.append(line)
-    return kept, left
+    return lines, left
 
 
 # ----- the asker ---------------------------------------------------------------------------
@@ -385,21 +387,17 @@ def answer(root, now: dt.datetime | None = None, offline_roots: dict | None = No
                                             "asked_by": req.get("asked_by"), "outcome": "expired"})
                 report.expired.append(rid)
                 continue
-            import release
-            text = f"{req.get('question')} {req.get('subject')}"
-            choice = "never" if release.first_term(text, holder.never_leaves) else choice_for(holder, asker, aprofile, cls)
-            asker_space = _space_named(holder, asker, offline_roots)
-            left_out = asker_space.left_out if asker_space is not None else None
+            choice = choice_for(holder, asker, aprofile, cls)
             if choice == "never":
                 _append(root / HOLDER_LOG, {"at": pages.iso(now), "id": rid, "from": asker, "class": cls,
                                             "asked_by": req.get("asked_by"), "outcome": "never", "choice": "never"})
                 report.never.append(rid)
                 continue
-            lines, left = render(root, req, now, left_out)
             verdict = given.get(rid) or {}
             choice_path = f"request_choice:{asker}:{cls}"
-            if choice == "at_once" and lines and _paused(root, choice_path, now, holder):
+            if choice == "at_once" and _paused(root, choice_path, now, holder):
                 choice = "ask"   # a failed sample paused this standing choice: the holder answers by hand
+            lines, left = render(root, req, now, at_once=choice == "at_once")
             if choice == "at_once" and lines:
                 _ship_answer(root, holder, rid, req, lines, left, f"standing choice: {cls} for {asker}", now)
                 _log_line(root, f"- {pages.iso(now)} answered {rid} for {asker} at_once "

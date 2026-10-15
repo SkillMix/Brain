@@ -64,7 +64,8 @@ def test_a_status_request_is_answered_at_once_by_the_standing_choice(tmp_path):
     rid = got.collected[0]
     witness = next((roots["chloe"] / "knowledge" / "sources").rglob(f"answer-{rid}.md"))
     fm, body = pages.read(witness)
-    assert "2026-11-03" in body and "(signed, team, 2026-10-02)" in body
+    # at once only facts travel: the date, never a record's wording, which nobody judged here
+    assert "2026-11-03" in body and "go-live" not in body and "wording" in body
     assert "EUR 950" not in body and "day rate" not in body
     assert fm["approved_by"].startswith("standing choice: status")
     assert (roots["chloe"] / "_inbound" / "answers" / f"{rid}.md").exists()

@@ -1,5 +1,6 @@
 # Verdicts applied after day two of the fixture run, per person, by candidate id (the
-# subject slug). Quoted on purpose: a bare yes is a boolean in YAML.
-ada: {harbor: "yes"}
-chloe: {sales: "yes", "2026-10-04-pilots-run-for-one-quarter-before-any-rollout": "yes"}
+# subject slug) or, for a record held in doubt, by the record's id. Quoted on purpose: a
+# bare yes is a boolean in YAML.
+ada: {harbor: "yes", "m-ada-001": "yes"}
+chloe: {sales: "yes", "2026-10-04-pilots-run-for-one-quarter-before-any-rollout": "yes", "m-chloe-002": "yes"}
 ben: {}

@@ -63,7 +63,7 @@ itself.
 The brief: per item, two or three plain sentences (what happened, what the page will say,
 any date that matters; no labels, paths or field names), then "I recommend <verb> because
 <reason>" grounded in the item, then the question. Name a decide-relevant risk unasked: an
-item on the high-stakes list, a destination that widens the audience ("it will go to the
+item flagged `high_stakes` (say its why), or one you judge is about a high-stakes category, a destination that widens the audience ("it will go to the
 Harbor crew"), a claim about a named person. Numbers echoed digit by digit. Read back only
 the verdicts the person gave; an unanswered item stays where it is.
 

@@ -36,8 +36,9 @@ once, and the rest is one pre-answered item for the holder's person.
 The asker logged the request (`_meta/state/requests-asked.jsonl`) and, when it was
 answered, the question log entry with `answered_by_request`. The holder's channel step
 (`request.py answer`, in the sync task) decided each request from its standing choices: the
-covered part rendered from its status page and registry with tier and age on every line,
-scrubbed, released into the corridor at once with the uncovered part named and not sent;
+covered part rendered from its status page and registry with tier and age on every line
+(facts only at once: state, dates and last contact; the wording of what is coming up is
+named as left for the holder's person), scrubbed, released into the corridor at once with the uncovered part named and not sent;
 never-leaves material and `never` choices answered nothing; the remainder listed on its
 Needs you with a draft answer and what it would widen; a request unanswered for a scaled
 day expired; five requests of one class from one asker in thirty days became one proposal.

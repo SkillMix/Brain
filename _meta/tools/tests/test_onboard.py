@@ -155,7 +155,7 @@ def test_interview_defaults_and_records_skips():
 
 
 def test_interview_interactive_accepts_default_and_skip(monkeypatch):
-    replies = iter(["Harbor Lights", "", "", "skip", "equity, medical"])
+    replies = iter(["Harbor Lights", "", "", "skip", "anyone's equity, ownership or pay; medical matters"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(replies, ""))
     out = onboard.interview({}, interactive=True, case="company")
     assert out["company"] == "Harbor Lights"
@@ -163,7 +163,7 @@ def test_interview_interactive_accepts_default_and_skip(monkeypatch):
     assert out["owner"] and "owner" not in skipped          # empty input accepts the default
     assert out["owner_email"] == "" and "owner_email" not in skipped
     assert "domains" in skipped and onboard.parse_list(out["domains"]) == ["sales", "delivery", "operations"]
-    assert out["never_leaves"] == ["equity", "medical"]
+    assert out["never_leaves"] == ["anyone's equity, ownership or pay", "medical matters"]
     assert "feeds" not in skipped and onboard.parse_list(out["feeds"]) == []
 
 

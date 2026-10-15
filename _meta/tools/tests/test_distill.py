@@ -240,7 +240,7 @@ def test_a_routed_page_is_evidence_for_its_subject_here(tmp_path):
 
 
 # ----- set aside, rebuild, the archive switch (understand-first design 4.7) --------------------
-def test_set_aside_ids_stay_out_after_a_refresh(tmp_path):
+def test_set_aside_ids_and_the_checks_flag_stay_after_a_refresh(tmp_path):
     root = make_space(tmp_path / "ada", subjects=[
         {"id": "harbor", "kind": "projects", "title": "Harbor"}])
     witness(root, "rec-1", "harbor", "One.\n", NOW - 2 * D)
@@ -249,7 +249,7 @@ def test_set_aside_ids_stay_out_after_a_refresh(tmp_path):
     path = candidates(root)[0]
     fm, body = pages.read(path)
     aside = [{"id": "rec-2", "why": "about another client"}]
-    pages.write(path, dict(fm, evidence=["rec-1"], set_aside=aside), body)
+    pages.write(path, dict(fm, evidence=["rec-1"], set_aside=aside, high_stakes="a contract we agree to"), body)
     # the record is swept again (a re-export) and a new one arrives
     witness(root, "rec-2", "harbor", "About another client.\n", NOW - D, title="Other client",
             generated_at=NOW + H / 2)
@@ -258,7 +258,7 @@ def test_set_aside_ids_stay_out_after_a_refresh(tmp_path):
     assert report.refreshed == 1
     fm2, body2 = pages.read(path)
     assert fm2["evidence"] == ["rec-1", "rec-3"]
-    assert fm2["set_aside"] == aside
+    assert fm2["set_aside"] == aside and fm2["high_stakes"] == "a contract we agree to"
     assert "rec-2" not in "\n".join(evidence_lines(body2))
     assert len(evidence_lines(body2)) == 2
 
@@ -402,19 +402,13 @@ def test_verify_flags_a_source_not_in_evidence(tmp_path):
     assert len(problems) == 1 and "rec-9" in problems[0]
 
 
-def test_verify_flags_a_never_leaves_term(tmp_path):
+def test_verify_checks_facts_and_leaves_topics_to_the_page_check(tmp_path):
+    """Never-leaves and left-out matter is the page check's judgement (a second agent reading
+    the lists); a word in a line is no problem for verify."""
     root = make_space(tmp_path / "ada")
-    body = CLEAN.replace("project lead on the client side.", "project lead, holds equity.")
-    problems = distill.verify(root, candidate_file(root, body))
-    assert len(problems) == 1 and "never-leaves" in problems[0] and "equity" in problems[0]
-
-
-def test_verify_flags_a_left_out_term_of_the_destination(tmp_path):
-    root = make_space(tmp_path / "ada")
-    body = CLEAN.replace("project lead on the client side.", "project lead, agreed a day rate.")
-    assert distill.verify(root, candidate_file(root, body)) == []   # it stays home: no left-out list
-    problems = distill.verify(root, candidate_file(root, body, destination="harbor"))
-    assert len(problems) == 1 and "left-out" in problems[0] and "day rate" in problems[0]
+    body = CLEAN.replace("project lead on the client side.", "project lead, equity and day rate work.")
+    assert distill.verify(root, candidate_file(root, body)) == []
+    assert distill.verify(root, candidate_file(root, body, destination="harbor")) == []
 
 
 def test_verify_flags_a_bracketed_placeholder(tmp_path):

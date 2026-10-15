@@ -65,14 +65,15 @@ def test_unsigned_records_land_as_evidence_once(tmp_path):
 
 def test_high_stakes_and_trust_land_pending_for_the_domain_owner(tmp_path):
     root = harbor_space(tmp_path)
-    released(root, "p-0000a003", "The contract renews in March.\n")
+    released(root, "p-0000a003", "The contract renews in March.\n", high_stakes="the client renews for a year")
     released(root, "p-0000a004", "Plain fact.\n", signer="Chloe Martin", released_from="chloe",
              subject="harbor")
+    released(root, "p-0000a009", "The contract rules for the parser are fixed.\n")   # a word, not flagged
     (root / "_meta/state/trust.yaml").write_text(yaml.safe_dump({"pending": ["chloe"]}), encoding="utf-8")
     report = landing.land(root, now=NOW)
-    assert sorted(report.pending) == ["p-0000a003", "p-0000a004"]
+    assert sorted(report.pending) == ["p-0000a003", "p-0000a004"] and report.silent == ["p-0000a009"]
     fm, _ = pages.read(root / "_inbound/candidates/p-0000a003.md")
-    assert fm["landing"].startswith("pending: high stakes") and fm["for"] == "Ben Liu"
+    assert fm["landing"] == "pending: high stakes (the client renews for a year)" and fm["for"] == "Ben Liu"
     fm, _ = pages.read(root / "_inbound/candidates/p-0000a004.md")
     assert fm["landing"].startswith("pending: trust")
 
@@ -146,23 +147,21 @@ def test_trust_switch_after_enough_failed_samples(tmp_path):
 
 
 def test_a_high_stakes_record_lands_pending_not_filed(tmp_path):
-    """An unsigned record flagged high stakes (or carrying a high-stakes word) waits for the
-    domain owner's yes instead of being filed silently as evidence; a second run leaves it so."""
+    """An unsigned record flagged high stakes waits for the domain owner's yes instead of being
+    filed silently as evidence; a second run leaves it so. A high-stakes word alone flags nothing."""
     root = harbor_space(tmp_path)
     write_page(root, "_inbound/candidates/p-0000a020.md", "The API errors again.\n", id="p-0000a020",
                type="source", title="Alert", subject="harbor", released_from="ada",
-               release_class="window", at="2026-10-11T09:00:00Z", high_stakes=True)
+               release_class="window", at="2026-10-11T09:00:00Z", high_stakes="a security incident at the client")
     write_page(root, "_inbound/candidates/p-0000a021.md", "The contract renews in March.\n",
                id="p-0000a021", type="source", title="A mail", subject="harbor", released_from="ada",
                release_class="window", at="2026-10-11T09:00:00Z")
     report = landing.land(root, now=NOW)
-    assert sorted(report.pending) == ["p-0000a020", "p-0000a021"] and report.records == []
-    for pid in ("p-0000a020", "p-0000a021"):
-        fm, _ = pages.read(root / f"_inbound/candidates/{pid}.md")
-        assert fm["landing"].startswith("pending: high stakes") and fm["for"] == "Ben Liu"
-    assert not (root / "knowledge" / "sources").exists() or not list((root / "knowledge" / "sources").rglob("*.md"))
+    assert report.pending == ["p-0000a020"] and report.records == ["p-0000a021"]
+    fm, _ = pages.read(root / "_inbound/candidates/p-0000a020.md")
+    assert fm["landing"] == "pending: high stakes (a security incident at the client)" and fm["for"] == "Ben Liu"
     again = landing.land(root, now=NOW)
-    assert again.records == []
+    assert again.records == [] and again.pending == []
 
 
 def test_the_domain_owners_yes_files_a_pending_record_as_evidence(tmp_path):

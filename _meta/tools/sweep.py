@@ -5,23 +5,22 @@ Deterministic from files: an adapter exports records to `_meta/state/feed/<sourc
 `_meta/state/sweep-watermark.yaml` that has no witness page yet and
 
 1. writes the witness page `knowledge/sources/<yyyy>/<mm>/<record-id>.md` (a draft, never
-   signed; `sensitive: true` when a never-leaves term appears);
+   signed);
 2. attaches the record to the one subject whose `match:` identifier it carries (a fixed
    identifier, a mail domain on one of its addresses, a keyword in the title of a call or
    event). None or several: no attachment, the names in the text are kept as `mentions`
    (hints only);
 3. for an attached record whose subject lives elsewhere (`home` is another space), applies
-   the release rule (rules.md section 6): never-leaves term -> held; the destination's
-   left-out term -> held; a call with participants outside the crew (an address counts as the
-   registered person it belongs to; the subject's own mail domain is its counterpart, not an
-   outsider) -> held in doubt;
-   a high-stakes term -> the window, landing pending; audience already covering the
-   destination, or a standing choice {destination, kind} (never for calls) -> at once, except
-   a record attached by inference (domain or keywords only) or re-attached from an older page,
-   which nobody chose: it waits; anything else -> after one window and one morning view. A
-   content-free signal goes to the subject's home for every attached record that is not
-   never-leaves. A record matching several subjects with a home elsewhere is held in doubt and
-   shown as a count;
+   the release rule without the router (rules.md section 6). Nothing here reads what a record
+   says, so nothing leaves on a judgement of its topic: audience already covering the
+   destination -> at once, shallow; a call with participants outside the crew (an address
+   counts as the registered person it belongs to; the subject's own mail domain is its
+   counterpart, not an outsider), a record attached by inference (domain or keywords only) or
+   re-attached from an older page, and anything else -> held in doubt, where one yes from its
+   person releases it (a standing choice {destination, kind} makes yes the recommendation, never
+   the answer). A content-free
+   signal goes to the subject's home for every attached record. A record matching several
+   subjects with a home elsewhere is held in doubt and shown as a count;
 4. advances the watermark and appends one run line (cost = characters of records // 4).
 
     python sweep.py [root] [--dry-run]     --dry-run prints the plan and writes nothing
@@ -217,8 +216,7 @@ def record_text(record: dict) -> str:
 
 
 # ----- the witness page ------------------------------------------------------
-def witness_frontmatter(record: dict, hits: list, mentions: list, audience, sensitive: bool,
-                        now: dt.datetime) -> dict:
+def witness_frontmatter(record: dict, hits: list, mentions: list, audience, now: dt.datetime) -> dict:
     kind = record.get("kind", "document")
     title = str(record.get("subject") or "").strip() or f"{kind} from {record.get('from', 'unknown')}"
     fm = {"id": pages.new_id(), "type": "source", "title": title, "status": "draft",
@@ -240,8 +238,6 @@ def witness_frontmatter(record: dict, hits: list, mentions: list, audience, sens
             fm[key] = str(record[key])
     if record.get("research"):   # exported by research for this subject: the router decides it for it
         fm["research"] = str(record["research"])
-    if sensitive:
-        fm["sensitive"] = True
     imported = record.get("imported_from") or record.get("witness_page")
     if imported:   # the text is an archive page's retelling, not the record: kept out while archives are off
         fm["imported_from"] = str(imported)
@@ -310,108 +306,21 @@ def covers(audience, subject: registry.Subject, dest_space) -> bool:
     return False
 
 
-PRICING = ("pricing", "price list")
-
-
-def other_client(space: spaceyaml.Space, subject: registry.Subject, text: str) -> str | None:
-    """Another client named in a record bound for this subject's home (left out by default)."""
-    try:
-        reg = registry.Registry(space.root, space)
-        own = {subject.id} | {a.id for a in reg.ancestors_of(subject.id)}
-        clients = [c for c in reg.everywhere() if c.kind == "clients" and c.id not in own]
-    except Exception:
-        return None
-    if subject.kind != "projects" and not any(a.kind == "clients" for a in reg.ancestors_of(subject.id)):
-        return None
-    for client in clients:
-        for name in [client.title, *(client.aliases or [])]:
-            if name and release.first_term(text, [str(name)]):
-                return str(client.title)
-    return None
-
-
-def project_lines(record: dict, left_out: list, space: spaceyaml.Space, subject: registry.Subject) -> str | None:
-    """The record's lines without a left-out term or another client, or None when the title
-    carries one or nothing is left."""
-    if release.first_term(str(record.get("subject") or ""), left_out) or \
-            other_client(space, subject, str(record.get("subject") or "")):
-        return None
-    kept = [line for line in str(record.get("text") or "").splitlines()
-            if line.strip() and not release.first_term(line, left_out) and not other_client(space, subject, line)]
-    return "\n".join(kept) if kept else None
-
-
-def _address(value) -> str:
-    text = str(value or "").strip().lower()
-    return text.split("<")[-1].rstrip(">").strip() if "<" in text else text
-
-
-def sent_by_owner(space: spaceyaml.Space, record: dict) -> bool:
-    return bool(space.owner_email) and _address(record.get("from")) == space.owner_email.strip().lower()
-
-
-def named_person(space: spaceyaml.Space, record: dict, text: str) -> str | None:
-    """A mail from outside the company that names a registered person: a claim about a named
-    person is high-stakes. Colleagues writing about each other are not flagged here."""
-    if record.get("kind") not in ("mail", "message"):
-        return None
-    sender, own = _address(record.get("from")), _address(space.owner_email)
-    if not sender or "@" not in sender or not own or "@" not in own:
-        return None
-    if sender.split("@")[1] == own.split("@")[1]:
-        return None
-    try:
-        people = [s for s in registry.Registry(space.root, space).everywhere() if s.kind == "people"]
-    except Exception:
-        return None
-    for person in people:
-        for name in [person.title, *(person.aliases or [])]:
-            if name and " " in str(name) and release.first_term(text, [str(name)]):
-                return str(person.title)
-    return None
-
-
 def classify(space: spaceyaml.Space, record: dict, subject: registry.Subject, destination: str,
              dest_space, audience, now: dt.datetime, reg=None, inferred: bool = False) -> Verdict:
-    text = record_text(record)
-    term = release.first_term(text, space.never_leaves)
-    if term:
-        return Verdict(hold="never_leaves", why=f"never-leaves term `{term}` appears")
-    left_out = release.left_out_of(dest_space)
-    term = release.first_term(text, left_out)
-    other = other_client(space, subject, text)
-    if term or other:
-        kept = project_lines(record, left_out, space, subject)
-        what = f"left-out term `{term}`" if term else f"another client ({other})"
-        if kept is None:
-            return Verdict(hold="left_out", why=f"{what} for {destination} appears")
-        verdict = classify(space, dict(record, text=kept), subject, destination, dest_space, audience, now,
-                           reg, inferred)
-        if not verdict.hold:   # a passage that mixes them keeps only its project facts
-            verdict.extra = dict(verdict.extra or {}, trimmed_body=kept, trimmed=True)
-            verdict.why += f"; {what} left out, the rest travels"
-        return verdict
+    """Without the router nothing reads what a record says, so nothing leaves on a judgement of
+    its topic: a record leaves by itself only when its destination's audience already reads it;
+    anything else waits for its person's yes (a standing choice makes yes the expected answer,
+    never the answer itself)."""
     kind = record.get("kind")
     if kind == "call":
         outside = outsiders(space, dest_space, record.get("participants") or [], reg, subject)
         if outside:
             return Verdict(hold="doubt",
                            why="call with participants outside the crew: " + ", ".join(outside))
-    term = release.first_term(text, space.high_stakes)
-    if term and term in PRICING and sent_by_owner(space, record):
-        term = None   # a quote already sent is a record of what was said, not a pricing rule
-    if term:
-        return Verdict(cls="window", stage_after=now + space.window(), extra={"high_stakes": True},
-                       why=f"high-stakes term `{term}`: waits the window, lands pending")
-    named = named_person(space, record, text)
-    if named:
-        return Verdict(cls="window", stage_after=now + space.window(), extra={"high_stakes": True},
-                       why=f"an outside party writes about {named}: a claim about a named person waits "
-                           "the window and lands pending")
     if inferred or record.get("_reattach"):
         how = "re-attached from an older page" if record.get("_reattach") else "attached by its domain or title"
-        return Verdict(cls="window", stage_after=now + space.window(),
-                       why=f"widens who can read it; {how}, which nobody chose: never at once")
+        return Verdict(hold="doubt", why=f"widens who can read it; {how}, which nobody chose")
     paused_why = ""
     if covers(audience, subject, dest_space):
         path = f"audience:{record.get('source') or 'unknown'}"
@@ -419,14 +328,15 @@ def classify(space: spaceyaml.Space, record: dict, subject: registry.Subject, de
             return Verdict(cls="at_once", stage_after=now, why=f"audience {audience} already reads it",
                            extra={"path": path})
         paused_why = f"; {path} is paused"
+    why = "widens who can read it and no router judged what it says" + paused_why
     if kind != "call" and any(c.get("destination") == destination and c.get("kind") == kind
                               for c in space.standing_choices):
         path = f"standing_choice:{destination}:{kind}"
         if not release.is_paused(space.root, path, now):
-            return Verdict(cls="at_once", stage_after=now, why=f"standing choice {kind} -> {destination}",
-                           extra={"path": path})
-        paused_why += f"; {path} is paused"
-    return Verdict(cls="window", stage_after=now + space.window(), why="widens who can read it" + paused_why)
+            return Verdict(hold="doubt", why=f"{why}; your standing choice covers {kind} -> {destination}",
+                           extra={"recommendation": f"yes: your standing choice sends {kind} to {destination}"})
+        why += f"; {path} is paused"
+    return Verdict(hold="doubt", why=why)
 
 
 def item_frontmatter(space: spaceyaml.Space, record: dict, subject_id, destination, cls: str,
@@ -544,8 +454,7 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
         audience = audience_of(space, record)
         hits = reg.match(record)
         mentions = reg.mentions(record)
-        sensitive = release.first_term(record_text(record), space.never_leaves) is not None
-        fm = witness_frontmatter(record, hits, mentions, audience, sensitive, now)
+        fm = witness_frontmatter(record, hits, mentions, audience, now)
         report.plan.append(f"witness {target.relative_to(root).as_posix()}")
         if not dry_run:
             _write_parts(root, target, record, fm, str(record.get("text") or ""))
@@ -582,32 +491,30 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
         inferred = not (reg.matched_by(subject, record) - set(registry.INFERRED_KEYS))
         verdict = classify(space, record, subject, home, dest_space_of(home), audience, now, reg, inferred)
         if verdict.hold:
-            held = item_frontmatter(space, record, subject.id, home, verdict.hold, now, now)
+            held = item_frontmatter(space, record, subject.id, home, verdict.hold, now, now,
+                                    dict(verdict.extra or {}))
             report.plan.append(f"hold {verdict.hold} {record['id']} -> {home}: {verdict.why}")
-            if not dry_run:
-                release.hold(root, held, body, verdict.hold, verdict.why)
+            if not dry_run:   # a yes releases what is held: without the router, never in full
+                release.hold(root, held, shallow(body), verdict.hold, verdict.why)
             if verdict.hold == "doubt":
                 report.held_in_doubt += 1
             else:
                 report.held_other += 1
         else:
-            extra = dict(verdict.extra or {})
-            sent_body = shallow(extra.pop("trimmed_body", body))   # without the router: never in full
             item = item_frontmatter(space, record, subject.id, home, verdict.cls,
-                                    verdict.stage_after, now, extra)
+                                    verdict.stage_after, now, dict(verdict.extra or {}))
             report.plan.append(f"queue {verdict.cls} {record['id']} -> {home}: {verdict.why}")
-            if not dry_run:
-                pages.write(root / release.QUEUE / f"{item['id']}.md", item, sent_body)
+            if not dry_run:   # without the router: never in full
+                pages.write(root / release.QUEUE / f"{item['id']}.md", item, shallow(body))
             report.queued += 1
-        if verdict.hold != "never_leaves":
-            signal = signal_for(subject.id, home, now)
-            report.plan.append(f"signal {record['id']} -> {home}")
-            if not dry_run:
-                path = root / release.SIGNALS / f"{signal['id']}.yaml"
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(yaml.safe_dump(signal, sort_keys=False, allow_unicode=True),
-                                encoding="utf-8", newline="\n")
-            report.signals += 1
+        signal = signal_for(subject.id, home, now)   # content-free: that something moved
+        report.plan.append(f"signal {record['id']} -> {home}")
+        if not dry_run:
+            path = root / release.SIGNALS / f"{signal['id']}.yaml"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(yaml.safe_dump(signal, sort_keys=False, allow_unicode=True),
+                            encoding="utf-8", newline="\n")
+        report.signals += 1
 
     report.cost_tokens = chars // 4
     if newest is not None:

@@ -46,16 +46,20 @@ search until the gap is closed, and let a second agent check.
       - every sentence or bullet ends with `[src: <record id>, ...]`, ids from `evidence`;
       - newer evidence replaces older; `## Disagreements` only for records of the same moment
         that conflict, each side with its source;
-      - written for where it lands (`destination`, else this space): nothing on the never-leaves
-        list or the destination's left-out list (prices, terms, pay, ownership, a person's
-        private situation). Soften ("currently unavailable") or leave the fact in the brief;
+      - written for where it lands (`destination`, else this space): nothing about a category
+        on the never-leaves list or the destination's left-out list (prices, terms, pay,
+        ownership, a person's private situation), however it is worded. Soften ("currently
+        unavailable") or leave the fact in the brief;
       - plain words, short sentences; keep `## New evidence` and its lines at the end.
    7. **Verify.** `python _meta/tools/distill.py <root> verify <candidate>` and fix every problem
-      it lists (a line without a source, a source not in evidence, a sensitive term, a
-      placeholder).
+      it lists (a line without a source, a source not in evidence, a placeholder). It checks
+      facts only: what the page is about is the check's judgement.
    8. **Check.** A second agent (a fresh subagent that has not seen your reasoning) reads the
       candidate against every cited record: each line supported, current, and fit for its
-      destination. It fixes or removes what fails, runs `verify` again, then
+      destination (nothing about a never-leaves or left-out category). When the page is about
+      one of the destination's `high_stakes` categories it sets `high_stakes: <why, one line>`
+      in the frontmatter: the signed page then waits the window and lands pending. It fixes or
+      removes what fails, runs `verify` again, then
       `python _meta/tools/distill.py <root> checked <candidate> --by <its name>`.
 3. Your run line: `{"routine": "distill", "at": "<ISO UTC>", "space": "<name>", "cost_tokens":
    <n>, "notes": {"step": "rewrite", "candidates": <n>, "checked": <n>, "set_aside": <n>,
@@ -102,5 +106,5 @@ Run distill for the space at <root> (second step of the sweep chain, after sweep
 `_meta/tests/behaviour/distill.yaml`: two witness pages for one active subject give exactly
 one candidate; a second run refreshes it in place; writes only under `_inbound/candidates/`
 and `_meta/state/`; no `stable`. `_meta/tools/tests/test_distill.py`: `verify` flags a line
-without a source, a bracketed placeholder and a destination's left-out term; set-aside
+without a source and a bracketed placeholder, and no word decides; set-aside
 evidence stays out; `--rebuild` starts from scratch.

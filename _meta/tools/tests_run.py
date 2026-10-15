@@ -539,7 +539,7 @@ def _request_leak(root: Path, space, leak: dict, needles: list, roots: dict, now
     req.setdefault("from", asker.name if asker else str(req.get("asker")))
     hspace = spaceyaml.load(holder)
     choice = rq.choice_for(hspace, req["from"], asker.profile if asker else "", str(req.get("class")))
-    lines, _ = rq.render(holder, req, now, asker.left_out if asker else None)
+    lines, _ = rq.render(holder, req, now)
     sent = "\n".join(lines) if choice == "at_once" else ""
     found = [n for n in needles if carries(sent, n)]
     return {"audience_root": str(leak.get("audience_root")), "root": str(holder),

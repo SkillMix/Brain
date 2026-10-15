@@ -31,7 +31,7 @@ def test_the_brains_floors_and_never_leaves_reach_every_space_below(tmp_path):
     ada = make_space(tmp_path / "ada")
     mount_brain(ada, brain)
     space = spaceyaml.load(ada)
-    assert "acquisition" in space.never_leaves and "equity" in space.never_leaves
+    assert "acquisition" in space.never_leaves and any("equity" in e for e in space.never_leaves)
     assert authority.level(space, "release") == "propose"
     assert any("authority.release may not rise above `propose`" in e for e in space.errors())
 
