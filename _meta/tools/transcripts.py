@@ -138,7 +138,6 @@ def captured(session: dict, notes: dict) -> bool:
 
 
 def _witness(root: Path, session: dict, now: dt.datetime, space: spaceyaml.Space) -> Path:
-    import release
     asked = "\n".join(f"- {' '.join(a.split())[:300]}" for a in session["asked"][:8]) or "- (nothing recorded)"
     last = " ".join(session["last"].split())[:EXCERPT] or "(nothing recorded)"
     body = (f"# Session {session['start']:%Y-%m-%d %H:%M}Z in {Path(session['cwd']).name or 'a folder'}\n\n"
@@ -149,8 +148,6 @@ def _witness(root: Path, session: dict, now: dt.datetime, space: spaceyaml.Space
           "record": f"session-{session['id']}", "source": "sessions", "kind": "session",
           "at": pages.iso(session["start"]), "from": space.owner, "mentions": [], "audience": "owner",
           "identifiers": {}}
-    if release.first_term(body, space.never_leaves):
-        fm["sensitive"] = True
     target = root / "knowledge" / "sources" / f"{session['start']:%Y}" / f"{session['start']:%m}" / \
         f"session-{session['id']}.md"
     return pages.write(target, fm, body)

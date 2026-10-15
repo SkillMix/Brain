@@ -45,9 +45,9 @@ def test_landing_files_silently_only_what_the_signers_history_shows(tmp_path, mo
     assert "signer's history" in fm["landing"]
 
 
-def test_the_high_stakes_words_cover_hr_security_and_legal():
-    terms = spaceyaml.DEFAULTS["high_stakes"]
-    assert {"lawsuit", "security incident", "disciplinary", "policy"} <= set(terms)
+def test_the_high_stakes_categories_cover_hr_security_and_legal():
+    text = " ".join(spaceyaml.DEFAULTS["high_stakes"]).lower()
+    assert all(word in text for word in ("hr", "security", "legal", "policy", "contract"))
 
 
 def test_connecting_a_feed_is_one_line_and_never_twice(tmp_path):

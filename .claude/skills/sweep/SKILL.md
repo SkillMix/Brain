@@ -83,8 +83,9 @@ attachment to the one subject whose `match:` identifier the record carries (a fi
 identifier, a client's mail domain on any address, a keyword in a call's or event's title;
 none or several: no attachment, names in the text kept as hints), and the same again for older
 pages once the registry learns a new identifier; the release class for records whose subject
-has a `home` elsewhere (at once, window, or held: doubt, left_out, never_leaves; a record
-placed by domain or title, or placed late, always waits the window and a morning view); queue
+has a `home` elsewhere: at once only when the destination's audience already reads the
+source; everything else held in doubt for its person's yes, because nothing has read what it
+says (a standing choice makes yes the recommendation, never the answer); queue
 items in `_outbound/queue/`, held items in `_outbound/held/` with a reason; content-free
 signals in `_outbound/signals/`; the watermark; one run line.
 

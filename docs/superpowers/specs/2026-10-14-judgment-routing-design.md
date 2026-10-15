@@ -152,6 +152,10 @@ pages, and its token cost goes into its run line.
 
 ### 4.3 Gates (deterministic, in `route.py record`)
 
+> Superseded in part on 2026-10-15: the term rows below (never-leaves, left-out, high-stakes
+> words) are now the router's judgement, checked by a second agent. See
+> `2026-10-15-judged-gates-design.md`.
+
 A decision is refused (nothing written, the reason printed, the agent fixes it) when:
 
 - a destination is not a space this workspace releases to, or the subject's home is not that space;

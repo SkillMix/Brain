@@ -2,7 +2,7 @@
 # leaves the default in place and puts the question on Needs you for later.
 # Defaults starting with `$` are computed: $folder (the repository's folder name),
 # $user (the signed-in user), $org (the organization of the git remote),
-# $never_leaves (the template's never-leaves terms).
+# $never_leaves (the template's never-leaves categories).
 questions:
   - key: company
     ask: What is the company called?
@@ -25,10 +25,10 @@ questions:
     applies_to: [company]
     kind: list
   - key: never_leaves
-    ask: Which terms mark what must never leave this space? (whole words; the defaults are shown)
+    ask: "What kinds of matter must never leave the space that holds them? (a few words each, separated by `;`; an agent reads every record against them, so describe the matter, not a word to match; the defaults are shown)"
     default: $never_leaves
     applies_to: [company, person]
-    kind: list
+    kind: categories
   - key: name
     ask: What is your name?
     default: $user

@@ -53,6 +53,7 @@ setup:
       decision: route
       confidence: high
       why: the client's kickoff
+      checked_by: Checker
       routes:
         - space: harbor
           subject: harbor

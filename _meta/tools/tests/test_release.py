@@ -10,7 +10,7 @@ import release
 import spaceyaml
 import sweep
 from conftest import NOW, make_space, mount_brain
-from test_sweep import BRAIN_SUBJECTS, mount, record, write_feed
+from test_sweep import BRAIN_SUBJECTS, CREW_MAIL, mount, record, write_feed
 
 
 def build(tmp_path, ada_mode="live", harbor_mode="live", **ada_extra):
@@ -42,6 +42,16 @@ def landed(harbor):
     return [pages.read(p) for p in sorted((harbor / "_inbound" / "candidates").glob("*.md"))]
 
 
+def as_window_item(root):
+    """The sweep holds what nobody judged; a window item is what the router queues. One made
+    from the held page, as the router would have queued it."""
+    (fm, body), = held_items(root)
+    item = {k: v for k, v in fm.items() if k not in ("reason", "why")}
+    item.update({"class": "window", "stage_after": pages.iso(NOW + dt.timedelta(hours=24)), "listed": False})
+    pages.write(root / "_outbound" / "queue" / f"{fm['id']}.md", item, body)
+    (root / "_outbound" / "held" / f"{fm['id']}.md").unlink()
+
+
 def set_listed(path):
     fm, body = pages.read(path)
     fm["listed"] = True
@@ -52,6 +62,7 @@ def test_window_item_waits_for_listing_then_ships_offline(tmp_path):
     _, harbor, ada = build(tmp_path)
     write_feed(ada, [record()])
     sweep.run(ada, now=NOW)
+    as_window_item(ada)
     offline = {"harbor": harbor}
     later = NOW + dt.timedelta(hours=25)
     report = release.ship(ada, now=NOW, offline_roots=offline)
@@ -85,7 +96,7 @@ def test_window_item_waits_for_listing_then_ships_offline(tmp_path):
 
 
 def test_at_once_item_needs_no_listing(tmp_path):
-    _, harbor, ada = build(tmp_path, standing_choices=[{"destination": "harbor", "kind": "mail"}])
+    _, harbor, ada = build(tmp_path, sources=CREW_MAIL)
     write_feed(ada, [record()])
     sweep.run(ada, now=NOW)
     report = release.ship(ada, now=NOW, offline_roots={"harbor": harbor})
@@ -96,7 +107,7 @@ def test_at_once_item_needs_no_listing(tmp_path):
 
 def test_shadow_source_refuses_a_live_destination(tmp_path):
     _, harbor, ada = build(tmp_path, ada_mode="shadow", harbor_mode="live",
-                           standing_choices=[{"destination": "harbor", "kind": "mail"}])
+                           sources=CREW_MAIL)
     write_feed(ada, [record()])
     sweep.run(ada, now=NOW)
     report = release.ship(ada, now=NOW, offline_roots={"harbor": harbor})
@@ -113,24 +124,28 @@ def test_shadow_source_refuses_a_live_destination(tmp_path):
 
 def test_shadow_ships_to_shadow(tmp_path):
     _, harbor, ada = build(tmp_path, ada_mode="shadow", harbor_mode="shadow",
-                           standing_choices=[{"destination": "harbor", "kind": "mail"}])
+                           sources=CREW_MAIL)
     write_feed(ada, [record()])
     sweep.run(ada, now=NOW)
     report = release.ship(ada, now=NOW, offline_roots={"harbor": harbor})
     assert report.shipped == 1 and report.held == 0
 
 
-def test_scrub_runs_again_at_ship_time(tmp_path):
-    _, harbor, ada = build(tmp_path, standing_choices=[{"destination": "harbor", "kind": "mail"}])
+def test_scrub_at_ship_time_checks_facts_not_words(tmp_path):
+    """What an item says was judged before it was queued; at ship time a word holds nothing,
+    a secret still does."""
+    _, harbor, ada = build(tmp_path, sources=CREW_MAIL)
     write_feed(ada, [record()])
     sweep.run(ada, now=NOW)
     path, = queue_paths(ada)
     fm, body = pages.read(path)
-    pages.write(path, fm, body + "\nThe hourly rate stays 120.\n")
+    pages.write(path, fm, body + "\nThe hourly rate stays 120 and the settlement report is due.\n")
+    pages.write(path.with_name("p-0000c0de.md"), dict(fm, id="p-0000c0de"),
+                body + "".join(["-----BEGIN ", "PRIVATE KEY-----\nabc\n-----END ", "PRIVATE KEY-----\n"]))
     report = release.ship(ada, now=NOW, offline_roots={"harbor": harbor})
-    assert report.shipped == 0 and report.held == 1 and landed(harbor) == []
+    assert report.shipped == 1 and report.held == 1
     (held, _), = held_items(ada)
-    assert held["reason"] == "left_out" and "hourly rate" in held["why"]
+    assert held["id"] == "p-0000c0de" and held["reason"] == "scan"
 
 
 def test_signed_page_keeps_its_signature(tmp_path):
@@ -152,7 +167,7 @@ def test_signed_page_keeps_its_signature(tmp_path):
 
 
 def test_retract_writes_a_retraction_item_that_ships_at_once(tmp_path):
-    _, harbor, ada = build(tmp_path, standing_choices=[{"destination": "harbor", "kind": "mail"}])
+    _, harbor, ada = build(tmp_path, sources=CREW_MAIL)
     write_feed(ada, [record()])
     sweep.run(ada, now=NOW)
     offline = {"harbor": harbor}
@@ -175,7 +190,7 @@ def test_retract_writes_a_retraction_item_that_ships_at_once(tmp_path):
 
 
 def test_retract_marks_the_original_when_the_destination_is_reachable_offline(tmp_path):
-    _, harbor, ada = build(tmp_path, standing_choices=[{"destination": "harbor", "kind": "mail"}])
+    _, harbor, ada = build(tmp_path, sources=CREW_MAIL)
     write_feed(ada, [record()])
     sweep.run(ada, now=NOW)
     release.ship(ada, now=NOW, offline_roots={"harbor": harbor})
@@ -189,6 +204,7 @@ def test_pull_back_moves_a_queue_item_to_held(tmp_path):
     _, _, ada = build(tmp_path)
     write_feed(ada, [record()])
     sweep.run(ada, now=NOW)
+    as_window_item(ada)
     path, = queue_paths(ada)
     item_id = pages.read(path)[0]["id"]
     held_path = release.pull_back(ada, item_id)
@@ -198,7 +214,7 @@ def test_pull_back_moves_a_queue_item_to_held(tmp_path):
 
 
 def test_unknown_destination_stays_queued(tmp_path):
-    _, _, ada = build(tmp_path, standing_choices=[{"destination": "harbor", "kind": "mail"}])
+    _, _, ada = build(tmp_path, sources=CREW_MAIL)
     write_feed(ada, [record()])
     sweep.run(ada, now=NOW)
     report = release.ship(ada, now=NOW, offline_roots={})
@@ -207,7 +223,7 @@ def test_unknown_destination_stays_queued(tmp_path):
 
 
 def test_online_destination_goes_through_publish(tmp_path, monkeypatch):
-    _, harbor, ada = build(tmp_path, standing_choices=[{"destination": "harbor", "kind": "mail"}])
+    _, harbor, ada = build(tmp_path, sources=CREW_MAIL)
     spaces_home = tmp_path / "spaces-home"
     checkout = spaces_home / "harbor"
     checkout.mkdir(parents=True)
@@ -244,12 +260,12 @@ def test_settings_come_from_the_mount_before_a_release_clone(tmp_path, monkeypat
     (checkout / "space.yaml").write_text(yaml.safe_dump(stale), encoding="utf-8")
     monkeypatch.setenv("SPACES_HOME", str(tmp_path / "spaces-home"))
     space = spaceyaml.load(ada)
-    assert "transcript" not in release.left_out_of(release.destination_space(space, "harbor"))
-    assert "transcript" in release.left_out_of(release.destination_space(space, "harbor", checkout))
+    assert "transcript" not in release.destination_space(space, "harbor").left_out
+    assert "transcript" in release.destination_space(space, "harbor", checkout).left_out
 
 
 def test_publish_failure_keeps_the_queue(tmp_path, monkeypatch):
-    _, harbor, ada = build(tmp_path, standing_choices=[{"destination": "harbor", "kind": "mail"}])
+    _, harbor, ada = build(tmp_path, sources=CREW_MAIL)
     spaces_home = tmp_path / "spaces-home"
     checkout = spaces_home / "harbor"
     (checkout / ".git").mkdir(parents=True)
@@ -295,7 +311,7 @@ def test_publish_runs_git_as_argument_lists(tmp_path, monkeypatch):
 
 
 def test_main_cli(tmp_path, monkeypatch, capsys):
-    _, harbor, ada = build(tmp_path, standing_choices=[{"destination": "harbor", "kind": "mail"}])
+    _, harbor, ada = build(tmp_path, sources=CREW_MAIL)
     write_feed(ada, [record()])
     monkeypatch.setenv("SPACE_NOW", pages.iso(NOW))
     sweep.run(ada)
@@ -312,7 +328,7 @@ def test_main_cli(tmp_path, monkeypatch, capsys):
 def test_secrets_scan_finding_holds_the_item_without_quoting_it(tmp_path):
     pytest = __import__("pytest")
     pytest.importorskip("scan")
-    _, harbor, ada = build(tmp_path, standing_choices=[{"destination": "harbor", "kind": "mail"}])
+    _, harbor, ada = build(tmp_path, sources=CREW_MAIL)
     write_feed(ada, [record()])
     sweep.run(ada, now=NOW)
     path, = queue_paths(ada)
@@ -330,7 +346,7 @@ def test_secrets_scan_finding_holds_the_item_without_quoting_it(tmp_path):
 def test_destination_checkout_is_cloned_on_first_release(tmp_path, monkeypatch):
     """A destination with a mount that names its repository needs no hand step: the first
     release clones it under the spaces home and publishes through that clone."""
-    _, harbor, ada = build(tmp_path, standing_choices=[{"destination": "harbor", "kind": "mail"}])
+    _, harbor, ada = build(tmp_path, sources=CREW_MAIL)
     git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.test"]
     subprocess.run(git + ["init", "--quiet", "-b", "main"], cwd=harbor, check=True)
     subprocess.run(git + ["add", "-A"], cwd=harbor, check=True)
@@ -364,7 +380,7 @@ def test_destination_checkout_is_cloned_on_first_release(tmp_path, monkeypatch):
 def test_item_follows_its_subject_to_a_new_home(tmp_path):
     """Queued for a project space that was offboarded since: the item re-addresses itself to
     the subject's current home instead of staying unreachable forever."""
-    brain, _, ada = build(tmp_path, standing_choices=[{"destination": "harbor", "kind": "mail"}])
+    brain, _, ada = build(tmp_path, sources=CREW_MAIL)
     write_feed(ada, [record()])
     sweep.run(ada, now=NOW)
     (item,) = queue_paths(ada)
@@ -392,8 +408,7 @@ def test_brain_destination_is_cloned_through_the_brain_mount(tmp_path, monkeypat
     brain = make_space(tmp_path / "brain", profile="brain", name="lantern", subjects=[
         {"id": "pricing", "kind": "topics", "title": "Pricing", "home": "lantern",
          "match": {"label": "Pricing"}}])
-    ada = make_space(tmp_path / "ada", name="ada", sources=[{"name": "mail", "adapter": "gmail", "audience": "owner"}],
-                     standing_choices=[{"destination": "lantern", "kind": "mail"}])
+    ada = make_space(tmp_path / "ada", name="ada", sources=[{"name": "mail", "adapter": "gmail", "audience": "everyone"}])
     mount_brain(ada, brain)
     git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.test"]
     subprocess.run(git + ["init", "--quiet", "-b", "main"], cwd=brain, check=True)
@@ -413,7 +428,7 @@ def test_brain_destination_is_cloned_through_the_brain_mount(tmp_path, monkeypat
     write_feed(ada, [record(subject="Pricing call", identifiers={"thread": "t-2", "labels": ["Pricing"]})])
     sweep.run(ada, now=NOW)
     report = release.ship(ada, now=NOW)
-    assert report.shipped + report.signals == 1 and report.unreachable == 0
+    assert report.shipped == 1 and report.unreachable == 0
     assert (spaces_home / "lantern" / ".git").exists()
     assert list((spaces_home / "lantern" / "_inbound").rglob("*"))
 
@@ -422,7 +437,7 @@ def test_live_source_waits_while_the_destination_looks_shadow(tmp_path):
     """A live space never holds an item only because a destination still runs shadow: the
     destination may be a stale view, so the item waits in the queue and ships once it is live."""
     _, harbor, ada = build(tmp_path, ada_mode="live", harbor_mode="shadow",
-                           standing_choices=[{"destination": "harbor", "kind": "mail"}])
+                           sources=CREW_MAIL)
     write_feed(ada, [record()])
     sweep.run(ada, now=NOW)
     report = release.ship(ada, now=NOW, offline_roots={"harbor": harbor})
@@ -437,7 +452,7 @@ def test_live_source_waits_while_the_destination_looks_shadow(tmp_path):
 
 
 def test_items_held_for_a_shadow_destination_return_to_the_queue(tmp_path):
-    _, harbor, ada = build(tmp_path, standing_choices=[{"destination": "harbor", "kind": "mail"}])
+    _, harbor, ada = build(tmp_path, sources=CREW_MAIL)
     write_feed(ada, [record()])
     sweep.run(ada, now=NOW)
     (item,) = queue_paths(ada)

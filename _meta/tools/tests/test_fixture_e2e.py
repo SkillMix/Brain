@@ -55,11 +55,13 @@ def test_at_once_release_landed_in_harbor(fixture_dir):
     assert all(pages.read(p)[0].get("status") == "draft" for p in records)
 
 
-def test_left_out_and_doubt_stay_home(fixture_dir):
+def test_what_nobody_judged_stays_home_until_a_yes(fixture_dir):
+    """Without the router nothing reads what a record says: the rate card waits in doubt even
+    under Ada's standing choice, and only her yes would let it go."""
     target, _ = fixture_dir
     held = {p.name: pages.read(p)[0] for p in (target / "ada" / "_outbound" / "held").glob("*.md")}
-    reasons = sorted(fm.get("reason") for fm in held.values())
-    assert "left_out" in reasons and reasons.count("doubt") >= 2
+    assert any(fm.get("evidence") == ["m-ada-002"] and fm.get("reason") == "doubt" for fm in held.values())
+    assert sorted(fm.get("reason") for fm in held.values()).count("doubt") >= 3
     content = []
     for zone in ("knowledge", "live", "_inbound", "_outbound"):
         content += [p.read_text(encoding="utf-8") for p in (target / "harbor" / zone).rglob("*")
@@ -88,13 +90,13 @@ def test_needs_you_shows_doubt_count_and_health_shows_cost(fixture_dir):
     assert (target / "ben" / "_meta" / "state" / "probe.jsonl").exists()
 
 
-def test_window_item_left_only_after_listing(fixture_dir):
+def test_a_held_record_left_only_after_its_persons_yes(fixture_dir):
     target, _ = fixture_dir
     log = (target / "chloe" / "log.md").read_text(encoding="utf-8")
-    assert "released" in log and "(window)" in log
+    assert "released m-chloe-002 from doubt by Chloe Martin" in log
     landed = [pages.read(p)[0] for p in (target / "beacon" / "_inbound" / "candidates").glob("*.md")]
     landed += [pages.read(p)[0] for p in (target / "beacon" / "knowledge" / "sources").rglob("*.md")]
-    assert any(fm.get("release_class") == "window" for fm in landed)
+    assert any(fm.get("evidence") == ["m-chloe-002"] and fm.get("acted_for") == "Chloe Martin" for fm in landed)
 
 
 def test_time_scale_only_in_fixture_mode(fixture_dir):

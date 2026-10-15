@@ -71,10 +71,10 @@ def index(root: Path) -> dict:
     """Every item a verdict can name, by its id and by its file stem."""
     found: dict = {}
 
-    def add(kind, rel, fm, body):
+    def add(kind, rel, fm, body, *also):
         path = root / rel
         entry = Found(kind, path, fm, body)
-        for key in (str(fm.get("id") or ""), path.stem):
+        for key in (str(fm.get("id") or ""), path.stem, *also):
             if key:
                 found.setdefault(key, entry)
 
@@ -84,8 +84,8 @@ def index(root: Path) -> dict:
             add(kind, rel, fm, body)
     for rel, fm, body in needs_you.pages_in(root, needs_you.QUEUE):
         add("high_stakes" if fm.get("high_stakes") else "leaving", rel, fm, body)
-    for rel, fm, body in needs_you.doubt_pages(root):
-        add("doubt", rel, fm, body)
+    for rel, fm, body in needs_you.doubt_pages(root):   # also by the record it holds
+        add("doubt", rel, fm, body, *[str(e) for e in fm.get("evidence") or []][:1])
     try:
         import tracker
         for path, fm, body in tracker.waiting_for_a_person(root):
@@ -185,9 +185,8 @@ def _own_repo(root: Path) -> str | None:
 
 
 def _high_stakes(space: spaceyaml.Space, fm: dict, body: str) -> bool:
-    import release
-    return bool(fm.get("high_stakes")) or release.first_term(
-        f"{fm.get('title', '')}\n{body}", space.high_stakes) is not None
+    """Flagged by the router or the person who released it; no word decides."""
+    return bool(fm.get("high_stakes"))
 
 
 def _file_evidence(root, space, fm: dict, body: str, path: Path, item_id, by, now, report) -> None:
@@ -250,7 +249,7 @@ def _candidate(root, space, entry: Found, item_id, verb, note, by, now, report: 
                     "generated": pages.generated("sign", now), "class": "window" if stakes else "at_once",
                     "destination": str(destination), "subject": fm.get("subject"),
                     "stage_after": pages.iso(now + space.window() if stakes else now), "listed": False,
-                    "high_stakes": stakes or None, "path": f"approved:{by}", "approved_by": by,
+                    "high_stakes": fm.get("high_stakes") or None, "path": f"approved:{by}", "approved_by": by,
                     "evidence": list(fm.get("evidence") or []), "from_space": space.name,
                     "kind": fm.get("kind"), "page": target.relative_to(root).as_posix()}
         queue_fm.update(signature)

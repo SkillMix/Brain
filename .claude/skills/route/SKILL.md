@@ -26,7 +26,8 @@ can be retracted.
 1. **Pending.** `python _meta/tools/route.py <root> pending [--subject <id>]`. Read
    `_meta/state/private/route-pending.json`: `records` (each with its full `text`, people,
    thread, `episode`, `history`, `same_meeting` and the subjects its identifiers `suggested`),
-   `spaces` (name, audience, left-out terms), `subjects` (homes, aliases), `status_pages`,
+   `spaces` (name, audience, what each leaves out, its high-stakes categories), `never_leaves`,
+   `subjects` (homes, aliases), `status_pages`,
    `briefs` (subjects that already have one), `lessons` and `archives`. Read `lessons` first:
    each is a correction the owner made once and never wants to make again.
 2. **Triage.** For every record, name the subjects it may be about: identifiers, names,
@@ -57,11 +58,14 @@ decision: private | route
 scope: [<subject ids>]         # a subject backfill only: decided for these subjects, open for others
 confidence: high | medium | low
 why: <one or two sentences>
+never_leaves: <optional: where this record touches the never-leaves list, one line; stays home>
+checked_by: <who checked this decision (step 6); required when anything leaves this space>
 routes:
   - space: <the subject's home>
     subject: <subject id>
     tier: at_once | window
     why: <why this space; why this tier>
+    high_stakes: <optional: why this route is high stakes, one line; it travels>
     content: whole | parts
     title: <optional: this projection's title, when the record's own names what the parts leave out>
     parts:
@@ -78,9 +82,11 @@ routes:
 ```
 
 6. **Check.** A second agent (a fresh subagent, or you in a separate pass with the brief closed)
-   reads at least one decision in five, every `window` route and every `whole` route against its
-   record: is the subject right, is every part verbatim and needed, is anything sensitive leaving?
-   Fix what it finds before recording.
+   reads every decision that sends anything out of this space against its whole record and the
+   destination's lists: is the subject right, is every part verbatim and needed, does anything
+   leaving fall under a left-out or never-leaves category, is a high-stakes route flagged? Fix
+   what it finds, then set `checked_by` to the checker. The tool refuses an outgoing decision
+   without it.
 7. **Record.** `python _meta/tools/route.py <root> record _meta/state/private/decisions/*.yaml`.
    A recorded file moves to `decisions/done/`; a record that already has a decision is skipped.
    A refused decision prints why and its file stays: fix it once and record again; refused
@@ -102,16 +108,21 @@ routes:
 - **What travels.** `whole` when the record is about one subject and everyone on it is inside the
   destination's audience (its crew, and the client's own people for a client project); the tool
   refuses `whole` otherwise. Else `parts`: the relevant passages and transcript segments verbatim,
-  whole lines, never a summary in their place. Leave out every passage with a left-out term of
-  the destination (prices, fees, pay, credentials, client data, other clients; a money amount such
-  as `EUR 600` counts as a price) or a never-leaves
-  term: the tool holds a projection that carries one. The record's title travels too: when it
-  names what the parts leave out, give the route a plain `title` of your own. A phrase in the destination's
-  `left_out_except` (a practice's or product's name that holds a left-out word) does not count.
+  whole lines, never a summary in their place. The destination's `left_out` and the space's
+  `never_leaves` are categories, not words: read the whole record and leave out every passage
+  that is about one of them (a price stated in a sentence, a person's contract, another client's
+  matter), however it is worded; a word that only looks like one (a practice named after pricing,
+  a product called Settlement) is not. Nothing in the code matches words: your judgement and the
+  check are the gate. The record's title travels too: when it names what the parts leave out,
+  give the route a plain `title` of your own. When the record touches the never-leaves list,
+  set `never_leaves` on the decision (where, one line): it waits the window and that line stays
+  home.
 - **Tier.** `at_once` for ordinary work of that space (a client writing to the team about the
   work, a meeting of the crew). `window` when it is more sensitive: a person's situation, money,
   a disagreement, anything the owner may want to see leave. Say why in `why`: the morning view
-  shows it.
+  shows it. A route about one of the destination's `high_stakes` categories (a contract, a
+  policy, HR, legal, security, a claim about a named person) gets `high_stakes: <why>`: it waits
+  the window and lands pending for that space's person, with your why.
 - **Confidence.** `high` when you would defend the route to the owner; `medium` when another
   reading is plausible (it waits the window); `low` when you would want the owner's eye (it
   becomes a question, nothing leaves). Research first: low confidence is for what research

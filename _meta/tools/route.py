@@ -317,8 +317,8 @@ def pending(root, subject: str | None = None, now: dt.datetime | None = None, li
         dest = release.destination_space(space, name)
         spaces.append({"name": name, "profile": dest.profile if dest else "unknown",
                        "audience": dest.audience if dest else "unknown",
-                       "left_out": release.left_out_of(dest),
-                       "left_out_except": release.left_out_of(dest).excepted})
+                       "left_out": dest.left_out if dest else list(spaceyaml.DEFAULTS["left_out"]),
+                       "high_stakes": dest.high_stakes if dest else list(spaceyaml.DEFAULTS["high_stakes"])})
     subjects = [{"id": s.id, "kind": s.kind, "title": s.title, "home": reg.home_of(s.id),
                  "aliases": list(s.aliases), "match": dict(s.match)} for s in reg.everywhere()]
     status_pages = {}
@@ -329,7 +329,8 @@ def pending(root, subject: str | None = None, now: dt.datetime | None = None, li
         if page is not None and page.exists():
             status_pages[s.id] = page.read_text(encoding="utf-8")
     return {"records": records, "spaces": spaces, "subjects": subjects, "status_pages": status_pages,
-            "lessons": lessons, "briefs": briefs, "archives": space.routing_archives}
+            "lessons": lessons, "briefs": briefs, "archives": space.routing_archives,
+            "never_leaves": space.never_leaves}
 
 
 def _outside(space, reg, dest_space, subject, rec: dict) -> list:
@@ -387,6 +388,9 @@ def _validate(root: Path, space, reg, decision: dict, now: dt.datetime, strict: 
         raise RouteError(f"{rid}: a route decision names at least one route")
     if decision["decision"] == "private" and routes:
         raise RouteError(f"{rid}: a private decision has no routes")
+    for flag, where in [("never_leaves", decision)] + [("high_stakes", r) for r in routes]:
+        if where.get(flag) is not None and not (isinstance(where[flag], str) and where[flag].strip()):
+            raise RouteError(f"{rid}: {flag} is a one-line why, or absent")
     outside = sorted({str(r.get("subject")) for r in routes} - set(scope)) if scope else []
     if outside:
         raise RouteError(f"{rid}: routes {', '.join(outside)} outside its scope ({', '.join(scope)})")
@@ -480,12 +484,21 @@ def record(root, decision: dict, now: dt.datetime | None = None, by: str | None 
     history_low = asks and rec["history"]
     if history_low:   # history asks no question: a low-confidence call keeps it here, counted
         decision, asks = dict(decision, decision="private", routes=[]), False
+    leaving = [r for r in decision.get("routes") or [] if str(r.get("space")) != space.name]
+    if leaving and not asks and not by and not str(decision.get("checked_by") or "").strip():
+        raise RouteError(f"{rec['record']}: a decision that sends anything out needs a second agent's "
+                         "check first (checked_by)")
     out = {"queued": [], "held": [], "question": None, "attached": [], "history_low": history_low}
     row = {"at": pages.iso(now), "record": rec["record"], "decision": decision["decision"],
            "confidence": decision["confidence"], "why": decision.get("why", ""), "by": by or "router",
            "routes": []}
     if rec["history"]:
         row["history"] = True
+    elsewhere = bool(str(decision.get("never_leaves") or "").strip())   # where it is never travels
+    if elsewhere:
+        row["never_leaves"] = True
+    if decision.get("checked_by"):
+        row["checked_by"] = str(decision["checked_by"])
     if history_low:
         row["outcome"] = "history_low"
     if asks:
@@ -496,7 +509,6 @@ def record(root, decision: dict, now: dt.datetime | None = None, by: str | None 
     if fm.get("refreshed_at") and not prior:   # a deeper page: its earlier projections still waiting are replaced
         _withdraw(root, rec["record"], "superseded", "replaced by the projection of the refreshed page",
                   router_only=True)
-    elsewhere = release.first_term(f"{rec['title']}\n{rec['text']}", space.never_leaves)
     items, here_informs, away_informs = [], [], []
     for r in decision.get("routes") or []:
         dest_name, sid = str(r["space"]), str(r["subject"])
@@ -506,41 +518,23 @@ def record(root, decision: dict, now: dt.datetime | None = None, by: str | None 
             here_informs += [dict(i) for i in r.get("informs") or []]
             continue
         away_informs += [dict(i, subject=sid) for i in r.get("informs") or []]
-        dest_space = release.destination_space(space, dest_name)
         content = _projection(rec, r)
         shown = dict(rec, title=str(r.get("title") or "").strip() or rec["title"])   # the route's own title, if it gives one
-        # everything that would travel or explain the projection is checked: its parts, what it
-        # informs (text and owner) and the router's reason
-        said = " ".join([str(r.get("why") or "")] + [f"{i.get('text', '')} {i.get('owner', '')}"
-                                                     for i in r.get("informs") or []])
-        projected = f"{shown['title']}\n{content}\n{said}"
-        term = release.first_term(projected, space.never_leaves)
-        hold_reason = "never_leaves" if term else None
-        if not hold_reason:
-            term = release.first_term(projected, release.left_out_of(dest_space))
-            hold_reason = "left_out" if term else None
-        if not hold_reason:
-            other = sweep.other_client(space, reg.get(sid), projected)
-            if other:
-                hold_reason, term = "left_out", f"another client ({other})"
+        # what it says is judged by the router and its check; the tools check only facts
         tier, reasons, extra = r.get("tier", "window"), [str(r.get("why") or "").strip()], {}
         if by:
             extra["approved_by"], extra["path"] = by, f"approved:{by}"
-        if elsewhere and not hold_reason:
+        if elsewhere:
             tier = "window"
             reasons.append("the record holds never-leaves material elsewhere")
         if decision["confidence"] == "medium" and not by:
             tier = "window"
             reasons.append("medium confidence")
-        if release.first_term(projected, space.high_stakes):
+        stakes = str(r.get("high_stakes") or "").strip()
+        if stakes:   # the why travels: the domain owner reads it before the page lands
             tier = "window"
-            extra["high_stakes"] = True
-            reasons.append("high-stakes term: lands pending")
-        named = sweep.named_person(space, _as_record(rec), projected)
-        if named:
-            tier = "window"
-            extra["high_stakes"] = True
-            reasons.append(f"an outside party writes about {named}: lands pending")
+            extra["high_stakes"] = stakes
+            reasons.append(f"high stakes, lands pending: {stakes}")
         if space.review_until and now < space.review_until and not by:
             tier = "window"
             reasons.append(f"review mode until {space.review_until:%Y-%m-%d}")
@@ -548,24 +542,15 @@ def record(root, decision: dict, now: dt.datetime | None = None, by: str | None 
         extra.update({"why": "; ".join(x for x in reasons if x), "informs": list(r.get("informs") or []),
                       "confidence": decision["confidence"], "routed_by": by or "router",
                       "content": r.get("content")})
-        item = sweep.item_frontmatter(space, _as_record(shown), sid, dest_name, hold_reason or tier,
-                                      stage_after, now, extra)
-        if hold_reason:
-            release.hold(root, item, content, hold_reason,
-                         f"{'never-leaves' if hold_reason == 'never_leaves' else 'left-out'} `{term}` in the projection")
-            out["held"].append((item["id"], hold_reason))
-            row["routes"].append({"space": dest_name, "subject": sid, "outcome": f"held:{hold_reason}",
-                                  "item": item["id"]})
-        else:
-            pages.write(root / release.QUEUE / f"{item['id']}.md", item, content)
-            out["queued"].append(item["id"])
-            row["routes"].append({"space": dest_name, "subject": sid, "tier": tier, "outcome": "queued",
-                                  "item": item["id"]})
-        if hold_reason != "never_leaves":
-            signal = sweep.signal_for(sid, dest_name, now)
-            target = root / release.SIGNALS / f"{signal['id']}.yaml"
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(yaml.safe_dump(signal, sort_keys=False), encoding="utf-8", newline="\n")
+        item = sweep.item_frontmatter(space, _as_record(shown), sid, dest_name, tier, stage_after, now, extra)
+        pages.write(root / release.QUEUE / f"{item['id']}.md", item, content)
+        out["queued"].append(item["id"])
+        row["routes"].append({"space": dest_name, "subject": sid, "tier": tier, "outcome": "queued",
+                              "item": item["id"]})
+        signal = sweep.signal_for(sid, dest_name, now)
+        target = root / release.SIGNALS / f"{signal['id']}.yaml"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(yaml.safe_dump(signal, sort_keys=False), encoding="utf-8", newline="\n")
         items.append(item["id"])
     routes = list(prior.get("routes") or []) + [f"{r['space']}/{r['subject']}" for r in decision.get("routes") or []]
     stamping = {"decided_at": pages.iso(now), "decision": "route" if routes else decision["decision"],

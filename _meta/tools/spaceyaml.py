@@ -55,15 +55,21 @@ DEFAULTS = {
                   "release": "after_window", "write_outside_system": "at_once",
                   "send_outward": "propose", "spend": "propose"},
     "floors": {"send_outward": "propose", "spend": "propose", "release": "after_window"},
-    "left_out": ["price", "prices", "pricing", "fee", "fees", "commercial terms",
-                 "day rate", "hourly rate", "margin", "salary", "pay", "employment",
-                 "immigration", "visa", "password", "credential", "credentials",
-                 "access link", "api key", "client data"],
-    "never_leaves": ["equity", "settlement", "termination", "legal position", "medical",
-                     "salary"],
-    "high_stakes": ["pricing", "price list", "contract", "commitment", "policy",
-                    "identity", "rules", "lawsuit", "litigation", "indemnity", "liability",
-                    "data breach", "security incident", "gdpr", "disciplinary", "dismissal"],
+    # categories an agent reads and judges a whole record against, never words matched in code
+    "left_out": ["prices, fees, rates, margins and the commercial terms of a deal",
+                 "a person's pay, employment, contract or immigration status",
+                 "passwords, keys, credentials and access links",
+                 "a client's own data (their customers, employees or records)",
+                 "another client's name or matters, in a space a client reads"],
+    "never_leaves": ["anyone's equity, ownership share or pay",
+                     "a settlement, a termination or a legal position pending counsel",
+                     "a person's medical matters"],
+    "high_stakes": ["a contract, commitment or price the company agrees to",
+                    "a company policy or a rule people must follow",
+                    "HR: discipline, dismissal or a complaint about a person",
+                    "legal: litigation, liability or indemnity",
+                    "security: an incident, a data breach or a regulator's question",
+                    "a claim from outside the company about a named person"],
     "windows": {"snapshot": 7, "status": 7, "process": 90, "directive": 90, "review": 90,
                 "concept": 180, "entity": 180, "policy": 365, "decision": 365},
     "protected": ["identity/", "rules.md", "space.yaml", ".claude/", "_meta/tools/", ".github/"],
@@ -205,11 +211,6 @@ class Space:
     def left_out(self) -> list:
         value = self.data.get("left_out")
         return list(DEFAULTS["left_out"] if value is None else value)
-
-    @property
-    def left_out_except(self) -> list:
-        """Phrases that hold a left-out term but are not about it (a practice's or product's name)."""
-        return list(self.data.get("left_out_except") or [])
 
     @property
     def never_leaves(self) -> list:
@@ -441,7 +442,7 @@ class Space:
                 errs.append("transcripts.switch must be on or off")
             elif not isinstance(transcripts.get("exclude_words") or [], list):
                 errs.append("transcripts.exclude_words must be a list of words or phrases")
-        for key in ("left_out", "left_out_except", "never_leaves", "protected", "models"):
+        for key in ("left_out", "never_leaves", "high_stakes", "protected", "models"):
             value = data.get(key)
             if value is not None and not isinstance(value, list):
                 errs.append(f"{key} must be a list")

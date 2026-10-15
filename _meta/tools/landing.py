@@ -192,6 +192,15 @@ def _mark(path: Path, fm: dict, body: str, **fields) -> None:
         pages.write(path, dict(fm, **changed), body)
 
 
+def stakes(fm: dict) -> str | None:
+    """Why the sender judged an item high stakes (an older flag carries no why); None when it
+    was not flagged. No word in it decides: the router or a person judged it."""
+    value = fm.get("high_stakes")
+    if not value:
+        return None
+    return value.strip() if isinstance(value, str) and value.strip() else "flagged"
+
+
 def signer_log(repo: str, cache: dict) -> str | None:
     """The signer's own `log.md`, read with this person's grants (the host's command line)."""
     if repo in cache:
@@ -225,7 +234,6 @@ def land(root, space: spaceyaml.Space | None = None, reg=None, now: dt.datetime 
     reg = reg or registry_mod.Registry(root, space)
     now = now or space.now()
     report = LandingReport()
-    import release  # the high-stakes words and the whole-word matcher are the release rule's
     distrusted = pending_releasers(root)
     signer_cache: dict = {}
     groups: dict = {}
@@ -242,8 +250,7 @@ def land(root, space: spaceyaml.Space | None = None, reg=None, now: dt.datetime 
             # a high-stakes record waits for the domain owner's yes; it is never filed silently
             if str(fm.get("landing") or "").startswith("pending"):
                 continue
-            term = fm.get("high_stakes") and "flagged" or release.first_term(
-                f"{fm.get('title', '')}\n{body}", space.high_stakes)
+            term = stakes(fm)
             if term:
                 pid = str(fm.get("id") or path.stem)
                 _mark(path, fm, body, landing=f"pending: high stakes ({term})",
@@ -280,8 +287,7 @@ def land(root, space: spaceyaml.Space | None = None, reg=None, now: dt.datetime 
                 _mark(path, fm, body, landing="pending: fingerprint mismatch", **{"for": owner})
                 report.pending.append(pid)
                 continue
-            term = fm.get("high_stakes") and "flagged" or release.first_term(
-                f"{fm.get('title', '')}\n{body}", space.high_stakes)
+            term = stakes(fm)
             if term:
                 _mark(path, fm, body, landing=f"pending: high stakes ({term})", **{"for": owner})
                 report.pending.append(pid)

@@ -48,7 +48,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pages  # noqa: E402
 import provenance  # noqa: E402
 import registry as registry_mod  # noqa: E402
-import release  # noqa: E402
 import spaceyaml  # noqa: E402
 
 ROUTINE = "distill"
@@ -363,6 +362,8 @@ def write_candidate(root: Path, space, reg, subject, new: list, index: dict,
     fm["evidence"] = merged
     if aside:
         fm["set_aside"] = aside
+    if prior.get("high_stakes"):   # the check's flag stays until a check removes it
+        fm["high_stakes"] = prior["high_stakes"]
     pages.write(path, fm, body)
     return "refreshed" if old_fm else "new"
 
@@ -528,15 +529,13 @@ def candidate_path(root: Path, candidate) -> Path:
 
 
 def verify(root, candidate) -> list:
-    """Every problem that keeps a candidate from the signer, one line each; [] when clean."""
+    """Every problem that keeps a candidate from the signer, one line each; [] when clean. Facts
+    only: never-leaves and left-out matter is the page check's judgement."""
     root = Path(root)
-    space = spaceyaml.load(root)
     text = candidate_path(root, candidate).read_text(encoding="utf-8")
     fm, body = pages.split(text)
     offset = text[:len(text) - len(body)].count("\n")   # report lines of the file, not the body
     evidence = {str(r) for r in fm.get("evidence") or []}
-    destination = str(fm.get("destination") or "")
-    left_out = release.left_out_of(release.destination_space(space, destination)) if destination else []
     problems = []
     for number, heading, unit in body_units(body):
         where = f"line {number + offset}"
@@ -547,10 +546,6 @@ def verify(root, candidate) -> list:
             for rid in (r.strip() for r in marker.split(",")):
                 if rid and rid not in evidence:
                     problems.append(f"{where}: source {rid} is not in evidence")
-        problems += [f"{where}: never-leaves term `{term}`" for term in space.never_leaves
-                     if release.term_in(unit, str(term))]
-        problems += [f"{where}: left-out term `{term}` for {destination}"
-                     for term in release.terms_found(unit, left_out)]
         mark = next((m for m in PLACEHOLDERS if m in unit.lower()), None)
         if mark:
             problems.append(f"{where}: placeholder `{mark}`")

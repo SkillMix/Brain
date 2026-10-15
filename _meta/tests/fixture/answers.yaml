@@ -13,8 +13,8 @@ questions:
     expect: ["2026-11-10"]
     asker: ben
     via: both
-    # Passes only after the window and Chloe's listing: the mail leaves Chloe's space to
-    # beacon after one window and one morning view, never before.
+    # Passes only after Chloe's yes: without the router nothing has read the mail, so it
+    # waits in her space, held in doubt, and leaves for beacon once she says yes.
   - question: "What is going on with Beacon?"
     subject: beacon
     kind: status

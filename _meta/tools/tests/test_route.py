@@ -61,6 +61,7 @@ def captured(root, rid="c-1", text=CALL, participants=None, title="Kickoff", kin
 
 def decision(**over):
     base = {"record": "c-1", "decision": "route", "confidence": "high", "why": "the client's kickoff",
+            "checked_by": "Checker",
             "routes": [{"space": "harbor", "subject": "harbor", "tier": "at_once", "why": "pilot work",
                         "content": "parts",
                         "parts": [{"text": "[00:01:00] Chloe: The first list should hold forty leads."},
@@ -160,28 +161,65 @@ def test_whole_needs_everyone_inside_the_audience(tmp_path):
         route.record(root, dict(whole, record="c-3"), now=NOW)
 
 
-def test_gates(tmp_path):
+def test_words_hold_nothing_the_router_judges(tmp_path):
+    """Topics are the router's judgement: a part that only looks like a left-out, never-leaves,
+    high-stakes word or another client's name travels as the router decided."""
     root, _, _ = space_set(tmp_path)
-    captured(root, text=CALL + "\n[00:04:00] Ada: The settlement terms are separate.")
-    route.record(root, decision(), now=NOW)
+    text = ("[00:01:00] Chloe: Our transfer pricing team wants the settlement report.\n"
+            "[00:02:00] Ben: Acme Foods uses the same contract rules, says Ben Liu.\n")
+    captured(root, text=text, title="Pricing team, settlement report")
+    out = route.record(root, decision(routes=route_with(parts=[
+        {"text": "[00:01:00] Chloe: Our transfer pricing team wants the settlement report."},
+        {"text": "[00:02:00] Ben: Acme Foods uses the same contract rules, says Ben Liu."}])), now=NOW)
+    (fm, body), = queued(root)
+    assert out["held"] == [] and fm["class"] == "at_once" and not fm.get("high_stakes")
+    assert "transfer pricing" in body and "Acme Foods" in body
+
+
+def test_never_leaves_elsewhere_waits_the_window_and_its_line_stays_home(tmp_path):
+    root, _, _ = space_set(tmp_path)
+    captured(root)
+    route.record(root, decision(never_leaves="at 00:03, a colleague's contract"), now=NOW)
+    (fm, body), = queued(root)
+    assert fm["class"] == "window" and "never-leaves material elsewhere" in fm["why"]
+    assert "colleague" not in json.dumps(fm) + body
+    log = (root / route.LOG).read_text(encoding="utf-8")
+    assert "colleague" not in log and json.loads(log.splitlines()[-1])["never_leaves"] is True
+
+
+def test_a_high_stakes_route_waits_and_carries_its_why(tmp_path):
+    root, _, _ = space_set(tmp_path)
+    captured(root)
+    route.record(root, decision(routes=route_with(high_stakes="the client commits to the first list")), now=NOW)
     (fm, _), = queued(root)
-    assert fm["class"] == "window" and "never-leaves" in fm["why"]
-    captured(root, rid="c-4", text="[00:01:00] Chloe: Our day rate is 950.\n[00:02:00] Ada: Fine.")
-    out = route.record(root, decision(record="c-4", routes=route_with(
-        parts=[{"text": "[00:01:00] Chloe: Our day rate is 950."}])), now=NOW)
-    assert out["held"][0][1] == "left_out"
-    captured(root, rid="c-5", text="[00:01:00] Chloe: Please sign the contract.\n")
-    route.record(root, decision(record="c-5", routes=route_with(
-        parts=[{"text": "[00:01:00] Chloe: Please sign the contract."}])), now=NOW)
-    fm = [f for f, _ in queued(root) if f["evidence"] == ["c-5"]][0]
-    assert fm["class"] == "window" and fm["high_stakes"] is True
+    assert fm["class"] == "window" and fm["high_stakes"] == "the client commits to the first list"
     captured(root, rid="c-6")
     route.record(root, decision(record="c-6", confidence="medium"), now=NOW)
     assert [f for f, _ in queued(root) if f["evidence"] == ["c-6"]][0]["class"] == "window"
-    captured(root, rid="c-9", text="[00:01:00] Ada: The settlement is agreed.\n")
-    out = route.record(root, decision(record="c-9", routes=route_with(
-        parts=[{"text": "[00:01:00] Ada: The settlement is agreed."}])), now=NOW)
-    assert out["held"][0][1] == "never_leaves"
+
+
+def test_an_outgoing_decision_needs_a_second_check(tmp_path):
+    root, _, _ = space_set(tmp_path)
+    captured(root)
+    unchecked = {k: v for k, v in decision().items() if k != "checked_by"}
+    with pytest.raises(route.RouteError, match="checked_by"):
+        route.record(root, unchecked, now=NOW)
+    assert queued(root) == []
+    captured(root, rid="c-2")
+    assert route.record(root, dict(unchecked, record="c-2", decision="private", routes=[]), now=NOW)
+    captured(root, rid="c-3")
+    assert route.record(root, dict(unchecked, record="c-3", confidence="low"), now=NOW)["question"]
+    captured(root, rid="c-4")
+    assert route.record(root, dict(unchecked, record="c-4"), now=NOW, by="Ada Okafor")["queued"]
+
+
+def test_the_brief_gives_the_lists_as_categories(tmp_path):
+    root, _, _ = space_set(tmp_path)
+    captured(root)
+    pack = route.pending(root, now=NOW)
+    harbor = next(s for s in pack["spaces"] if s["name"] == "harbor")
+    assert harbor["left_out"] and harbor["high_stakes"] and "left_out_except" not in harbor
+    assert pack["never_leaves"]
 
 
 def test_low_confidence_becomes_a_question_and_nothing_leaves(tmp_path):
@@ -344,26 +382,10 @@ def test_the_projection_lands_and_the_home_status_page_shows_its_open_item(tmp_p
 
 
 # ----- the final review's findings ---------------------------------------------------------
-def test_never_leaves_and_left_out_cover_what_the_projection_says_about_itself(tmp_path):
-    root, _, _ = space_set(tmp_path)
-    captured(root)
-    held = route.record(root, decision(routes=route_with(informs=[
-        {"kind": "open_item", "text": "Agree the settlement with Ben", "direction": "we owe"}])), now=NOW)
-    assert held["held"][0][1] == "never_leaves"
-    captured(root, rid="c-2")
-    held = route.record(root, decision(record="c-2", routes=route_with(why="his salary came up")), now=NOW)
-    assert held["held"][0][1] == "never_leaves"
-    captured(root, rid="c-3")
-    held = route.record(root, decision(record="c-3", routes=route_with(informs=[
-        {"kind": "decision", "text": "The day rate stays as it is"}])), now=NOW)
-    assert held["held"][0][1] == "left_out"
-    assert queued(root) == []
-
-
 def test_the_routers_reasons_stay_home(tmp_path):
     root, harbor, _ = space_set(tmp_path)
-    captured(root, text=CALL + "\n[00:04:00] Ada: The settlement terms are separate.")
-    route.record(root, decision(), now=NOW)
+    captured(root)
+    route.record(root, decision(never_leaves="at 00:03"), now=NOW)
     (fm, _), = queued(root)
     assert "never-leaves" in fm["why"], "the owner sees why it waits"
     for path in (root / "_outbound" / "queue").glob("*.md"):
@@ -375,32 +397,13 @@ def test_the_routers_reasons_stay_home(tmp_path):
     assert not {"why", "confidence", "routed_by"} & set(lfm), "the reasons stay in the releasing space"
 
 
-def test_another_clients_name_holds_and_a_named_person_waits(tmp_path):
-    root, _, _ = space_set(tmp_path)
-    captured(root, text="[00:01:00] Chloe: Acme Foods pays us double.\n[00:02:00] Ada: Noted.\n")
-    out = route.record(root, decision(routes=route_with(
-        parts=[{"text": "[00:01:00] Chloe: Acme Foods pays us double."}])), now=NOW)
-    assert out["held"][0][1] == "left_out"
-    captured(root, rid="m-1", kind="mail", participants=[], sender="chloe@harbor.example",
-             text="Ben Liu will lead the rollout from Monday.\n")
-    route.record(root, decision(record="m-1", routes=route_with(
-        parts=[{"text": "Ben Liu will lead the rollout from Monday."}])), now=NOW)
-    (fm, _), = queued(root)
-    assert fm["class"] == "window" and fm["high_stakes"] is True
-
-
-def test_a_route_may_title_its_projection_under_the_same_gates(tmp_path):
+def test_a_route_may_title_its_projection(tmp_path):
     """A record's title speaks for all of it; parts may leave out what it names."""
     root, _, _ = space_set(tmp_path)
     captured(root, title="Kickoff, then the day rate")
-    assert route.record(root, decision(), now=NOW)["held"][0][1] == "left_out"
-    captured(root, rid="c-2", title="Kickoff, then the day rate")
-    route.record(root, decision(record="c-2", routes=route_with(title="Harbor kickoff: the first list")), now=NOW)
+    route.record(root, decision(routes=route_with(title="Harbor kickoff: the first list")), now=NOW)
     (fm, _), = queued(root)
     assert fm["title"] == "Harbor kickoff: the first list"
-    captured(root, rid="c-3")
-    out = route.record(root, decision(record="c-3", routes=route_with(title="Kickoff and the day rate")), now=NOW)
-    assert out["held"][0][1] == "left_out"
 
 
 def test_a_projection_too_large_for_one_release_is_refused(tmp_path, monkeypatch):
@@ -535,10 +538,14 @@ def test_retract_queued_only_leaves_what_already_shipped(tmp_path):
 
 
 def test_retract_withdraws_what_the_router_held_too(tmp_path):
-    """A held projection of a retracted decision must not wait to be let go by mistake."""
+    """A projection an earlier router held on a word must not wait to be let go by mistake."""
     root, _, _ = space_set(tmp_path)
-    captured(root, title="Kickoff, then the day rate")
-    held_id = route.record(root, decision(), now=NOW)["held"][0][0]
+    captured(root)
+    route.record(root, decision(), now=NOW)
+    (fm, body), = queued(root)
+    held_id = fm["id"]
+    release.hold(root, fm, body, "left_out", "left-out `rate` in the projection")
+    (root / "_outbound" / "queue" / f"{held_id}.md").unlink()
     out = route.retract(root, "c-1", by="Ada Okafor", now=NOW, queued_only=True)
     assert out["withdrawn"] == [held_id]
     assert pages.read(root / "_outbound" / "held" / f"{held_id}.md")[0]["reason"] == "withdrawn"

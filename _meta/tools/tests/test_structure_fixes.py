@@ -72,23 +72,6 @@ def test_a_brain_sweeps_nothing_and_a_space_only_its_declared_feeds(tmp_path):
     assert sweep.run(ada, now=NOW).records_seen == 1
 
 
-def test_another_client_stays_home_and_a_mixed_passage_keeps_its_project_facts(tmp_path):
-    subjects = [{"id": "tidewater", "kind": "clients", "title": "Tidewater Ferries"},
-                {"id": "alder", "kind": "clients", "title": "Alder Clinic"},
-                {"id": "harbor", "kind": "projects", "title": "Harbor", "part_of": "tidewater", "home": "harbor",
-                 "match": {"label": "Harbor"}}]
-    ada = make_space(tmp_path / "ada", subjects=subjects, owner_email="ada@lantern.example",
-                     standing_choices=[{"destination": "harbor", "kind": "mail"}])
-    space = spaceyaml.load(ada)
-    subject = __import__("registry").Registry(ada, space).get("harbor")
-    mixed = {"id": "m1", "kind": "mail", "from": "ops@tidewater.example", "at": "2026-10-11T08:00:00Z",
-             "subject": "Harbor plan", "text": "Go-live moves to 3 November.\nAlder Clinic had the same issue."}
-    verdict = sweep.classify(space, mixed, subject, "harbor", None, "owner", NOW)
-    assert not verdict.hold and verdict.extra["trimmed_body"] == "Go-live moves to 3 November."
-    titled = dict(mixed, id="m2", subject="Alder Clinic and Harbor")
-    assert sweep.classify(space, titled, subject, "harbor", None, "owner", NOW).hold == "left_out"
-
-
 def test_an_at_once_answer_is_logged_and_a_failed_sample_pauses_its_choice(tmp_path):
     roots = world(tmp_path)
     request.ask(roots["chloe"], "harbor", "status", "Where does Harbor stand?", asked_by="Chloe Martin", now=NOW)

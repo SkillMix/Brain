@@ -191,8 +191,7 @@ def unmounted(tmp_path, harbor_repo):
     subjects = [dict(s, match=dict(s.get("match") or {}, repo=str(harbor_repo))) if s["id"] == "harbor" else s
                 for s in BRAIN_SUBJECTS]
     brain = make_space(tmp_path / "brain", profile="brain", subjects=subjects)
-    ada = make_space(tmp_path / "ada", name="ada", standing_choices=[{"destination": "harbor", "kind": "mail"}],
-                     sources=[{"name": "mail", "adapter": "gmail", "audience": "owner"}])
+    ada = make_space(tmp_path / "ada", name="ada", sources=[{"name": "mail", "adapter": "gmail", "audience": "crew"}])
     mount_brain(ada, brain)
     return brain, ada
 

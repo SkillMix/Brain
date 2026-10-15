@@ -30,8 +30,9 @@ any release.
 ## What the tool already did
 
 For each `_outbound/queue/<id>.md` with `stage_after` passed and (`class: at_once` or
-`listed: true`): scrubbed it (never-leaves terms, the destination's left-out terms and
-secret-scan hits fail it into `held/` with a reason); wrote it into the destination's
+`listed: true`): scrubbed it for facts (a secret-scan hit fails it into `held/` with a
+reason; what it says was judged before it was queued, by the router and its check or by a
+person, and no word in it decides); wrote it into the destination's
 `_inbound/candidates/<id>.md` as `status: draft` with `released_by`, `released_from`,
 `release_class` and an opaque `evidence` pointer, signature fields carried unchanged on a
 signed page; refused a destination whose `mode` differs; online, updated the destination

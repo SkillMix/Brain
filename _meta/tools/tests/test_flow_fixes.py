@@ -43,17 +43,30 @@ def test_doubt_items_open_one_by_one_and_take_the_five_verbs(tmp_path):
     assert {"destination": "harbor", "kind": "mail"} in spaceyaml.load(root).standing_choices
 
 
-def test_a_high_stakes_item_still_waits_its_window_after_a_yes(tmp_path):
+def test_a_doubt_item_may_be_answered_by_the_record_it_holds(tmp_path):
     root = make_space(tmp_path / "ada", subjects=[HARBOR])
-    held(root, "p-0000f011", title="The contract renews")
-    sign.apply(root, {"p-0000f011": "yes"}, by="Ada Okafor", now=NOW)
+    held(root, "p-0000f004", evidence=["m-0042"])
+    report = sign.apply(root, {"m-0042": "yes"}, by="Ada Okafor", now=NOW)
+    assert report.signed == ["m-0042"]
+    assert pages.read(root / "_outbound/queue/p-0000f004.md")[0]["class"] == "at_once"
+
+
+def test_a_high_stakes_item_still_waits_its_window_after_a_yes(tmp_path):
+    """High stakes is a flag someone judged, never a word: a flagged item waits its window after
+    a yes, an unflagged one with the same words goes at once."""
+    root = make_space(tmp_path / "ada", subjects=[HARBOR])
+    held(root, "p-0000f011", title="The contract renews", high_stakes="the client renews for a year")
+    held(root, "p-0000f013", title="The contract renews")
+    sign.apply(root, {"p-0000f011": "yes", "p-0000f013": "yes"}, by="Ada Okafor", now=NOW)
     fm, _ = pages.read(root / "_outbound/queue/p-0000f011.md")
     assert fm["class"] == "window" and pages.parse_iso(fm["stage_after"]) > NOW
+    assert pages.read(root / "_outbound/queue/p-0000f013.md")[0]["class"] == "at_once"
     write_page(root, "_inbound/candidates/p-0000f012.md", "Our pricing changes in March.\n",
-               id="p-0000f012", type="concept", title="Pricing", subject="harbor", destination="harbor")
+               id="p-0000f012", type="concept", title="Pricing", subject="harbor", destination="harbor",
+               high_stakes="a price the company agrees to")
     sign.apply(root, {"p-0000f012": "yes"}, by="Ada Okafor", now=NOW)
     fm, _ = pages.read(root / "_outbound/queue/p-0000f012.md")
-    assert fm["class"] == "window" and fm["high_stakes"] is True
+    assert fm["class"] == "window" and fm["high_stakes"] == "a price the company agrees to"
 
 
 def test_a_record_is_filed_as_evidence_never_signed(tmp_path):
@@ -63,24 +76,6 @@ def test_a_record_is_filed_as_evidence_never_signed(tmp_path):
     sign.apply(root, {"p-0000f021": "yes"}, by="Ada Okafor", now=NOW)
     fm, _ = pages.read(root / "knowledge/sources/2026/10/p-0000f021.md")
     assert fm["status"] == "draft" and "signed_by" not in fm
-
-
-def test_an_outside_mail_naming_a_person_is_high_stakes_and_a_sent_quote_is_not(tmp_path):
-    root = make_space(tmp_path / "ada", subjects=[HARBOR, BEN], owner_email="ada@lantern.example")
-    space = spaceyaml.load(root)
-    reg = registry.Registry(root, space)
-    subject = reg.get("harbor")
-    outside = {"id": "m1", "kind": "mail", "from": "ops@tidewater.example", "at": "2026-10-11T08:00:00Z",
-               "text": "Ben Liu missed the review twice."}
-    verdict = sweep.classify(space, outside, subject, "harbor", None, "owner", NOW)
-    assert verdict.cls == "window" and verdict.extra.get("high_stakes") and "Ben Liu" in verdict.why
-    colleague = dict(outside, id="m2", **{"from": "chloe@lantern.example"})
-    assert not (sweep.classify(space, colleague, subject, "harbor", None, "owner", NOW).extra or {}).get(
-        "high_stakes")
-    quote = {"id": "m3", "kind": "mail", "from": "Ada Okafor <ada@lantern.example>",
-             "at": "2026-10-11T08:00:00Z", "text": "As agreed, the price list for the pilot is attached."}
-    assert not (sweep.classify(space, quote, subject, "harbor", None, "owner", NOW).extra or {}).get(
-        "high_stakes")
 
 
 def test_a_signal_flags_the_homes_status_page(tmp_path):

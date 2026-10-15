@@ -17,8 +17,7 @@ write `status: stable` and delete only their own queue files.
     python release.py [root] retract <item-id>      a retraction item, ships at once
     python release.py [root] pull-back <item-id>    queue -> held, reason pulled
 
-sweep.py imports the shared helpers (`first_term`, `destination_space`, `left_out_of`,
-`hold`, `append_run_line`).
+sweep.py imports the shared helpers (`destination_space`, `hold`, `append_run_line`).
 """
 from __future__ import annotations
 
@@ -78,52 +77,6 @@ class ShipReport:
 
 
 # ----- shared helpers (sweep.py imports these) -----------------------------
-_START, _END = r"(?<![^\W_])", r"(?![^\W_])"   # a letter or digit, never `_`: `_fee_` is italics
-
-
-def _term_re(term: str):
-    words = [re.escape(w) for w in str(term).split()]
-    return re.compile(_START + r"\s+".join(words) + _END, re.IGNORECASE) if words else None
-
-
-def term_in(text: str, term: str) -> bool:
-    """Whole-word, case-insensitive; a multi-word term matches across any whitespace; an
-    underscore is markdown, not part of a word."""
-    pattern = _term_re(term)
-    return pattern is not None and pattern.search(text) is not None
-
-
-class Terms(list):
-    """A destination's left-out terms with the phrases it declares are not about them
-    (`left_out_except`: a practice's or product's name that holds a left-out word)."""
-
-    def __init__(self, terms=(), excepted=()):
-        super().__init__(terms or [])
-        self.excepted = [str(p) for p in excepted or [] if str(p).strip()]
-
-
-# A money amount is a price: a currency code or symbol next to a number, either order
-# (EUR 600, €1.200,-, 600 EUR, $1,200.50). A number followed by % is a percentage.
-_NUMBER = r"(?:\d{1,3}(?:[.,]\d{3})+|\d+)(?:[.,](?:\d{1,2}|-{1,2}))?"
-_CODE, _SYMBOL = r"(?:EUR|USD|GBP|CHF)", r"[€$£¥]"
-AMOUNT = re.compile(rf"(?:{_START}{_CODE}\s?|{_SYMBOL}\s?){_NUMBER}(?![\d.,]*\s?%)"
-                    rf"|{_START}(?<![.,]){_NUMBER}[km]?\s?(?:{_SYMBOL}|{_CODE}{_END})", re.IGNORECASE)
-
-
-def terms_found(text: str, terms) -> list:
-    """Every term in `text`, after blanking the phrases `terms` excepts; a money amount is
-    found as `amount` wherever `price` is one of the terms."""
-    for phrase in getattr(terms, "excepted", ()):
-        text = _term_re(phrase).sub(" ", text)
-    found = [str(term) for term in terms or [] if term_in(text, str(term))]
-    if any(str(term).strip().lower() == "price" for term in terms or []) and AMOUNT.search(text):
-        found.append("amount")
-    return found
-
-
-def first_term(text: str, terms) -> str | None:
-    found = terms_found(text, terms)
-    return found[0] if found else None
 
 
 def spaces_home() -> Path:
@@ -251,11 +204,6 @@ def destination_space(space: spaceyaml.Space, destination: str,
     return None
 
 
-def left_out_of(dest_space: spaceyaml.Space | None) -> Terms:
-    if dest_space is None:
-        return Terms(spaceyaml.DEFAULTS["left_out"])
-    return Terms(dest_space.left_out, dest_space.left_out_except)
-
 
 def hold(root: Path, fm: dict, body: str, reason: str, why: str) -> Path:
     """Write an item to _outbound/held/ with its reason; held items never leave by themselves."""
@@ -321,16 +269,8 @@ def slug_of(name: str) -> str:
 # ----- the scrub -------------------------------------------------------------
 def scrub_reason(space: spaceyaml.Space, dest_space: spaceyaml.Space | None, fm: dict,
                  body: str, path: Path | None = None) -> tuple[str, str] | None:
-    """Why an item may not leave: (reason, why) or None when it is clean."""
-    informs = " ".join(f"{i.get('text', '')} {i.get('owner', '')}" for i in fm.get("informs") or []
-                       if isinstance(i, dict))
-    text = f"{fm.get('title', '')}\n{body}\n{informs}"
-    term = first_term(text, space.never_leaves)
-    if term:
-        return "never_leaves", f"never-leaves term `{term}` appears"
-    term = first_term(text, left_out_of(dest_space))
-    if term:
-        return "left_out", f"left-out term `{term}` for {fm.get('destination')} appears"
+    """Why an item may not leave: (reason, why) or None when it is clean. Facts only: what it
+    says was judged before it was queued (the router and its check, or a person)."""
     if dest_space is not None and dest_space.mode != space.mode:
         return "mode", (f"this space runs {space.mode}, the destination "
                         f"{fm.get('destination')} runs {dest_space.mode}")

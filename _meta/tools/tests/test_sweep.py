@@ -41,6 +41,11 @@ def mount(space_root, name, target):
     (space_root / "space.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
 
 
+# a mail source its project's crew already reads: it leaves at once, nothing to judge
+CREW_MAIL = [{"name": "mail", "adapter": "gmail", "audience": "crew"},
+             {"name": "calls", "adapter": "recorder", "audience": "owner"}]
+
+
 def build(tmp_path, **ada_extra):
     brain = make_space(tmp_path / "brain", profile="brain", subjects=BRAIN_SUBJECTS)
     harbor = make_space(tmp_path / "harbor", profile="project", name="harbor", owner="Ben Liu",
@@ -61,8 +66,8 @@ def held_items(root):
     return [pages.read(p) for p in sorted((root / "_outbound" / "held").glob("*.md"))]
 
 
-def test_standing_choice_queues_at_once_and_writes_signal(tmp_path):
-    _, _, ada = build(tmp_path, standing_choices=[{"destination": "harbor", "kind": "mail"}])
+def test_a_record_its_destination_already_reads_queues_at_once_and_writes_signal(tmp_path):
+    _, _, ada = build(tmp_path, sources=CREW_MAIL)
     write_feed(ada, [record()])
     report = sweep.run(ada, now=NOW)
     assert report.records_seen == 1 and report.witness_written == 1
@@ -72,7 +77,7 @@ def test_standing_choice_queues_at_once_and_writes_signal(tmp_path):
     fm, body = pages.read(witness)
     assert fm["type"] == "source" and fm["status"] == "draft"
     assert fm["subject"] == "harbor" and fm["record"] == "m-0001"
-    assert fm["audience"] == "owner" and fm["generated"]["by"] == "sweep"
+    assert fm["audience"] == "crew" and fm["generated"]["by"] == "sweep"
     assert pages.ID_RE.match(fm["id"]) and "sensitive" not in fm
     assert "3 November" in body
     (item_fm, item_body), = queue_items(ada)
@@ -95,15 +100,15 @@ def test_standing_choice_queues_at_once_and_writes_signal(tmp_path):
     assert runs[-1]["at"] == pages.iso(NOW)
 
 
-def test_without_standing_choice_queues_window_of_30_minutes_at_scale_48(tmp_path):
-    _, _, ada = build(tmp_path, mode="fixture", time_scale=48)
-    write_feed(ada, [record()])
+def test_without_router_or_standing_choice_a_widening_record_waits_for_a_yes(tmp_path):
+    """Nothing here read what it says: it leaves only when its person says yes."""
+    _, _, ada = build(tmp_path)
+    write_feed(ada, [record(text="Go-live moves to 3 November.\n" + "More words. " * 900)])
     report = sweep.run(ada, now=NOW)
-    assert report.queued == 1 and report.signals == 1
-    (fm, _), = queue_items(ada)
-    assert fm["class"] == "window"
-    assert pages.parse_iso(fm["stage_after"]) == NOW + dt.timedelta(minutes=30)
-    assert "high_stakes" not in fm
+    assert report.queued == 0 and report.held_in_doubt == 1 and report.signals == 1
+    (fm, body), = held_items(ada)
+    assert fm["reason"] == "doubt" and "no router" in fm["why"] and "high_stakes" not in fm
+    assert len(body) <= sweep.CAP_WITHOUT_ROUTING + 10, "a yes releases it shallow, never in full"
 
 
 def test_two_matches_are_held_in_doubt_and_counted(tmp_path):
@@ -121,48 +126,26 @@ def test_two_matches_are_held_in_doubt_and_counted(tmp_path):
     assert "subject" not in witness_fm
 
 
-def test_left_out_term_for_the_destination_is_held(tmp_path):
+def test_a_standing_choice_suggests_the_yes_and_no_word_decides(tmp_path):
+    """Without the router a standing choice makes yes the expected answer, never the answer:
+    nobody read the record. A word that only looks like a topic decides nothing either way."""
     _, _, ada = build(tmp_path, standing_choices=[{"destination": "harbor", "kind": "mail"}])
-    write_feed(ada, [record("m-0003", text="Our day rate 950 for the extra week.")])
+    write_feed(ada, [record("m-0003", text="The transfer pricing team asked for the settlement report.")])
     report = sweep.run(ada, now=NOW)
-    assert report.attached == 1 and report.queued == 0 and report.held_other == 1
-    assert report.signals == 1
+    assert report.queued == 0 and report.held_in_doubt == 1 and report.held_other == 0
     (fm, _), = held_items(ada)
-    assert fm["reason"] == "left_out" and fm["destination"] == "harbor"
-    assert "day rate" in fm["why"]
-
-
-def test_an_excepted_phrase_hides_only_itself():
-    terms = release.Terms(["pricing", "fee"], ["transfer pricing"])
-    assert release.first_term("The Transfer\n Pricing team asked", terms) is None
-    assert release.first_term("transfer pricing work at our usual pricing", terms) == "pricing"
-    assert release.first_term("a fee", terms) == "fee"
-
-
-def test_a_phrase_the_destination_excepts_is_not_a_left_out_term(tmp_path):
-    _, harbor, ada = build(tmp_path, standing_choices=[{"destination": "harbor", "kind": "mail"}])
-    data = yaml.safe_load((harbor / "space.yaml").read_text(encoding="utf-8"))
-    data["left_out_except"] = ["transfer pricing"]   # a practice's name, not a price
-    (harbor / "space.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
-    write_feed(ada, [record("m-0003", text="The transfer pricing team signed off the interview flow.")])
-    report = sweep.run(ada, now=NOW)
-    assert report.queued == 1 and report.held_other == 0
-
-
-def test_never_leaves_term_is_held_and_marks_the_witness_sensitive(tmp_path):
-    _, _, ada = build(tmp_path, standing_choices=[{"destination": "harbor", "kind": "mail"}])
-    write_feed(ada, [record("m-0004", text="The settlement terms are attached.")])
-    report = sweep.run(ada, now=NOW)
-    assert report.held_other == 1 and report.queued == 0
-    assert report.signals == 0, "nothing about a never-leaves record leaves, not even a signal"
-    (fm, _), = held_items(ada)
-    assert fm["reason"] == "never_leaves"
-    witness_fm, _ = pages.read(ada / "knowledge" / "sources" / "2026" / "10" / "m-0004.md")
-    assert witness_fm["sensitive"] is True
+    assert fm["recommendation"].startswith("yes") and "standing choice" in fm["why"]
+    witness_fm, _ = pages.read(ada / "knowledge" / "sources" / "2026" / "10" / "m-0003.md")
+    assert "sensitive" not in witness_fm
+    _, _, ben = build(tmp_path / "crew", sources=CREW_MAIL)
+    write_feed(ben, [record("m-0006", text="Please sign the contract by Friday.")])
+    sweep.run(ben, now=NOW)
+    (fm, _), = queue_items(ben)
+    assert fm["class"] == "at_once" and not fm.get("high_stakes")
 
 
 def test_second_run_processes_nothing_new(tmp_path):
-    _, _, ada = build(tmp_path, standing_choices=[{"destination": "harbor", "kind": "mail"}])
+    _, _, ada = build(tmp_path, sources=CREW_MAIL)
     write_feed(ada, [record(), record("m-0005", at="2026-10-12T08:20:00Z")])
     first = sweep.run(ada, now=NOW)
     assert first.records_seen == 2 and first.witness_written == 2
@@ -175,15 +158,6 @@ def test_second_run_processes_nothing_new(tmp_path):
     assert len(runs) == 2
 
 
-def test_high_stakes_term_waits_the_window_even_under_a_standing_choice(tmp_path):
-    _, _, ada = build(tmp_path, standing_choices=[{"destination": "harbor", "kind": "mail"}])
-    write_feed(ada, [record("m-0006", text="Please sign the contract by Friday.")])
-    sweep.run(ada, now=NOW)
-    (fm, _), = queue_items(ada)
-    assert fm["class"] == "window" and fm["high_stakes"] is True
-    assert pages.parse_iso(fm["stage_after"]) == NOW + dt.timedelta(hours=24)
-
-
 def test_calls_never_travel_under_a_standing_choice_and_mixed_calls_are_doubt(tmp_path):
     _, _, ada = build(tmp_path, standing_choices=[{"destination": "harbor", "kind": "call"}])
     crew_call = record("c-0001", source="calls", kind="call", subject="Harbor weekly",
@@ -193,12 +167,10 @@ def test_calls_never_travel_under_a_standing_choice_and_mixed_calls_are_doubt(tm
                         text="Pier work, then weekend plans.")
     write_feed(ada, [crew_call, mixed_call], source="calls")
     report = sweep.run(ada, now=NOW)
-    assert report.queued == 1 and report.held_in_doubt == 1 and report.signals == 2
-    (fm, _), = queue_items(ada)
-    assert fm["class"] == "window" and fm["evidence"] == ["c-0001"]
-    (held, _), = held_items(ada)
-    assert held["reason"] == "doubt" and held["evidence"] == ["c-0002"]
-    assert "Chloe Martin" in held["why"]
+    assert report.queued == 0 and report.held_in_doubt == 2 and report.signals == 2
+    held = {fm["evidence"][0]: fm for fm, _ in held_items(ada)}
+    assert "no router" in held["c-0001"]["why"]
+    assert held["c-0002"]["reason"] == "doubt" and "Chloe Martin" in held["c-0002"]["why"]
 
 
 def test_audience_everyone_leaves_at_once_and_audience_falls_back_to_the_source(tmp_path):
@@ -214,7 +186,7 @@ def test_audience_everyone_leaves_at_once_and_audience_falls_back_to_the_source(
     by_record = {fm["evidence"][0]: fm for fm, _ in queue_items(ada)}
     assert by_record["w-0001"]["class"] == "at_once"
     assert by_record["i-0001"]["class"] == "at_once", "crew audience bound for the home project"
-    assert by_record["m-0007"]["class"] == "window"
+    assert [fm["evidence"] for fm, _ in held_items(ada)] == [["m-0007"]], "it widens: a person decides"
     witness_fm, _ = pages.read(ada / "knowledge" / "sources" / "2026" / "10" / "w-0001.md")
     assert witness_fm["audience"] == "everyone"
     assert "beacon" in witness_fm["mentions"]
@@ -232,7 +204,7 @@ def test_record_without_a_home_elsewhere_is_witnessed_only(tmp_path):
 
 
 def test_dry_run_writes_nothing(tmp_path):
-    _, _, ada = build(tmp_path, standing_choices=[{"destination": "harbor", "kind": "mail"}])
+    _, _, ada = build(tmp_path, sources=CREW_MAIL)
     write_feed(ada, [record()])
     report = sweep.run(ada, now=NOW, dry_run=True)
     assert report.queued == 1 and report.plan
@@ -388,35 +360,34 @@ def client_mail(rid="m-0200", **over):
     return record(rid, **base)
 
 
-def test_a_client_mail_attaches_by_domain_and_waits_the_window_despite_a_standing_choice(tmp_path):
+def test_a_client_mail_attached_by_domain_waits_for_a_yes_despite_a_standing_choice(tmp_path):
     """The owner's standing choice covered what they label; a mail placed by its domain was
-    never chosen, so it waits one window and one morning view."""
+    never chosen, so its person decides."""
     _, _, ada = build(tmp_path, standing_choices=[{"destination": "harbor", "kind": "mail"}])
     set_match(tmp_path, "harbor", domain="harbor.example")
     write_feed(ada, [client_mail()])
     report = sweep.run(ada, now=NOW)
-    assert report.attached == 1 and report.queued == 1
-    (fm, body), = queue_items(ada)
-    assert fm["class"] == "window" and fm["subject"] == "harbor"
-    assert pages.parse_iso(fm["stage_after"]) == NOW + dt.timedelta(hours=24)
+    assert report.attached == 1 and report.queued == 0 and report.held_in_doubt == 1
+    (fm, body), = held_items(ada)
+    assert fm["reason"] == "doubt" and fm["subject"] == "harbor" and "domain or title" in fm["why"]
     assert "first list by Friday" in body
     witness, = list((ada / "knowledge" / "sources").rglob("m-0200.md"))
     assert pages.read(witness)[0]["cc"] == ["ben@lantern.example"]
 
 
-def test_queue_items_carry_when_who_and_the_thread_for_the_homes_status_page(tmp_path):
+def test_items_carry_when_who_and_the_thread_for_the_homes_status_page(tmp_path):
     _, _, ada = build(tmp_path)
     set_match(tmp_path, "harbor", domain="harbor.example")
     write_feed(ada, [client_mail()])
     sweep.run(ada, now=NOW)
-    (fm, _), = queue_items(ada)
+    (fm, _), = held_items(ada)
     assert fm["at"] == "2026-10-12T08:14:00Z"
     assert fm["from"] == "Chloe Martin <chloe@harbor.example>" and fm["to"] == ["ada@lantern.example"]
     assert fm["identifiers"] == {"thread": "t-200"}, "the thread only: labels and channels stay home"
 
 
-def test_reattached_pages_wait_the_window_even_under_a_standing_choice(tmp_path):
-    """The backfill: pages swept before the domain was known attach now, and wait the window."""
+def test_reattached_pages_wait_for_a_yes_even_under_a_standing_choice(tmp_path):
+    """The backfill: pages swept before the domain was known attach now, and their person decides."""
     _, _, ada = build(tmp_path, standing_choices=[{"destination": "harbor", "kind": "mail"}])
     write_feed(ada, [client_mail(), record("m-0201", identifiers={"labels": []})])
     first = sweep.run(ada, now=NOW)
@@ -424,13 +395,12 @@ def test_reattached_pages_wait_the_window_even_under_a_standing_choice(tmp_path)
     set_match(tmp_path, "harbor", domain="harbor.example")
     later = NOW + dt.timedelta(hours=3)
     second = sweep.run(ada, now=later)
-    assert second.attached == 1 and second.queued == 1
-    (fm, body), = queue_items(ada)
-    assert fm["class"] == "window" and fm["evidence"] == ["m-0200"]
-    assert pages.parse_iso(fm["stage_after"]) == later + dt.timedelta(hours=24)
+    assert second.attached == 1 and second.queued == 0 and second.held_in_doubt == 1
+    (fm, body), = held_items(ada)
+    assert fm["reason"] == "doubt" and fm["evidence"] == ["m-0200"]
     assert fm["from"] == "Chloe Martin <chloe@harbor.example>" and fm["identifiers"] == {"thread": "t-200"}
     assert "first list by Friday" in body
-    assert sweep.run(ada, now=later + dt.timedelta(minutes=5)).queued == 0, "attached once"
+    assert sweep.run(ada, now=later + dt.timedelta(minutes=5)).held_in_doubt == 0, "attached once"
 
 
 def test_a_reattached_labelled_record_never_ships_at_once(tmp_path):
@@ -447,8 +417,9 @@ def test_a_reattached_labelled_record_never_ships_at_once(tmp_path):
         {"id": "harbor", "kind": "projects", "home": "harbor", "match": {"label": "Harbor"}}]}),
         encoding="utf-8")
     sweep.run(ada, now=NOW + dt.timedelta(minutes=1))
-    (fm, _), = queue_items(ada)
-    assert fm["class"] == "window"
+    assert queue_items(ada) == []
+    (fm, _), = held_items(ada)
+    assert fm["reason"] == "doubt" and "re-attached" in fm["why"]
 
 
 def _call(rid, subject, participants, text):
@@ -456,9 +427,9 @@ def _call(rid, subject, participants, text):
                   identifiers={"thread": rid}, text=text, **{"from": "ada@lantern.example"})
 
 
-def test_a_client_call_with_the_clients_own_people_travels_after_the_window(tmp_path):
+def test_a_client_call_with_the_clients_own_people_names_only_real_outsiders(tmp_path):
     """Participants are addresses: a registered colleague by their email or alias is crew, the
-    client's own people (the subject's domain) are its counterpart; anyone else is doubt."""
+    client's own people (the subject's domain) are its counterpart; anyone else is named."""
     _, _, ada = build(tmp_path, owner_email="ada@lantern.example")
     set_match(tmp_path, "harbor", domain="harbor.example", keywords=["Harbor"])
     add_people(tmp_path, {"id": "ben", "kind": "people", "title": "Ben Liu", "email": "ben@lantern.example",
@@ -471,25 +442,12 @@ def test_a_client_call_with_the_clients_own_people_travels_after_the_window(tmp_
                   "Pier work, then other business.")
     write_feed(ada, [kickoff, mixed], source="calls")
     report = sweep.run(ada, now=NOW)
-    assert report.attached == 2 and report.queued == 1 and report.held_in_doubt == 1
-    (fm, body), = queue_items(ada)
-    assert fm["evidence"] == ["c-0200"] and fm["class"] == "window" and "plan on Monday" in body
-    (held, _), = held_items(ada)
-    assert held["evidence"] == ["c-0201"] and "eve@elsewhere.example" in held["why"]
-    assert "chloe" not in held["why"]
-
-
-def test_a_call_summary_travels_without_its_day_rate_line(tmp_path):
-    """A left-out term (a day rate, a fee) trims its line; the summary still travels."""
-    _, _, ada = build(tmp_path, owner_email="ada@lantern.example")
-    set_match(tmp_path, "harbor", domain="harbor.example")
-    call = _call("c-0300", "Kickoff", ["ada@lantern.example", "chloe@harbor.example"],
-                 "Summary: scope agreed.\nAction items: Ada sends the plan.\nDay rate: 950 for the extension.")
-    write_feed(ada, [call], source="calls")
-    sweep.run(ada, now=NOW)
-    (fm, body), = queue_items(ada)
-    assert "Action items: Ada sends the plan." in body and "day rate" not in body.lower()
-    assert fm["trimmed"] is True
+    assert report.attached == 2 and report.queued == 0 and report.held_in_doubt == 2
+    held = {fm["evidence"][0]: (fm, body) for fm, body in held_items(ada)}
+    fm, body = held["c-0200"]
+    assert "outside" not in fm["why"] and "plan on Monday" in body
+    fm, _ = held["c-0201"]
+    assert "eve@elsewhere.example" in fm["why"] and "chloe" not in fm["why"]
 
 
 def test_attachments_lists_what_to_read_on_threads_that_belong_to_one_subject(tmp_path, capsys):
@@ -529,11 +487,12 @@ def test_the_export_contract_is_lossless_and_keeps_private_records_out():
         assert "route/SKILL.md" in flat
 
 
-def test_after_the_window_the_homes_status_page_shows_the_client_thread_and_the_call(tmp_path):
-    """End to end: a client mail and a client call, placed by domain and title, wait the window
-    and a morning view, land at the project, and its status page lists the call and the thread
-    with who moves next."""
+def test_after_a_yes_the_homes_status_page_shows_the_client_thread_and_the_call(tmp_path):
+    """End to end: a client mail and a client call, placed by domain and title, wait for their
+    person's yes, land at the project, and its status page lists the call and the thread with
+    who moves next."""
     import release
+    import sign
     import status
     brain, harbor, ada = build(tmp_path, owner_email="ada@lantern.example")
     mount_brain(harbor, brain)
@@ -543,11 +502,9 @@ def test_after_the_window_the_homes_status_page_shows_the_client_thread_and_the_
                            "Summary: scope agreed.\nAction items: Ada sends the plan by 2026-10-20.")],
                source="calls")
     sweep.run(ada, now=NOW)
-    assert release.ship(ada, now=NOW, offline_roots={"harbor": harbor}).shipped == 0, "nothing at once"
-    for path in sorted((ada / "_outbound" / "queue").glob("*.md")):   # the morning view lists them
-        fm, body = pages.read(path)
-        pages.write(path, dict(fm, listed=True), body)
-    later = NOW + dt.timedelta(hours=25)
+    assert release.ship(ada, now=NOW, offline_roots={"harbor": harbor}).shipped == 0, "nothing by itself"
+    sign.apply(ada, {fm["id"]: "yes" for fm, _ in held_items(ada)}, by="Ada Okafor", now=NOW)
+    later = NOW + dt.timedelta(hours=1)
     assert release.ship(ada, now=later, offline_roots={"harbor": harbor}).shipped == 2
     status.run(harbor, now=later)
     page = (harbor / "live" / "subjects" / "harbor.md").read_text(encoding="utf-8")
@@ -713,7 +670,7 @@ def test_without_routing_a_call_transcript_never_leaves_by_identifier(tmp_path):
                  "[00:01:00] Chloe: our internal numbers are bad.\n" + "More words. " * 900)
     write_feed(ada, [call], source="calls")
     sweep.run(ada, now=NOW)
-    (fm, body), = queue_items(ada)
+    (fm, body), = held_items(ada)
     assert "Action items: Ada sends the plan." in body and "[00:01:00]" not in body
     assert len(body) <= sweep.CAP_WITHOUT_ROUTING + 10
 

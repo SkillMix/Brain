@@ -277,6 +277,7 @@ def test_fixture_answers_leaks_and_verdicts_shape():
     assert {"EUR 950", "day rate"} <= set(by_root["harbor"])
     assert "paid search ads" in by_root["chloe"] and "3 November" in by_root["beacon"]
     verdicts = yaml.safe_load((FIXTURE / "verdicts.yaml").read_text(encoding="utf-8"))
-    assert verdicts == {"ada": {"harbor": "yes"}, "ben": {},
-                        "chloe": {"sales": "yes",
+    # a record held in doubt is answered by its id: without the router nothing else lets it go
+    assert verdicts == {"ada": {"harbor": "yes", "m-ada-001": "yes"}, "ben": {},
+                        "chloe": {"sales": "yes", "m-chloe-002": "yes",
                                   "2026-10-04-pilots-run-for-one-quarter-before-any-rollout": "yes"}}
