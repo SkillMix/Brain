@@ -606,7 +606,7 @@ def test_a_file_with_no_text_settles_its_attachment_without_a_page(tmp_path):
 
 def test_a_record_with_windows_line_endings_is_not_refreshed_again_and_again(tmp_path):
     _, _, ada = build(tmp_path, routing={})
-    write_feed(ada, [record(text="Line one.\r\nLine two.\r\nLine three.", backfill=True)])
+    write_feed(ada, [record(text="Line one.  \r\nLine two.\r\nLine three.   \n  ", backfill=True)])
     sweep.run(ada, now=NOW)
     page, = list((ada / "knowledge" / "sources").rglob("m-0001.md"))
     fm, body = pages.read(page)
