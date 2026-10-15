@@ -63,6 +63,23 @@ def logins(root: Path, space: spaceyaml.Space) -> dict:
     return out
 
 
+def audience_names(root: Path, space: spaceyaml.Space) -> list:
+    """The names a space's `audience` stands for. A list is itself. `everyone` (the brain) is
+    the owner and every registered person who has not left (state `archived`); `owner` and
+    `crew` are the owner, since a space's crew is its audience list and its owner
+    (mint.crew_of) and the word alone lists no one else."""
+    if isinstance(space.audience, list):
+        return space.audience
+    names = [space.owner] if space.owner else []
+    if space.audience == "everyone":
+        try:
+            subjects = registry_mod.Registry(root, space).everywhere()
+        except Exception:
+            subjects = []
+        names += [str(s.title) for s in subjects if s.kind == "people" and s.state != "archived"]
+    return list(dict.fromkeys(names))
+
+
 def check(root, readers_fn=readers) -> AccessReport:
     root = Path(root)
     space = spaceyaml.load(root)
@@ -79,7 +96,7 @@ def check(root, readers_fn=readers) -> AccessReport:
     if found is None:
         report.skipped = "the host did not list the readers"
         return report
-    audience = space.audience if isinstance(space.audience, list) else [space.owner]
+    audience = audience_names(root, space)
     known = logins(root, space)
     allowed = {known[name].lower() for name in audience if name in known}
     report.unverified = sorted(name for name in audience if name not in known)
