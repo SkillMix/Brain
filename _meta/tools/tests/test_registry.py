@@ -97,6 +97,28 @@ def test_match_by_title_keyword_for_calls_and_events_only(tmp_path):
     assert reg.check() == []
 
 
+def test_register_fields_round_trip(tmp_path):
+    """The register's fields (history spec 4.4): period, client, crew and work are kept, written
+    back only when set, and anything else stays in `extra`."""
+    root = make_space(tmp_path / "brain", profile="brain", subjects=[
+        {"id": "harbor", "kind": "projects", "title": "Harbor", "period": {"from": "2025-03", "to": "2025-09"},
+         "client": "tidewater", "crew": ["ada", "ben"], "work": "A data pipeline for the port", "colour": "blue"},
+        {"id": "tidewater", "kind": "clients", "title": "Tidewater"}])
+    reg = registry.Registry(root)
+    harbor = reg.get("harbor")
+    assert harbor.period == {"from": "2025-03", "to": "2025-09"}
+    assert (harbor.client, harbor.crew, harbor.work) == ("tidewater", ["ada", "ben"], "A data pipeline for the port")
+    assert harbor.extra == {"colour": "blue"}
+    assert reg.get("tidewater").to_dict() == {"id": "tidewater", "kind": "clients", "title": "Tidewater",
+                                              "state": "active"}
+    reg.save()
+    again = registry.Registry(root).get("harbor")
+    assert again.to_dict() == harbor.to_dict()
+    assert {k: again.to_dict()[k] for k in ("period", "client", "crew", "work", "colour")} == {
+        "period": {"from": "2025-03", "to": "2025-09"}, "client": "tidewater", "crew": ["ada", "ben"],
+        "work": "A data pipeline for the port", "colour": "blue"}
+
+
 def test_matched_by_names_how_a_record_attached(tmp_path):
     reg, _ = _harbor_with(tmp_path, label="Harbor", domain="harbor.example")
     harbor = reg.get("harbor")
@@ -104,3 +126,11 @@ def test_matched_by_names_how_a_record_attached(tmp_path):
     assert reg.matched_by(harbor, both) == {"label", "domain"}
     assert reg.matched_by(harbor, dict(both, identifiers={})) == {"domain"}
     assert reg.matched_by(harbor, {"kind": "mail", "from": "x@lantern.example"}) == set()
+
+
+def test_engagement_states_are_valid_and_open_deals_stay_live():
+    import registry
+    for state in ("delivered", "stopped", "open", "won", "lost"):
+        assert state in registry.STATES
+    assert "open" in registry.LIVE_STATES and "active" in registry.LIVE_STATES
+    assert "delivered" not in registry.LIVE_STATES

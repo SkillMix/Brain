@@ -44,12 +44,12 @@ def space_set(tmp_path, **ada):
 
 
 def captured(root, rid="c-1", text=CALL, participants=None, title="Kickoff", kind="call",
-             sender="ada@lantern.example"):
-    rec = {"id": rid, "source": "calls", "kind": kind, "at": "2026-10-12T08:00:00Z",
-           "from": sender, "to": [], "subject": title, "text": text,
+             sender="ada@lantern.example", at="2026-10-12T08:00:00Z", identifiers=None, to=None):
+    rec = {"id": rid, "source": "calls", "kind": kind, "at": at,
+           "from": sender, "to": list(to or []), "subject": title, "text": text,
            "participants": participants if participants is not None else
            ["ada@lantern.example", "ben@lantern.example", "chloe@harbor.example"],
-           "identifiers": {"thread": rid}}
+           "identifiers": identifiers if identifiers is not None else {"thread": rid}}
     feed = root / "_meta" / "state" / "feed" / "calls.jsonl"
     feed.parent.mkdir(parents=True, exist_ok=True)
     with feed.open("a", encoding="utf-8") as fh:
@@ -448,3 +448,183 @@ def test_retract_queued_only_leaves_what_already_shipped(tmp_path):
     out = route.retract(root, "c-1", by="Ada Okafor", now=NOW, queued_only=True)
     assert len(out["withdrawn"]) == 1 and out["retractions"] == [] and queued(root) == []
     assert route.main([str(root), "retract", "c-1", "--by", "Ada Okafor", "--queued-only"]) == 0
+
+
+# ----- history: older than routing.since, judged as background (history spec 4.3) -----------
+HISTORY = {"since": "2026-10-01", "history_since": "2026-06-01"}
+
+
+def test_the_history_window_is_listed_and_flagged(tmp_path):
+    root, _, _ = space_set(tmp_path, routing=HISTORY)
+    captured(root)
+    captured(root, rid="h-1", at="2026-08-03T10:00:00Z")
+    captured(root, rid="o-1", at="2026-05-04T10:00:00Z")
+    records = {r["record"]: r for r in route.pending(root, now=NOW)["records"]}
+    assert set(records) == {"c-1", "h-1"}, "before history_since: not listed"
+    assert records["h-1"]["history"] is True and records["c-1"]["history"] is False
+    backfill = sorted(r["record"] for r in route.pending(root, subject="harbor", now=NOW)["records"])
+    assert backfill == ["c-1", "h-1"], "a backfill reaches back to history_since, no further"
+
+
+def test_without_history_since_nothing_changes(tmp_path):
+    root, _, _ = space_set(tmp_path, routing={"since": "2026-10-01"})
+    captured(root)
+    captured(root, rid="h-1", at="2026-08-03T10:00:00Z")
+    captured(root, rid="o-1", at="2026-05-04T10:00:00Z")
+    rec, = route.pending(root, now=NOW)["records"]
+    assert rec["record"] == "c-1" and rec["history"] is False
+    backfill = route.pending(root, subject="harbor", now=NOW)["records"]
+    assert sorted(r["record"] for r in backfill) == ["c-1", "h-1", "o-1"], "back to the first mention"
+    assert not any(r["history"] for r in backfill)
+    assert route.record(root, decision(record="h-1", confidence="low"), now=NOW)["question"]
+
+
+def test_history_opens_no_items(tmp_path):
+    root, _, _ = space_set(tmp_path, routing=HISTORY)
+    captured(root, rid="h-1", at="2026-08-03T10:00:00Z")
+    with pytest.raises(route.RouteError, match="history opens no items"):
+        route.record(root, decision(record="h-1"), now=NOW)
+    assert queued(root) == [] and not (root / route.LOG).exists()
+
+
+def test_history_may_close_an_item_and_record_a_decision(tmp_path):
+    root, _, _ = space_set(tmp_path, routing=HISTORY)
+    captured(root, rid="h-1", at="2026-08-03T10:00:00Z")
+    informs = [{"kind": "decision", "text": "The first list holds forty leads", "closes": "p-0000aa01"}]
+    out = route.record(root, decision(record="h-1", routes=route_with(informs=informs)), now=NOW)
+    (fm, _), = queued(root)
+    assert out["queued"] == [fm["id"]] and fm["informs"][0]["closes"] == "p-0000aa01"
+
+
+def test_low_confidence_on_history_is_kept_private_and_counted(tmp_path, capsys):
+    root, _, _ = space_set(tmp_path, routing=HISTORY)
+    captured(root, rid="h-1", at="2026-08-03T10:00:00Z")
+    out = route.record(root, decision(record="h-1", confidence="low"), now=NOW)
+    assert out["question"] is None and out["history_low"] is True and queued(root) == []
+    assert not list((root / "_inbound" / "questions").glob("route-*.md")), "history asks no question"
+    stamp = pages.read(route.find_page(root, "h-1"))[0]["routing"]
+    assert stamp["decision"] == "private" and stamp["confidence"] == "low"
+    log = [json.loads(line) for line in (root / route.LOG).read_text(encoding="utf-8").splitlines()]
+    assert log[-1]["outcome"] == "history_low" and log[-1]["history"] is True
+    captured(root, rid="h-2", at="2026-08-04T10:00:00Z")
+    low = tmp_path / "low.yaml"
+    low.write_text(yaml.safe_dump(decision(record="h-2", confidence="low")), encoding="utf-8")
+    assert route.main([str(root), "record", str(low)]) == 0
+    assert "history_low" in capsys.readouterr().out
+
+
+# ----- episodes: one event arrives as several records (understand-first spec 4.4) -----------
+PEOPLE = ["ada@lantern.example", "chloe@harbor.example", "dan@harbor.example"]
+
+
+def episodes(root):
+    return {r["record"]: r["episode"] for r in route.pending(root, now=NOW)["records"]}
+
+
+def test_a_call_joins_its_event_by_calendar_id(tmp_path):
+    root, _, _ = space_set(tmp_path)
+    captured(root, rid="gcal-ev1", kind="event", at="2026-10-05T08:00:00Z", identifiers={})
+    captured(root, rid="gcal-ev2", kind="event", title="Review", at="2026-10-06T08:00:00Z",
+             identifiers={"thread": "series-7"})
+    captured(root, rid="c-1", at="2026-10-05T11:00:00Z", participants=["ada@lantern.example"],
+             identifiers={"thread": "c-1", "calendar": "ev1"})
+    captured(root, rid="c-2", at="2026-10-06T15:00:00Z", participants=["ada@lantern.example"],
+             identifiers={"calendar": "series-7"})
+    eps = episodes(root)
+    assert eps["gcal-ev1"] == eps["c-1"] == "ep-gcal-ev1", "the event's id without the gcal- prefix"
+    assert eps["gcal-ev2"] == eps["c-2"] == "ep-gcal-ev2", "the event's thread"
+
+
+def test_a_call_joins_an_event_by_time_and_a_shared_participant(tmp_path):
+    root, _, _ = space_set(tmp_path)
+    captured(root, rid="gcal-ev1", kind="event", at="2026-10-05T08:00:00Z", identifiers={},
+             participants=["ada@lantern.example", "chloe@harbor.example"])
+    captured(root, rid="c-1", at="2026-10-05T08:40:00Z",
+             participants=["ada@lantern.example", "Chloe <chloe@harbor.example>"])
+    captured(root, rid="c-2", at="2026-10-05T08:40:00Z", participants=["ada@lantern.example", "zed@else.example"])
+    captured(root, rid="c-3", at="2026-10-05T09:30:00Z", participants=["chloe@harbor.example"])
+    captured(root, rid="gcal-ev9", kind="event", at="2026-10-07T23:40:00Z", identifiers={},
+             participants=["chloe@harbor.example"])
+    captured(root, rid="c-4", at="2026-10-08T00:20:00Z", participants=["chloe@harbor.example"])
+    eps = episodes(root)
+    assert eps["c-1"] == "ep-gcal-ev1", "within the hour, Chloe on both"
+    assert eps["c-2"] == "th-c-2", "the owner alone is not a shared participant"
+    assert eps["c-3"] == "th-c-3", "an hour and a half after the start"
+    assert eps["c-4"] == "th-c-4", "forty minutes later, but the next day"
+
+
+def test_the_owners_other_addresses_are_never_in_common(tmp_path):
+    root, _, _ = space_set(tmp_path)
+    (root / "_meta" / "subjects.yaml").write_text(yaml.safe_dump({"subjects": [
+        {"id": "ada", "kind": "people", "title": "Ada Okafor", "email": "ada@lantern.example",
+         "aliases": ["ada@home.example"]}]}), encoding="utf-8")
+    captured(root, rid="gcal-ev1", kind="event", at="2026-10-05T08:00:00Z", identifiers={},
+             participants=["ada@home.example", "chloe@harbor.example"])
+    captured(root, rid="c-1", at="2026-10-05T08:10:00Z", participants=["ada@home.example", "zed@else.example"])
+    assert episodes(root)["c-1"] == "th-c-1", "the owner's registered alias is the owner's own"
+
+
+def test_a_follow_up_mail_joins_with_two_shared_participants_within_three_days(tmp_path):
+    root, _, _ = space_set(tmp_path)
+    captured(root, rid="gcal-ev1", kind="event", at="2026-10-05T08:00:00Z", identifiers={}, participants=PEOPLE)
+    mail = dict(kind="mail", sender="chloe@harbor.example", participants=[], title="Follow-up", text="Thanks.\n")
+    captured(root, rid="m-1", at="2026-10-06T09:00:00Z", to=["ada@lantern.example", "dan@harbor.example"], **mail)
+    captured(root, rid="m-2", at="2026-10-06T09:00:00Z", to=["ada@lantern.example"], **mail)
+    captured(root, rid="m-3", at="2026-10-09T09:00:00Z", to=["ada@lantern.example", "dan@harbor.example"], **mail)
+    eps = episodes(root)
+    assert eps["m-1"] == "ep-gcal-ev1", "Chloe and Dan, the next day"
+    assert eps["m-2"] == "th-m-2", "one shared participant besides the owner is not enough"
+    assert eps["m-3"] == "th-m-3", "four days after the event"
+
+
+def test_two_recordings_of_one_meeting_are_the_same_meeting(tmp_path):
+    root, _, _ = space_set(tmp_path)
+    captured(root, rid="gcal-ev1", kind="event", at="2026-10-05T08:00:00Z", identifiers={})
+    captured(root, rid="c-1", at="2026-10-05T08:02:00Z", identifiers={"thread": "c-1", "calendar": "ev1"})
+    captured(root, rid="c-2", at="2026-10-05T08:03:00Z", identifiers={"thread": "c-2", "calendar": "ev1"})
+    captured(root, rid="c-3", at="2026-10-06T08:00:00Z")
+    records = {r["record"]: r for r in route.pending(root, now=NOW)["records"]}
+    assert records["c-1"]["episode"] == records["c-2"]["episode"] == "ep-gcal-ev1"
+    assert records["c-1"]["same_meeting"] is True and records["c-2"]["same_meeting"] is True
+    assert records["gcal-ev1"]["same_meeting"] is False and records["c-3"]["same_meeting"] is False
+
+
+def test_records_are_listed_per_episode_oldest_first(tmp_path):
+    root, _, _ = space_set(tmp_path)
+    mail = dict(kind="mail", participants=[], text="Hello.\n")
+    captured(root, rid="m-9", sender="eve@else.example", at="2026-10-05T12:00:00Z",
+             identifiers={"thread": "t-9"}, **mail)
+    captured(root, rid="gcal-ev1", kind="event", at="2026-10-05T08:00:00Z", identifiers={}, participants=PEOPLE)
+    captured(root, rid="m-1", sender="chloe@harbor.example", to=["dan@harbor.example"], at="2026-10-06T09:00:00Z",
+             identifiers={"thread": "t-1"}, **mail)
+    captured(root, rid="m-2", sender="ada@lantern.example", to=["chloe@harbor.example"], at="2026-10-07T09:00:00Z",
+             identifiers={"thread": "t-1"}, **mail)
+    captured(root, rid="m-10", sender="eve@else.example", at="2026-10-08T12:00:00Z",
+             identifiers={"thread": "t-9"}, **mail)
+    records = route.pending(root, now=NOW)["records"]
+    assert [r["record"] for r in records] == ["gcal-ev1", "m-1", "m-2", "m-9", "m-10"]
+    assert [r["episode"] for r in records] == ["ep-gcal-ev1"] * 3 + ["th-t-9"] * 2, \
+        "the reply joins through its thread"
+
+
+# ----- what the router reads first: lessons, briefs, the archive switch (4.5, 4.8) ----------
+def test_pending_carries_lessons_briefs_and_the_archive_switch(tmp_path):
+    root, _, _ = space_set(tmp_path)
+    captured(root)
+    pack = route.pending(root, now=NOW)
+    assert pack["lessons"] == [] and pack["briefs"] == {} and pack["archives"] is False
+    lessons = ["- 2026-10-14 route [harbor]: a pilot call goes whole (from: \"that was the client\")",
+               "- 2026-10-15 all: never guess a surname (from: an edit)"]
+    (root / "_meta" / "lessons.md").write_text(f"{lessons[0]}\n\n{lessons[1]}\n", encoding="utf-8")
+    briefs = root / "_meta" / "state" / "private" / "briefs"
+    briefs.mkdir(parents=True)
+    (briefs / "harbor.md").write_text("# Harbor\n", encoding="utf-8")
+    (briefs / "beacon.md").write_text("# Beacon\n", encoding="utf-8")   # named, never suggested
+    assert route.main([str(root), "pending"]) == 0
+    pack = json.loads((root / route.PACK).read_text(encoding="utf-8"))
+    assert pack["lessons"] == lessons
+    assert pack["briefs"] == {"harbor": "_meta/state/private/briefs/harbor.md"}
+    data = yaml.safe_load((root / "space.yaml").read_text(encoding="utf-8"))
+    data["routing"] = {"archives": True}
+    (root / "space.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    assert route.pending(root, now=NOW)["archives"] is True

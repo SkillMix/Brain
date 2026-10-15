@@ -53,8 +53,36 @@ def test_the_brains_projects_page_rolls_up_every_home(tmp_path):
                        subjects=[dict(HARBOR, home="harbor", owner="Ada Okafor"), BEACON])
     status.run(brain, now=NOW)
     text = (brain / "live/projects.md").read_text(encoding="utf-8")
-    assert "Harbor (`harbor`): active; owner Ada Okafor; home harbor" in text
+    assert "Harbor (`harbor`): active; unconfirmed; owner Ada Okafor; home harbor" in text
     assert "Beacon (`beacon`)" in text
+
+
+def test_the_projects_page_is_the_register(tmp_path):
+    """Every project, client and deal with state, period, client, crew and work when known; a
+    subject without a signed page is unconfirmed (history spec 4.4)."""
+    brain = make_space(tmp_path / "brain", profile="brain", name="brain",
+                       kinds=["clients", "projects", "deals", "people", "domains", "topics"], subjects=[
+                           dict(HARBOR, client="tidewater", period={"from": "2025-03", "to": "2025-09"},
+                                crew=["ada", "ben"], work="a data pipeline for the port"),
+                           dict(BEACON, period={"from": "2026-08"}),
+                           {"id": "tidewater", "kind": "clients", "title": "Tidewater", "state": "active"},
+                           {"id": "pier-deal", "kind": "deals", "title": "Pier deal", "state": "active",
+                            "client": "tidewater"},
+                           {"id": "ada", "kind": "people", "title": "Ada Okafor"}, BEN])
+    write_page(brain, "knowledge/projects/harbor/harbor.md", "# Harbor\n", type="entity", title="Harbor",
+               status="stable", signed_at="2026-10-01T09:00:00Z")
+    write_page(brain, "knowledge/clients/tidewater/notes.md", "# Notes\n", type="concept", title="Notes")
+    status.run(brain, now=NOW)
+    text = (brain / "live/projects.md").read_text(encoding="utf-8")
+    lines = {line.split(" (`")[0][2:]: line for line in text.splitlines() if line.startswith("- ")}
+    assert lines["Harbor"] == ("- Harbor (`harbor`): active; 2025-03 to 2025-09; client Tidewater; "
+                               "crew Ada Okafor, Ben Liu; work: a data pipeline for the port; "
+                               "owner Ada Okafor; home brain")
+    assert lines["Beacon"] == "- Beacon (`beacon`): active; unconfirmed; since 2026-08; owner Ada Okafor; home brain"
+    assert "unconfirmed" in lines["Tidewater"], "a draft page is not a signed one"
+    assert "client Tidewater" in lines["Pier deal"] and "unconfirmed" in lines["Pier deal"]
+    assert "Ben Liu" not in lines and "Ada Okafor" not in lines, "people are not on the register"
+    assert text.index("## Projects") < text.index("## Clients") < text.index("## Deals")
 
 
 def test_todays_meetings_say_who_is_who(tmp_path):

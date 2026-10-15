@@ -237,3 +237,204 @@ def test_a_routed_page_is_evidence_for_its_subject_here(tmp_path):
                record="c1", body="Scope agreed.\n", routing={"decision": "route", "routes": ["ada/harbor"]})
     distill.run(root, now=NOW)
     assert (root / "_inbound" / "candidates" / "harbor.md").exists()
+
+
+# ----- set aside, rebuild, the archive switch (understand-first design 4.7) --------------------
+def test_set_aside_ids_stay_out_after_a_refresh(tmp_path):
+    root = make_space(tmp_path / "ada", subjects=[
+        {"id": "harbor", "kind": "projects", "title": "Harbor"}])
+    witness(root, "rec-1", "harbor", "One.\n", NOW - 2 * D)
+    witness(root, "rec-2", "harbor", "About another client.\n", NOW - D, title="Other client")
+    distill.run(root, now=NOW)
+    path = candidates(root)[0]
+    fm, body = pages.read(path)
+    aside = [{"id": "rec-2", "why": "about another client"}]
+    pages.write(path, dict(fm, evidence=["rec-1"], set_aside=aside), body)
+    # the record is swept again (a re-export) and a new one arrives
+    witness(root, "rec-2", "harbor", "About another client.\n", NOW - D, title="Other client",
+            generated_at=NOW + H / 2)
+    witness(root, "rec-3", "harbor", "Three.\n", NOW + H / 2)
+    report = distill.run(root, now=NOW + H)
+    assert report.refreshed == 1
+    fm2, body2 = pages.read(path)
+    assert fm2["evidence"] == ["rec-1", "rec-3"]
+    assert fm2["set_aside"] == aside
+    assert "rec-2" not in "\n".join(evidence_lines(body2))
+    assert len(evidence_lines(body2)) == 2
+
+
+def test_rebuild_drops_the_old_body_and_the_merged_list_and_keeps_the_id(tmp_path):
+    root = make_space(tmp_path / "ada", subjects=[
+        {"id": "harbor", "kind": "projects", "title": "Harbor"}])
+    witness(root, "rec-1", "harbor", "One.\n", NOW - 2 * D)
+    witness(root, "rec-2", "harbor", "Two.\n", NOW - D)
+    distill.run(root, now=NOW)
+    path = candidates(root)[0]
+    fm, body = pages.read(path)
+    wrong = body.replace("# Harbor\n", "# Harbor\n\nA line about another client. [src: rec-old]\n")
+    pages.write(path, dict(fm, evidence=["rec-1", "rec-old"], set_aside=[{"id": "rec-2", "why": "x"}],
+                           checked={"by": "Ben Liu", "at": pages.iso(NOW)}), wrong)
+    assert distill.main([str(root), "--rebuild", "--subject", "harbor"]) == 0
+    fm2, body2 = pages.read(path)
+    assert fm2["id"] == fm["id"]
+    assert fm2["evidence"] == ["rec-1", "rec-2"]   # as it is now, not merged with the old list
+    assert "set_aside" not in fm2 and "checked" not in fm2
+    assert "another client" not in body2
+    assert body2.startswith("# Harbor\n\n## New evidence\n")
+    assert len(evidence_lines(body2)) == 2
+
+
+def test_rebuild_without_a_subject_rewrites_what_the_run_would_write(tmp_path):
+    root = make_space(tmp_path / "ada", subjects=[
+        {"id": "harbor", "kind": "projects", "title": "Harbor"},
+        {"id": "ferry", "kind": "projects", "title": "Ferry"}])
+    witness(root, "rec-1", "harbor", "One.\n", NOW - 2 * D)
+    witness(root, "rec-f", "ferry", "Ferry one.\n", NOW - 2 * D)
+    distill.run(root, now=NOW)
+    for name in ("harbor", "ferry"):
+        target = root / "_inbound" / "candidates" / f"{name}.md"
+        fm, body = pages.read(target)
+        pages.write(target, fm, body.replace("\n## New evidence", "\nOld text.\n\n## New evidence"))
+    witness(root, "rec-2", "harbor", "Two.\n", NOW + H / 2)
+    report = distill.run(root, now=NOW + H, rebuild=True)
+    assert report.refreshed == 1 and report.subjects == ["harbor"]
+    _, harbor = pages.read(root / "_inbound" / "candidates" / "harbor.md")
+    _, ferry = pages.read(root / "_inbound" / "candidates" / "ferry.md")
+    assert "Old text." not in harbor and len(evidence_lines(harbor)) == 2
+    assert "Old text." in ferry   # no new evidence: the run would not write it
+
+
+def archive_space(tmp_path, archives):
+    extra = {"routing": {"archives": True}} if archives else {}
+    root = make_space(tmp_path / "ada", subjects=[
+        {"id": "harbor", "kind": "projects", "title": "Harbor"}], **extra)
+    witness(root, "rec-1", "harbor", "Own record.\n", NOW - 2 * D)
+    path = witness(root, "rec-a", "harbor", "Read from the archive.\n", NOW - D)
+    fm, body = pages.read(path)
+    pages.write(path, dict(fm, source="archive"), body)
+    write_page(root, "knowledge/projects/harbor/harbor.md", type="entity", title="Harbor",
+               generated=pages.generated("cold-start", NOW - 3 * D),
+               body="# Harbor\n\nDrafted from the archive.\n")
+    return root
+
+
+def test_archive_derived_evidence_is_ignored_with_archives_off(tmp_path):
+    root = archive_space(tmp_path, archives=False)
+    distill.run(root, now=NOW)
+    fm, body = pages.read(root / "_inbound" / "candidates" / "harbor.md")
+    assert fm["evidence"] == ["rec-1"]
+    assert fm["target"] == "knowledge/projects/harbor/harbor.md"
+    assert "Drafted from the archive" not in body
+    assert body.startswith("# Harbor\n\n## New evidence\n")
+
+
+def test_archive_derived_evidence_is_used_with_archives_on(tmp_path):
+    root = archive_space(tmp_path, archives=True)
+    distill.run(root, now=NOW)
+    fm, body = pages.read(root / "_inbound" / "candidates" / "harbor.md")
+    assert fm["evidence"] == ["rec-1", "rec-a"]
+    assert "Drafted from the archive" in body
+
+
+# ----- verify and checked ------------------------------------------------------------------------
+CLEAN = (
+    "# Harbor\n\n"
+    "## What it is\n\n"
+    "A booking tool for a ferry operator, built in two phases\n"
+    "and handed over in the spring. [src: rec-1, rec-2]\n\n"
+    "## People and roles\n\n"
+    "- Ben Liu, project lead on the client side. [src: rec-1]\n"
+    "- Chloe Martin, designer, joined for phase two\n"
+    "  and left after the handover. [src: rec-2]\n\n"
+    "## New evidence\n"
+    "- 2026-10-10: Kickoff (witness, rec-1)\n"
+    "- 2026-10-11: no marker here and [unknown] is fine (witness, rec-2)\n"
+)
+
+
+def candidate_file(root, body, **extra):
+    fm = {"id": "p-0000c0de", "type": "entity", "title": "Harbor", "status": "draft",
+          "generated": pages.generated("distill", NOW), "subject": "harbor", "kind": "projects",
+          "target": "knowledge/projects/harbor/harbor.md", "evidence": ["rec-1", "rec-2"]}
+    fm.update(extra)
+    return pages.write(root / "_inbound" / "candidates" / "harbor.md", fm, body)
+
+
+def test_verify_passes_a_clean_candidate(tmp_path, capsys):
+    root = make_space(tmp_path / "ada")
+    path = candidate_file(root, CLEAN, destination="harbor")
+    assert distill.verify(root, path) == []
+    assert distill.main([str(root), "verify", str(path)]) == 0
+    assert capsys.readouterr().out.strip() == "clean"
+
+
+def test_verify_flags_a_line_without_a_source(tmp_path, capsys):
+    root = make_space(tmp_path / "ada")
+    body = CLEAN.replace("## People and roles\n\n",
+                         "## People and roles\n\nThe team met weekly.\n\n")
+    path = candidate_file(root, body)
+    problems = distill.verify(root, path)
+    assert len(problems) == 1 and "source" in problems[0] and "The team met weekly" in problems[0]
+    assert distill.main([str(root), "verify", str(path)]) == 1
+    assert capsys.readouterr().out.strip().splitlines() == problems
+
+
+def test_verify_wants_the_marker_to_close_the_paragraph(tmp_path):
+    root = make_space(tmp_path / "ada")
+    body = CLEAN.replace("A booking tool for a ferry operator, built in two phases\n"
+                         "and handed over in the spring. [src: rec-1, rec-2]\n",
+                         "A booking tool for a ferry operator. [src: rec-1]\n"
+                         "It was handed over in the spring.\n")
+    problems = distill.verify(root, candidate_file(root, body))
+    assert len(problems) == 1 and "source" in problems[0]
+
+
+def test_verify_flags_a_source_not_in_evidence(tmp_path):
+    root = make_space(tmp_path / "ada")
+    body = CLEAN.replace("[src: rec-1]\n- Chloe", "[src: rec-1, rec-9]\n- Chloe")
+    problems = distill.verify(root, candidate_file(root, body))
+    assert len(problems) == 1 and "rec-9" in problems[0]
+
+
+def test_verify_flags_a_never_leaves_term(tmp_path):
+    root = make_space(tmp_path / "ada")
+    body = CLEAN.replace("project lead on the client side.", "project lead, holds equity.")
+    problems = distill.verify(root, candidate_file(root, body))
+    assert len(problems) == 1 and "never-leaves" in problems[0] and "equity" in problems[0]
+
+
+def test_verify_flags_a_left_out_term_of_the_destination(tmp_path):
+    root = make_space(tmp_path / "ada")
+    body = CLEAN.replace("project lead on the client side.", "project lead, agreed a day rate.")
+    assert distill.verify(root, candidate_file(root, body)) == []   # it stays home: no left-out list
+    problems = distill.verify(root, candidate_file(root, body, destination="harbor"))
+    assert len(problems) == 1 and "left-out" in problems[0] and "day rate" in problems[0]
+
+
+def test_verify_flags_a_bracketed_placeholder(tmp_path):
+    root = make_space(tmp_path / "ada")
+    for mark in ("[unknown name]", "[?]", "(who?]", "[TODO: ask]", "[tbd]"):
+        body = CLEAN.replace("project lead on the client side.", f"project lead {mark}.")
+        problems = distill.verify(root, candidate_file(root, body))
+        assert len(problems) == 1 and "placeholder" in problems[0], mark
+
+
+def test_checked_stamps_a_clean_candidate(tmp_path):
+    root = make_space(tmp_path / "ada")
+    path = candidate_file(root, CLEAN)
+    before_fm, before_body = pages.read(path)
+    assert distill.main([str(root), "checked", str(path), "--by", "Ben Liu"]) == 0
+    fm, body = pages.read(path)
+    assert fm["checked"]["by"] == "Ben Liu"
+    assert pages.parse_iso(fm["checked"]["at"]) and str(fm["checked"]["at"]).endswith("Z")
+    assert {k: v for k, v in fm.items() if k != "checked"} == before_fm
+    assert body == before_body
+
+
+def test_checked_refuses_when_verify_finds_problems(tmp_path, capsys):
+    root = make_space(tmp_path / "ada")
+    path = candidate_file(root, CLEAN.replace("## New evidence", "No source here.\n\n## New evidence"))
+    before = path.read_text(encoding="utf-8")
+    assert distill.main([str(root), "checked", str(path), "--by", "Ben Liu"]) == 1
+    assert path.read_text(encoding="utf-8") == before
+    assert "source" in capsys.readouterr().out
