@@ -205,7 +205,9 @@ five, all `window` and all `whole` routes) before `route.py record`.
 One client with two projects, done exactly as the full backfill will be: clean map, a count of
 records per month, a year of records re-exported in full, sweep, briefs and research, routing,
 distill rebuilt, verify and check, landing. The result is compared with the page the owner
-already has, line by line: found, missing, wrong, and what came only from the archive.
+already has, line by line: found, missing, wrong, and what came only from the archive. A pilot's
+decisions carry `scope:` (its subjects): an internal call that also covers other projects is
+decided for the pilot's subjects only and stays pending for the rest.
 
 ## 5. What changes in the machinery
 

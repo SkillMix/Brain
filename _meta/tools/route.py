@@ -38,6 +38,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pages  # noqa: E402
+from provenance import is_archive_derived  # noqa: E402
 import registry  # noqa: E402
 import release  # noqa: E402
 import spaceyaml  # noqa: E402
@@ -108,6 +109,15 @@ def _full_text(root: Path, fm: dict, body: str) -> str:
     for path in sweep._part_paths(root, {"id": str(fm.get("record")), "at": fm.get("at")}, parts)[1:]:
         texts.append(pages.read(path)[1] if path.exists() else "")
     return "".join(texts)
+
+
+def _decided_for(fm: dict) -> list:
+    """The subjects a subject backfill decided this page for (`routing.scope`); empty when the
+    page has no decision, a whole one, or a retracted one."""
+    routing = fm.get("routing") if isinstance(fm.get("routing"), dict) else {}
+    if routing.get("decision") == "retracted":
+        return []
+    return [str(x) for x in routing.get("scope") or []]
 
 
 def _questioned(root: Path) -> set:
@@ -256,7 +266,11 @@ def pending(root, subject: str | None = None, now: dt.datetime | None = None, li
     asked = _questioned(root)
     records = []
     for path, fm, body in _pages(root):
-        if fm.get("routing") or str(fm.get("record")) in asked or int(fm.get("part") or 1) != 1:
+        decided = _decided_for(fm)
+        if (fm.get("routing") and not decided) or str(fm.get("record")) in asked \
+                or int(fm.get("part") or 1) != 1 or (subject and subject in decided):
+            continue
+        if not space.routing_archives and is_archive_derived(fm):   # an archive's retelling waits
             continue
         rec = _record_of(root, fm, body)
         try:
@@ -274,6 +288,8 @@ def pending(root, subject: str | None = None, now: dt.datetime | None = None, li
         rec["suggested"] = [s.id for s in reg.match(shaped)]
         rec["mentions"] = list(fm.get("mentions") or [])
         rec["path"] = path.relative_to(root).as_posix()
+        if decided:
+            rec["decided_for"] = decided
         records.append(rec)
     records = episodes(records, own_addresses(space, reg))
     if limit:
@@ -338,8 +354,13 @@ def _validate(root: Path, space, reg, decision: dict, now: dt.datetime, strict: 
         raise RouteError(f"{rid}: no witness page for that record")
     fm, body = pages.read(path)
     routing = fm.get("routing") if isinstance(fm.get("routing"), dict) else {}
+    scope = [str(x) for x in decision.get("scope") or []]
     if routing and routing.get("decision") != "retracted":
-        raise AlreadyRouted(f"{rid}: already routed ({routing.get('decision')}); retract it first")
+        named = {str(r.get("subject")) for r in decision.get("routes") or []} | set(scope)
+        decided = _decided_for(fm)
+        if not decided or named & set(decided):
+            raise AlreadyRouted(f"{rid}: already routed ({routing.get('decision')}"
+                                f"{' for ' + ', '.join(decided) if decided else ''}); retract it first")
     if decision.get("decision") not in ("private", "route"):
         raise RouteError(f"{rid}: decision must be private or route")
     if decision.get("confidence") not in CONFIDENCE:
@@ -354,6 +375,9 @@ def _validate(root: Path, space, reg, decision: dict, now: dt.datetime, strict: 
         raise RouteError(f"{rid}: a route decision names at least one route")
     if decision["decision"] == "private" and routes:
         raise RouteError(f"{rid}: a private decision has no routes")
+    outside = sorted({str(r.get("subject")) for r in routes} - set(scope)) if scope else []
+    if outside:
+        raise RouteError(f"{rid}: routes {', '.join(outside)} outside its scope ({', '.join(scope)})")
     for r in routes:
         subject = reg.get(str(r.get("subject") or ""))
         if subject is None:
@@ -450,7 +474,8 @@ def record(root, decision: dict, now: dt.datetime | None = None, by: str | None 
         out["question"] = _question(root, decision, fm, path, now)
         _log(root, dict(row, outcome="question"))
         return out
-    if fm.get("refreshed_at"):   # a deeper page: its earlier projections still waiting are replaced
+    prior = fm.get("routing") if _decided_for(fm) else {}
+    if fm.get("refreshed_at") and not prior:   # a deeper page: its earlier projections still waiting are replaced
         _withdraw(root, rec["record"], "superseded", "replaced by the projection of the refreshed page",
                   router_only=True)
     elsewhere = release.first_term(f"{rec['title']}\n{rec['text']}", space.never_leaves)
@@ -522,10 +547,13 @@ def record(root, decision: dict, now: dt.datetime | None = None, by: str | None 
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(yaml.safe_dump(signal, sort_keys=False), encoding="utf-8", newline="\n")
         items.append(item["id"])
-    stamped = dict(fm, routing={
-        "decided_at": pages.iso(now), "decision": decision["decision"], "confidence": decision["confidence"],
-        "routes": [f"{r['space']}/{r['subject']}" for r in decision.get("routes") or []],
-        "items": items, "by": by or "router"})
+    routes = list(prior.get("routes") or []) + [f"{r['space']}/{r['subject']}" for r in decision.get("routes") or []]
+    stamping = {"decided_at": pages.iso(now), "decision": "route" if routes else decision["decision"],
+                "confidence": decision["confidence"], "routes": routes,
+                "items": list(prior.get("items") or []) + items, "by": by or "router"}
+    if decision.get("scope"):   # a subject backfill: the record still waits for its other subjects
+        stamping["scope"] = sorted(set(_decided_for(fm)) | {str(x) for x in decision["scope"]})
+    stamped = dict(fm, routing=stamping)
     if here_informs:   # what it informs in this space stays on the page itself
         stamped["informs"] = list(fm.get("informs") or []) + here_informs
     pages.write(path, stamped, body)

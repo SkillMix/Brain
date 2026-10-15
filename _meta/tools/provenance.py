@@ -11,8 +11,11 @@ from __future__ import annotations
 
 
 def is_archive_derived(fm: dict) -> bool:
-    """True for a page the cold start drafted, or one that names an archive as its source."""
+    """True for a page the cold start drafted, one that names an archive as its source, or a
+    witness page whose text was imported from an archive's page instead of read from the record."""
     fm = fm or {}
+    if fm.get("imported_from"):
+        return True
     gen = fm.get("generated") if isinstance(fm.get("generated"), dict) else {}
     if str(gen.get("by") or "") == "cold-start":
         return True

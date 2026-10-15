@@ -126,7 +126,7 @@ def run(root, now: dt.datetime | None = None) -> list:
     if not me or not (root / FEED).exists():
         return written
     seen = _seen(root)
-    for line in (root / FEED).read_text(encoding="utf-8", errors="replace").splitlines():
+    for line in (root / FEED).read_text(encoding="utf-8", errors="replace").split("\n"):
         try:
             rec = json.loads(line)
         except ValueError:

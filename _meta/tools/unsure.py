@@ -97,7 +97,7 @@ def admit(root, key: str) -> bool:
     feed.parent.mkdir(parents=True, exist_ok=True)
     present = set()
     if feed.exists():
-        for line in feed.read_text(encoding="utf-8").splitlines():
+        for line in feed.read_text(encoding="utf-8").split("\n"):
             try:
                 present.add(str(json.loads(line).get("id")))
             except (ValueError, AttributeError):

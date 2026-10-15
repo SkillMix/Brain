@@ -571,6 +571,29 @@ def test_a_deeper_export_refreshes_the_page_and_keeps_its_id(tmp_path):
     assert "whole rest of the message" in pages.read(page)[1], "a shorter export never shrinks a page"
 
 
+def test_an_imported_page_is_marked_and_the_original_replaces_it_however_short(tmp_path):
+    _, _, ada = build(tmp_path, routing={})
+    retold = "An earlier system's retelling of the mail, far longer than the mail itself ever was."
+    write_feed(ada, [record(text=retold, witness_page="knowledge/sources/2026/10/old-slug.md")])
+    sweep.run(ada, now=NOW)
+    page, = list((ada / "knowledge" / "sources").rglob("m-0001.md"))
+    assert pages.read(page)[0]["imported_from"] == "knowledge/sources/2026/10/old-slug.md"
+    write_feed(ada, [record(text="Go-live moves.", backfill=True)])
+    sweep.run(ada, now=NOW + dt.timedelta(hours=1))
+    fm, body = pages.read(page)
+    assert "Go-live moves." in body and "retelling" not in body, "the original replaces an import"
+    assert "imported_from" not in fm
+
+
+def test_a_record_whose_text_holds_a_unicode_line_separator_is_read_whole(tmp_path):
+    _, _, ada = build(tmp_path, routing={})
+    path = ada / "_meta" / "state" / "feed" / "mail.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record(text="Page one\u2028page two."), ensure_ascii=False) + "\n",
+                    encoding="utf-8", newline="\n")
+    assert sweep.run(ada, now=NOW).witness_written == 1
+
+
 def test_a_page_over_the_size_limit_is_split_on_lines(tmp_path, monkeypatch):
     monkeypatch.setattr(sweep, "PART_BYTES", 60)
     _, _, ada = build(tmp_path, routing={})

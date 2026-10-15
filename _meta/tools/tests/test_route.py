@@ -44,12 +44,12 @@ def space_set(tmp_path, **ada):
 
 
 def captured(root, rid="c-1", text=CALL, participants=None, title="Kickoff", kind="call",
-             sender="ada@lantern.example", at="2026-10-12T08:00:00Z", identifiers=None, to=None):
+             sender="ada@lantern.example", at="2026-10-12T08:00:00Z", identifiers=None, to=None, **extra):
     rec = {"id": rid, "source": "calls", "kind": kind, "at": at,
            "from": sender, "to": list(to or []), "subject": title, "text": text,
            "participants": participants if participants is not None else
            ["ada@lantern.example", "ben@lantern.example", "chloe@harbor.example"],
-           "identifiers": identifiers if identifiers is not None else {"thread": rid}}
+           "identifiers": identifiers if identifiers is not None else {"thread": rid}, **extra}
     feed = root / "_meta" / "state" / "feed" / "calls.jsonl"
     feed.parent.mkdir(parents=True, exist_ok=True)
     with feed.open("a", encoding="utf-8") as fh:
@@ -201,6 +201,34 @@ def test_a_routed_record_is_not_routed_twice_unless_refreshed(tmp_path):
     with pytest.raises(route.RouteError, match="already routed"):
         route.record(root, decision(), now=NOW)
     assert len(queued(root)) == 1
+
+
+def test_a_subject_backfill_decides_a_record_for_its_subjects_only(tmp_path):
+    root, _, _ = space_set(tmp_path)
+    captured(root)
+    route.record(root, decision(scope=["harbor"]), now=NOW)
+    assert [r["record"] for r in route.pending(root, subject="harbor", now=NOW)["records"]] == []
+    rec, = route.pending(root, now=NOW)["records"]
+    assert rec["record"] == "c-1" and rec["decided_for"] == ["harbor"], "still waits for its other subjects"
+    with pytest.raises(route.RouteError, match="already routed"):
+        route.record(root, decision(), now=NOW)   # harbor was decided by the backfill
+    beacon = {"space": "beacon", "subject": "beacon", "tier": "at_once", "why": "the venue",
+              "content": "parts", "parts": [{"text": "[00:03:00] Ben: For Beacon, the venue moves to the harbour hall."}]}
+    route.record(root, decision(routes=[beacon]), now=NOW)
+    assert route.pending(root, now=NOW)["records"] == []
+    fm, _ = pages.read(route.find_page(root, "c-1"))
+    assert fm["routing"]["routes"] == ["harbor/harbor", "beacon/beacon"] and "scope" not in fm["routing"]
+    assert len(queued(root)) == 2
+
+
+def test_a_scoped_decision_routes_only_inside_its_scope(tmp_path):
+    root, _, _ = space_set(tmp_path)
+    captured(root)
+    with pytest.raises(route.RouteError, match="outside its scope"):
+        route.record(root, decision(scope=["beacon"]), now=NOW)
+    route.record(root, decision(decision="private", routes=[], scope=["beacon"]), now=NOW)
+    rec, = route.pending(root, now=NOW)["records"]
+    assert rec["decided_for"] == ["beacon"], "private for beacon, still open for harbor"
 
 
 def test_a_refreshed_record_replaces_its_queued_projection(tmp_path):
@@ -605,6 +633,17 @@ def test_records_are_listed_per_episode_oldest_first(tmp_path):
     assert [r["record"] for r in records] == ["gcal-ev1", "m-1", "m-2", "m-9", "m-10"]
     assert [r["episode"] for r in records] == ["ep-gcal-ev1"] * 3 + ["th-t-9"] * 2, \
         "the reply joins through its thread"
+
+
+def test_an_imported_page_waits_out_of_routing_while_the_archive_is_off(tmp_path):
+    root, _, _ = space_set(tmp_path)
+    captured(root, "c-old", title="Retold kickoff", witness_page="knowledge/sources/2026/10/old.md")
+    captured(root, "c-1")
+    assert [r["record"] for r in route.pending(root, now=NOW)["records"]] == ["c-1"]
+    data = yaml.safe_load((root / "space.yaml").read_text(encoding="utf-8"))
+    data["routing"] = {"archives": True}
+    (root / "space.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    assert sorted(r["record"] for r in route.pending(root, now=NOW)["records"]) == ["c-1", "c-old"]
 
 
 # ----- what the router reads first: lessons, briefs, the archive switch (4.5, 4.8) ----------

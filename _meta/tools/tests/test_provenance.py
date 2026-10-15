@@ -10,6 +10,10 @@ def test_archive_evidence_is_archive_derived():
     assert is_archive_derived({"source": "archive"})
 
 
+def test_a_page_imported_from_an_archive_is_archive_derived():
+    assert is_archive_derived({"generated": {"by": "sweep"}, "imported_from": "knowledge/sources/2026/10/old.md"})
+
+
 def test_own_records_are_not():
     assert not is_archive_derived({"generated": {"by": "distill"}, "evidence": ["gmail-1"]})
     assert not is_archive_derived({})

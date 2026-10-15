@@ -17,7 +17,9 @@ can be retracted.
 - Scheduled: step 4 of the sweep skill, when `space.yaml` has `routing:`.
 - On request: "route this", "where did the kickoff call go?", "backfill <subject>".
 - Backfill of a subject: `--subject <id>` reaches back to the first mention (bounded by
-  `routing.history_since` when it is set).
+  `routing.history_since` when it is set). Each decision then carries `scope: [<the backfilled
+  subject ids>]`: it decides the record for those subjects only, and a record that also informs
+  other subjects stays pending for them (`decided_for` in the next pending).
 
 ## Run
 
@@ -51,6 +53,7 @@ can be retracted.
 ```yaml
 record: <record id>
 decision: private | route
+scope: [<subject ids>]         # a subject backfill only: decided for these subjects, open for others
 confidence: high | medium | low
 why: <one or two sentences>
 routes:
