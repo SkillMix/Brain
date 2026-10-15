@@ -514,6 +514,16 @@ def test_retract_queued_only_leaves_what_already_shipped(tmp_path):
     assert route.main([str(root), "retract", "c-1", "--by", "Ada Okafor", "--queued-only"]) == 0
 
 
+def test_retract_withdraws_what_the_router_held_too(tmp_path):
+    """A held projection of a retracted decision must not wait to be let go by mistake."""
+    root, _, _ = space_set(tmp_path)
+    captured(root, title="Kickoff, then the day rate")
+    held_id = route.record(root, decision(), now=NOW)["held"][0][0]
+    out = route.retract(root, "c-1", by="Ada Okafor", now=NOW, queued_only=True)
+    assert out["withdrawn"] == [held_id]
+    assert pages.read(root / "_outbound" / "held" / f"{held_id}.md")[0]["reason"] == "withdrawn"
+
+
 # ----- history: older than routing.since, judged as background (history spec 4.3) -----------
 HISTORY = {"since": "2026-10-01", "history_since": "2026-06-01"}
 
