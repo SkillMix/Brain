@@ -360,7 +360,8 @@ class Run:
             return None
         if gate.is_template(self.root):
             return None
-        out = git(self.root, "diff", "--name-only", "-z", "origin/main", "HEAD").stdout
+        # --no-renames: a move lists its old path too, so the subset commit deletes it
+        out = git(self.root, "diff", "--name-only", "--no-renames", "-z", "origin/main", "HEAD").stdout
         changed = [p for p in out.split("\x00") if p]
         prefixes, _ = gate.protected_prefixes(self.root)
         managed = self.template_managed()   # a template update lands as one unit, with its tools
@@ -461,7 +462,7 @@ class Run:
 
     def only_housekeeping(self) -> bool:
         """Every path this checkout changes is a run line file or a mount pin."""
-        out = git(self.root, "diff", "--name-only", "-z", "origin/main", "HEAD").stdout
+        out = git(self.root, "diff", "--name-only", "--no-renames", "-z", "origin/main", "HEAD").stdout
         changed = [p for p in out.split("\x00") if p]
         quiet = {RUNS_PATH.as_posix(), *self.submodules()}
         return bool(changed) and all(p in quiet for p in changed)

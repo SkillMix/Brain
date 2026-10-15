@@ -252,6 +252,21 @@ def test_protected_changes_go_to_their_own_branch_so_the_rest_lands_on_green(rep
     assert git(repo, "rev-parse", f"origin/sync/{host}", f"origin/sync/{host}-protected").stdout == before
 
 
+def test_a_moved_file_leaves_its_old_path_when_protected_changes_split_the_run(repo, monkeypatch):
+    """A file moved in the same run as a protected change: the plain branch drops the old path
+    too, not only adds the new one (git's rename detection names a move by its new path only)."""
+    monkeypatch.setattr(sync.Run, "gh", lambda self, *args: None)
+    write(repo / "space.yaml", (repo / "space.yaml").read_text(encoding="utf-8") + "x: 1\n", minutes_old=20)
+    (repo / "work" / "notes.md").unlink()
+    write(repo / "work" / "filed" / "notes.md", "# Notes\n\nline one\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    host = sync.hostname()
+    git(repo, "fetch", "-q", "origin")
+    plain = f"origin/sync/{host}"
+    assert git(repo, "ls-tree", "--name-only", plain, "work/filed/notes.md").stdout.strip()
+    assert not git(repo, "ls-tree", "--name-only", plain, "work/notes.md").stdout.strip()
+
+
 def test_files_the_template_manages_travel_with_the_protected_ones(repo, monkeypatch):
     """A template update lands as one unit: a managed file outside the protected prefixes (a
     template prompt) goes to the protected branch with the tools that expect it."""
