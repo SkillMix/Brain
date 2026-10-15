@@ -66,7 +66,7 @@ routes:
     title: <optional: this projection's title, when the record's own names what the parts leave out>
     parts:
       - text: <a passage or transcript segment copied exactly, whole lines>
-        note: <optional: why this part is here, one line>
+        note: <optional: why this part is here, one line; it travels, so never name what you left out>
     informs:
       - kind: open_item | decision | person | page
         text: <one line>

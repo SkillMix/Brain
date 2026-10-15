@@ -430,11 +430,15 @@ def _render_status(space, subject, evs: list, now, template: str) -> str:
                 continue
             if day > today:
                 coming.setdefault((day, e.title), f"- {day}: {e.title} ({e.tier}, {e.scope}, {e.at:%Y-%m-%d})")
+    ahead = [e for e in evs if e.section == "timeline" and e.at > now]   # a calendar event not yet held
+    for e in ahead:
+        day = f"{e.at:%Y-%m-%d}"
+        coming.setdefault((day, e.title), f"- {day}: {e.title} ({e.tier}, {e.scope}, {day})")
     return template.format(
         title=f"{subject.title}: status", subject=subject.id,
         open=_open_text(evs),
         closed=_lines(_newest(e for e in evs if e.section == "closed" and e.at >= cut)),
-        timeline=_lines(_newest(e for e in evs if e.section == "timeline")[:TIMELINE_LINES]),
+        timeline=_lines(_newest(e for e in evs if e.section == "timeline" and e not in ahead)[:TIMELINE_LINES]),
         coming="\n".join(coming[k] for k in sorted(coming)) or "- none")
 
 
