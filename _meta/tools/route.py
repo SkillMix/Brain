@@ -310,7 +310,8 @@ def pending(root, subject: str | None = None, now: dt.datetime | None = None, li
         dest = release.destination_space(space, name)
         spaces.append({"name": name, "profile": dest.profile if dest else "unknown",
                        "audience": dest.audience if dest else "unknown",
-                       "left_out": release.left_out_of(dest)})
+                       "left_out": release.left_out_of(dest),
+                       "left_out_except": release.left_out_of(dest).excepted})
     subjects = [{"id": s.id, "kind": s.kind, "title": s.title, "home": reg.home_of(s.id),
                  "aliases": list(s.aliases), "match": dict(s.match)} for s in reg.everywhere()]
     status_pages = {}

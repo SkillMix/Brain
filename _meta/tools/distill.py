@@ -546,8 +546,8 @@ def verify(root, candidate) -> list:
                     problems.append(f"{where}: source {rid} is not in evidence")
         problems += [f"{where}: never-leaves term `{term}`" for term in space.never_leaves
                      if release.term_in(unit, str(term))]
-        problems += [f"{where}: left-out term `{term}` for {destination}" for term in left_out
-                     if release.term_in(unit, str(term))]
+        problems += [f"{where}: left-out term `{term}` for {destination}"
+                     for term in release.terms_found(unit, left_out)]
         mark = next((m for m in PLACEHOLDERS if m in unit.lower()), None)
         if mark:
             problems.append(f"{where}: placeholder `{mark}`")

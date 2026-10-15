@@ -207,6 +207,11 @@ class Space:
         return list(DEFAULTS["left_out"] if value is None else value)
 
     @property
+    def left_out_except(self) -> list:
+        """Phrases that hold a left-out term but are not about it (a practice's or product's name)."""
+        return list(self.data.get("left_out_except") or [])
+
+    @property
     def never_leaves(self) -> list:
         """This space's list plus the brain's: a space may add terms, never drop the brain's."""
         value = self.data.get("never_leaves")
@@ -436,7 +441,7 @@ class Space:
                 errs.append("transcripts.switch must be on or off")
             elif not isinstance(transcripts.get("exclude_words") or [], list):
                 errs.append("transcripts.exclude_words must be a list of words or phrases")
-        for key in ("left_out", "never_leaves", "protected", "models"):
+        for key in ("left_out", "left_out_except", "never_leaves", "protected", "models"):
             value = data.get(key)
             if value is not None and not isinstance(value, list):
                 errs.append(f"{key} must be a list")

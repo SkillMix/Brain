@@ -5,6 +5,7 @@ import json
 import yaml
 
 import pages
+import release
 import spaceyaml
 import sweep
 from conftest import NOW, make_space, mount_brain
@@ -129,6 +130,23 @@ def test_left_out_term_for_the_destination_is_held(tmp_path):
     (fm, _), = held_items(ada)
     assert fm["reason"] == "left_out" and fm["destination"] == "harbor"
     assert "day rate" in fm["why"]
+
+
+def test_an_excepted_phrase_hides_only_itself():
+    terms = release.Terms(["pricing", "fee"], ["transfer pricing"])
+    assert release.first_term("The Transfer\n Pricing team asked", terms) is None
+    assert release.first_term("transfer pricing work at our usual pricing", terms) == "pricing"
+    assert release.first_term("a fee", terms) == "fee"
+
+
+def test_a_phrase_the_destination_excepts_is_not_a_left_out_term(tmp_path):
+    _, harbor, ada = build(tmp_path, standing_choices=[{"destination": "harbor", "kind": "mail"}])
+    data = yaml.safe_load((harbor / "space.yaml").read_text(encoding="utf-8"))
+    data["left_out_except"] = ["transfer pricing"]   # a practice's name, not a price
+    (harbor / "space.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    write_feed(ada, [record("m-0003", text="The transfer pricing team signed off the interview flow.")])
+    report = sweep.run(ada, now=NOW)
+    assert report.queued == 1 and report.held_other == 0
 
 
 def test_never_leaves_term_is_held_and_marks_the_witness_sensitive(tmp_path):
