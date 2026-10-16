@@ -9,8 +9,10 @@ routines only edit files. Each run:
   3. scan the staged paths; unstage every file with a finding (count recorded, never
      the match); commit `chore: sync`
   4. advance the pin of every clean mount to its remote branch; commit `chore: pins`
-  5. fetch origin and merge origin/main in (append-only files by union); on a
-     conflict abort and record it
+  5. fetch origin and merge origin/main in (append-only files by union); a conflict
+     where origin holds only an earlier copy of this checkout's own change keeps ours
+     (the rebuilt commits of step 6 share no history with it); any other conflict is
+     aborted and recorded
   6. when local main differs from origin/main: push it to sync/<hostname> and open the pull
      request the platform merges. Changes under a `protected:` path go to their own branch
      sync/<hostname>-protected (their own pull request, the owner's one click), so the
@@ -343,13 +345,39 @@ class Run:
             return
         before = git(self.root, "rev-parse", "HEAD").stdout.strip()
         done = git(self.root, "merge", "--no-edit", "origin/main")
-        if done.returncode != 0:
+        if done.returncode != 0 and not self.keep_ours():
             git(self.root, "merge", "--abort")
             self.notes["conflict"] = True
             print("merge: conflict with origin/main; aborted, next run retries")
             return
         if git(self.root, "rev-parse", "HEAD").stdout.strip() != before:
             print("merge: origin/main brought in")
+
+    def keep_ours(self) -> bool:
+        """Finish a conflicted merge when every conflict is origin holding an earlier copy of this
+        checkout's own change. A protected change waiting splits the push, so the rest lands as a
+        rebuilt commit that shares no history with this checkout; a path changed here again since
+        (above all a new mount's pin, which git cannot merge without a base) then conflicts with
+        its own earlier copy. Ours wins only where origin's version is one this checkout held."""
+        conflicts = [p for p in git(self.root, "diff", "--name-only", "--diff-filter=U", "-z").stdout.split("\0") if p]
+        base = git(self.root, "merge-base", "HEAD", "MERGE_HEAD").stdout.strip()
+        if not conflicts or not base:
+            return False
+        for path in conflicts:
+            theirs = git(self.root, "rev-parse", "-q", "--verify", f"MERGE_HEAD:{path}").stdout.strip()
+            held = git(self.root, "log", "--full-history", "--no-renames", "--raw", "--no-abbrev", "--format=",
+                       f"{base}..HEAD", "--", path).stdout
+            ours = git(self.root, "rev-parse", "-q", "--verify", f"HEAD:{path}").stdout.strip()
+            if not theirs or not ours or theirs not in {line.split()[3] for line in held.splitlines()
+                                                        if line.startswith(":")}:
+                return False
+        spec = "\0".join(f":(literal){rel}" for rel in conflicts)
+        if git(self.root, "checkout", "HEAD", "--pathspec-from-file=-", "--pathspec-file-nul", input=spec).returncode \
+                or git(self.root, "commit", "-q", "--no-edit").returncode:
+            return False   # the caller aborts the merge: nothing is left half done
+        self.notes["kept_ours"] = len(conflicts)
+        print(f"merge: {len(conflicts)} path(s) where origin held an earlier copy of ours; kept ours")
+        return True
 
     def split(self) -> tuple[list, list] | None:
         """The paths this checkout changes against origin/main, as (plain, protected); None

@@ -285,6 +285,88 @@ def test_files_the_template_manages_travel_with_the_protected_ones(repo, monkeyp
     assert "_meta/templates/prompt.md" not in plain and "work/notes.md" in plain
 
 
+def remote_space(tmp_path, name):
+    """A space another checkout mounts: its bare origin and a working clone that moves it."""
+    origin, work = tmp_path / f"{name}.git", tmp_path / f"{name}-work"
+    git(tmp_path, "init", "-q", "--bare", "--initial-branch=main", str(origin))
+    git(tmp_path, "clone", "-q", str(origin), str(work))
+    return origin, work
+
+
+def move(work, text):
+    write(work / "index.md", text)
+    git(work, "add", "-A")
+    git(work, "commit", "-q", "-m", "move")
+    git(work, "push", "-q", "origin", "HEAD:main")
+    return git(work, "rev-parse", "HEAD").stdout.strip()
+
+
+def platform_merges(tmp_path, branch):
+    """The platform merges a pull request: a merge commit on origin's main."""
+    hub = tmp_path / "hub"
+    if not hub.exists():
+        git(tmp_path, "clone", "-q", str(tmp_path / "origin.git"), str(hub))
+    git(hub, "fetch", "-q", "origin")
+    git(hub, "checkout", "-q", "-B", "main", "origin/main")
+    git(hub, "merge", "-q", "--no-ff", "--no-edit", f"origin/{branch}")
+    git(hub, "push", "-q", "origin", "main")
+
+
+def test_a_new_mount_merges_while_a_protected_change_waits(repo, tmp_path, monkeypatch):
+    """A protected change waiting splits the push: the new mount lands on origin through a
+    rebuilt commit that shares no history with this checkout. The mounted space moves on, the
+    next run advances the pin, and origin/main must still merge in: git cannot merge two
+    different pins of a mount that the merge base lacks, so the run keeps its own newer one."""
+    monkeypatch.setattr(sync.Run, "gh", lambda self, *args: None)
+    origin, work = remote_space(tmp_path, "harbor")
+    first = move(work, "# Harbor\n")
+    git(repo, "submodule", "add", "-q", "-b", "main", str(origin), "mounts/harbor")
+    write(repo / "space.yaml", (repo / "space.yaml").read_text(encoding="utf-8") + "x: 1\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    host = sync.hostname()
+    platform_merges(tmp_path, f"sync/{host}")   # the plain part lands; the protected one waits
+    git(repo, "fetch", "-q", "origin")
+    assert git(repo, "ls-tree", "origin/main", "mounts/harbor").stdout.split()[2] == first
+    assert git(repo, "ls-tree", "origin/main", "space.yaml").stdout != git(repo, "ls-tree", "HEAD", "space.yaml").stdout
+    second = move(work, "# Harbor\n\nmoved\n")
+    assert sync.main(["--root", str(repo)]) == 0
+    notes = run_lines(repo)[-1]["notes"]
+    assert not notes.get("conflict"), notes
+    assert git(repo, "merge-base", "--is-ancestor", "origin/main", "HEAD", check=False).returncode == 0
+    assert git(repo, "ls-tree", "HEAD", "mounts/harbor").stdout.split()[2] == second
+    assert not git(repo, "diff", "--name-only", "--diff-filter=U").stdout.strip()
+    git(repo, "fetch", "-q", "origin")
+    guarded = git(repo, "diff", "--name-only", "origin/main", f"origin/sync/{host}-protected").stdout.split()
+    assert guarded == ["space.yaml"]   # the protected change still waits on its own branch
+
+
+def test_a_path_changed_again_while_a_protected_change_waits_merges(repo, tmp_path, monkeypatch):
+    """The same for a plain file: origin holds the copy this checkout pushed before, this
+    checkout has changed it since, so ours wins. A change origin got from anyone else still
+    conflicts and aborts."""
+    monkeypatch.setattr(sync.Run, "gh", lambda self, *args: None)
+    write(repo / "space.yaml", (repo / "space.yaml").read_text(encoding="utf-8") + "x: 1\n", minutes_old=20)
+    write(repo / "work" / "notes.md", "# Notes\n\nline one, edited\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    platform_merges(tmp_path, f"sync/{sync.hostname()}")
+    write(repo / "work" / "notes.md", "# Notes\n\nline one, edited twice\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    assert not run_lines(repo)[-1]["notes"].get("conflict")
+    assert git(repo, "merge-base", "--is-ancestor", "origin/main", "HEAD", check=False).returncode == 0
+    assert (repo / "work" / "notes.md").read_text(encoding="utf-8") == "# Notes\n\nline one, edited twice\n"
+    hub = tmp_path / "hub"
+    git(hub, "fetch", "-q", "origin")
+    git(hub, "checkout", "-q", "-B", "main", "origin/main")
+    write(hub / "work" / "notes.md", "# Notes\n\nsomeone else's line\n")
+    git(hub, "commit", "-q", "-am", "theirs")
+    git(hub, "push", "-q", "origin", "main")
+    write(repo / "work" / "notes.md", "# Notes\n\nline one, edited three times\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    assert run_lines(repo)[-1]["notes"].get("conflict") is True
+    assert not (repo / ".git" / "MERGE_HEAD").exists()
+    assert (repo / "work" / "notes.md").read_text(encoding="utf-8") == "# Notes\n\nline one, edited three times\n"
+
+
 def test_run_lines_and_pins_alone_wait_until_the_quiet_window_passes(repo, monkeypatch):
     """A space whose only change is its own run lines (or a mount pin) opens no pull request
     every 15 minutes: it publishes once, then waits QUIET_HOURS or until real content comes."""

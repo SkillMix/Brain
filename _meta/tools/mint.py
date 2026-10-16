@@ -75,6 +75,8 @@ def mount_space(root, name: str, url, path: str | None = None, online: bool = Tr
     row is new."""
     root = Path(root).resolve()
     path = path or f"mounts/{name}"
+    if dry_run:
+        return not any(m.get("name") == name for m in spaceyaml.load(root).mounts)
     added = _add_mount(root, name, url, path)
     if online and url and not (root / path / "space.yaml").exists():
         run_cmd(["git", "submodule", "add", "-b", "main", url, path], dry_run, cwd=root)
@@ -189,6 +191,14 @@ def strip_skeleton(dst: Path, profile: str) -> list:
     return removed
 
 
+def planned(report: onboard.Report, dst, repo, then: str) -> onboard.Report:
+    """A dry run stops once it knows where the space would go: nothing was written."""
+    if dst is not None:
+        report.add("dry run", True, "the same command without --dry-run",
+                   f"would create {repo or dst}, then {then}; nothing was written")
+    return report
+
+
 def channel(root, other_root, online=False, org=None, home=None, dry_run=False,
             name: str | None = None) -> onboard.Report:
     """A corridor between this space and another: a `channel` space read by those two only,
@@ -200,6 +210,8 @@ def channel(root, other_root, online=False, org=None, home=None, dry_run=False,
     report = onboard.Report(case="channel")
     dst, repo = onboard.create_space(report, root, name, name, not online, org, home,
                                      onboard.template_repo(root), dry_run)
+    if dry_run:
+        return planned(report, dst, repo, f"mount it in {a.name} and {b.name}")
     if dst is None:
         return report
     audience = sorted({str(x) for s in (a, b) for x in (s.audience if isinstance(s.audience, list) else [s.owner])})
@@ -246,6 +258,8 @@ def vault(root, name: str, audience: list, online=False, org=None, home=None, dr
         return report
     dst, repo = onboard.create_space(report, root, name, name, not online, org, home,
                                      onboard.template_repo(root), dry_run)
+    if dry_run:
+        return planned(report, dst, repo, f"fill it for {', '.join(names)}")
     if dst is None:
         return report
     mount = next((m for m in space.mounts if m.get("name") == "brain"), {})
@@ -308,6 +322,9 @@ def run(root, seed, name, crew, online, org=None, home=None, dry_run=False,
 
     dst, repo = onboard.create_space(report, root, name, name, offline, org, home,
                                      onboard.template_repo(root), dry_run)
+    if dry_run:
+        return planned(report, dst, repo, f"draft the seed's pages there, set home: {name} on {subject} "
+                       "and mount it for the crew")
     if dst is None:
         receipt()
         return report
@@ -418,7 +435,8 @@ def main(argv=None) -> int:
     if args.mount:
         name, url = args.mount
         added = mount_space(args.root, name, url, online=not args.offline, dry_run=args.dry_run)
-        print(f"{name}: {'mounted at' if added else 'already mounted at'} mounts/{name}")
+        verb = ("would mount at" if args.dry_run else "mounted at") if added else "already mounted at"
+        print(f"{name}: {verb} mounts/{name}")
         return 0
     if args.channel:
         report = channel(args.root, args.channel, online=not args.offline, org=args.org, home=args.home,
