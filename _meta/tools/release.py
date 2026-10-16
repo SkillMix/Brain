@@ -360,15 +360,22 @@ def _current_home(reg, fm: dict) -> str | None:
 def _ready_items(root: Path, now: dt.datetime, report: ShipReport,
                  space: spaceyaml.Space | None = None) -> list:
     ready = []
-    reg = None
+    reg = gating = None
+    unreadable = False
     if space is not None:
+        import classify as gating
         try:
             reg = registry_mod.Registry(root, space)
-        except Exception:
-            reg = None
+        except Exception as exc:   # the gate cannot be read: nothing about a subject leaves
+            unreadable = True
+            print(f"release: the registry cannot be read ({exc.__class__.__name__}): "
+                  "items about a subject wait", file=sys.stderr)
     for path in sorted((root / QUEUE).glob("*.md")):
         fm, body = pages.read(path)
         if not fm.get("id") or not fm.get("destination"):
+            continue
+        if unreadable and fm.get("subject") and fm.get("class") != "retraction":
+            report.waiting += 1
             continue
         # a subject that moved home since the item was queued (its space offboarded, say)
         # takes the item along; it never ships to a destination the registry no longer names
@@ -377,6 +384,23 @@ def _ready_items(root: Path, now: dt.datetime, report: ShipReport,
             fm["rerouted_from"], fm["destination"] = fm["destination"], home
             pages.write(path, fm, body)
             report.rerouted += 1
+        if gating is not None and reg is not None and fm.get("class") != "retraction":
+            # the backstop: whatever path queued it, an unclassified subject does not leave
+            blocked = gating.gate_all(space, reg, fm.get("subject"), fm.get("also_about"), fm["destination"])
+            if blocked:
+                hold(root, dict(fm, kept=True) if blocked[0] == "kept" else fm, body, *blocked)
+                path.unlink()
+                report.held += 1
+                continue
+            if fm.get("class") == "at_once" and not fm.get("approved_by") and \
+                    gating.first_release(root, space, reg, fm.get("subject")):
+                why = f"the first release since {fm['subject']} was classified company"
+                fm.update({"class": "window", "stage_after": pages.iso(now + space.window()),
+                           "first_release": str(fm["subject"]),
+                           "why": "; ".join(x for x in (str(fm.get("why") or ""), why) if x)})
+                pages.write(path, fm, body)
+                report.waiting += 1
+                continue
         try:
             stage_after = pages.parse_iso(fm.get("stage_after") or pages.iso(now))
         except (TypeError, ValueError):
@@ -391,6 +415,11 @@ def _ready_items(root: Path, now: dt.datetime, report: ShipReport,
         else:
             ready.append((path, fm, body))
     return ready
+
+
+# a registry note goes to the registry that holds its subject; a failed sample goes back to the
+# space that released the item: neither carries the subject's material toward a home
+UNGATED_SIGNALS = ("registry", "sample_failed")
 
 
 def _signals(root: Path, now: dt.datetime) -> list:
@@ -415,7 +444,19 @@ def ship(root, now: dt.datetime | None = None,
     now = now or space.now()
     offline_roots = {k: Path(v) for k, v in (offline_roots or {}).items()}
     report = ShipReport()
+    try:   # registry notes that arrived here (the brain applies them every sync)
+        import classify
+        classify.land_notes(root, space, now)
+    except Exception as exc:  # a note never stops the ship
+        print(f"release: registry notes not applied ({exc.__class__.__name__})", file=sys.stderr)
     report.requeued = _requeue_mode_held(root, space)
+    try:   # what waited for a classification goes back to the queue once it has one
+        import classify
+        back = classify.requeue(root, space, None, now)
+        report.requeued += back["requeued"]
+        report.rerouted += back["rerouted"]
+    except Exception as exc:  # held items stay held: the safe side
+        print(f"release: classification requeue skipped ({exc.__class__.__name__}: {exc})", file=sys.stderr)
     batches: dict = {}
     for path, fm, body in _ready_items(root, now, report, space):
         batches.setdefault(fm["destination"], ([], []))[0].append((path, fm, body))
@@ -424,13 +465,22 @@ def ship(root, now: dt.datetime | None = None,
     except Exception:
         reg = None
     for path, data, view in _signals(root, now):
-        home = _current_home(reg, data)
+        home = None if data.get("kind") == "registry" else _current_home(reg, data)   # a note goes to its registry
         if home and home != data["destination"] and home != space.name:
             # a signal follows its subject to its current home, like a queue item
             data["rerouted_from"], data["destination"] = data["destination"], home
             view["destination"] = home
             path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
             report.rerouted += 1
+        if data.get("kind") not in UNGATED_SIGNALS and data.get("subject"):
+            if reg is None:   # the gate cannot be read: the signal waits
+                continue
+            import classify
+            blocked = classify.gate(space, reg, data.get("subject"), data["destination"])
+            if blocked:   # a signal of a held subject waits; one kept home never goes
+                if blocked[0] == "kept":
+                    path.unlink()
+                continue
         batches.setdefault(data["destination"], ([], []))[1].append((path, data, view))
     for destination, (items, signals) in sorted(batches.items()):
         offline = offline_roots.get(destination)

@@ -34,7 +34,9 @@ setup:
         title: Harbor
         state: active
         owner: Ada Okafor
-        home: ada
+        home: beacon
+        classification: {class: walled, state: settled, home: beacon, crew: [ada], reason: its own space,
+          decided_by: Ada Okafor, at: '2026-10-01T09:00:00Z'}
         match:
           label: Harbor
       - id: ben

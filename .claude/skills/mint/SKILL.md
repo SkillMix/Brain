@@ -13,6 +13,9 @@ member may read that a colleague outside may not.
 - The person asks to mint, or a mint signal shows: a second person needs the seed, a feed
   (a channel, a tracker, a client thread) needs a home, a recurring group shares it.
 - Resume: a receipt `_meta/state/mint-<name>.yaml` exists; the tool continues from it.
+- A walled classification planned this space (`mint_due` in `classify.py pending`): the person
+  was told and the window passed without a no, which counts as their ask. The seed is the
+  subject's desk folder; the crew is the classification's.
 
 A corridor for requests between two spaces: `python _meta/tools/mint.py <root> --channel
 <other space root>` creates the `channel` space (both names in `between`, read by those two
@@ -53,7 +56,8 @@ line: `{"routine": "mint", "at": "<ISO UTC>", "space": "<name>", "cost_tokens": 
 
 ## Never
 
-- Never mint without the person's ask; never move or re-mint the subject's id.
+- Never mint without the person's ask (a planned space whose window passed without a no is
+  that ask); never move or re-mint the subject's id.
 - Never copy `personal/`, `academic/`, the journal or never-leaves material into the new
   space; never delete the seed.
 - Never write `stable` in either space; never create the repository or the team by hand

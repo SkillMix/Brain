@@ -64,6 +64,7 @@ class Found:
     fm: dict
     body: str
     item: needs_you.Item | None = None  # a routine-written item with no file of its own
+    members: list = field(default_factory=list)  # the queue items one first-release line stands for
 
 
 # ----- finding items -------------------------------------------------------------
@@ -82,8 +83,13 @@ def index(root: Path) -> dict:
                          (needs_you.QUESTIONS, "question"), (needs_you.ANSWERS, "answer")):
         for rel, fm, body in needs_you.pages_in(root, folder):
             add(kind, rel, fm, body)
+    firsts: dict = {}
     for rel, fm, body in needs_you.pages_in(root, needs_you.QUEUE):
         add("high_stakes" if fm.get("high_stakes") else "leaving", rel, fm, body)
+        if fm.get("first_release") and not fm.get("high_stakes"):
+            firsts.setdefault(f"first-{fm['first_release']}", []).append(Found("leaving", root / rel, fm, body))
+    for key, members in firsts.items():
+        found.setdefault(key, Found("first_release", None, {}, "", members=members))
     for rel, fm, body in needs_you.doubt_pages(root):   # also by the record it holds
         add("doubt", rel, fm, body, *[str(e) for e in fm.get("evidence") or []][:1])
     try:
@@ -313,6 +319,14 @@ def _queue_item(root, space, entry: Found, item_id, verb, note, by, now, report:
         _add_standing_choice(space, fm.get("destination"), fm.get("kind"), report)
 
 
+def _first_release(root, space, entry: Found, item_id, verb, note, by, now, report: ApplyReport):
+    """The one line of a subject's first release: the verdict applies to each of its items."""
+    for member in entry.members:
+        if member.path.exists():
+            _queue_item(root, space, member, str(member.fm.get("id") or member.path.stem),
+                        "yes" if verb == "edit" else verb, note, by, now, report)
+
+
 def _tracker_item(root, space, entry: Found, item_id, verb, note, by, now, report: ApplyReport):
     """A tracker request at `propose`: yes lets the tracker routine create it, no declines it."""
     fm, body, path = dict(entry.fm), entry.body, entry.path
@@ -444,7 +458,8 @@ def _review_line(root: Path, space, batch: Path, number: int, verb: str, note: s
 
 
 HANDLERS = {"candidate": _candidate, "check": _check, "leaving": _queue_item, "doubt": _doubt, "tracker": _tracker_item,
-            "high_stakes": _queue_item, "question": _question, "answer": _question}
+            "high_stakes": _queue_item, "question": _question, "answer": _question,
+            "first_release": _first_release}
 
 
 def _verb(value) -> str:

@@ -75,21 +75,26 @@ def _mark_listed(root: Path, space: spaceyaml.Space, items: list, now: dt.dateti
     for item in items:
         if item.kind not in ("leaving", "high_stakes"):
             continue
-        path = root / item.payload
-        if not path.is_file():
-            continue
-        fm, body = pages.read(path)
-        if fm.get("class") != "window":
-            continue
-        try:
-            stage_after = pages.parse_iso(fm.get("stage_after"))
-        except (TypeError, ValueError):
-            continue
-        if stage_after > horizon:
-            continue
-        fm["listed"], fm["listed_at"] = True, pages.iso(now)
-        pages.write(path, fm, body)
-        stamped.append(item.id)
+        paths, group = [root / item.payload], item.id.startswith("first-") and item.payload.endswith("/")
+        if group:   # one line, every item of it
+            sid = item.id[len("first-"):]
+            paths = [p for p in sorted((root / item.payload).glob("*.md"))
+                     if str(pages.read(p)[0].get("first_release") or "") == sid]
+        for path in paths:
+            if not path.is_file():
+                continue
+            fm, body = pages.read(path)
+            if fm.get("class") != "window":
+                continue
+            try:
+                stage_after = pages.parse_iso(fm.get("stage_after"))
+            except (TypeError, ValueError):
+                continue
+            if stage_after > horizon:
+                continue
+            fm["listed"], fm["listed_at"] = True, pages.iso(now)
+            pages.write(path, fm, body)
+            stamped.append(str(fm.get("id") or path.stem) if group else item.id)
     return stamped
 
 

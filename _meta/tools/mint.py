@@ -24,6 +24,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import classify  # noqa: E402
 import onboard  # noqa: E402
 import pages  # noqa: E402
 import registry  # noqa: E402
@@ -378,6 +379,9 @@ def run(root, seed, name, crew, online, org=None, home=None, dry_run=False,
             local.match.setdefault(key, value)
         reg.save()
         result = f"home: {name} set on {subject}"
+    elif reg.get(subject) is not None and name in (reg.home_of(subject),
+                                                    (classify.effective(reg, subject) or {}).get("home")):
+        result = f"{subject}'s classification already names home: {name}"
     elif reg.get(subject) is not None:
         result = f"{subject} lives in an ancestor's registry; its owner sets home: {name}"
         items.append({"id": f"mint-{name}-home", "kind": "question",

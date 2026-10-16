@@ -29,6 +29,12 @@ questions:
     default: $never_leaves
     applies_to: [company, person]
     kind: categories
+  - key: classification_default
+    ask: "When a new client, project or deal turns up, may its work be shared across the company unless its owner gives a reason to keep it apart (open), or is it kept apart until its owner says it may be shared (closed)?"
+    default: open
+    applies_to: [company]
+    kind: choice
+    choices: [open, closed]
   - key: name
     ask: What is your name?
     default: $user

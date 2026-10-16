@@ -916,7 +916,7 @@ def moved_signals(root: Path, space, now) -> dict:
             at = pages.parse_iso(data.get("at"))
         except Exception:
             continue
-        if not isinstance(data, dict) or data.get("kind") == "sample_failed" or not data.get("subject"):
+        if not isinstance(data, dict) or data.get("kind") in ("sample_failed", "registry") or not data.get("subject"):
             continue
         if since <= at <= now and (data["subject"] not in out or at > out[data["subject"]][0]):
             out[str(data["subject"])] = (at, str(data.get("from") or "another space"))
@@ -1154,6 +1154,8 @@ def run(root, now=None, check: bool = False) -> StatusReport:
         return report
     if not check:
         report.probed = _weekly_probe(root, space, now)
+        import classify   # registry notes before anything reads the registry
+        classify.land_notes(root, space, now)
     reg = registry_mod.Registry(root, space)
     if not check:
         import landing

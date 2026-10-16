@@ -27,6 +27,8 @@ setup:
           state: active
           owner: Ada Okafor
           home: harbor
+          classification: {class: walled, state: settled, home: harbor, crew: [ada], reason: its own space,
+                           decided_by: Ada Okafor, at: "2026-10-01T09:00:00Z"}
           match: {domain: harbor.example}
     knowledge/sources/2026/10/c-scenario-1.md: |
       ---

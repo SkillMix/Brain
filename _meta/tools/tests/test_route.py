@@ -11,10 +11,13 @@ import route
 import sweep
 from conftest import NOW, make_space, mount_brain
 
+from test_sweep import walled  # noqa: E402
+
 SUBJECTS = [
     {"id": "harbor", "kind": "projects", "title": "Harbor", "home": "harbor",
-     "match": {"domain": "harbor.example"}},
-    {"id": "beacon", "kind": "projects", "title": "Beacon", "home": "beacon"},
+     "match": {"domain": "harbor.example"}, "classification": walled("harbor", ["ada", "ben"])},
+    {"id": "beacon", "kind": "projects", "title": "Beacon", "home": "beacon",
+     "classification": walled("beacon", ["ada"])},
     {"id": "ben", "kind": "people", "title": "Ben Liu", "email": "ben@lantern.example"},
     {"id": "acme", "kind": "clients", "title": "Acme Foods"},
 ]

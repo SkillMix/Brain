@@ -4,6 +4,7 @@ import json
 import pages
 import distill
 from conftest import NOW, make_space, write_page
+from test_sweep import walled
 
 H = dt.timedelta(hours=1)
 D = dt.timedelta(days=1)
@@ -117,7 +118,8 @@ def test_not_stateful_not_important_is_skipped_unless_asked(tmp_path):
 
 def test_home_elsewhere_sets_destination(tmp_path):
     root = make_space(tmp_path / "ada", subjects=[
-        {"id": "harbor", "kind": "projects", "title": "Harbor", "home": "harbor"}])
+        {"id": "harbor", "kind": "projects", "title": "Harbor", "home": "harbor",
+         "classification": walled("harbor", ["ada"])}])
     witness(root, "rec-1", "harbor", "Go-live moved.\n", NOW - D)
     distill.run(root, now=NOW)
     fm, _ = pages.read(candidates(root)[0])
