@@ -7,7 +7,10 @@ the fixed identifiers (tracker, repo, channel, label, thread, calendar, github) 
 sweep attaches evidence, plus two inferred ones: `domain`, a mail domain on any address of the
 record (from, to, cc, participants), and `keywords`, whole words in the title of a call or a
 calendar event. Ids are shared up the ladder: a space reuses an ancestor's
-id (read through its mount) and mints a new one only when no space above has one. The register
+id (read through its mount) and mints a new one only when no space above has one. The one
+exception is a subject's home: it may hold the id too, to add the names the subject is known by
+there (`aliases`, `match`) that its parent keeps out, and a space that mounts the home reads them
+on top of the parent's entry. The register
 fields say what an engagement was (the brain's projects page shows them): `period` (`from`,
 `to`, months `YYYY-MM`), `client` (a subject id), `crew` (people subject ids) and `work` (one line).
 
@@ -152,6 +155,21 @@ def routed_subjects(fm: dict, space_name: str | None) -> list:
     return out
 
 
+def _add_names(base: Subject, entry: dict) -> None:
+    """The names a subject's home adds: its aliases and match identifiers, after the parent's."""
+    for alias in entry.get("aliases") or []:
+        if alias not in base.aliases:
+            base.aliases.append(alias)
+    for key, value in (entry.get("match") or {}).items():
+        have = base.match.get(key)
+        if have is None:
+            base.match[key] = value
+            continue
+        merged = list(have) if isinstance(have, list) else [have]
+        merged += [v for v in (value if isinstance(value, list) else [value]) if v not in merged]
+        base.match[key] = merged if len(merged) > 1 else merged[0]
+
+
 def _word_in(text: str, needle: str) -> bool:
     if len(needle) < 3:
         return False
@@ -166,6 +184,7 @@ class Registry:
         self.subjects: dict = {}
         self.ancestors: dict = {}
         self.ancestor_ids: set = set()  # every id any ancestor holds, shadowed or not
+        self.ancestor_homes: dict = {}  # the home the first ancestor holding an id names for it
         self._load()
 
     # ----- loading ---------------------------------------------------------
@@ -187,17 +206,37 @@ class Registry:
             except Exception:
                 self.space = None
         if self.space is not None:
+            later = []   # (space name, entry): a second holder of an id, read once all are loaded
             for mount in self.space.mounts:
                 name = mount.get("name", "")
                 mount_root = self.space.mount_root(name)
                 if mount_root is None:
                     continue
+                try:
+                    space_name = spaceyaml.load(mount_root).name
+                except Exception:
+                    space_name = name
                 for entry in self._read(mount_root / REGISTRY_PATH):
                     if isinstance(entry, dict) and entry.get("id"):
                         sid = str(entry["id"])
+                        if sid not in self.ancestor_ids:
+                            self.ancestor_homes[sid] = entry.get("home")
                         self.ancestor_ids.add(sid)
                         if sid not in self.subjects and sid not in self.ancestors:
                             self.ancestors[sid] = Subject.from_dict(entry, space=name)
+                        else:
+                            later.append((space_name, entry))
+            # a subject's home may hold its id too, with the names it is known by there (aliases,
+            # match identifiers) that its parent keeps out; a space that mounts the home reads them
+            for space_name, entry in later:
+                base = self.ancestors.get(str(entry["id"]))
+                if base is not None and base.home and base.home == space_name:
+                    _add_names(base, entry)
+
+    def homed_here(self, sid: str) -> bool:
+        """An ancestor's subject whose home is this space: this registry may add its names."""
+        return self.space is not None and bool(self.space.name) and \
+            self.ancestor_homes.get(sid) == self.space.name
 
     def save(self) -> None:
         data = {"subjects": [s.to_dict() for s in self.subjects.values()]}
@@ -335,7 +374,7 @@ class Registry:
             for key in subject.match:
                 if key not in MATCH_KEYS:
                     errs.append(f"registry: `{sid}` match key `{key}` is not one of {', '.join(MATCH_KEYS)}")
-            if sid in self.ancestor_ids:
+            if sid in self.ancestor_ids and not self.homed_here(sid):
                 errs.append(f"registry: `{sid}` re-mints an id an ancestor already has")
             # loops
             seen, current = {sid}, subject

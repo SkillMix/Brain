@@ -1,3 +1,4 @@
+import yaml
 import registry
 import spaceyaml
 from conftest import make_space, mount_brain
@@ -134,3 +135,48 @@ def test_engagement_states_are_valid_and_open_deals_stay_live():
         assert state in registry.STATES
     assert "open" in registry.LIVE_STATES and "active" in registry.LIVE_STATES
     assert "delivered" not in registry.LIVE_STATES
+
+
+def _mount(space_root, name, target_root):
+    data = yaml.safe_load((space_root / "space.yaml").read_text(encoding="utf-8"))
+    data["mounts"] = [m for m in (data.get("mounts") or []) if m.get("name") != name] + \
+        [{"name": name, "path": str(target_root)}]
+    (space_root / "space.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+
+def test_a_home_adds_the_names_its_parent_keeps_out(tmp_path):
+    """The brain keeps id, title and home; the home space holds the aliases and match keys, and a
+    workspace that mounts the home reads them on top of the brain's entry."""
+    brain = make_space(tmp_path / "brain", profile="brain", subjects=[
+        {"id": "harbor", "kind": "projects", "title": "Harbor", "home": "harbor"}])
+    home = make_space(tmp_path / "harbor", profile="project", subjects=[
+        {"id": "harbor", "kind": "projects", "title": "Harbor", "home": "harbor",
+         "aliases": ["Lighthouse"], "match": {"domain": "harbor.example", "label": "harbor"}}])
+    mount_brain(home, brain)
+    own = registry.Registry(home, spaceyaml.load(home))
+    assert own.check() == []
+    assert own.get("harbor").aliases == ["Lighthouse"]
+    ada = make_space(tmp_path / "ada", profile="personal", subjects=[])
+    mount_brain(ada, brain)
+    _mount(ada, "harbor", home)
+    reg = registry.Registry(ada, spaceyaml.load(ada))
+    harbor = reg.get("harbor")
+    assert harbor.space == "brain" and reg.home_of("harbor") == "harbor"
+    assert harbor.aliases == ["Lighthouse"] and harbor.match["domain"] == "harbor.example"
+    assert reg.find("Lighthouse").id == "harbor"
+    assert [s.id for s in reg.match({"kind": "mail", "from": "chloe@harbor.example"})] == ["harbor"]
+    assert registry.Registry(brain).get("harbor").aliases == []
+
+
+def test_only_the_home_adds_names(tmp_path):
+    """Another space mounted beside the brain cannot add names to a subject homed elsewhere."""
+    brain = make_space(tmp_path / "brain", profile="brain", subjects=[
+        {"id": "harbor", "kind": "projects", "home": "harbor"}])
+    other = make_space(tmp_path / "beacon", profile="project", subjects=[
+        {"id": "harbor", "kind": "projects", "aliases": ["Decoy"]}])
+    mount_brain(other, brain)
+    assert any("re-mints" in e for e in registry.Registry(other, spaceyaml.load(other)).check())
+    ada = make_space(tmp_path / "ada", profile="personal", subjects=[])
+    mount_brain(ada, brain)
+    _mount(ada, "beacon", other)
+    assert registry.Registry(ada, spaceyaml.load(ada)).get("harbor").aliases == []
