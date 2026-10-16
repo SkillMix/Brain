@@ -49,7 +49,7 @@ _meta/state/                      watermarks, ids.yaml, runs.jsonl, payloads; fe
 _meta/state/private/briefs/       one private brief per subject the space understands (and its pack); local, disposable, never travels
 _meta/tests/                      answers.yaml, leaks.yaml, behaviour/<skill>.yaml, fixture/, forbidden-names.sha256
 _meta/tools/  _meta/templates/    the tools (stdlib plus PyYAML) and the page templates
-.github/                          the checks and auto-merge workflows; template-marker only in the template
+.github/                          the checks workflow (it also arms auto-merge); template-marker only in the template
 .claude/skills/<name>/SKILL.md    the toolbox: one skill per routine, each wrapping one tool
 personal/  academic/  _scratch/   gitignored in every profile; outside every tool and every sweep
 ```

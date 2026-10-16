@@ -3,7 +3,8 @@
 # generated cron command under `env -i` with a stub `gh` on the registration PATH. `bare` runs
 # the whole first step on a machine with nothing on it (no git, gh or Python): the bootstrap
 # installs a Python, the doctor installs git and gh. Not required checks (`checks` is). Runs
-# when the setup tools change; in an instance the gate finds no template marker and skips them.
+# when the setup tools change, only in the template repository (it carries GitHub's template
+# flag): in a space every job is skipped before a runner starts, so it costs nothing.
 name: platforms
 
 on:
@@ -46,18 +47,8 @@ permissions:
   contents: read
 
 jobs:
-  gate:
-    runs-on: ubuntu-latest
-    outputs:
-      template: ${{ steps.marker.outputs.template }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: marker
-        run: echo "template=$([ -f .github/template-marker ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-
   platforms:
-    needs: gate
-    if: needs.gate.outputs.template == 'true'
+    if: github.event.repository.is_template
     strategy:
       fail-fast: false
       matrix:
@@ -84,8 +75,7 @@ jobs:
         run: python -m pytest _meta/tools/tests/test_start.py _meta/tools/tests/test_sync_task.py -v -k "start_command or empty_environment"
 
   bare:
-    needs: gate
-    if: needs.gate.outputs.template == 'true'
+    if: github.event.repository.is_template
     runs-on: ubuntu-latest
     container: ubuntu:24.04
     steps:

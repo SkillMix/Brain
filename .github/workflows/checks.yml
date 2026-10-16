@@ -1,17 +1,28 @@
-# The required check. The platform merges a pull request when this is green; protected
-# paths wait for the owner's click instead (auto-merge.yml, rules.md section 8).
+# The required check, one job per pull request so a sync costs one billed minute. The platform
+# merges a pull request when this is green; protected paths wait for the owner's click instead
+# (rules.md section 8). Validate, the gate, the secrets scan and the answer and leak tests run on
+# every change; the tool tests run when the machinery changed. The last step arms auto-merge, so
+# the job may write: the same trust the separate arming job had, which ran the pull request's
+# own gate.py with that token. A pull request from a fork gets a read-only token and is not armed.
 name: checks
 
 on:
   pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
   push:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: write
+  pull-requests: write
 
 jobs:
   checks:
+    # A pull request's merge was checked on the pull request; a direct push to main still runs.
+    if: >-
+      github.event_name != 'push' ||
+      !(startsWith(github.event.head_commit.message, 'Merge pull request #') ||
+      contains(github.event.head_commit.message, ' (#'))
     runs-on: ubuntu-latest
     env:
       GIT_TERMINAL_PROMPT: "0"
@@ -40,13 +51,30 @@ jobs:
         if: github.event_name == 'pull_request'
         run: git fetch --no-recurse-submodules origin "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
 
+      # The tool tests read only the machinery. They run when it changed, always in the template,
+      # and whenever the diff cannot be read (a new branch, a force-push that dropped `before`).
+      - name: What changed
+        id: scope
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+        run: |
+          tools=true
+          case "$BASE" in ""|0000000000000000000000000000000000000000) BASE="" ;; esac
+          if [ -n "$BASE" ] && [ ! -f .github/template-marker ] && changed=$(git diff --name-only "$BASE...HEAD" --); then
+            machinery='^(_meta/tools/|_meta/tests/|_meta/templates/|\.github/|\.claude/|space\.yaml$|_meta/state/template-version\.yaml$)'
+            grep -qE "$machinery" <<< "$changed" || tools=false
+          fi
+          echo "tools=$tools" >> "$GITHUB_OUTPUT"
+          echo "tool tests: $tools"
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - run: pip install pyyaml pytest
+      - run: pip install pyyaml ${{ steps.scope.outputs.tools == 'true' && 'pytest' || '' }}
 
       - name: Unit tests
+        if: steps.scope.outputs.tools == 'true'
         env:
           GIT_CONFIG_GLOBAL: /dev/null
           GIT_TERMINAL_PROMPT: "0"
@@ -61,7 +89,7 @@ jobs:
 
       - name: Gate (protected paths and signatures)
         if: github.event_name == 'pull_request'
-        run: python _meta/tools/gate.py origin/${{ github.base_ref || 'main' }} .
+        run: python _meta/tools/gate.py origin/${{ github.base_ref || 'main' }} . | tee "$RUNNER_TEMP/gate.txt"
 
       - name: Secrets scan on what changed
         if: github.event_name == 'pull_request'
@@ -72,29 +100,30 @@ jobs:
         run: python _meta/tools/tests_run.py .
 
       - name: Behaviour scenarios
-        if: hashFiles('_meta/tools/behaviour.py') != ''
+        if: steps.scope.outputs.tools == 'true' && hashFiles('_meta/tools/behaviour.py') != ''
         run: python _meta/tools/behaviour.py . --all
 
-  # The template proves itself on the fixture company. Steps are gated because a job
-  # condition cannot see the checkout; in an instance this job passes doing nothing.
-  fixture:
-    runs-on: ubuntu-latest
-    env:
-      GIT_CONFIG_GLOBAL: /dev/null
-      GIT_TERMINAL_PROMPT: "0"
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: actions/setup-python@v5
-        if: hashFiles('.github/template-marker') != '' && hashFiles('_meta/tools/onboard.py') != ''
-        with:
-          python-version: "3.12"
-
-      - if: hashFiles('.github/template-marker') != '' && hashFiles('_meta/tools/onboard.py') != ''
-        run: pip install pyyaml pytest
-
+      # The template proves itself on the fixture company; in a space this step is skipped.
       - name: Build and run the fixture
         if: hashFiles('.github/template-marker') != '' && hashFiles('_meta/tools/onboard.py') != ''
+        env:
+          GIT_CONFIG_GLOBAL: /dev/null
         run: python _meta/tools/onboard.py --fixture "$RUNNER_TEMP/fixture"
+
+      # Last, so only a pull request that passed everything above is armed; auto-merge lands it
+      # when this job reports green. A protected one waits for the owner's click on a Needs you
+      # item, and arming from an earlier push is switched off. The merge method follows the
+      # repository: a merge commit where allowed, else squash, else rebase.
+      - name: Arm auto-merge, or leave it for the owner
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          if grep -q "GATE: auto-mergeable" "$RUNNER_TEMP/gate.txt"; then
+            gh pr merge --auto --merge "$PR_URL" || gh pr merge --auto --squash "$PR_URL" || gh pr merge --auto --rebase "$PR_URL"
+          else
+            echo "protected paths: waits for the owner"
+            gh pr merge --disable-auto "$PR_URL" || true
+          fi
