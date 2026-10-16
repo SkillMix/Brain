@@ -32,7 +32,9 @@ pins (`chore: pins`); fetched without recursing into mounts; merged `origin/main
 changes to `sync/<hostname>` and opened a pull request when none was open, with changes under
 `protected:` paths on their own branch `sync/<hostname>-protected` and pull request; one run
 line. The platform merges the first on green; the protected one waits for the space owner's
-one click, and nothing else waits behind it.
+one click, and nothing else waits behind it. Every push costs a paid check, so journal lines
+and run logs alone wait up to an hour, run lines and mount pins alone up to six hours (the run
+line says `waiting`), and a waiting pull request is not pushed again when only main moved.
 
 ## Judgment left to you
 

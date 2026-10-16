@@ -944,7 +944,7 @@ def platform_settings(report, root, repo, org, dry_run) -> None:
                    "present" if present else "the owner adds the repository secret BRAIN_READ_TOKEN "
                    "(a token that reads the mounted repositories) so the checks can read the mounts",
                    needs_owner=not present)
-    # No organization-level grant is needed: the auto-merge workflow arms auto-merge with the
+    # No organization-level grant is needed: the checks workflow arms auto-merge with the
     # repository token, which the merge settings above allow (proved on the template's own
     # pull requests). The platform's own first pull request is the read-back check.
 

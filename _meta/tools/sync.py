@@ -17,9 +17,11 @@ routines only edit files. Each run:
      request the platform merges. Changes under a `protected:` path go to their own branch
      sync/<hostname>-protected (their own pull request, the owner's one click), so the
      journal, desk and run lines never wait behind them; each branch is rebuilt on
-     origin/main and pushed only when its content changed. A change that is only run lines
-     and mount pins goes out at most every QUIET_HOURS, or with the next real change, so
-     nobody watching the repository gets a pull request every 15 minutes
+     origin/main and pushed only when its content changed (main moving under a waiting pull
+     request is no reason to rebuild it: every push reruns the checks). A change that is
+     only run lines and mount pins goes out at most every QUIET_HOURS, one that is only
+     journal lines and run logs at most every BATCH_HOURS, or with the next real change, so
+     nobody watching the repository gets a pull request (and a paid check) every 15 minutes
   7. append one run line to _meta/state/runs.jsonl when something happened, plus at
      most one heartbeat a day; the line rides along in the next run's commit
 
@@ -57,7 +59,9 @@ PRIVATE_ZONES = ("personal/", "academic/", "_scratch/", "_meta/state/private/")
 IN_PROGRESS = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "rebase-merge", "rebase-apply", "index.lock")
 LOCK_HOURS = 0.5
 QUIET_HOURS = 6   # run lines and mount pins alone go out at most this often
+BATCH_HOURS = 1   # journal lines and run logs alone go out at most this often
 RUNS_PATH = Path("_meta") / "state" / "runs.jsonl"
+RUN_LOGS = {"_meta/state/tests.jsonl", "_meta/state/probe.jsonl"}
 NOTABLE = ("committed", "pins", "conflict", "scan_hits", "errors")
 
 
@@ -434,19 +438,34 @@ class Run:
             if remote:   # unchanged since the last run: keep the same commit, so CI does not rerun
                 same_tree = git(self.root, "rev-parse", f"{remote}^{{tree}}").stdout.strip() == tree
                 same_base = git(self.root, "rev-parse", f"{remote}^").stdout.strip() == base
-                if same_tree and same_base:
+                if (same_tree and same_base) or self.still_carries(remote, paths, base):
                     return remote
             done = git(self.root, "commit-tree", tree, "-p", base, "-m", "chore: sync")
             return done.stdout.strip() if done.returncode == 0 else None
         finally:
             index.unlink(missing_ok=True)
 
-    def push_branch(self, commit: str, branch: str) -> bool:
+    def still_carries(self, commit: str, paths: list, base: str) -> bool:
+        """The pushed commit carries exactly `paths`, as HEAD has them, and origin/main has not
+        touched them since it was built: only main moved, so the pull request stays as it is."""
+        def names(*spec: str) -> set | None:
+            done = git(self.root, "diff", "--name-only", "--no-renames", "-z", *spec)
+            return None if done.returncode else {p for p in done.stdout.split("\x00") if p}
+        if git(self.root, "merge-base", "--is-ancestor", commit, base).returncode == 0:
+            return False   # it merged already: what is left needs a new commit
+        want = set(paths)
+        carried, stale, moved = names(f"{commit}^", commit), names(commit, "HEAD"), names(f"{commit}^", base)
+        if carried is None or stale is None or moved is None:
+            return False
+        return carried == want and not (stale & want) and not (moved & want)
+
+    def push_branch(self, commit: str, branch: str) -> bool | None:
+        """True when pushed, False when the branch already holds the commit, None on failure."""
         current = git(self.root, "rev-parse", "-q", "--verify", f"refs/remotes/origin/{branch}").stdout.strip()
         if current == commit:
-            return True
+            return False
         done = git(self.root, "push", "--quiet", "--force", "origin", f"{commit}:refs/heads/{branch}")
-        return done.returncode == 0
+        return True if done.returncode == 0 else None
 
     def publish(self) -> None:
         if not self.has_origin_main():
@@ -460,47 +479,59 @@ class Run:
             return
         if git(self.root, "diff", "--quiet", "origin/main", "HEAD").returncode == 0:
             return   # only merge commits: nothing this checkout changes, nothing to push
-        if self.only_housekeeping() and not self.quiet_due():
-            self.notes["waiting"] = "run lines and pins only"
-            return
         parts = self.split()
         if parts is not None:
             # protected paths wait for the owner's click on their own branch; the rest lands on green
             plain, guarded = parts
             for paths, name, note in ((plain, branch, "pushed"), (guarded, f"{branch}-protected", "pushed_protected")):
-                if not paths:
+                if not paths or self.waits(paths):
                     continue
                 commit = self.subset_commit(paths, f"origin/{name}")
-                if commit is None or not self.push_branch(commit, name):
+                pushed = None if commit is None else self.push_branch(commit, name)
+                if pushed is None:
                     self.error(f"push failed ({name})")
                     continue
-                self.notes[note] = len(paths)
-                self.quiet_pushed()
-                print(f"push: {len(paths)} path(s) to {name}")
+                if pushed:
+                    self.notes[note] = len(paths)
+                    self.quiet_pushed()
+                    print(f"push: {len(paths)} path(s) to {name}")
                 self.open_pr(name, "chore: sync (protected)" if note == "pushed_protected" else "chore: sync")
             return
-        done = git(self.root, "push", "--quiet", "--force-with-lease", "origin", f"HEAD:refs/heads/{branch}")
-        if done.returncode != 0:
-            self.error("push failed")
+        out = git(self.root, "diff", "--name-only", "--no-renames", "-z", "origin/main", "HEAD").stdout
+        if self.waits([p for p in out.split("\x00") if p]):
             return
-        self.notes["pushed"] = ahead
-        self.quiet_pushed()
-        print(f"push: {ahead} commit(s) to {branch}")
+        current = git(self.root, "rev-parse", "-q", "--verify", f"refs/remotes/origin/{branch}").stdout.strip()
+        if current != git(self.root, "rev-parse", "HEAD").stdout.strip():
+            done = git(self.root, "push", "--quiet", "--force-with-lease", "origin", f"HEAD:refs/heads/{branch}")
+            if done.returncode != 0:
+                self.error("push failed")
+                return
+            self.notes["pushed"] = ahead
+            self.quiet_pushed()
+            print(f"push: {ahead} commit(s) to {branch}")
         self.open_pr(branch)
 
-    def only_housekeeping(self) -> bool:
-        """Every path this checkout changes is a run line file or a mount pin."""
-        out = git(self.root, "diff", "--name-only", "--no-renames", "-z", "origin/main", "HEAD").stdout
-        changed = [p for p in out.split("\x00") if p]
-        quiet = {RUNS_PATH.as_posix(), *self.submodules()}
-        return bool(changed) and all(p in quiet for p in changed)
+    def waits(self, paths: list) -> bool:
+        """A change that is only run lines and mount pins waits QUIET_HOURS since the last push,
+        one that is only journal lines and run logs BATCH_HOURS; anything else goes out now."""
+        housekeeping = {RUNS_PATH.as_posix(), *self.submodules()}
+        if paths and all(p in housekeeping for p in paths):
+            hours, what = QUIET_HOURS, "run lines and pins only"
+        elif paths and all(p in housekeeping or p in RUN_LOGS or p.startswith("journal/") for p in paths):
+            hours, what = BATCH_HOURS, "journal lines and run logs only"
+        else:
+            return False
+        if self.quiet_due(hours):
+            return False
+        self.notes["waiting"] = what
+        return True
 
-    def quiet_due(self) -> bool:
+    def quiet_due(self, hours: float) -> bool:
         try:
             last = float((self.gdir / "sync-quiet-pushed").read_text(encoding="utf-8").strip())
         except (OSError, ValueError):
             return True
-        return self.now.timestamp() - last >= QUIET_HOURS * 3600
+        return self.now.timestamp() - last >= hours * 3600
 
     def quiet_pushed(self) -> None:
         try:

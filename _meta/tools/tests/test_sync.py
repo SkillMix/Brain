@@ -336,7 +336,7 @@ def test_a_new_mount_merges_while_a_protected_change_waits(repo, tmp_path, monke
     assert git(repo, "ls-tree", "HEAD", "mounts/harbor").stdout.split()[2] == second
     assert not git(repo, "diff", "--name-only", "--diff-filter=U").stdout.strip()
     git(repo, "fetch", "-q", "origin")
-    guarded = git(repo, "diff", "--name-only", "origin/main", f"origin/sync/{host}-protected").stdout.split()
+    guarded = git(repo, "diff", "--name-only", f"origin/main...origin/sync/{host}-protected").stdout.split()
     assert guarded == ["space.yaml"]   # the protected change still waits on its own branch
 
 
@@ -398,6 +398,83 @@ def test_run_lines_and_pins_alone_wait_until_the_quiet_window_passes(repo, monke
     stamp.write_text(str(time.time() - (sync.QUIET_HOURS + 1) * 3600), encoding="utf-8")
     assert sync.main(["--root", str(repo)]) == 0
     assert branch() != second   # the window passed: the lines go out
+
+
+def test_journal_and_run_logs_alone_go_out_at_most_hourly(repo, tmp_path, monkeypatch):
+    """Daily-note lines and run logs open no pull request every 15 minutes: they go out once,
+    then wait BATCH_HOURS or until real content comes. Run lines alone keep QUIET_HOURS."""
+    monkeypatch.setattr(sync.Run, "gh", lambda self, *args: None)
+    host = sync.hostname()
+    note = repo / "journal" / "2026" / "10" / "2026-10-15.md"
+    stamp = repo / ".git" / "sync-quiet-pushed"
+
+    def branch():
+        git(repo, "fetch", "-q", "origin")
+        return git(repo, "rev-parse", "-q", "--verify", f"origin/sync/{host}", check=False).stdout.strip()
+
+    write(note, "# 2026-10-15\n\n- one\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    first = branch()
+    assert first   # nothing published from this checkout yet: it goes out
+    write(note, "# 2026-10-15\n\n- one\n- two\n", minutes_old=20)
+    write(repo / "_meta" / "state" / "tests.jsonl", '{"at": "2026-10-15T10:00:00Z"}\n', minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    assert branch() == first   # journal and run logs inside the hour: they wait
+    stamp.write_text(str(time.time() - (sync.BATCH_HOURS + 0.1) * 3600), encoding="utf-8")
+    assert sync.main(["--root", str(repo)]) == 0
+    assert branch() != first   # the hour passed: they go out
+    platform_merges(tmp_path, f"sync/{host}")
+    assert sync.main(["--root", str(repo)]) == 0   # merges main in; only its own run line is left
+    second = branch()
+    stamp.write_text(str(time.time() - (sync.BATCH_HOURS + 0.1) * 3600), encoding="utf-8")
+    assert sync.main(["--root", str(repo)]) == 0
+    assert branch() == second   # run lines alone still wait for the quiet window
+
+
+def test_a_waiting_pull_request_is_not_rebuilt_when_only_main_moves(repo, tmp_path, monkeypatch):
+    """The protected change waits for the owner's click while the plain part lands. Main moves
+    under it, but its branch keeps the same commit (no push, so no new checks) until its own
+    content changes."""
+    monkeypatch.setattr(sync.Run, "gh", lambda self, *args: None)
+    host = sync.hostname()
+    protected = f"origin/sync/{host}-protected"
+    write(repo / "space.yaml", (repo / "space.yaml").read_text(encoding="utf-8") + "x: 1\n", minutes_old=20)
+    write(repo / "work" / "notes.md", "# Notes\n\nline one\nline two\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    git(repo, "fetch", "-q", "origin")
+    waiting = git(repo, "rev-parse", protected).stdout.strip()
+    platform_merges(tmp_path, f"sync/{host}")   # the plain part lands: main moves
+    write(repo / "work" / "notes.md", "# Notes\n\nline one\nline two\nline three\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    git(repo, "fetch", "-q", "origin")
+    assert git(repo, "rev-parse", protected).stdout.strip() == waiting
+    assert "work/notes.md" in git(repo, "diff", "--name-only", "origin/main", f"origin/sync/{host}").stdout.split()
+    write(repo / "space.yaml", (repo / "space.yaml").read_text(encoding="utf-8") + "y: 2\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    git(repo, "fetch", "-q", "origin")
+    assert git(repo, "rev-parse", protected).stdout.strip() != waiting   # its own content changed
+    assert git(repo, "diff", "--name-only", f"origin/main...{protected}").stdout.split() == ["space.yaml"]
+
+
+def test_the_quiet_clock_moves_only_when_something_is_pushed(repo, monkeypatch):
+    """A run that finds its branch already up to date pushes nothing, so the window that holds
+    back run lines and journal lines keeps counting from the last real push."""
+    monkeypatch.setattr(sync.Run, "gh", lambda self, *args: None)
+    host = sync.hostname()
+    stamp = repo / ".git" / "sync-quiet-pushed"
+    write(repo / "work" / "notes.md", "# Notes\n\nline one\nline two\n", minutes_old=20)
+    tips = []
+    for _ in range(5):   # until the run lines settle and the branch stops moving
+        assert sync.main(["--root", str(repo)]) == 0
+        git(repo, "fetch", "-q", "origin")
+        tips.append(git(repo, "rev-parse", f"origin/sync/{host}").stdout.strip())
+        if len(tips) > 1 and tips[-1] == tips[-2]:
+            break
+    assert tips[-1] == tips[-2]
+    old = str(time.time() - 3 * 3600)
+    stamp.write_text(old, encoding="utf-8")
+    assert sync.main(["--root", str(repo)]) == 0
+    assert stamp.read_text(encoding="utf-8") == old
 
 
 def test_the_private_state_zone_is_never_staged():
