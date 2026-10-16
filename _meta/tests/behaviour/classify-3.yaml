@@ -1,0 +1,42 @@
+# A workspace that does not hold the relationship never classifies: the tool refuses before any
+# write, so no note leaves for the brain.
+name: a workspace that does not own the client cannot classify it
+command: [python, _meta/tools/classify.py, "{root}", decide, tide, --class, company, --reason,
+          ordinary client work, --evidence, m-0001]
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1440
+      name: ada
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience: [Ada Okafor]
+      parent: brain
+      mounts: [{name: brain, path: brain}]
+      sources: [{name: mail, adapter: files, audience: owner}]
+    work/.gitkeep: ""
+    journal/.gitkeep: ""
+    outbox/.gitkeep: ""
+    _meta/subjects.yaml: {subjects: []}
+    brain/space.yaml:
+      shape: 1
+      profile: brain
+      mode: fixture
+      time_scale: 1440
+      name: lantern
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience: everyone
+    brain/_meta/subjects.yaml:
+      subjects:
+        - {id: ada, kind: people, title: Ada Okafor, state: active, workspace: ada}
+        - {id: ben, kind: people, title: Ben Liu, state: active, workspace: ben}
+        - {id: tide, kind: clients, title: Tide, state: active, owner: Ben Liu, home: lantern}
+env: {SPACE_NOW: "2026-10-05T09:00:00Z"}
+expect:
+  exit: 1
+  writes_only_under: []
+  must_not_exist: ["_outbound/signals/*.yaml"]

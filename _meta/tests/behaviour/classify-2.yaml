@@ -1,0 +1,44 @@
+# An obligation this workspace's records hold: one note to the brain that holds the subject,
+# with its kind, its date and record ids. Never its wording; the registry here is untouched.
+name: an obligation leaves as one note with its kind and date only
+command: [python, _meta/tools/classify.py, "{root}", obligation, tide, --kind, confidentiality,
+          --date, "2026-04-14", --evidence, m-0009]
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1440
+      name: ben
+      owner: Ben Liu
+      owner_email: ben@lantern.example
+      audience: [Ben Liu]
+      parent: brain
+      mounts: [{name: brain, path: brain}]
+      sources: [{name: mail, adapter: files, audience: owner}]
+    work/.gitkeep: ""
+    journal/.gitkeep: ""
+    outbox/.gitkeep: ""
+    _meta/subjects.yaml: {subjects: []}
+    brain/space.yaml:
+      shape: 1
+      profile: brain
+      mode: fixture
+      time_scale: 1440
+      name: lantern
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience: everyone
+    brain/_meta/subjects.yaml:
+      subjects:
+        - {id: ada, kind: people, title: Ada Okafor, state: active, workspace: ada}
+        - {id: ben, kind: people, title: Ben Liu, state: active, workspace: ben}
+        - {id: tide, kind: clients, title: Tide, state: active, owner: Ada Okafor, home: lantern}
+env: {SPACE_NOW: "2026-10-05T09:00:00Z"}
+expect:
+  exit: 0
+  writes_only_under: [_outbound/signals/]
+  never_contains:
+    "_outbound/signals/**": ["fact:", "terms", "wording"]
+  must_exist: ["_outbound/signals/*.yaml"]

@@ -39,6 +39,7 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import classify as gating  # noqa: E402
 import pages  # noqa: E402
 import registry  # noqa: E402
 import release  # noqa: E402
@@ -490,6 +491,7 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
             continue
         inferred = not (reg.matched_by(subject, record) - set(registry.INFERRED_KEYS))
         verdict = classify(space, record, subject, home, dest_space_of(home), audience, now, reg, inferred)
+        blocked = gating.gate(space, reg, subject.id, home)   # an unclassified client, project or deal
         if verdict.hold:
             held = item_frontmatter(space, record, subject.id, home, verdict.hold, now, now,
                                     dict(verdict.extra or {}))
@@ -500,6 +502,13 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
                 report.held_in_doubt += 1
             else:
                 report.held_other += 1
+        elif blocked:   # the release rule's class is kept, for when its classification lets it go
+            extra = dict(verdict.extra or {}, **({"kept": True} if blocked[0] == "kept" else {}))
+            held = item_frontmatter(space, record, subject.id, home, verdict.cls, verdict.stage_after, now, extra)
+            report.plan.append(f"hold {blocked[0]} {record['id']} -> {home}: {blocked[1]}")
+            if not dry_run:
+                release.hold(root, held, shallow(body), *blocked)
+            report.held_other += 1
         else:
             item = item_frontmatter(space, record, subject.id, home, verdict.cls,
                                     verdict.stage_after, now, dict(verdict.extra or {}))
@@ -507,6 +516,8 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
             if not dry_run:   # without the router: never in full
                 pages.write(root / release.QUEUE / f"{item['id']}.md", item, shallow(body))
             report.queued += 1
+        if blocked:   # nothing about it moves while the gate holds it, not even a signal
+            continue
         signal = signal_for(subject.id, home, now)   # content-free: that something moved
         report.plan.append(f"signal {record['id']} -> {home}")
         if not dry_run:

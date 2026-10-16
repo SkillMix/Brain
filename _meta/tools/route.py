@@ -38,6 +38,7 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import classify  # noqa: E402
 import pages  # noqa: E402
 from provenance import is_archive_derived  # noqa: E402
 import registry  # noqa: E402
@@ -270,9 +271,14 @@ def pending(root, subject: str | None = None, now: dt.datetime | None = None, li
     history = space.routing_history_since
     oldest = min(since, history) if history else since
     wanted = reg.get(subject) if subject else None
+    waits = None   # a subject backfill waits until the gate lets its subject reach its home
+    if wanted is not None:
+        home = reg.home_of(wanted.id)
+        blocked = classify.gate(space, reg, wanted.id, home) if home and home != space.name else None
+        waits = blocked[1] if blocked else None
     asked = _questioned(root)
     records = []
-    for path, fm, body in _pages(root):
+    for path, fm, body in [] if waits else _pages(root):
         decided = _decided_for(fm)
         if (fm.get("routing") and not decided) or str(fm.get("record")) in asked \
                 or int(fm.get("part") or 1) != 1 or (subject and subject in decided):
@@ -328,9 +334,12 @@ def pending(root, subject: str | None = None, now: dt.datetime | None = None, li
         page = base / "live" / "subjects" / f"{s.id}.md" if base is not None else None
         if page is not None and page.exists():
             status_pages[s.id] = page.read_text(encoding="utf-8")
-    return {"records": records, "spaces": spaces, "subjects": subjects, "status_pages": status_pages,
+    pack = {"records": records, "spaces": spaces, "subjects": subjects, "status_pages": status_pages,
             "lessons": lessons, "briefs": briefs, "archives": space.routing_archives,
             "never_leaves": space.never_leaves}
+    if waits:
+        pack["waits"] = waits
+    return pack
 
 
 def _outside(space, reg, dest_space, subject, rec: dict) -> list:
@@ -455,7 +464,7 @@ def _withdraw(root: Path, record_id: str, reason: str, why: str, space_name: str
     held = []   # what the router's own gates held: withdrawn too, so nobody lets it go by mistake
     for hp in sorted((root / release.HELD).glob("*.md")):
         hfm = pages.read(hp)[0]
-        if hfm.get("routed_by") and hfm.get("reason") in ("left_out", "never_leaves"):
+        if hfm.get("routed_by") and hfm.get("reason") in ("left_out", "never_leaves", "unclassified"):
             held.append(hp)
     for qp in sorted((root / release.QUEUE).glob("*.md")) + held:
         qfm, qbody = pages.read(qp)
@@ -538,11 +547,27 @@ def record(root, decision: dict, now: dt.datetime | None = None, by: str | None 
         if space.review_until and now < space.review_until and not by:
             tier = "window"
             reasons.append(f"review mode until {space.review_until:%Y-%m-%d}")
+        # the whole record leaves: every client it carries an identifier of must let it go
+        also = classify.also_about(reg, sid, _as_record(rec)) if r.get("content") == "whole" else []
+        blocked = classify.gate_all(space, reg, sid, also, dest_name)   # an unclassified client, project or deal
+        if also:
+            extra["also_about"] = also
+        if not blocked and classify.first_release(root, space, reg, sid):
+            tier = "window"
+            extra["first_release"] = sid
+            reasons.append(f"the first release since {sid} was classified company")
         stage_after = now if tier == "at_once" else now + space.window()
         extra.update({"why": "; ".join(x for x in reasons if x), "informs": list(r.get("informs") or []),
                       "confidence": decision["confidence"], "routed_by": by or "router",
                       "content": r.get("content")})
         item = sweep.item_frontmatter(space, _as_record(shown), sid, dest_name, tier, stage_after, now, extra)
+        if blocked:   # held until its classification lets it go; nothing moves, not even a signal
+            release.hold(root, dict(item, kept=True) if blocked[0] == "kept" else item, content, *blocked)
+            out["held"].append(item["id"])
+            row["routes"].append({"space": dest_name, "subject": sid, "tier": tier, "outcome": "held",
+                                  "reason": blocked[0], "item": item["id"]})
+            items.append(item["id"])
+            continue
         pages.write(root / release.QUEUE / f"{item['id']}.md", item, content)
         out["queued"].append(item["id"])
         row["routes"].append({"space": dest_name, "subject": sid, "tier": tier, "outcome": "queued",
@@ -618,6 +643,33 @@ def retract(root, record_id, by: str, space: str | None = None, now: dt.datetime
     return out
 
 
+def reopen(root, record_id, subject: str, space: str, by: str, now: dt.datetime | None = None) -> dict:
+    """Offer a record to the router again for one subject whose classification named another
+    home: the router's projections for `space` that still wait are withdrawn, and the page waits
+    for a decision on that subject; what it decided for its other subjects stands."""
+    root = Path(root)
+    sp = spaceyaml.load(root)
+    now = now or sp.now()
+    rid = str(record_id)
+    withdrawn = _withdraw(root, rid, "withdrawn", f"withdrawn by {by}: {subject} has another home now", space,
+                          router_only=True)
+    page = find_page(root, rid)
+    if page is not None:
+        fm, body = pages.read(page)
+        routing = fm.get("routing") if isinstance(fm.get("routing"), dict) else {}
+        if routing and routing.get("decision") != "retracted":
+            others = sorted(({str(r).split("/", 1)[-1] for r in routing.get("routes") or []}
+                             | set(_decided_for(fm))) - {str(subject)})
+            if others:
+                fm = dict(fm, routing=dict(routing, scope=others))
+            else:
+                fm = {k: v for k, v in fm.items() if k != "routing"}
+            pages.write(page, fm, body)
+    _log(root, {"at": pages.iso(now), "record": rid, "decision": "reopen", "by": by, "space": space,
+                "subject": str(subject), "withdrawn": withdrawn})
+    return {"withdrawn": withdrawn}
+
+
 def _decisions_in(path: Path) -> list:
     text = path.read_text(encoding="utf-8")
     data = json.loads(text) if path.suffix == ".json" else yaml.safe_load(text)
@@ -653,6 +705,8 @@ def main(argv=None) -> int:
         out = Path(args.out) if args.out else root / PACK
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(pack, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+        if pack.get("waits"):
+            print(f"no backfill yet: {pack['waits']}")
         print(f"{len(pack['records'])} record(s) wait for a decision; context in {out}")
         return 0
     if args.cmd == "record":

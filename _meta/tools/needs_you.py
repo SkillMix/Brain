@@ -178,10 +178,40 @@ def _checks(root: Path) -> list:
     return out
 
 
+def _subject_title(root: Path, space: spaceyaml.Space, sid: str) -> str:
+    try:
+        import registry
+        subject = registry.Registry(root, space).get(sid)
+    except Exception:
+        subject = None
+    return (subject.title if subject is not None else "") or sid
+
+
+def _first_releases(root: Path, space: spaceyaml.Space, groups: dict) -> list:
+    """One line per newly classified company subject for everything of its first release."""
+    out = []
+    for sid, group in sorted(groups.items()):
+        dests = sorted({_text(fm.get("destination"), "its destination") for fm in group})
+        whens = [w for w in (_when(fm.get("stage_after")) for fm in group) if w is not None]
+        earliest = min(whens) if whens else None
+        n = len(group)
+        out.append(Item(id=f"first-{sid}", kind="leaving",
+                        text=f"{_subject_title(root, space, sid)}: the first {n} item{'s' if n != 1 else ''} "
+                             f"since it was classified company leave for {', '.join(dests)} at "
+                             f"{pages.iso(earliest) if earliest else 'the end of the window'}",
+                        recommendation="yes", default="leaves", deadline=earliest,
+                        payload=QUEUE.as_posix() + "/", fingerprint=""))
+    return out
+
+
 def _queue(root: Path, space: spaceyaml.Space, now: dt.datetime) -> list:
     out = []
+    firsts: dict = {}
     horizon = now + space.window()
     for rel, fm, body in pages_in(root, QUEUE):
+        if fm.get("first_release") and not fm.get("high_stakes"):
+            firsts.setdefault(str(fm["first_release"]), []).append(fm)
+            continue
         title = _text(fm.get("title"), Path(rel).stem)
         destination = _text(fm.get("destination"), "its destination")
         stage_after = _when(fm.get("stage_after"))
@@ -198,7 +228,7 @@ def _queue(root: Path, space: spaceyaml.Space, now: dt.datetime) -> list:
                                  + (f" ({reason})" if reason else ""),
                             recommendation=_text(fm.get("recommendation"), "yes"), default="leaves",
                             deadline=stage_after, **common))
-    return out
+    return out + _first_releases(root, space, firsts)
 
 
 def _outbox(root: Path, space: spaceyaml.Space, now: dt.datetime) -> list:
@@ -270,9 +300,17 @@ def doubt_pages(root) -> list:
             if fm.get("reason") == "doubt" and not fm.get("kept")]
 
 
+def unclassified_pages(root) -> list:
+    """The pages held at home until their client, project or deal is classified. Counted on the
+    doubt line, never offered there: only the subject's owner classifies, and the gate lets them go."""
+    return [(rel, fm, body) for rel, fm, body in pages_in(Path(root), HELD)
+            if fm.get("reason") == "unclassified" and not fm.get("kept")]
+
+
 def doubt_count(root) -> int:
-    """How many pages are held at home in doubt (one Needs-you line counts them all)."""
-    return len(doubt_pages(root))
+    """How many pages are held at home in doubt or waiting for a classification (one Needs-you
+    line counts them all)."""
+    return len(doubt_pages(root)) + len(unclassified_pages(root))
 
 
 def doubt_items(root) -> list:
@@ -289,10 +327,11 @@ def doubt_items(root) -> list:
 
 
 def _doubt(root: Path) -> list:
-    count = doubt_count(root)
-    if not count:
+    count, waiting = len(doubt_pages(root)), len(unclassified_pages(root))
+    if not count and not waiting:
         return []
-    return [Item(id="doubt", kind="doubt", text=f"held in doubt: {count}",
+    text = f"held in doubt: {count}" + (f", {waiting} wait for a classification" if waiting else "")
+    return [Item(id="doubt", kind="doubt", text=text,
                  recommendation="leave them home", default="stay home", deadline=None,
                  payload=HELD.as_posix() + "/", fingerprint="")]
 

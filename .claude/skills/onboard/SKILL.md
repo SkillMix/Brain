@@ -107,7 +107,12 @@ email), creates the repository from the template (the person's own account when 
 organization does not allow it), clones it under `~/spaces/`, and runs onboard there:
 `space.yaml` filled for the profile; the brain and every crew project mounted read-only; for a
 company the charter drafted, the domains registered as umbrella subjects and the owner's
-workspace created; `_meta/access/resources.yaml` for the chosen feeds; the personal instruction
+workspace created; `_meta/access/resources.yaml` for the chosen feeds; for a company the one gate setting
+`classification_default` in the brain's `space.yaml` (open: a new client's work may be shared
+unless its owner gives a reason to keep it apart; closed: kept apart until its owner says it
+may be shared; open unless the person says closed), and every project given its own space
+classified walled for its crew; for a person joining later a note that tells the brain this is
+their workspace, so their first sweep checks back; the personal instruction
 at user level and the workspace as an allowed directory for the harness; the sync task every
 15 minutes; auto-merge and the required check on the host; `AGENTS.md`, `ids.yaml`, the first
 sweep, the first status and the tests; every step recorded as `{step, done, check, result}` in

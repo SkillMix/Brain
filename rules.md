@@ -71,7 +71,11 @@ Doubt about the class means the window; doubt about privacy means the item stays
 is shown as a count. External disclosure is not internal permission. A subject's `home` is
 the narrowest shared space whose audience covers everyone on the subject; no home means the
 conclusion stays where it was made. A release to a project carries only project facts:
-a line with a left-out term or another client's name stays home.
+a line with a left-out term or another client's name stays home. A client, project or deal,
+or anything part of one, sends nothing out of the space where its material came in until its
+owner's workspace has classified it `company`, `walled` or `owner` after asking the other
+workspaces for obligations; a new obligation re-opens a `company` classification, and the first
+release after one waits one window and one morning view.
 
 ## 7. Budget
 

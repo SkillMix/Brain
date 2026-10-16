@@ -10,11 +10,17 @@ import spaceyaml
 import sweep
 from conftest import NOW, make_space, mount_brain
 
+def walled(home, crew):
+    """A settled classification: the gate lets the project reach its own space."""
+    return {"class": "walled", "state": "settled", "home": home, "crew": crew, "reason": "its own space",
+            "decided_by": "Ada Okafor", "at": "2026-10-01T09:00:00Z"}
+
+
 BRAIN_SUBJECTS = [
     {"id": "harbor", "kind": "projects", "title": "Harbor", "home": "harbor",
-     "match": {"label": "Harbor"}},
+     "match": {"label": "Harbor"}, "classification": walled("harbor", ["ada", "ben"])},
     {"id": "beacon", "kind": "projects", "title": "Beacon", "home": "beacon",
-     "match": {"label": "Beacon"}},
+     "match": {"label": "Beacon"}, "classification": walled("beacon", ["ada"])},
     {"id": "pricing", "kind": "topics", "title": "Pricing", "match": {"label": "Pricing"}},
 ]
 

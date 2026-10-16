@@ -389,9 +389,13 @@ def test_item_follows_its_subject_to_a_new_home(tmp_path):
     reg_path = brain / "_meta" / "subjects.yaml"
     data = yaml.safe_load(reg_path.read_text(encoding="utf-8"))
     for subject in data["subjects"]:
-        if subject["id"] == "harbor":
+        if subject["id"] == "harbor":   # the home moves, and its classification with it
             subject["home"] = "brain"
+            subject["classification"] = dict(subject["classification"], home="brain", **{"class": "company"})
     reg_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    released = ada / "_meta" / "state" / "released.jsonl"   # released once since: no first-release wait
+    released.write_text(json.dumps({"id": "p-1", "at": pages.iso(NOW), "subject": "harbor"}) + "\n",
+                        encoding="utf-8")
     report = release.ship(ada, now=NOW, offline_roots={"brain": brain})
     # the item and the signal its record raised both follow the subject
     assert report.rerouted == 2 and report.shipped == 1 and report.unreachable == 0
@@ -495,8 +499,9 @@ def test_signal_follows_its_subject_to_a_new_home(tmp_path):
     reg_path = brain / "_meta" / "subjects.yaml"
     data = yaml.safe_load(reg_path.read_text(encoding="utf-8"))
     for subject in data["subjects"]:
-        if subject["id"] == "harbor":
+        if subject["id"] == "harbor":   # the home moves, and its classification with it
             subject["home"] = "brain"
+            subject["classification"] = dict(subject["classification"], home="brain", **{"class": "company"})
     reg_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
     report = release.ship(ada, now=NOW, offline_roots={"brain": brain})
     assert report.rerouted == 1 and report.signals == 1

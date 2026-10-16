@@ -1,0 +1,49 @@
+# The pending pack: what this workspace decides, checks or asks about. It writes the private
+# pack, the one question for a client nobody owns and nothing else: no registry, no queue.
+name: classify pending writes the private pack and its questions, nothing that leaves
+command: [python, _meta/tools/classify.py, "{root}", pending]
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1440
+      name: ada
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience: [Ada Okafor]
+      parent: brain
+      sources: [{name: mail, adapter: files, audience: owner}]
+    work/.gitkeep: ""
+    journal/.gitkeep: ""
+    outbox/.gitkeep: ""
+    _meta/subjects.yaml:
+      subjects:
+        - {id: ada, kind: people, title: Ada Okafor, state: active, workspace: ada}
+        - {id: tide, kind: clients, title: Tide, state: active, owner: Ada Okafor, home: lantern}
+        - {id: dock, kind: clients, title: Dock, state: active, home: lantern}
+    _outbound/held/p-0000c801.md: |
+      ---
+      id: p-0000c801
+      type: source
+      title: A mail about Dock
+      status: draft
+      generated: {by: sweep, at: '2026-10-04T09:00:00Z'}
+      class: at_once
+      destination: lantern
+      subject: dock
+      reason: unclassified
+      why: dock waits for its owner's agent to classify it
+      evidence: [m-0001]
+      ---
+      The mail.
+env: {SPACE_NOW: "2026-10-05T09:00:00Z"}
+expect:
+  exit: 0
+  writes_only_under: [_outbound/signals/, _inbound/needs-you/]
+  never_contains:
+    "_inbound/needs-you/**": ["status: stable"]
+  must_exist: ["_meta/state/private/classify-pending.json", "_inbound/needs-you/classify.yaml",
+               "_outbound/held/p-0000c801.md"]
+  must_not_exist: ["_outbound/queue/*.md"]

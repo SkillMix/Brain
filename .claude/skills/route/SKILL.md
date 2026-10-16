@@ -23,6 +23,11 @@ can be retracted.
 
 ## Run
 
+0. **Classify first.** `python _meta/tools/classify.py <root> pending`, then
+   `.claude/skills/classify/SKILL.md`. A client, project or deal its owner's workspace has not
+   classified sends nothing: the tool holds its projections at home and a subject backfill
+   (`pending --subject`) waits with the reason in `waits`. Route its records as you judge them;
+   the gate lets them go once it is classified.
 1. **Pending.** `python _meta/tools/route.py <root> pending [--subject <id>]`. Read
    `_meta/state/private/route-pending.json`: `records` (each with its full `text`, people,
    thread, `episode`, `history`, `same_meeting` and the subjects its identifiers `suggested`),
@@ -108,7 +113,8 @@ routes:
   notes and chats count like any record. A record that matters only to the owner stays private.
 - **What travels.** `whole` when the record is about one subject and everyone on it is inside the
   destination's audience (its crew, and the client's own people for a client project); the tool
-  refuses `whole` otherwise. Else `parts`: the relevant passages and transcript segments verbatim,
+  refuses `whole` otherwise, and holds a `whole` while any other client, project or deal whose
+  identifiers the record carries is unclassified or has another home. Else `parts`: the relevant passages and transcript segments verbatim,
   whole lines, never a summary in their place. The destination's `left_out` and the space's
   `never_leaves` are categories, not words: read the whole record and leave out every passage
   that is about one of them (a price stated in a sentence, a person's contract, another client's
@@ -137,6 +143,12 @@ routes:
   line leaves the page. When the record settles an item, set `closes:` to that id on what settled
   it (a decision, or the next open item); the item moves to recently closed. An id with a
   `.<n>` names one item of several from one record; a bare id names all of them.
+- **Obligations.** A record that shows an obligation on a client, project or deal (a
+  confidentiality agreement, named people only, a data processing agreement, any other limit on
+  who may see the work) is reported whatever you route:
+  `python _meta/tools/classify.py <root> obligation <subject> --kind <kind> [--date YYYY-MM-DD]
+  --evidence <record id>`. The kind and the date only, never its wording; it re-opens a company
+  classification until its owner settles it again.
 - **History** (`history: true`: before `routing.since`). Background only: route it to the
   subject's home for its timeline, or keep it private. Never an `open_item` (the tool refuses
   one); `closes`, decisions (dated, historical) and people are fine. Low confidence on history
@@ -151,3 +163,4 @@ routes:
   librarian) or keep the record private.
 - Never ask the owner what a search could answer; never read the archive while `archives` is off.
 - Never let the brief travel: it stays in `_meta/state/private/briefs/`.
+- Never route a held subject by hand or move a held projection: the classification lets it go.

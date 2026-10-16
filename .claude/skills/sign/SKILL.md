@@ -20,7 +20,11 @@ Only a person signs. The read-back shows the exact text that will land and its f
    more"; `--json` for the full set). The line "held in doubt: N" opens on demand:
    `python _meta/tools/needs_you.py <root> --doubt` lists each held page with its reason and
    recommendation; its id takes the same verbs (yes releases it, no keeps it home for good,
-   `edit <subject>` names the one subject it is about, always adds the standing choice).
+   `edit <subject>` names the one subject it is about, always adds the standing choice). The
+   line's ", M wait for a classification" part is counted, never offered: those leave on their
+   own once their owner's workspace classifies the client, project or deal. A line
+   "<subject>: the first N items since it was classified company leave for ..." stands for every
+   one of them: its verdict applies to each.
 2. Brief and take verdicts (contract below). Verbs: `yes`, `edit <note>`, `no`, `later`,
    `always`; in bulk ("1 to 4 yes, 5 edit: the date is the ninth, 6 later").
 3. Read back: `python _meta/tools/sign.py <root> read-back <ids>` prints each item's exact

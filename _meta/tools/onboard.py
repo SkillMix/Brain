@@ -414,10 +414,19 @@ def people_of(answers) -> list:
     return [people[s] for s in order]
 
 
-def fill_registry(report, root, answers, top_owner, brain_name, now) -> None:
+def classification_default(answers) -> str:
+    """The company's one setting for the classification gate: `open` unless it says closed."""
+    value = answers.get("classification_default")
+    value = value[0] if isinstance(value, list) and value else value
+    return "closed" if str(value or "").strip().lower() == "closed" else "open"
+
+
+def fill_registry(report, root, answers, top_owner, brain_name, now, workspaces=None) -> None:
+    """`workspaces` maps a person's slug to the space name of the workspace made for them."""
     space = spaceyaml.load(root)
     reg = registry.Registry(root, space)
     names = {p["slug"]: p["name"] for p in people_of(answers)}
+    workspaces = dict(workspaces or {})
     added = []
 
     def upsert(data):
@@ -430,6 +439,9 @@ def fill_registry(report, root, answers, top_owner, brain_name, now) -> None:
         for key in ("owner", "home", "part_of"):
             if data.get(key) and not getattr(existing, key):
                 setattr(existing, key, data[key])
+        for key in ("workspace", "classification"):   # set once; a later decision is never undone
+            if data.get(key) and not existing.extra.get(key):
+                existing.extra[key] = data[key]
         if data.get("match") and not existing.match:
             existing.match = dict(data["match"])
 
@@ -451,6 +463,13 @@ def fill_registry(report, root, answers, top_owner, brain_name, now) -> None:
             data["match"] = dict(p["match"])
         if p.get("aliases"):
             data["aliases"] = list(p["aliases"])
+        if own_space:   # a project given its own space is walled: its crew, its home
+            crew = [slugify(c) for c in p.get("crew") or []] or [people_of(answers)[0]["slug"]
+                                                                if people_of(answers) else "owner"]
+            data["classification"] = {"class": "walled", "state": "settled", "home": data["home"], "crew": crew,
+                                      "reason": "given its own space at onboarding", "evidence": [],
+                                      "decided_by": top_owner, "at": pages.iso(now),
+                                      "checked_with": [], "not_yet_checked": []}
         upsert(data)
     # Any other subjects, in the company's own kinds (deals, topics, whatever it declared):
     # {id, kind, title, part_of, owner, home, match, aliases, important}.
@@ -468,6 +487,8 @@ def fill_registry(report, root, answers, top_owner, brain_name, now) -> None:
         data = {"id": person["slug"], "kind": "people", "title": person["name"]}
         if person.get("email"):
             data["email"] = person["email"]
+        if workspaces.get(person["slug"]):
+            data["workspace"] = workspaces[person["slug"]]
         if person.get("domain") and reg.get(slugify(person["domain"])) is not None:
             data["part_of"] = slugify(person["domain"])
         upsert(data)
@@ -1132,7 +1153,12 @@ def run(root, answers, offline=False, org=None, dry_run=False, home=None, user_i
         skipped = list(skipped) + [{"key": "identity", "ask": (
             f"The identity of {company} is drafted (identity/charter.md and the spine): read it and "
             "sign it, or say what to change"), "default": "sign it when it reads right"}]
-        fill_registry(report, root, answers, top["name"], name, now)
+        settings = read_yaml(root / "space.yaml", {}) or {}
+        if settings.get("classification_default") != classification_default(answers):
+            settings["classification_default"] = classification_default(answers)
+            write_yaml(root / "space.yaml", settings)
+        fill_registry(report, root, answers, top["name"], name, now,
+                      workspaces={i["slug"]: i["slug"] for k, i, _, _ in created if k == "personal"})
         report.spaces[name] = root
         report.spaces.setdefault("brain", root)
         workspace = None
@@ -1190,6 +1216,13 @@ def run(root, answers, offline=False, org=None, dry_run=False, home=None, user_i
         setup_space(report, root, "personal", values, feeds)
         if not offline and brain_repo and not (root / "brain" / "space.yaml").exists():
             run_cmd(["git", "submodule", "add", "-b", "main", brain_repo, "brain"], dry_run, cwd=root)
+        try:   # the brain learns this is the person's workspace: late checks find it
+            import classify
+            sent = classify.announce(root, now)
+            report.add("workspace announced", True, "python _meta/tools/classify.py . pending",
+                       "a note names this workspace to the brain" if sent else "the brain knows it, or has no entry yet")
+        except Exception as exc:
+            report.add("workspace announced", False, "python _meta/tools/classify.py . pending", str(exc)[:200])
         for mount in crew_mounts:
             if not offline and mount.get("repo") and not (root / mount["path"] / "space.yaml").exists():
                 run_cmd(["git", "submodule", "add", "-b", "main", mount["repo"], mount["path"]], dry_run, cwd=root)

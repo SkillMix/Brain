@@ -45,6 +45,7 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import classify as gating  # noqa: E402
 import pages  # noqa: E402
 import provenance  # noqa: E402
 import registry as registry_mod  # noqa: E402
@@ -250,6 +251,7 @@ class DistillReport:
     candidates_written: int = 0   # candidates created this run (decisions included)
     refreshed: int = 0            # existing draft candidates rewritten in place
     skipped: int = 0              # subjects or files left alone, with the reason counted
+    unclassified: int = 0         # candidates not written: their home waits for a classification
     subjects: list = field(default_factory=list)
     cost_tokens: int = 0
 
@@ -436,9 +438,17 @@ def run(root, now: dt.datetime | None = None, rebuild: bool = False,
         if sid and sid not in report.subjects:
             report.subjects.append(sid)
 
+    def held(sid: str | None) -> bool:
+        """A candidate addressed to another space while the gate holds its subject."""
+        home = reg.home_of(sid) if sid else None
+        if home and home != space.name and gating.gate(space, reg, sid, home):
+            report.unclassified += 1
+            return True
+        return False
+
     def notes() -> dict:
         out = {"candidates_written": report.candidates_written, "refreshed": report.refreshed,
-               "skipped": report.skipped, "subjects": report.subjects}
+               "skipped": report.skipped, "subjects": report.subjects, "unclassified": report.unclassified}
         if rebuild or subject_id:
             out["rebuild"] = subject_id or True
         return out
@@ -452,7 +462,7 @@ def run(root, now: dt.datetime | None = None, rebuild: bool = False,
         items = everything.get(subject_id, [])
         if subject.kind in MENTION_BLIND_KINDS and not any(ev.subject == subject_id for ev in items):
             report.skipped += 1
-        else:
+        elif not held(subject_id):
             count(write_candidate(root, space, reg, subject, items, index, now, reader,
                                   rebuild=True, ignored=ignored), subject_id)
         report.cost_tokens = reader.cost_tokens
@@ -470,14 +480,17 @@ def run(root, now: dt.datetime | None = None, rebuild: bool = False,
             # finance) are ordinary words. Only attached records count for these kinds.
             report.skipped += 1
             continue
+        if held(sid):
+            continue
         chosen = everything.get(sid, items) if rebuild else items
         count(write_candidate(root, space, reg, subject, chosen, index, now, reader,
                               rebuild=rebuild, ignored=ignored), sid)
     for ev in new:
-        if not ev.landed and decision_title(ev.body):
+        if not ev.landed and decision_title(ev.body) and not held(ev.subject):
             count(write_decision(root, space, reg, ev, now, reader), None)
         for item in ev.fm.get("informs") or []:   # a decision the router saw in the record
-            if isinstance(item, dict) and item.get("kind") == "decision" and str(item.get("text") or "").strip():
+            if isinstance(item, dict) and item.get("kind") == "decision" and str(item.get("text") or "").strip() \
+                    and not held(ev.subject):
                 said = dataclasses.replace(ev, body=f"Decision: {str(item['text']).strip()}\n\n{ev.body}")
                 count(write_decision(root, space, reg, said, now, reader), None)
     write_watermark(root, ROUTINE, {"at": pages.iso(now)})

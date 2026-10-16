@@ -41,6 +41,62 @@ MATCH_KEYS = ("tracker", "repo", "channel", "label", "thread", "calendar", "gith
               "domain", "keywords")
 INFERRED_KEYS = ("domain", "keywords")   # attach by inference: never released at once
 TITLED_KINDS = ("call", "event")
+# The classification gate (docs/superpowers/specs/2026-10-16-classification-gate-design.md):
+# a subject of these kinds, or a part of one, leaves nowhere before its owner's agent classifies it.
+GATED_KINDS = ("clients", "projects", "deals")
+CLASSES = ("company", "walled", "owner")             # widest to narrowest
+CLASS_STATES = ("asking", "settled", "open")         # only settled opens the gate
+OBLIGATION_KINDS = {"confidentiality": "confidentiality agreement", "named_people": "named people only",
+                    "data_processor": "data processing agreement", "other": "other obligation"}
+OBLIGATION_KEYS = ("kind", "date", "seen_in", "at", "evidence")   # kind and date only: never wording
+SLUG = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+
+
+def _is_date(value) -> bool:
+    try:
+        dt.date.fromisoformat(str(value))
+        return True
+    except ValueError:
+        return False
+
+
+def _gate_errors(sid: str, subject: "Subject") -> list:
+    """The classification, obligations and workspace fields of one entry."""
+    errs = []
+    c = subject.extra.get("classification")
+    if c is not None:
+        if not isinstance(c, dict):
+            return [f"registry: `{sid}` classification is not a mapping"]
+        if c.get("class") is not None and c.get("class") not in CLASSES:
+            errs.append(f"registry: `{sid}` classification class `{c.get('class')}` is not one of {', '.join(CLASSES)}")
+        if c.get("state") not in CLASS_STATES:
+            errs.append(f"registry: `{sid}` classification state `{c.get('state')}` is not one of "
+                        f"{', '.join(CLASS_STATES)}")
+        if c.get("state") == "settled" and c.get("class") not in CLASSES:
+            errs.append(f"registry: `{sid}` classification is settled without a class")
+        if c.get("state") == "settled" and c.get("class") == "walled":
+            if not c.get("home"):
+                errs.append(f"registry: `{sid}` walled classification names no home")
+            if not isinstance(c.get("crew"), list) or not c.get("crew"):
+                errs.append(f"registry: `{sid}` walled classification names no crew")
+    obligations = subject.extra.get("obligations")
+    items = obligations if isinstance(obligations, list) else ([] if obligations is None else [obligations])
+    for n, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            errs.append(f"registry: `{sid}` obligation {n} is not a mapping")
+            continue
+        extra_keys = sorted(set(item) - set(OBLIGATION_KEYS))
+        if extra_keys:
+            errs.append(f"registry: `{sid}` obligation {n} carries {', '.join(extra_keys)}: kind and date only")
+        if item.get("kind") not in OBLIGATION_KINDS:
+            errs.append(f"registry: `{sid}` obligation {n} kind `{item.get('kind')}` is not one of "
+                        f"{', '.join(OBLIGATION_KINDS)}")
+        if item.get("date") is not None and not _is_date(item.get("date")):
+            errs.append(f"registry: `{sid}` obligation {n} date `{item.get('date')}` is not YYYY-MM-DD")
+    workspace = subject.extra.get("workspace")
+    if workspace is not None and not SLUG.match(str(workspace)):
+        errs.append(f"registry: `{sid}` workspace `{workspace}` is not a space name")
+    return errs
 
 
 @dataclass
@@ -328,10 +384,30 @@ class Registry:
                 return parent.owner
         return self.space.owner if self.space else None
 
+    def classification(self, sid: str) -> dict | None:
+        """The classification that governs the subject: the narrowest settled one on its chain
+        (the subject, then its umbrellas; the nearest on a tie), with `subject` naming whose it
+        is. None when there is none, or when any on the chain is still asking or re-opened."""
+        subject = self.get(sid)
+        best = None
+        for distance, s in enumerate([] if subject is None else [subject] + self.ancestors_of(sid)):
+            c = s.extra.get("classification")
+            if not isinstance(c, dict):
+                continue
+            if c.get("state") != "settled" or c.get("class") not in CLASSES:
+                return None
+            rank = (CLASSES.index(c["class"]), -distance)
+            if best is None or rank > best[0]:
+                best = (rank, dict(c, subject=s.id))
+        return best[1] if best else None
+
     def home_of(self, sid: str) -> str | None:
         subject = self.get(sid)
         if subject is None:
             return None
+        governing = self.classification(sid)   # a company or walled class names the home of all it covers
+        if governing and governing.get("class") != "owner" and governing.get("home"):
+            return str(governing["home"])
         if subject.home:
             return subject.home
         for parent in self.ancestors_of(sid):
@@ -376,6 +452,7 @@ class Registry:
                     errs.append(f"registry: `{sid}` match key `{key}` is not one of {', '.join(MATCH_KEYS)}")
             if sid in self.ancestor_ids and not self.homed_here(sid):
                 errs.append(f"registry: `{sid}` re-mints an id an ancestor already has")
+            errs += _gate_errors(sid, subject)
             # loops
             seen, current = {sid}, subject
             while current is not None and current.part_of:

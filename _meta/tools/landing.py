@@ -231,8 +231,10 @@ def verified(fm: dict, cache: dict) -> bool | None:
 def land(root, space: spaceyaml.Space | None = None, reg=None, now: dt.datetime | None = None) -> LandingReport:
     root = Path(root)
     space = space or spaceyaml.load(root)
-    reg = reg or registry_mod.Registry(root, space)
     now = now or space.now()
+    import classify   # registry notes first: what lands below reads the registry as they left it
+    if classify.land_notes(root, space, now)["applied"] or reg is None:
+        reg = registry_mod.Registry(root, space)
     report = LandingReport()
     distrusted = pending_releasers(root)
     signer_cache: dict = {}

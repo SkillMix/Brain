@@ -33,7 +33,10 @@ background, never a question per record and never an open item.
    For a pilot of one subject: select by its domains, names and aliases, whole threads.
    Large connector results that land in a file are converted with Python, never retyped.
 5. `python _meta/tools/sweep.py <root>`; read what `sweep.py <root> --attachments` lists, as the
-   sweep skill says, then `sweep.py` again.
+   sweep skill says, then `sweep.py` again. Then the classify skill's checks
+   (`.claude/skills/classify/SKILL.md`): `python _meta/tools/classify.py <root> pending`, answer
+   every check against the records the backfill brought in, and ask or decide what this person
+   holds. A first sweep and backfill is when a late workspace checks back.
 6. **Route**, as `.claude/skills/route/SKILL.md` says: triage, a brief per subject, research,
    placement per episode, the second agent's check, `route.py record`. History records follow the
    history rules there. For a pilot: `route.py pending --subject <id>` for each of its
