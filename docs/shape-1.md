@@ -140,7 +140,10 @@ calendar event); a record matching none or several subjects is never attached, a
 placed by an inferred key alone never travels at once), `aliases` (for a person, also any
 second mail address they use: calls name people by address),
 `important`, `stateful` (status page yes or no), `added`, `added_by`. Hierarchy and
-ownership live here, never in paths.
+ownership live here, never in paths. A subject's home may hold its id too, to add the
+`aliases` and `match` keys its parent keeps out (a restricted client's project names and
+mail domains); a space that mounts the home reads them on top of the parent's entry, and no
+other space may add names to it.
 
 ### Needs-you items
 
