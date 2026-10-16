@@ -1,5 +1,8 @@
 """mint: a desk seed becomes a project space, offline."""
+import subprocess
 from pathlib import Path
+
+import pytest
 
 import mint
 import onboard
@@ -110,6 +113,38 @@ def test_mint_links_channel_and_tracker_by_name_and_proposes_them(tmp_path, monk
     items = yaml.safe_load((ada / "_inbound" / "needs-you" / "mint.yaml").read_text(encoding="utf-8"))["items"]
     ids = {i["id"] for i in items}
     assert {"mint-lighthouse-channel", "mint-lighthouse-tracker"} <= ids
+
+
+def tree(root):
+    return {p.relative_to(root).as_posix(): p.read_bytes() if p.is_file() else None
+            for p in sorted(Path(root).rglob("*"))}
+
+
+@pytest.mark.parametrize("mode", ["seed", "seed-offline", "channel", "vault", "mount"])
+def test_a_dry_run_leaves_the_tree_untouched(tmp_path, monkeypatch, mode):
+    """No new space, receipt, registry line, Needs-you item or crew mount row: only the plan."""
+    calls = []
+
+    def fake(argv, dry_run=False, cwd=None):
+        calls.append(dry_run)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+    monkeypatch.setattr(onboard, "run_cmd", fake)
+    brain, ada = seeded(tmp_path)
+    (ada / "_meta" / "state" / "template-origin.yaml").write_text("repo: lantern/brain-template\n",
+                                                                  encoding="utf-8")
+    other = make_space(tmp_path / "ben", name="ben", owner="Ben Liu")
+    argv = {"seed": ["--seed", "work/projects/lighthouse/kickoff", "--name", "lighthouse",
+                     "--crew", "Ada Okafor", "Ben Liu", "--org", "lantern"],
+            "seed-offline": ["--seed", "work/projects/lighthouse/kickoff", "--name", "lighthouse",
+                             "--crew", "Ada Okafor", "Ben Liu", "--offline"],
+            "channel": ["--channel", str(other), "--org", "lantern"],
+            "vault": ["--vault", "--name", "pay", "--audience", "Ada Okafor", "--org", "lantern"],
+            "mount": ["--mount", "harbor", "https://github.com/lantern/harbor"]}[mode]
+    before = tree(tmp_path)
+    assert mint.main([str(ada), *argv, "--home", str(tmp_path / "spaces"), "--dry-run"]) == 0
+    after = tree(tmp_path)
+    assert [p for p in sorted(set(before) | set(after)) if before.get(p, "gone") != after.get(p, "gone")] == []
+    assert all(calls)
 
 
 def test_a_sub_team_mounts_every_ancestor_flat(tmp_path, monkeypatch):

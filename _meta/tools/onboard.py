@@ -325,14 +325,15 @@ def setup_space(report, dst, profile, values, feeds) -> None:
 
 def create_space(report, root, dirname, repo_name, offline, org, home, tpl, dry_run):
     """The directory of a new space: offline a copy under `home` (default: a sibling), online a
-    clone of a new repository."""
+    clone of a new repository. A dry run writes nothing: it only says where the space would go."""
     if offline:
         dst = (Path(home) if home else Path(root).parent) / dirname
-        made = copy_template(root, dst)
-        report.add(f"create {dirname}", True, f"test -f {dst / 'space.yaml'}", "copied" if made else "exists")
+        made = "would copy" if dry_run else "copied" if copy_template(root, dst) else "exists"
+        report.add(f"create {dirname}", True, f"test -f {dst / 'space.yaml'}", made)
         return dst, None
     base = Path(home) if home else Path.home() / ".spaces"
-    base.mkdir(parents=True, exist_ok=True)
+    if not dry_run:
+        base.mkdir(parents=True, exist_ok=True)
     dst, full = base / repo_name, f"{org}/{repo_name}"
     if (dst / "space.yaml").exists():
         report.add(f"create {dirname}", True, f"gh repo view {full}", f"exists at {dst}")
@@ -361,7 +362,7 @@ def create_space(report, root, dirname, repo_name, offline, org, home, tpl, dry_
     res = run_cmd(["gh", "repo", "create", full, "--template", tpl, "--private", "--clone"], dry_run, cwd=base)
     ok = res.returncode == 0 and (dry_run or (dst / "space.yaml").exists())
     report.add(f"create {dirname}", ok, f"gh repo view {full}",
-               f"cloned into {dst}" if ok else (res.stderr or res.stdout).strip()[:200])
+               f"{'would clone' if dry_run else 'cloned'} into {dst}" if ok else (res.stderr or res.stdout).strip()[:200])
     return (dst if ok else None), full
 
 
