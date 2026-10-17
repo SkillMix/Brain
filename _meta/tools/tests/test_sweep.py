@@ -433,6 +433,12 @@ def _call(rid, subject, participants, text):
                   identifiers={"thread": rid}, text=text, **{"from": "ada@lantern.example"})
 
 
+def test_a_crew_name_written_with_accents_is_still_crew(tmp_path):
+    _, harbor, ada = build(tmp_path)
+    space, dest = spaceyaml.load(ada), spaceyaml.load(harbor)
+    assert sweep.outsiders(space, dest, ["Bén Liú", "ADA OKAFOR", "Eve Stone"]) == ["Eve Stone"]
+
+
 def test_a_client_call_with_the_clients_own_people_names_only_real_outsiders(tmp_path):
     """Participants are addresses: a registered colleague by their email or alias is crew, the
     client's own people (the subject's domain) are its counterpart; anyone else is named."""

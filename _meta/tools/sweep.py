@@ -33,6 +33,7 @@ import datetime as dt
 import json
 import re
 import sys
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -261,7 +262,14 @@ def crew_of(space: spaceyaml.Space, dest_space: spaceyaml.Space | None) -> set |
         crew.add(dest_space.owner)
         if isinstance(dest_space.audience, list):
             crew.update(dest_space.audience)
-    return {str(n).strip().lower() for n in crew if n}
+    return {_name_key(n) for n in crew if n}
+
+
+def _name_key(name) -> str:
+    """A name as the crew check compares it: case and accents ignored (a chat app shows
+    `Zoë`, the audience lists `Zoe`)."""
+    text = unicodedata.normalize("NFKD", str(name).strip())
+    return "".join(c for c in text if not unicodedata.combining(c)).casefold()
 
 
 def _person_name(space: spaceyaml.Space, reg, participant) -> str:
@@ -292,7 +300,7 @@ def outsiders(space: spaceyaml.Space, dest_space, participants: list, reg=None,
         domains = registry.record_domains({"from": p})
         if domains and any(d == o or d.endswith("." + o) for d in domains for o in own):
             continue   # the subject's own people: its counterpart on the call
-        if _person_name(space, reg, p).strip().lower() not in crew:
+        if _name_key(_person_name(space, reg, p)) not in crew:
             out.append(p)
     return out
 
