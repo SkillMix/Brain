@@ -32,6 +32,7 @@ import bisect
 import datetime as dt
 import glob
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -670,6 +671,14 @@ def reopen(root, record_id, subject: str, space: str, by: str, now: dt.datetime 
     return {"withdrawn": withdrawn}
 
 
+def _long(path: Path) -> Path:
+    """The path as Windows opens it past its path limit (decision files are named after record
+    ids, which can be long); unchanged elsewhere."""
+    if sys.platform != "win32" or str(path).startswith("\\\\?\\"):
+        return path
+    return Path("\\\\?\\" + os.path.abspath(path))
+
+
 def _decisions_in(path: Path) -> list:
     text = path.read_text(encoding="utf-8")
     data = json.loads(text) if path.suffix == ".json" else yaml.safe_load(text)
@@ -712,8 +721,14 @@ def main(argv=None) -> int:
     if args.cmd == "record":
         refused = 0
         for name in args.files:
-            source, failed = Path(name), 0
-            for decision in _decisions_in(source):
+            source, failed = _long(Path(name)), 0
+            try:
+                decisions = _decisions_in(source)
+            except OSError as exc:   # one unreadable file is refused; the rest are still recorded
+                refused += 1
+                print(f"refused: {name}: {exc}")
+                continue
+            for decision in decisions:
                 try:
                     result = record(root, decision)
                 except AlreadyRouted as exc:
