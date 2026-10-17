@@ -10,13 +10,15 @@ waits, and checks again. It never types a password.
 
 ## Before anything exists
 
-### The invitation link does not open
+### The link in the sentence does not open
 
-Seen: the template's link is a 404 for the agent.
-Why: the template is private; an agent without `gh`, or not signed in, cannot read it.
+Seen: the repository in the sentence is a 404 for the agent, or start.py cannot read the brain.
+Why: that repository is private (the company's brain, or a company's own private copy of the
+template); an agent without `gh`, or not signed in, cannot read it. The public template opens
+for anyone.
 The agent: installs `gh` from https://cli.github.com and asks the person to sign in once
-(`gh auth login --web`); then it clones. A public start page that tells an agent how to begin on
-a bare machine is the owner's choice to publish (proposed on the brain's Needs-you list).
+(`gh auth login --web`); then it clones. Signed in and still a 404 means no read access yet:
+see "No read access to the template or the brain" below.
 
 ### No Python, a Python older than 3.10, or the Microsoft Store's `python`
 
@@ -80,9 +82,10 @@ sentence is the person asking to join. No invitation at all: the person asks an 
 
 ### No read access to the template or the brain
 
-The person asks the owner; the owner has an `invite-<slug>-access` item on their Needs-you list
-recommending a company-wide team with read access to both. Re-running the invitation removes the
-item once the colleague can read both. Agents never grant access.
+Every space is created private, the brain included; the template is public unless the company uses a private copy of
+it. The person asks the owner; the owner has an `invite-<slug>-access` item on their Needs-you
+list recommending a company-wide team with read access to both. Re-running the invitation removes
+the item once the colleague can read both. Agents never grant access.
 
 ## The machine
 
