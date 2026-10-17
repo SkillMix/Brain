@@ -585,6 +585,20 @@ def test_a_file_with_no_text_settles_its_attachment_without_a_page(tmp_path):
     assert sweep.attachments(ada) == [], "the feed record alone settles the attachment"
 
 
+def test_a_document_is_not_listed_for_its_own_file_and_an_object_entry_lists_by_name(tmp_path):
+    """A document's `attachments` points at the file the record already holds; an entry written
+    as an object (name, type, link) is listed and settled by its name."""
+    _, _, ada = build(tmp_path, routing={})
+    deck = {"name": "deck.pdf", "mimeType": "application/pdf", "url": ""}
+    write_feed(ada, [record(identifiers={"labels": []}, attachments=[deck]),
+                     record("d-0001", kind="document", subject="plan.xlsx", text="The plan.",
+                            identifiers={"labels": []}, attachments=[{"name": "plan.xlsx", "url": ""}])])
+    assert sweep.attachments(ada) == [("m-0001", "", "deck.pdf")]
+    write_feed(ada, [record(identifiers={"labels": []}, attachments=[deck]),
+                     record("m-0001/deck.pdf", kind="document", subject="deck.pdf", text="The deck.")])
+    assert sweep.attachments(ada) == [], "the document record settles the object entry"
+
+
 def test_a_record_with_windows_line_endings_is_not_refreshed_again_and_again(tmp_path):
     _, _, ada = build(tmp_path, routing={})
     write_feed(ada, [record(text="Line one.  \r\nLine two.\r\nLine three.   \n  ", backfill=True)])
