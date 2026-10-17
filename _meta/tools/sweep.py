@@ -167,7 +167,11 @@ def attachments(root) -> list:
     have = {str(r["id"]) for r in feed}
     out = []
     for record in feed:
-        names = [str(a) for a in record.get("attachments") or [] if str(a).strip()]
+        if record.get("kind") == "document":   # its attachment points at the file it already holds
+            continue
+        names = [str(a.get("name") or "") if isinstance(a, dict) else str(a)
+                 for a in record.get("attachments") or []]
+        names = [n for n in names if n.strip()]
         hits = reg.match(record) if names else []
         if len(hits) != 1 and not space.routing_on:   # with routing on, capture reads them all
             continue
