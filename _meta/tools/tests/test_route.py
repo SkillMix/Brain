@@ -335,6 +335,17 @@ def test_the_cli_records_a_file_and_reports_refusals(tmp_path, capsys):
     assert "refused" in capsys.readouterr().out and bad.exists(), "a refused file stays to be fixed"
 
 
+def test_an_unreadable_decision_file_is_refused_alone(tmp_path, capsys):
+    root, _, _ = space_set(tmp_path)
+    captured(root)
+    good = tmp_path / "good.yaml"
+    good.write_text(yaml.safe_dump(decision()), encoding="utf-8")
+    assert route.main([str(root), "record", str(tmp_path / "gone.yaml"), str(good)]) == 1
+    out = capsys.readouterr().out
+    assert "refused" in out and "gone.yaml" in out
+    assert len(queued(root)) == 1 and (tmp_path / "done" / "good.yaml").exists(), "the next file is still recorded"
+
+
 # ----- answers and retraction ---------------------------------------------------------------
 def test_an_owner_yes_applies_the_proposed_route_as_approved(tmp_path):
     root, _, _ = space_set(tmp_path, routing={"review_until": "2026-10-28"})
