@@ -84,8 +84,9 @@ sentence is the person asking to join. No invitation at all: the person asks an 
 
 Every space is created private, the brain included; the template is public unless the company uses a private copy of
 it. The person asks the owner; the owner has an `invite-<slug>-access` item on their Needs-you
-list recommending a company-wide team with read access to both. Re-running the invitation removes
-the item once the colleague can read both. Agents never grant access.
+list recommending a company-wide team with read access to the brain (and to the template when the
+company uses a private copy). Re-running the invitation removes the item once the colleague can
+read them. Agents never grant access.
 
 ## The machine
 

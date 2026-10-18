@@ -166,7 +166,8 @@ beacon         0      0        0    0         -       1/0
 ```
 
 The columns are candidates waiting, pages signed, releases received, items held at home, and
-the answer and leak tests as passed/failed. Then open what it made: `ada/live/needs-you.md` is
+the answer and leak tests as passed/failed. A legend repeats that under the table, and the last
+line says `fixture: passed`, or `fixture: failed` with what failed. Then open what it made: `ada/live/needs-you.md` is
 Ada's list, `ada/live/subjects/harbor.md` her status page for Harbor, and
 `brain/live/projects.md` the company's register.
 
@@ -215,7 +216,7 @@ Then open Claude Code (the desktop app's Code tab, or the CLI) in any folder and
 - **A company with no brain yet:** "Set up our company brain from
   https://github.com/OWNER/REPOSITORY" (this repository's address).
 - **Joining a company:** the sentence from your invitation, for example "Onboard me to Lantern
-  Works: https://github.com/OWNER/REPOSITORY with my invitation lantern-works/brain:ada".
+  Works: https://github.com/OWNER/REPOSITORY with my invitation lantern-works/lantern-works-brain:ada".
 
 That is all. The agent copies this template and runs `_meta/tools/start.py`, which does every
 step itself. It reads who you are from git and your host account, finds your invitation,
@@ -277,7 +278,9 @@ In the brain, run `python _meta/tools/onboard.py . --invite <slug>`, or ask your
 <name>". It writes the colleague's invitation (their name, the brain, the projects they are
 crew on) and puts one item on your Needs-you list with the sentence to send them. They say it
 in Claude Code on their own machine and their agent does the rest in about fifteen minutes,
-mostly their sign-ins. Nothing is done for them.
+mostly their sign-ins. Nothing is done for them. Someone not in the registry yet is added by the
+same command with `--name "<full name>"` (and `--email <address>`). Until they can read the
+brain, a second item asks you to give them access.
 
 ## Add a client
 
