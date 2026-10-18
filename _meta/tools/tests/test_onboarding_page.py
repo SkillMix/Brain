@@ -15,7 +15,7 @@ SIGN_IN = Step("doctor: github sign-in", False, "gh auth status",
 
 
 def states(html: str) -> list:
-    return re.findall(r'<li class="state-([a-z-]+)"><span class="stage-title">([^<]+)', html)
+    return re.findall(r'<li class="stage state-([a-z-]+)">.*?<span class="stage-title">([^<]+)', html, re.S)
 
 
 def company(tmp_path, schedule="30 6 * * *"):
@@ -82,7 +82,7 @@ def test_a_setup_names_the_company_the_person_and_the_briefing_time_from_the_spa
     assert "Check this machine" not in found   # no doctor rows: it did not apply here
     assert found["Your routines"] == "done"   # read from the rendered prompt in the workspace
     assert found["Your sources"] == "needs-you" and found["First morning briefing"] == "next"
-    assert "tomorrow at 07:15" in html and "At 07:15, the daily chain" in html
+    assert "tomorrow at 07:15" in html and '<span class="time">07:15</span></span><span>The daily chain' in html
     assert "<h3>Connect mail</h3>" in html and "<code>/mcp</code>" in html and "Waiting for you" in html
 
 
@@ -106,8 +106,8 @@ def test_after_the_first_sweep_the_page_shows_the_day(tmp_path):
         json.dumps({"routine": "sweep", "at": "2026-10-13T07:00:00Z", "space": "ada", "notes": {}}) + "\n",
         encoding="utf-8")
     html = page.render([Step("create ada", True, "test -f ada/space.yaml", "made")], spaces)
-    assert "<h2>Today</h2>" in html and "<dt>Last sweep</dt><dd>2026-10-13" in html
-    assert "<dt>Needs you</dt><dd>1</dd>" in html
+    assert "<h2>Today</h2>" in html and '<span class="k">Last sweep</span><span class="v">2026-10-13' in html
+    assert '<span class="k">Needs you</span><span class="v">1</span>' in html
     assert "<h2>Today</h2>" not in page.render([], spaces, live=True)   # never while a run is live
 
 
@@ -115,7 +115,8 @@ def test_the_page_is_self_contained_escaped_and_in_the_house_style():
     html = page.render([Step("create <b>", False, "x", "<script>alert(1)</script>")])
     assert "<script" not in html and "&lt;script&gt;" in html and "<b>" not in html
     assert not re.search(r"https?:|<link|@import|src=", html)   # no server, no external anything
-    assert "prefers-color-scheme: dark" in html and ".wordmark::before" in html
+    assert "color-scheme: dark;" in html and ".wordmark::before" in html   # dark by default
+    assert 'type="checkbox" id="light"' in html and ":root:has(#light:checked)" in html   # light, no script
     assert "<svg" in html and "Walled project space" in html   # the README's diagram, inline
     assert "—" not in html and "·" not in html   # house rule: no em dash, no middot
 

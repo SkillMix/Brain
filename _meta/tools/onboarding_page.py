@@ -11,8 +11,9 @@ count and what leaves within the window.
 It lives at `~/.spaces/onboarding.html`, outside every repository, beside the machine's list
 of spaces: it names local paths and the person's sign-ins, it exists before any space does
 (a doctor that stops), and a file that changes on every run would open a sync pull request
-each time. No server, no scripts, no external fonts or images; light and dark. The house
-style, and the brand, are in `_meta/templates/onboarding.css`, the one brand file.
+each time. No server, no scripts, no external fonts or images; dark by default, light by a
+switch in the banner that needs no script. The house style, and the brand, are in
+`_meta/templates/onboarding.css`, the one brand file.
 """
 from __future__ import annotations
 
@@ -274,16 +275,30 @@ def _headline(found: list, live: bool) -> str:
     return "You are set up" if all(s == "done" for s in setup) else "Setup has not finished"
 
 
-def _stage_html(stage: dict) -> str:
+ICONS = {"done": '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg>',
+         "failed": '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg>',
+         "needs-you": "!"}
+
+
+def _stage_html(number: int, stage: dict) -> str:
     rows = "".join(
         f'<tr class="{"done" if r["done"] else "not-done"}"><td class="mark">'
         f'{"ok" if r["done"] else ("you" if r["needs_owner"] else "fail")}</td>'
         f'<td>{_e(r["name"])}</td><td>{_code(r["result"])}</td></tr>' for r in stage["rows"])
     details = (f'<details><summary>{len(stage["rows"])} step{"s" if len(stage["rows"]) != 1 else ""}'
                f'</summary><table>{rows}</table></details>') if stage["rows"] else ""
-    return (f'<li class="state-{stage["state"]}"><span class="stage-title">{_e(stage["title"])}</span>'
-            f'<span class="badge">{LABELS[stage["state"]]}</span>'
-            f'<div class="stage-summary">{_code(stage["summary"])}{details}</div></li>')
+    return (f'<li class="stage state-{stage["state"]}"><span class="dot">{ICONS.get(stage["state"], number)}</span>'
+            f'<div class="stage-body"><div class="stage-head"><span class="stage-title">{_e(stage["title"])}</span>'
+            f'<span class="badge">{LABELS[stage["state"]]}</span></div>'
+            f'<div class="stage-summary">{_code(stage["summary"])}</div>{details}</div></li>')
+
+
+def _bar_html(found: list) -> str:
+    done = sum(1 for s in found if s["state"] == "done")
+    segments = "".join(f'<span class="seg seg-{s["state"]}" title="{_e(s["title"])}: {LABELS[s["state"]]}"></span>'
+                       for s in found)
+    return (f'<div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="{len(found)}" '
+            f'aria-valuenow="{done}" aria-label="{done} of {len(found)} stages done">{segments}</div>')
 
 
 def _yours_html(rows: list, workspace) -> str:
@@ -295,40 +310,46 @@ def _yours_html(rows: list, workspace) -> str:
         cards = '<p class="quiet">Nothing waits for you right now.</p>'
     if workspace:
         ws = Path(workspace).as_posix()
-        cards += ("<p>The defaults you may want to change wait on your Needs-you list: ask your agent "
+        cards += ('<p class="note">The defaults you may want to change wait on your Needs-you list: ask your agent '
                   f"\"what needs me\", or run <code>python {_e(ws)}/_meta/tools/needs_you.py {_e(ws)}</code>.</p>")
     return cards
 
 
+def _chips(schedule: str) -> str:
+    """One chip per time of day: `07:00, 13:00 and 19:00` becomes three."""
+    return "".join(f'<span class="time">{_e(t)}</span>' for t in re.split(r", | and ", _times(schedule)))
+
+
 def _tomorrow_html(workspace) -> str:
-    said = {"daily-chain": "the daily chain rebuilds your status pages and your Needs-you list, and your "
+    said = {"daily-chain": "The daily chain rebuilds your status pages and your Needs-you list, and your "
                            "morning briefing arrives: one mail from your own mailbox to you, counts only, "
                            "the items stay in your workspace.",
-            "sweep-chain": "the sweep reads your sources, keeps each record with its source and decides "
+            "sweep-chain": "The sweep reads your sources, keeps each record with its source and decides "
                            "what may travel."}
-    items = [f"<li>At {_e(_times(schedule))}, {said.get(name, _e(name) + ' runs.')}</li>"
+    items = [f'<li><span class="times-of">{_chips(schedule)}</span><span>{said.get(name, _e(name) + " runs.")}</span></li>'
              for name, schedule in _routines(workspace)]
-    return (f"<ul>{''.join(items)}</ul><p>Times are this machine's own. Nothing is signed or sent "
-            "without you: drafts wait on your Needs-you list, and mail waits in your outbox.</p>")
+    return (f'<ul class="times">{"".join(items)}</ul><p class="note">Times are this machine\'s own. Nothing is '
+            "signed or sent without you: drafts wait on your Needs-you list, and mail waits in your outbox.</p>")
 
 
 def _today_html(day: dict) -> str:
     leaving = "".join(f"<li>{_e(t)}</li>" for t in day["leaving"][:5])
-    return (f'<dl class="today"><dt>Last sweep</dt><dd>{_e(day["last_sweep"])}</dd>'
-            f'<dt>Needs you</dt><dd>{day["needs_you"]}</dd>'
-            f'<dt>Leaves within the window</dt><dd>{len(day["leaving"])}</dd></dl>'
-            + (f"<ul>{leaving}</ul>" if leaving else ""))
+    tiles = (("Last sweep", day["last_sweep"]), ("Needs you", day["needs_you"]),
+             ("Leaves within the window", len(day["leaving"])))
+    return ('<div class="tiles">' + "".join(f'<div class="tile"><span class="k">{_e(k)}</span>'
+                                             f'<span class="v">{_e(v)}</span></div>' for k, v in tiles)
+            + "</div>" + (f'<ul class="leaving">{leaving}</ul>' if leaving else ""))
 
 
-DIAGRAM = """<figure><svg class="how" viewBox="0 0 920 300" role="img" aria-labelledby="how-title">
+DIAGRAM = """<figure class="how-card"><svg class="how" viewBox="0 0 920 300" role="img" aria-labelledby="how-title">
 <title id="how-title">Your sources feed your workspace; facts travel to the company brain and to walled project spaces; nothing is signed or sent without a person's yes.</title>
 <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrow" d="M0 0 L10 5 L0 10 z"/></marker></defs>
-<g class="node"><rect x="330" y="10" width="200" height="60" rx="4"/><text class="t" x="430" y="36" text-anchor="middle">A colleague's workspace</text><text class="s" x="430" y="55" text-anchor="middle">only they read it</text></g>
-<g class="node"><rect x="10" y="120" width="190" height="60" rx="4"/><text class="t" x="105" y="146" text-anchor="middle">Your mail, chat, calls,</text><text class="s" x="105" y="165" text-anchor="middle">calendar and documents</text></g>
-<g class="node"><rect x="330" y="120" width="200" height="60" rx="4"/><text class="t" x="430" y="146" text-anchor="middle">Your workspace</text><text class="s" x="430" y="165" text-anchor="middle">only you read it</text></g>
-<g class="node brain"><rect x="710" y="10" width="200" height="60" rx="14"/><text class="t" x="810" y="36" text-anchor="middle">Company brain</text><text class="s" x="810" y="55" text-anchor="middle">everyone reads it</text></g>
-<g class="node"><rect x="710" y="120" width="200" height="60" rx="4"/><text class="t" x="810" y="146" text-anchor="middle">Walled project space</text><text class="s" x="810" y="165" text-anchor="middle">only its crew reads it</text></g>
-<g class="node"><rect x="710" y="230" width="200" height="60" rx="4"/><text class="t" x="810" y="256" text-anchor="middle">Signed pages,</text><text class="s" x="810" y="275" text-anchor="middle">sent mail</text></g>
+<g class="node"><rect x="330" y="10" width="200" height="60" rx="10"/><text class="t" x="430" y="36" text-anchor="middle">A colleague's workspace</text><text class="s" x="430" y="55" text-anchor="middle">only they read it</text></g>
+<g class="node"><rect x="10" y="120" width="190" height="60" rx="10"/><text class="t" x="105" y="146" text-anchor="middle">Your mail, chat, calls,</text><text class="s" x="105" y="165" text-anchor="middle">calendar and documents</text></g>
+<g class="node"><rect x="330" y="120" width="200" height="60" rx="10"/><text class="t" x="430" y="146" text-anchor="middle">Your workspace</text><text class="s" x="430" y="165" text-anchor="middle">only you read it</text></g>
+<g class="node brain"><rect x="710" y="10" width="200" height="60" rx="30"/><text class="t" x="810" y="36" text-anchor="middle">Company brain</text><text class="s" x="810" y="55" text-anchor="middle">everyone reads it</text></g>
+<g class="node"><rect x="710" y="120" width="200" height="60" rx="10"/><text class="t" x="810" y="146" text-anchor="middle">Walled project space</text><text class="s" x="810" y="165" text-anchor="middle">only its crew reads it</text></g>
+<g class="node"><rect x="710" y="230" width="200" height="60" rx="10"/><text class="t" x="810" y="256" text-anchor="middle">Signed pages,</text><text class="s" x="810" y="275" text-anchor="middle">sent mail</text></g>
 <path class="edge" marker-end="url(#arrow)" d="M200 150 H328"/><text class="lbl" x="265" y="128" text-anchor="middle">records in,</text><text class="lbl" x="265" y="142" text-anchor="middle">each with its source</text>
 <path class="edge" marker-end="url(#arrow)" d="M530 40 H708"/><text class="lbl" x="619" y="31" text-anchor="middle">facts released</text>
 <path class="edge" marker-end="url(#arrow)" d="M530 132 L708 62"/><text class="lbl" x="598" y="82" text-anchor="middle">facts released</text>
@@ -372,18 +393,21 @@ def render(steps, spaces=None, live: bool = False, now=None) -> str:
     title = company[:1].upper() + company[1:]
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="light dark">{refresh}<title>{_e(title)}: onboarding</title>
+<meta name="color-scheme" content="dark light">{refresh}<title>{_e(title)}: onboarding</title>
 <style>{theme}</style></head>
 <body>
+<input type="checkbox" id="light" class="theme-switch" aria-label="Light mode">
 <header class="banner"><div class="inner"><span class="wordmark"></span>
-<span class="label"><strong>Onboarding</strong><span>{_e(title)}</span></span></div></header>
+<span class="label"><strong>Onboarding</strong><span>{_e(title)}</span></span>
+<label for="light" class="theme"></label></div></header>
 <main class="inner">
+<section class="hero"><div>
 <p class="eyebrow">{_e(title) + " | " if who["company"] else ""}company brain</p>
 <h1>{_e(_headline(found, live))}</h1>
-<p class="lede">{lede}</p>
-<div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="{len(found)}" aria-valuenow="{done}"><span style="width:{round(100 * done / len(found))}%"></span></div>
-<p class="count">{done} of {len(found)} stages done</p>
-<ol class="stages">{''.join(_stage_html(s) for s in found)}</ol>
+<p class="lede">{lede}</p></div>
+<p class="score"><span class="big">{done}<small>/{len(found)}</small></span><span>stages done</span></p></section>
+{_bar_html(found)}
+<ol class="stages">{''.join(_stage_html(i, s) for i, s in enumerate(found, 1))}</ol>
 <h2>Only you can do this</h2>
 {_yours_html(rows, workspace)}
 {f'<h2>Today</h2>{_today_html(day)}' if day else ''}
@@ -391,7 +415,7 @@ def render(steps, spaces=None, live: bool = False, now=None) -> str:
 {_tomorrow_html(workspace)}
 <h2>How it works</h2>
 {DIAGRAM}
-<ol class="points">{''.join(f'<li><strong>{_e(t)}:</strong> {_e(b)}</li>' for t, b in POINTS)}</ol>
+<ol class="points">{''.join(f'<li><strong>{_e(t)}</strong><span>{_e(b[:1].upper() + b[1:])}</span></li>' for t, b in POINTS)}</ol>
 </main>
 <footer class="inner"><p>Rendered from the onboarding report by <code>_meta/tools/onboarding_page.py</code>.
 To bring it up to date, ask your agent "is this set up?", or run {check}.</p></footer>
