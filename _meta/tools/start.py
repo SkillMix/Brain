@@ -15,7 +15,9 @@ which does every step itself and asks nothing that has a default:
   own workspace;
 - renders the person's two routines (the sweep chain and the daily chain) for the agent to
   schedule in its harness;
-- prints what only the person can do (sign-ins), each with the check that proves it.
+- prints what only the person can do (sign-ins), each with the check that proves it;
+- keeps the onboarding page `~/.spaces/onboarding.html` (`onboarding_page.py`), rewritten after
+  every step: what is done, what runs now, what is next, what only the person can do.
 
 Defaults the person may want to change (the domains, the never-leaves list, the schedule)
 are taken and return on their Needs-you list. Run again, it changes nothing that is right.
@@ -107,6 +109,7 @@ import yaml  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import doctor  # noqa: E402
 import onboard  # noqa: E402
+import onboarding_page  # noqa: E402
 import spaceyaml  # noqa: E402
 
 HERE = Path(__file__).resolve().parents[2]
@@ -325,7 +328,9 @@ def start(here=HERE, invitation=None, brain=None, company=None, name=None, email
     if lock is None:
         report.add("one start at a time", False, f"test -f {LOCK}", "another start is running on this machine: "
                    "it finishes on its own; say the sentence again when it has")
-        return report
+        return report   # the running start keeps the page
+    if not dry_run:
+        report.progress = onboarding_page.Live()
     try:
         tpl = template or onboard.git_remote(Path(here).resolve())
         target = parse_invitation(invitation)[0] if invitation else brain
@@ -336,6 +341,8 @@ def start(here=HERE, invitation=None, brain=None, company=None, name=None, email
         else:
             report.stopped = True   # nothing was created: the person's rows come first
     finally:
+        if report.progress is not None:
+            report.page = report.progress.finish(report)
         lock.unlink(missing_ok=True)
     return report
 
@@ -381,7 +388,7 @@ def setup(report, here, invitation, brain, company, name, email, feeds, org, hom
             return plan(report, dst, full, tpl, "person")
         answers = onboard.interview(answers, interactive=False, case="person", root=dst)
         sub = onboard.run(dst, answers, offline=offline, org=space_org, dry_run=dry_run, home=home,
-                          user_instructions=user_instructions, brain=answers["brain"])
+                          user_instructions=user_instructions, brain=answers["brain"], progress=report.progress)
         person, workspace = answers["name"], dst
     else:
         space_org, orgs = (org, []) if org else namespace(who, offline, space_home, company)
@@ -406,7 +413,7 @@ def setup(report, here, invitation, brain, company, name, email, feeds, org, hom
             return plan(report, dst, full, tpl, "company")
         answers = onboard.interview(answers, interactive=False, case="company", root=dst)
         sub = onboard.run(dst, answers, offline=offline, org=space_org, dry_run=dry_run, home=home,
-                          user_instructions=user_instructions)
+                          user_instructions=user_instructions, progress=report.progress)
         person = who["name"]
         workspace = next((Path(p) for p in sub.spaces.values()
                           if Path(p) != dst and spaceyaml.load(p).profile == "personal"), None)
@@ -431,7 +438,7 @@ def summary(report: onboard.Report) -> dict:
     return {"workspace": str(getattr(report, "workspace", "") or ""),
             "spaces": {k: str(v) for k, v in report.spaces.items()},
             "routines": getattr(report, "routines", []), "plan": getattr(report, "plan", []),
-            "stopped": bool(getattr(report, "stopped", False)),
+            "stopped": bool(getattr(report, "stopped", False)), "page": str(getattr(report, "page", "") or ""),
             "done": sum(1 for s in report.steps if s.done), "failed": failed, "yours": owner}
 
 
@@ -473,6 +480,8 @@ def main(argv=None) -> int:
             print(f"routine {r['name']} ({r['schedule']}, {r['timezone']} time): {r['prompt_file']}")
         for line in result["plan"]:
             print(f"plan: {line}")
+        if result["page"]:
+            print(f"page: {result['page']}")
         for row in result["yours"]:
             print(f"yours: {row.get('name')}: {row.get('result')} (check: {row.get('check')})")
         if result["failed"] or result["yours"]:

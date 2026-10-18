@@ -167,9 +167,10 @@ beacon         0      0        0    0         -       1/0
 
 The columns are candidates waiting, pages signed, releases received, items held at home, and
 the answer and leak tests as passed/failed. A legend repeats that under the table, and the last
-line says `fixture: passed`, or `fixture: failed` with what failed. Then open what it made: `ada/live/needs-you.md` is
-Ada's list, `ada/live/subjects/harbor.md` her status page for Harbor, and
-`brain/live/projects.md` the company's register.
+line says `fixture: passed`, or `fixture: failed` with what failed. Then open what it made:
+`onboarding.html` is the page Ada sees when setup finishes, `ada/live/needs-you.md` is Ada's
+list, `ada/live/subjects/harbor.md` her status page for Harbor, and `brain/live/projects.md` the
+company's register.
 
 **Proof.** More than 700 unit tests, 61 behaviour scenarios and an offline setup run on Linux,
 macOS and Windows, and every pull request to the template rebuilds the fixture. In an internal pilot, one
@@ -231,6 +232,12 @@ What only you can do: sign in to GitHub once (`gh auth login`) if you never did,
 to your own mail, calendar and chat when you connect them. The tool lists each with the check
 that proves it. Your first morning briefing arrives the next day.
 
+While it runs, `start.py` keeps a page at `~/.spaces/onboarding.html` and your agent opens it:
+how far setup is, what only you can do, and how the system works, as a diagram.
+`onboard.py --check` brings it up to date.
+
+![The onboarding page of the fixture company's owner, Ada, when setup finishes](docs/onboarding-page.png)
+
 ### For agents
 
 When a person asks to be set up, onboarded or to start, and names this repository:
@@ -246,7 +253,8 @@ When a person asks to be set up, onboarded or to start, and names this repositor
    and installs what needs no password. Pass it `--invitation <brain>:<slug>` when the person
    gave an invitation, `--company "<name>"` when they named their company, and `--feeds <list>`
    naming the connectors your session has (mail, calendar, chat, calls, tracker, documents).
-   Ask nothing else: every other answer has a default.
+   Ask nothing else: every other answer has a default. Open the page it prints (`page:`,
+   `~/.spaces/onboarding.html`) in the person's browser; reload it after each step below.
 3. Each `doctor:` row in `yours` is one sentence for the person with the exact command (a
    sign-in, a password, a dialog, an access grant): ask once, wait, then run step 2 again.
 4. Schedule the two routines it rendered under `_meta/state/routines/` in the new workspace
