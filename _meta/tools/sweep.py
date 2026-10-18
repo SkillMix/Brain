@@ -724,7 +724,7 @@ def _security_notice(root: Path, space: spaceyaml.Space, record: dict) -> bool:
               "steps": [f"Open that {source} item and check whether the key is real.",
                         "If it is, change it where it was issued and tell whoever shared it."],
               "reassure": "Nothing was copied: the item was kept without the value.",
-              "key": f"security-{record.get('id')}"}
+              "where": source, "when": when, "key": f"security-{record.get('id')}"}
     try:
         return owner_email.queue(root, notice) is not None
     except (Exception, SystemExit):
