@@ -49,6 +49,10 @@ The first public release.
   holder's person.
 - **The fixture company Lantern Works**, built offline in one command, with answer and leak
   tests.
+- **Updates by release.** Spaces follow tagged releases, not `main`; one question per release
+  on the owner's Needs you, and their yes moves every space they own. A protected update lands
+  without a click only where its protected files are the approved release's, byte for byte;
+  the gate that decides is the base branch's own (`template_updates: main` opts out).
 - **CI that costs little.** One `checks` job per pull request (about one billed minute); the
   tool tests run only when the machinery changed; `platforms` runs the setup on Linux, macOS
   and Windows in the template only.

@@ -33,6 +33,20 @@ Linux, macOS and Windows when the setup tools change.
   tests read them. An example in the docs must not quote a fixture fact that some space may
   not see (see `_meta/tests/fixture/leaks.yaml`).
 
+## Cutting a release
+
+Spaces follow the template's releases, not its `main`. A maintainer (a person, not an
+agent) cuts one:
+
+1. Add a `## [X.Y.Z] - <date>` section at the top of `CHANGELOG.md`. Its first paragraph is
+   the summary each space's owner reads in the question "Update to vX.Y.Z?", so make it one or
+   two plain sentences.
+2. Once that is merged, tag the merge commit on `main`: `git tag -a vX.Y.Z -m vX.Y.Z` and
+   `git push origin vX.Y.Z`. A GitHub release with the same notes is optional.
+
+Never move a published tag. A space's approval names the tag's commit, so a moved tag stops
+every update that was approved for it until its owner answers again.
+
 ## Names and secrets
 
 - No real company, client, product or person names in any template file, commit message or

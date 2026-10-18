@@ -1,4 +1,5 @@
 """gate.py: protected paths and signatures at the landing gate."""
+import os
 import subprocess
 from pathlib import Path
 
@@ -112,3 +113,245 @@ def test_cli_prints_class_and_exits_on_signature_errors_only(tmp_path, monkeypat
     assert gate.main([base, str(root)]) == 1
     out = capsys.readouterr().out
     assert "GATE: protected" in out and "fingerprint" in out
+
+
+# ----- an approved template release lands on green; anything else waits ---------------------
+import yaml  # noqa: E402
+
+PROV = "_meta/state/template-version.yaml"
+RELEASE_FILES = {".claude/skills/sweep/SKILL.md": "# sweep v2\n", "_meta/tools/sweep.py": "print('v2')\n",
+                 "docs/shape-1.md": "shape\n"}
+
+
+def _write(root: Path, files: dict) -> None:
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8")
+
+
+def _commit(root: Path, message: str) -> str:
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "--allow-empty", "-m", message)
+    return _git(root, "rev-parse", "HEAD").strip()
+
+
+def _provenance(root: Path, **data) -> None:
+    (root / PROV).write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+
+def _edit_provenance(root: Path, **changes) -> None:
+    data = yaml.safe_load((root / PROV).read_text(encoding="utf-8"))
+    for key, value in changes.items():
+        if value is None:
+            data.pop(key, None)
+        else:
+            data[key] = value
+    _provenance(root, **data)
+
+
+def _released(tmp_path, monkeypatch, tag="v0.2.0", base_files=None, template_extra=None, base_release=None):
+    """A template tagged `tag`, a space whose base names it, and a pull request syncing it."""
+    empty = tmp_path / "gitconfig"
+    empty.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    tpl = tmp_path / "tpl"
+    tpl.mkdir()
+    _write(tpl, dict(RELEASE_FILES, **(template_extra or {})))
+    _git(tpl, "init", "-q", "-b", "main")
+    commit = _commit(tpl, "release")
+    _git(tpl, "tag", "-a", tag, "-m", tag)
+    space = make_space(tmp_path / "ada")
+    _provenance(space, repo=str(tpl), commit="0" * 40, files={},
+                **({"release": base_release} if base_release else {}))
+    _write(space, base_files or {})
+    _git(space, "init", "-q", "-b", "main")
+    base = _commit(space, "base")
+    _write(space, RELEASE_FILES)
+    _provenance(space, repo=str(tpl), release=tag, commit=commit,
+                approved={"release": tag, "commit": commit, "by": "Ada Okafor",
+                          "at": "2026-10-18T09:00:00Z", "in": "ada"}, files={})
+    _commit(space, "sync")
+    return tpl, space, base, commit
+
+
+def _gate(space: Path, base: str):
+    return gate.classify(space, gate.changed_files(space, base), base_ref=base)
+
+
+def test_a_release_matched_sync_lands_on_green(tmp_path, monkeypatch):
+    _, space, base, _ = _released(tmp_path, monkeypatch)
+    cls, reasons = _gate(space, base)
+    assert cls == "auto-mergeable", reasons
+    assert any("release v0.2.0 approved by Ada Okafor" in r for r in reasons)
+
+
+def test_a_tampered_protected_file_still_needs_the_click(tmp_path, monkeypatch):
+    _, space, base, _ = _released(tmp_path, monkeypatch)
+    (space / ".claude/skills/sweep/SKILL.md").write_text("# sweep v2!\n", encoding="utf-8")
+    _commit(space, "tamper")
+    cls, reasons = _gate(space, base)
+    assert cls == "protected"
+    assert any(".claude/skills/sweep/SKILL.md: not byte-identical to release v0.2.0" in r for r in reasons)
+
+
+def test_no_approval_or_someone_elses_or_another_commits_needs_the_click(tmp_path, monkeypatch):
+    _, space, base, _ = _released(tmp_path, monkeypatch)
+    approved = yaml.safe_load((space / PROV).read_text(encoding="utf-8"))["approved"]
+    for change in ({"approved": None}, {"approved": dict(approved, by="Bea Lund")},
+                   {"approved": dict(approved, commit="1" * 40)},
+                   {"approved": dict(approved, release="v0.3.0")}):
+        _edit_provenance(space, **change)
+        _commit(space, "edit")
+        assert _gate(space, base)[0] == "protected", change
+        _edit_provenance(space, approved=approved)
+    _commit(space, "restored")
+    assert _gate(space, base)[0] == "auto-mergeable"
+
+
+def test_the_owner_is_matched_ignoring_case_and_spacing(tmp_path, monkeypatch):
+    _, space, base, _ = _released(tmp_path, monkeypatch)
+    approved = yaml.safe_load((space / PROV).read_text(encoding="utf-8"))["approved"]
+    _edit_provenance(space, approved=dict(approved, by="ada  okafor"))
+    _commit(space, "name")
+    assert _gate(space, base)[0] == "auto-mergeable"
+
+
+def test_a_moved_tag_needs_the_click(tmp_path, monkeypatch):
+    tpl, space, base, _ = _released(tmp_path, monkeypatch)
+    (tpl / "_meta/tools/sweep.py").write_text("print('v2, moved')\n", encoding="utf-8")
+    _commit(tpl, "later")
+    _git(tpl, "tag", "-f", "-a", "v0.2.0", "-m", "moved")
+    cls, reasons = _gate(space, base)
+    assert cls == "protected" and any("now points at" in r for r in reasons)
+
+
+def test_a_protected_file_of_its_own_or_a_deletion_needs_the_click(tmp_path, monkeypatch):
+    _, space, base, _ = _released(tmp_path, monkeypatch, base_files={".claude/settings.json": "{}\n"})
+    assert _gate(space, base)[0] == "auto-mergeable"
+    _write(space, {".claude/skills/own/SKILL.md": "# ours\n"})
+    _commit(space, "own skill")
+    cls, reasons = _gate(space, base)
+    assert cls == "protected" and any(r.startswith(".claude/skills/own/SKILL.md: not byte") for r in reasons)
+    (space / ".claude/skills/own/SKILL.md").unlink()
+    (space / ".claude/settings.json").unlink()
+    _commit(space, "drop settings")
+    cls, reasons = _gate(space, base)
+    assert cls == "protected" and any(r.startswith(".claude/settings.json: not byte") for r in reasons)
+
+
+def test_the_rules_come_from_the_base_not_the_pull_request(tmp_path, monkeypatch):
+    _, space, base, _ = _released(tmp_path, monkeypatch)
+    data = yaml.safe_load((space / "space.yaml").read_text(encoding="utf-8"))
+    (space / "space.yaml").write_text(yaml.safe_dump(dict(data, protected=[]), sort_keys=False), encoding="utf-8")
+    _write(space, {".github/template-marker": "", "_meta/tools/gate.py": "print('GATE: auto-mergeable')\n"})
+    _commit(space, "loosen the gate")
+    cls, reasons = _gate(space, base)
+    assert cls == "protected"
+    for rel in ("space.yaml", ".github/template-marker", "_meta/tools/gate.py"):
+        assert any(r.startswith(f"{rel}: ") for r in reasons), rel
+
+
+def test_a_changed_template_name_needs_the_click(tmp_path, monkeypatch):
+    _, space, base, _ = _released(tmp_path, monkeypatch)
+    # alone: nothing else protected changes, and the name is protected by itself
+    _git(space, "checkout", "-q", "-b", "rename", base)
+    _edit_provenance(space, repo="someone/else")
+    _commit(space, "rename")
+    cls, reasons = _gate(space, base)
+    assert cls == "protected" and any("the template's name changed" in r for r in reasons)
+    # with a "template" of an agent's own making, whose release holds the changed file
+    _git(space, "checkout", "-q", "main")
+    fake = tmp_path / "fake"
+    _write(fake, dict(RELEASE_FILES, **{"_meta/tools/sweep.py": "print('mine')\n"}))
+    _git(fake, "init", "-q", "-b", "main")
+    fake_commit = _commit(fake, "fake")
+    _git(fake, "tag", "-a", "v0.2.0", "-m", "v0.2.0")
+    _write(space, {"_meta/tools/sweep.py": "print('mine')\n"})
+    _edit_provenance(space, repo=str(fake), commit=fake_commit,
+                     approved={"release": "v0.2.0", "commit": fake_commit, "by": "Ada Okafor"})
+    _commit(space, "fake release")
+    assert _gate(space, base)[0] == "protected"
+
+
+def test_a_failed_fetch_says_why_and_needs_the_click(tmp_path, monkeypatch):
+    import shutil
+    tpl, space, base, _ = _released(tmp_path, monkeypatch)
+    shutil.rmtree(tpl, onerror=lambda f, p, e: (Path(p).chmod(0o700), f(p)))
+    cls, reasons = _gate(space, base)
+    assert cls == "protected" and any("could not be fetched" in r for r in reasons)
+
+
+def test_only_machinery_the_template_installs_can_match(tmp_path, monkeypatch):
+    # the template's own copies of the rules, the settings and the marker are in its tree too
+    extra = {"rules.md": "# Rules of the template\n", ".github/template-marker": "",
+             "identity/charter.md": "# Charter\n"}
+    _, space, base, _ = _released(tmp_path, monkeypatch, template_extra=extra)
+    for rel, text in extra.items():
+        _write(space, {rel: text})
+        _commit(space, f"take {rel}")
+        cls, reasons = _gate(space, base)
+        assert cls == "protected" and any(r.startswith(f"{rel}: not machinery") for r in reasons), rel
+        (space / rel).unlink()
+        _commit(space, "back")
+
+
+def test_an_older_release_than_the_base_needs_the_click(tmp_path, monkeypatch):
+    _, space, base, _ = _released(tmp_path, monkeypatch, base_release="v0.3.0")
+    cls, reasons = _gate(space, base)
+    assert cls == "protected" and any("older than v0.3.0" in r for r in reasons)
+
+
+def test_a_release_files_id_under_another_mode_needs_the_click(tmp_path, monkeypatch):
+    _, space, base, _ = _released(tmp_path, monkeypatch)
+    rel = ".claude/skills/sweep/SKILL.md"
+    sha = _git(space, "rev-parse", f"HEAD:{rel}").strip()
+    _git(space, "rm", "-q", "--cached", rel)
+    _git(space, "update-index", "--add", "--cacheinfo", f"160000,{sha},{rel}")
+    _git(space, "commit", "-q", "-m", "a submodule entry with the file's id")
+    cls, reasons = _gate(space, base)
+    assert cls == "protected" and any(r.startswith(f"{rel}: not byte-identical") for r in reasons)
+
+
+def test_a_moved_or_renamed_protected_path_needs_the_click(tmp_path, monkeypatch):
+    empty = tmp_path / "gitconfig"
+    empty.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
+    space = make_space(tmp_path / "ada")
+    _write(space, {"_meta/tools/guard.py": "print('guard')\n"})
+    _git(space, "init", "-q", "-b", "main")
+    base = _commit(space, "base")
+    _git(space, "mv", "_meta/tools/guard.py", "docs-guard.py")
+    _commit(space, "move")
+    assert "_meta/tools/guard.py" in gate.changed_files(space, base)
+    assert _gate(space, base)[0] == "protected"
+    # a path that is the protected folder itself (a link in its place), or differs only in case
+    for rel in (".claude", ".Claude/skills/x/SKILL.md", "Space.yaml"):
+        assert gate.classify(space, [rel])[0] == "protected", rel
+
+
+def test_the_template_name_is_never_a_folder_in_the_checkout(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "o" / "n").mkdir(parents=True)
+    assert gate.template_url("o/n") == "https://github.com/o/n"
+    assert gate.template_url(str(tmp_path / "o" / "n")) == str(tmp_path / "o" / "n")
+
+
+def test_the_fetch_drops_the_checkout_token_and_adds_the_template_token():
+    env = gate._fetch_env("https://github.com/o/n", "t0k")
+    assert env["GIT_CONFIG_GLOBAL"] == os.devnull   # the job's url rewrite carries a mount token
+    assert env["GIT_CONFIG_COUNT"] == "2"
+    assert env["GIT_CONFIG_KEY_0"] == env["GIT_CONFIG_KEY_1"] == "http.https://github.com/.extraheader"
+    assert env["GIT_CONFIG_VALUE_0"] == ""
+    assert env["GIT_CONFIG_VALUE_1"].startswith("AUTHORIZATION: basic ") and "t0k" not in env["GIT_CONFIG_VALUE_1"]
+    assert gate._fetch_env("https://github.com/o/n", "")["GIT_CONFIG_COUNT"] == "1"
+    assert "GIT_CONFIG_COUNT" not in gate._fetch_env("/some/path", "t0k")
+    assert gate.template_url("o/n") == "https://github.com/o/n"
+    assert gate.template_url("file:///x/y") == "file:///x/y"
+
+
+def test_checks_runs_the_gate_from_the_base_branch():
+    text = (Path(__file__).resolve().parents[3] / ".github" / "workflows" / "checks.yml").read_text(encoding="utf-8")
+    assert 'git archive "origin/${{ github.base_ref }}" _meta/tools | tar -x -C "$RUNNER_TEMP/base"' in text
+    assert 'python "$RUNNER_TEMP/base/_meta/tools/gate.py" "origin/${{ github.base_ref }}" .' in text
+    assert "secrets.TEMPLATE_READ_TOKEN || secrets.BRAIN_READ_TOKEN || secrets.MOUNT_READ_TOKEN" in text
