@@ -251,17 +251,18 @@ def witness_frontmatter(record: dict, hits: list, mentions: list, audience, now:
 
 
 # ----- the release rule --------------------------------------------------------
-def crew_of(space: spaceyaml.Space, dest_space: spaceyaml.Space | None) -> set | None:
-    """Who may hear a call bound for the destination; None means everyone."""
+def crew_of(space: spaceyaml.Space, dest_space: spaceyaml.Space | None, reg=None) -> set:
+    """Who may hear a call bound for the destination; `everyone` (the brain) is everyone
+    registered in the company: each person in the registry."""
     crew = {space.owner}
     if isinstance(space.audience, list):
         crew.update(space.audience)
     if dest_space is not None:
-        if dest_space.audience == "everyone":
-            return None
         crew.add(dest_space.owner)
         if isinstance(dest_space.audience, list):
             crew.update(dest_space.audience)
+        elif dest_space.audience == "everyone":
+            crew.update(p.title for p in (reg.everywhere() if reg is not None else []) if p.kind == "people")
     return {_name_key(n) for n in crew if n}
 
 
@@ -290,9 +291,7 @@ def _person_name(space: spaceyaml.Space, reg, participant) -> str:
 
 def outsiders(space: spaceyaml.Space, dest_space, participants: list, reg=None,
               subject: registry.Subject | None = None) -> list:
-    crew = crew_of(space, dest_space)
-    if crew is None:
-        return []
+    crew = crew_of(space, dest_space, reg)
     own = subject.match.get("domain") if subject is not None else None
     own = {str(d).strip().lower() for d in (own if isinstance(own, list) else [own]) if d}
     out = []

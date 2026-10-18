@@ -8,6 +8,7 @@ import yaml
 import pages
 import release
 import route
+import spaceyaml
 import sweep
 from conftest import NOW, make_space, mount_brain
 
@@ -765,6 +766,30 @@ def _company_world(tmp_path):
     mount_brain(root, brain)
     captured(root, participants=["ada@lantern.example", "baker@dune.example"])
     return root, brain
+
+
+def test_the_brain_is_found_by_its_name_though_mounted_as_brain(tmp_path):
+    """Routes name the brain by its space name; every workspace mounts it as `brain`. Its settings
+    are found, and `whole` checks the brain's audience (everyone registered in the company)."""
+    brain = make_space(tmp_path / "brain", profile="brain", name="lantern-works", subjects=[
+        {"id": "dune", "kind": "clients", "title": "Dune Bakery", "home": "lantern-works",
+         "match": {"domain": "dune.example"}, "classification": {
+             "class": "company", "state": "settled", "home": "lantern-works", "reason": "ordinary work",
+             "decided_by": "Ada Okafor", "at": "2026-10-12T08:30:00Z"}},
+        {"id": "ben", "kind": "people", "title": "Ben Liu", "email": "ben@lantern.example"}])
+    root = make_space(tmp_path / "ada", name="ada", owner_email="ada@lantern.example", routing={},
+                      sources=[{"name": "calls", "adapter": "files", "audience": "owner"}])
+    mount_brain(root, brain)
+    found = release.destination_space(spaceyaml.load(root), "lantern-works")
+    assert found is not None and (found.name, found.profile) == ("lantern-works", "brain")
+    listed, = route.pending(root, now=NOW)["spaces"]
+    assert (listed["name"], listed["profile"], listed["audience"]) == ("lantern-works", "brain", "everyone")
+    whole = decision(routes=route_with(space="lantern-works", subject="dune", content="whole", parts=[]))
+    captured(root, participants=["ada@lantern.example", "ben@lantern.example", "baker@dune.example"])
+    assert route.record(root, whole, now=NOW)["queued"], "a registered colleague and the client are inside"
+    captured(root, rid="c-2", participants=["ada@lantern.example", "eve@elsewhere.example"])
+    with pytest.raises(route.RouteError, match="outside lantern-works"):
+        route.record(root, dict(whole, record="c-2"), now=NOW)
 
 
 def test_an_unclassified_client_is_refused_as_unclassified_then_routes_once_classified(tmp_path, capsys):
