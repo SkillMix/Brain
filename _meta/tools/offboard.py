@@ -127,16 +127,17 @@ def run(root, online, dry_run=False, forget_records: bool = False) -> onboard.Re
     elif ui.exists():
         text = ui.read_text(encoding="utf-8")
         new = onboard.remove_block(text)
-        if new != text:
+        if new != text and not dry_run:
             onboard.write_text(ui, new)
-        report.add("personal instruction removed", onboard.MARK_OPEN not in new,
+        report.add("personal instruction removed", dry_run or onboard.MARK_OPEN not in new,
                    f"grep -c 'space:personal-instruction' {ui}", str(ui))
     else:
         report.add("personal instruction removed", True, f"test ! -f {ui}", "no user-level file")
     if ui is not None:
         settings = ui.parent / "settings.json"
-        onboard.disallow_directory(settings, root)
-        report.add("workspace no longer allowed", not onboard.directory_allowed(settings, root),
+        if not dry_run:
+            onboard.disallow_directory(settings, root)
+        report.add("workspace no longer allowed", dry_run or not onboard.directory_allowed(settings, root),
                    f"grep -c additionalDirectories {settings}", str(settings))
     repo = state.get("repo") or onboard.git_remote(root)
     if online and repo:
@@ -155,13 +156,14 @@ def run(root, online, dry_run=False, forget_records: bool = False) -> onboard.Re
         if subject.home == space.name and subject.state != "archived":
             subject.state = "archived"
             archived.append(subject.id)
-    if archived:
+    if archived and not dry_run:
         reg.save()
     report.add("registry archived", True, "python _meta/tools/registry.py . check",
                ", ".join(archived) or "no subject has its home here")
-    onboard.write_yaml(root / "_meta" / "state" / "offboard.yaml",
-                       {"at": pages.iso(now), "space": space.name, "counts": counts, "archived": archived,
-                        "steps": [s.row() for s in report.steps]})
+    if not dry_run:
+        onboard.write_yaml(root / "_meta" / "state" / "offboard.yaml",
+                           {"at": pages.iso(now), "space": space.name, "counts": counts, "archived": archived,
+                            "steps": [s.row() for s in report.steps]})
     return report
 
 

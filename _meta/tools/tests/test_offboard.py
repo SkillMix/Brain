@@ -52,6 +52,30 @@ def test_offboard_offline_archives_and_deletes_nothing(tmp_path, monkeypatch):
     assert any(s.name == "still waiting" and s.done for s in report.steps)
 
 
+def test_offboard_dry_run_writes_nothing(tmp_path, monkeypatch):
+    """--dry-run only prints the plan: the instruction, the allowed directory, the registry
+    and the space's state stay as they were."""
+    monkeypatch.setattr(offboard, "run_cmd", lambda *a, **k: __import__("subprocess").CompletedProcess(a, 0, "", ""))
+    ada = make_space(tmp_path / "ada", name="ada", subjects=[
+        {"id": "lighthouse", "kind": "projects", "title": "Lighthouse", "home": "ada"},
+    ])
+    instructions = tmp_path / "home" / ".claude" / "CLAUDE.md"
+    instructions.parent.mkdir(parents=True)
+    onboard.install_instruction(instructions, ada)
+    settings = instructions.parent / "settings.json"
+    onboard.allow_directory(settings, ada)
+    onboard.write_yaml(ada / "_meta" / "state" / "onboard.yaml",
+                       {"case": "person", "offline": True, "workspace": str(ada),
+                        "user_instructions": str(instructions)})
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    report = offboard.run(ada, online=True, dry_run=True)
+    assert not report.failed(), [s.row() for s in report.failed()]
+    after = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    assert after == before
+    assert onboard.instruction_present(instructions, ada)
+    assert onboard.directory_allowed(settings, ada)
+
+
 def test_offboard_keeps_another_spaces_instruction_block(tmp_path, monkeypatch):
     """Offboarding a project space on the owner's machine must not wipe the owner's own
     instruction block from the shared user-level file."""
