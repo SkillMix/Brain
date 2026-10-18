@@ -104,7 +104,9 @@ and names the fix for the rest. Show only the failing rows.
 `start.py` reads who the person is (git, then the host account; a no-reply address is never
 the briefing address), finds the invitation (by slug, else by the person's name, login or
 email), creates the repository from the template (the person's own account when the
-organization does not allow it), clones it under `~/spaces/`, and runs onboard there:
+organization does not allow it; a new company's brain is `<company>-brain` in the account
+`--org` names, else the person's own, and a person who belongs to an organisation is asked
+once by the `namespace` row), clones it under `~/spaces/`, and runs onboard there:
 `space.yaml` filled for the profile; the brain and every crew project mounted read-only; for a
 company the charter drafted, the domains registered as umbrella subjects and the owner's
 workspace created; `_meta/access/resources.yaml` for the chosen feeds; for a company the one gate setting

@@ -9,8 +9,10 @@ which does every step itself and asks nothing that has a default:
 - a person: creates their workspace repository from the template, clones it, and runs
   onboard there (the brain and every crew project mounted, the personal instruction at user
   level, the sync task, the host's merge settings, the first status and the tests);
-- a company (no brain given): creates the brain from the template and runs onboard's
-  company case, which also creates the person's own workspace;
+- a company (no brain given): creates the brain `<company>-brain` from the template, in the
+  account `--org` names, else the person's own (one who belongs to an organisation is asked
+  once, nothing created), and runs onboard's company case, which also creates the person's
+  own workspace;
 - renders the person's two routines (the sweep chain and the daily chain) for the agent to
   schedule in its harness;
 - prints what only the person can do (sign-ins), each with the check that proves it.
@@ -208,14 +210,45 @@ def find_invitation(brain: str, slug: str | None, who: dict) -> tuple[dict | Non
     return None, "no invitation found: set up with the brain's defaults"
 
 
-def default_org(who: dict, offline: bool) -> str:
-    """The organization the person administers, when there is exactly one; else their account."""
-    if not offline:
-        orgs = [o for o in _out(["gh", "api", "user/memberships/orgs", "-q",
-                                 '.[] | select(.role == "admin") | .organization.login']).splitlines() if o]
-        if len(orgs) == 1:
-            return orgs[0]
-    return who.get("login") or onboard.slugify(who.get("name") or getpass.getuser())
+def _brain_yaml(text) -> dict:
+    try:
+        data = yaml.safe_load(text or "")
+    except yaml.YAMLError:
+        return {}
+    return data if isinstance(data, dict) and data.get("profile") == "brain" else {}
+
+
+def namespace(who: dict, offline: bool, home=None, company=None) -> tuple:
+    """Where a new company's repositories go without --org: the account of the brain an earlier
+    start cloned under `home` (a re-run adopts it), else the person's own account. A person who
+    belongs to an organisation is asked once, never given the first one: (None, their orgs)."""
+    slug = onboard.slugify(company) if company else None
+    for name in ([f"{slug}-brain"] if slug else []) + ["brain"] if home else []:
+        settings, remote = Path(home) / name / "space.yaml", onboard.git_remote(Path(home) / name)
+        data = _brain_yaml(settings.read_text(encoding="utf-8")) if settings.exists() else {}
+        if data and remote and (not slug or data.get("name") == slug):
+            return remote.split("/")[0], []
+    own = who.get("login") or onboard.slugify(who.get("name") or getpass.getuser())
+    if offline:
+        return own, []
+    orgs = [o for o in _out(["gh", "api", "user/memberships/orgs?state=active", "-q",
+                             ".[].organization.login"]).splitlines() if o]
+    return (None, orgs) if orgs else (own, [])
+
+
+def brain_name(slug: str, org: str, home, offline: bool) -> str:
+    """The brain's repository is `<company>-brain`; a `brain` an earlier start made for this
+    company (cloned under `home`, or on the host) is adopted unchanged by a re-run."""
+    new = f"{slug}-brain"
+    if (Path(home) / new / "space.yaml").exists():
+        return new
+    legacy = Path(home) / "brain" / "space.yaml"
+    if legacy.exists():
+        return "brain" if _brain_yaml(legacy.read_text(encoding="utf-8")).get("name") == slug else new
+    if not offline and org and read_file(f"{org}/{new}", "space.yaml") is None:
+        if _brain_yaml(read_file(f"{org}/brain", "space.yaml")).get("name") == slug:
+            return "brain"
+    return new
 
 
 def org_title(org: str, offline: bool) -> str:
@@ -351,14 +384,23 @@ def setup(report, here, invitation, brain, company, name, email, feeds, org, hom
                           user_instructions=user_instructions, brain=answers["brain"])
         person, workspace = answers["name"], dst
     else:
-        space_org = org or default_org(who, offline)
+        space_org, orgs = (org, []) if org else namespace(who, offline, space_home, company)
+        if space_org is None:
+            report.add("namespace", False, "python _meta/tools/start.py --org <account or organisation>",
+                       f"where should the company's repositories go? Your own account {who['login']} "
+                       f"(recommended) or an organisation you belong to: {', '.join(orgs)}. Say the sentence "
+                       "again with --org <name>; nothing was created", needs_owner=True)
+            report.stopped = True
+            return report
         answers = {"company": company or org_title(space_org, offline), "owner": who["name"],
                    "owner_email": who["email"], "org": space_org}
         if feeds_text:
             answers["feeds"] = feeds_text
-        dst, full = onboard.create_space(report, here, "brain", "brain", offline, space_org, space_home, tpl,
+        repo_name = brain_name(onboard.slugify(answers["company"]), space_org, space_home, offline)
+        dst, full = onboard.create_space(report, here, "brain", repo_name, offline, space_org, space_home, tpl,
                                          dry_run)
         if dst is None:
+            report.stopped = True
             return report
         if dry_run:
             return plan(report, dst, full, tpl, "company")

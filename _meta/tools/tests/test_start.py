@@ -1,6 +1,7 @@
 """Start: one sentence in an agent session sets a person or a company up, offline here."""
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -165,3 +166,71 @@ def test_identity_drops_a_no_reply_address(monkeypatch):
                         if "user.email" in argv else ("Ada Okafor" if "user.name" in argv else ""))
     who = start.identity(offline=True)
     assert who["name"] == "Ada Okafor" and who["email"] == ""
+
+
+def _online_dry_run(tmp_path, monkeypatch, orgs="", login="tess-v"):
+    """start.main online with --dry-run: every outside call recorded, the host faked."""
+    calls = []
+
+    def fake(argv, dry_run=False, cwd=None):
+        calls.append([str(a) for a in argv])
+        return subprocess.CompletedProcess(argv, 1 if argv[:3] == ["gh", "repo", "view"] else 0, "", "")
+
+    def out(argv, cwd=None):
+        if argv[:3] == ["gh", "api", "user"]:
+            return json.dumps({"login": login, "name": "Tess Varga"})
+        return orgs if "user/memberships/orgs" in " ".join(argv) else ""
+    monkeypatch.setattr(onboard, "run_cmd", fake)
+    monkeypatch.setattr(start, "_out", out)
+    monkeypatch.setattr(start.doctor, "diagnose", lambda **kw: [])
+    monkeypatch.setattr(start, "LOCK", tmp_path / "start.lock")
+    monkeypatch.setattr(start, "HERE", template_copy(tmp_path))
+    return calls
+
+
+def test_without_org_a_new_company_goes_to_the_persons_own_account(tmp_path, monkeypatch, capsys):
+    calls = _online_dry_run(tmp_path, monkeypatch)
+    code = start.main(["--company", "Trial Works", "--template", "acme/Brain", "--home", str(tmp_path / "home"),
+                       "--dry-run", "--user-instructions", str(tmp_path / "CLAUDE.md")])
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert ["gh", "repo", "create", "tess-v/trial-works-brain", "--template", "acme/Brain", "--private",
+            "--clone"] in calls
+    assert "tess-v/trial-works-brain" in out
+
+
+def test_a_person_in_an_organisation_is_asked_once_where_the_repositories_go(tmp_path, monkeypatch, capsys):
+    calls = _online_dry_run(tmp_path, monkeypatch, orgs="acme\nother-co")
+    code = start.main(["--company", "Trial Works", "--template", "acme/Brain", "--home", str(tmp_path / "home"),
+                       "--json", "--user-instructions", str(tmp_path / "CLAUDE.md")])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 1 and result["stopped"] is True
+    [row] = result["yours"]
+    assert row["name"] == "namespace" and "tess-v" in row["result"] and "acme, other-co" in row["result"]
+    assert not any(c[:3] == ["gh", "repo", "create"] for c in calls)
+
+
+def test_a_target_that_is_the_template_itself_is_refused(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(onboard, "run_cmd", lambda argv, *a, **k: calls.append(argv))
+    report = onboard.Report("company")
+    dst, full = onboard.create_space(report, tmp_path, "brain", "brain", False, "Acme", tmp_path / "home",
+                                     "https://github.com/acme/Brain.git", False)
+    assert dst is None and calls == []
+    [step] = report.steps
+    assert not step.done and step.needs_owner and "template" in step.result
+
+
+def test_a_rerun_adopts_the_brain_an_earlier_start_named_brain(tmp_path, monkeypatch):
+    monkeypatch.setattr(start, "_out", lambda *a, **k: "")
+    home = tmp_path / "home"
+    assert start.brain_name("trial-works", "tess-v", home, offline=False) == "trial-works-brain"
+    make_space(home / "brain", profile="brain", name="trial-works")
+    assert start.brain_name("trial-works", "tess-v", home, offline=False) == "brain"
+    assert start.brain_name("other-co", "tess-v", home, offline=False) == "other-co-brain"
+    # on the host only (a new machine): adopted when it is this company's brain, never the template
+    shutil.rmtree(home / "brain")
+    space = {"tess-v/brain": "profile: brain\nname: trial-works\n", "acme/brain": "profile: template\n"}
+    monkeypatch.setattr(start, "read_file", lambda repo, rel: space.get(repo))
+    assert start.brain_name("trial-works", "tess-v", home, offline=False) == "brain"
+    assert start.brain_name("trial-works", "acme", home, offline=False) == "trial-works-brain"

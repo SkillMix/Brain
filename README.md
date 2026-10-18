@@ -63,6 +63,11 @@ When a person asks to be set up, onboarded or to start, and names this repositor
 
 Run again, `start.py` changes nothing that is right: it adopts the repositories it made.
 
+Where they go: the person's own GitHub account, the brain named `<company>-brain`. Pass
+`--org <name>` to put them in an organisation instead. A person who belongs to an organisation
+and gave no `--org` gets a `namespace` row in `yours`: ask them once which account, then run
+step 2 again with `--org`.
+
 ### Without an agent
 
 Create a repository from this template, clone it, `pip install pyyaml`, then run
