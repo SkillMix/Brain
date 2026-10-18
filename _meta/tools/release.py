@@ -193,14 +193,19 @@ def _requeue_mode_held(root: Path, space: spaceyaml.Space) -> int:
 
 def destination_space(space: spaceyaml.Space, destination: str,
                       dest_root: Path | None = None) -> spaceyaml.Space | None:
-    """The destination's settings: its given root, else its mount (moved by every sync run),
+    """The destination's settings: its given root, else its mount (moved by every sync run), else
+    the mount whose space is named so (the brain is mounted as `brain` but addressed by its name),
     else its release checkout (refreshed only when something ships)."""
-    for root in (dest_root, space.mount_root(destination), checkout_of(destination)):
+    mounted = [space.mount_root(str(mount.get("name", ""))) for mount in space.mounts]
+    for root, by_name in [(dest_root, False), (space.mount_root(destination), False),
+                          *[(root, True) for root in mounted], (checkout_of(destination), False)]:
         if root is not None and (Path(root) / "space.yaml").exists():
             try:
-                return spaceyaml.load(root)
+                found = spaceyaml.load(root)
             except Exception:
                 continue
+            if not by_name or found.name == destination:
+                return found
     return None
 
 
