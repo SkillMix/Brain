@@ -218,6 +218,8 @@ def _queue(root: Path, space: spaceyaml.Space, now: dt.datetime) -> list:
         common = dict(id=_text(fm.get("id"), Path(rel).stem), depends=_int(fm.get("depends")),
                       payload=rel, fingerprint=pages.fingerprint(body))
         if fm.get("high_stakes"):
+            if fm.get("approved_by"):   # its person said yes: never asked twice (approved_leaving)
+                continue
             out.append(Item(kind="high_stakes", text=f"{title} for {destination}: high stakes",
                             recommendation=_text(fm.get("recommendation"), "yes"),
                             default="waits for the domain owner", deadline=None, **common))
@@ -229,6 +231,27 @@ def _queue(root: Path, space: spaceyaml.Space, now: dt.datetime) -> list:
                             recommendation=_text(fm.get("recommendation"), "yes"), default="leaves",
                             deadline=stage_after, **common))
     return out + _first_releases(root, space, firsts)
+
+
+def approved_leaving(root, space: spaceyaml.Space, now: dt.datetime) -> list:
+    """The high-stakes window items a person already approved that leave within the window.
+    Not on the list (the yes is recorded in log.md and as `approved_by`), but the morning view
+    still lists them, so they leave at `stage_after` like every window item."""
+    out = []
+    horizon = now + space.window()
+    for rel, fm, body in pages_in(Path(root), QUEUE):
+        if not (fm.get("high_stakes") and fm.get("approved_by")) or fm.get("class") != "window":
+            continue
+        stage_after = _when(fm.get("stage_after"))
+        if stage_after is None or stage_after > horizon:
+            continue
+        out.append(Item(id=_text(fm.get("id"), Path(rel).stem), kind="leaving",
+                        text=f"{_text(fm.get('title'), Path(rel).stem)} leaves for "
+                             f"{_text(fm.get('destination'), 'its destination')} at {pages.iso(stage_after)} "
+                             f"(approved by {fm['approved_by']})",
+                        recommendation="yes", default="leaves", deadline=stage_after,
+                        payload=rel, fingerprint=pages.fingerprint(body)))
+    return out
 
 
 def _outbox(root: Path, space: spaceyaml.Space, now: dt.datetime) -> list:
