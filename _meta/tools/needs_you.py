@@ -346,8 +346,9 @@ def _names_person(value, person: str) -> bool:
 
 def routed_items(root: Path, space: spaceyaml.Space, person: str) -> list:
     """Items in a mounted space that name this person: a landing pending for them (`for`), a
-    check routed to them first, a librarian or question item `for` them. Shown with the
-    space's name; answered in that space."""
+    check routed to them first, a librarian or question item `for` them; and in a space they
+    own, the routine items that name nobody (setup questions, the charter to sign, invitations
+    are for its owner). Shown with the space's name; answered in that space."""
     out = []
     for mount in space.mounts:
         name = str(mount.get("name", ""))
@@ -374,8 +375,15 @@ def routed_items(root: Path, space: spaceyaml.Space, person: str) -> list:
                                 recommendation=_text(fm.get("recommendation"), ""),
                                 default=_text(fm.get("default"), "the recommendation stands"),
                                 payload=f"{name}:{rel}", fingerprint=pages.fingerprint(body)))
+        try:
+            owns = _names_person(spaceyaml.load(mroot).owner, person)
+        except Exception:
+            owns = False
+        answered = answered_ids(mroot)
         for item in routine_items(mroot):
-            if _names_person(getattr(item, "for_", None), person):
+            if item.id in answered:
+                continue
+            if _names_person(item.for_, person) or (owns and not item.for_):
                 item.text = f"[{name}] {item.text}"
                 item.payload = f"{name}:{item.payload}"
                 out.append(item)

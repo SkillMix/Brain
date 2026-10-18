@@ -191,3 +191,25 @@ def test_a_leaving_item_shows_why_it_waits(tmp_path):
                   "why": "pilot work; review mode until 2026-10-28"})
     items = [i for i in needs_you.collect(root, now=NOW) if i.kind == "leaving"]
     assert items[0].text.endswith("(pilot work; review mode until 2026-10-28)")
+
+
+def test_a_mounted_space_the_person_owns_brings_its_unaddressed_items_to_their_list(tmp_path):
+    """Setup questions, the charter to sign and invitations name nobody: they are for the space's
+    owner, so they reach the owner's own list, and nobody else's."""
+    from conftest import mount_brain
+    brain = make_space(tmp_path / "brain", profile="brain", name="lantern-works", owner="Ada Okafor")
+    (brain / "_inbound" / "needs-you").mkdir(parents=True, exist_ok=True)
+    (brain / "_inbound" / "needs-you" / "onboard.yaml").write_text(yaml.safe_dump({"items": [
+        {"id": "onboard-identity", "kind": "question", "text": "The identity is drafted: sign it"},
+        {"id": "onboard-domains", "kind": "question", "text": "Which domains?"}]}), encoding="utf-8")
+    (brain / "_inbound" / "needs-you" / "invitations.yaml").write_text(yaml.safe_dump({"items": [
+        {"id": "invite-ben", "kind": "question", "text": "Invite Ben Liu"}]}), encoding="utf-8")
+    (brain / "log.md").write_text("# Log\n\n- 2026-10-12T09:00:00Z yes onboard-domains by Ada Okafor\n",
+                                  encoding="utf-8")
+    ada, ben = make_space(tmp_path / "ada", owner="Ada Okafor"), make_space(tmp_path / "ben", owner="Ben Liu")
+    mount_brain(ada, brain)
+    mount_brain(ben, brain)
+    mine = {i.id: i for i in needs_you.collect(ada, now=NOW, online=False)}
+    assert {"onboard-identity", "invite-ben"} <= set(mine) and "onboard-domains" not in mine   # answered there
+    assert mine["onboard-identity"].text.startswith("[brain]")
+    assert not {"onboard-identity", "invite-ben"} & {i.id for i in needs_you.collect(ben, now=NOW, online=False)}
