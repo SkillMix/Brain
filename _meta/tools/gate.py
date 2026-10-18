@@ -52,10 +52,11 @@ def _posix(rel: str) -> str:
 
 
 def _under(rel: str, prefix: str) -> bool:
-    prefix = _posix(prefix)
-    if prefix.endswith("/"):
-        return rel.startswith(prefix)
-    return rel == prefix or rel.startswith(prefix + "/")
+    """`rel` is the prefix's path or inside it, ignoring case: a checkout on a system that ignores
+    case puts `.Claude/x` into `.claude/`, and a link may stand where the folder was."""
+    rel, prefix = rel.casefold(), _posix(prefix).casefold()
+    bare = prefix.rstrip("/")
+    return rel == bare or rel.startswith(bare + "/")
 
 
 def is_template(root) -> bool:
@@ -88,9 +89,23 @@ def _yaml_at(root, ref: str, rel: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _blob(root, ref: str, rel: str) -> str | None:
-    done = _git(root, "rev-parse", "--verify", "-q", f"{ref}:{rel}")
-    return done.stdout.strip() if done.returncode == 0 else None
+def _file(root, ref: str, rel: str) -> str | None:
+    """The blob id of `rel` at `ref` when it is a plain file there (not a link, not a submodule)."""
+    out = _git(root, "--literal-pathspecs", "ls-tree", "-z", ref, "--", rel).stdout.split("\0")[0]
+    meta, _, name = out.partition("\t")
+    parts = meta.split()
+    if name != rel or len(parts) != 3 or parts[0] not in ("100644", "100755") or parts[1] != "blob":
+        return None
+    return parts[2]
+
+
+def _machinery(rel: str) -> bool:
+    """A path template sync installs (its machinery, minus what it never copies)."""
+    import template_sync   # imports this module; by now it is loaded
+
+    def under(prefix: str) -> bool:
+        return rel == prefix or rel.startswith(prefix + "/")
+    return any(under(p) for p in template_sync.MACHINERY) and not any(under(n) for n in template_sync.NEVER)
 
 
 def _person(name) -> str:
@@ -104,23 +119,33 @@ def rules_at(root, ref: str) -> dict:
     protected = data.get("protected")
     if not isinstance(protected, list):
         protected = spaceyaml.DEFAULTS["protected"]
+    prov = _yaml_at(root, ref, PROVENANCE)
     return {"protected": [str(p) for p in protected],
             "template": _show(root, ref, spaceyaml.TEMPLATE_MARKER.as_posix()) is not None,
             "owner": str(data.get("owner") or ""),
-            "repo": _yaml_at(root, ref, PROVENANCE).get("repo")}
+            "repo": prov.get("repo"), "release": str(prov.get("release") or "")}
 
 
 def template_url(repo) -> str:
+    """Where the template is read: a URL or an absolute local path as given, else `owner/name` on
+    GitHub; never a folder relative to the checkout, which the pull request itself could supply."""
     repo = str(repo)
-    return repo if "://" in repo or Path(repo).exists() else f"https://github.com/{repo}"
+    return repo if "://" in repo or Path(repo).is_absolute() else f"https://github.com/{repo}"
+
+
+def _version(tag: str) -> tuple | None:
+    match = RELEASE_TAG.match(tag)
+    return tuple(int(n) for n in match.groups()) if match else None
 
 
 def _fetch_env(url: str, token: str) -> dict:
-    """Git's environment config for the fetch: the checkout's header goes (its token reads only this
-    repository), the template token comes in when there is one. Never on a command line."""
+    """Git's environment config for the fetch: no global config (the job's url rewrite carries a
+    mount token into every address), no checkout header (its token reads only this repository),
+    and the template token when there is one. Never on a command line."""
     env = {"GIT_TERMINAL_PROMPT": "0"}
     if not url.startswith("https://github.com/"):
         return env
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
     key = "http.https://github.com/.extraheader"
     pairs = [(key, "")]   # an empty value empties the list of extra headers
     if token:
@@ -139,11 +164,13 @@ def fetch_release(root, repo, tag: str) -> str | None:
         return None
     url = template_url(repo)
     depth = ["--depth", "1"] if "://" in url else []
-    env = dict(os.environ, **_fetch_env(url, os.environ.get("TEMPLATE_TOKEN", "")))
-    if _git(root, "fetch", "--quiet", "--no-tags", *depth, url, f"refs/tags/{tag}", env=env).returncode:
-        return None
-    done = _git(root, "rev-parse", "--verify", "-q", "FETCH_HEAD^{commit}")
-    return done.stdout.strip() or None
+    # without a token first: a public template needs none, and an expired one would refuse it
+    for token in dict.fromkeys(["", os.environ.get("TEMPLATE_TOKEN", "")]):
+        env = dict(os.environ, **_fetch_env(url, token))
+        if _git(root, "fetch", "--quiet", "--no-tags", *depth, url, f"refs/tags/{tag}", env=env).returncode == 0:
+            done = _git(root, "rev-parse", "--verify", "-q", "FETCH_HEAD^{commit}")
+            return done.stdout.strip() or None
+    return None
 
 
 def release_match(root, rules: dict, head: str, paths: list) -> tuple[bool, list[str]]:
@@ -160,6 +187,12 @@ def release_match(root, rules: dict, head: str, paths: list) -> tuple[bool, list
         return False, [f"release {tag} was not approved by this space's owner"]
     if not rules["repo"]:
         return False, ["the base branch names no template"]
+    if not _version(tag) or (_version(rules["release"]) and _version(tag) < _version(rules["release"])):
+        return False, [f"release {tag} is older than {rules['release']}, the base branch's"
+                       if _version(tag) else f"{tag} is not a release name"]
+    foreign = [f"{rel}: not machinery the template installs" for rel in paths if not _machinery(rel)]
+    if foreign:
+        return False, foreign
     fetched = fetch_release(root, rules["repo"], tag)
     if fetched is None:
         return False, [f"release {tag} could not be fetched from the template "
@@ -168,8 +201,8 @@ def release_match(root, rules: dict, head: str, paths: list) -> tuple[bool, list
         return False, [f"release {tag} now points at {fetched[:8]}, not the approved {commit[:8]}"]
     differ = []
     for rel in paths:
-        mine = _blob(root, head, rel)
-        if mine is None or mine != _blob(root, commit, rel):
+        mine = _file(root, head, rel)
+        if mine is None or mine != _file(root, commit, rel):
             differ.append(f"{rel}: not byte-identical to release {tag}")
     if differ:
         return False, differ
@@ -234,9 +267,9 @@ def check_signatures(root, changed_files) -> list[str]:
 
 
 def changed_files(root, base_ref: str) -> list[str]:
-    """Paths changed between the merge base with `base_ref` and HEAD."""
+    """Paths changed between the merge base with `base_ref` and HEAD; a move lists both its paths."""
     for spec in ([f"{base_ref}...HEAD"], [base_ref, "HEAD"]):
-        done = subprocess.run(["git", "diff", "--name-only", "-z", *spec], cwd=str(root),
+        done = subprocess.run(["git", "diff", "--name-only", "--no-renames", "-z", *spec], cwd=str(root),
                               capture_output=True, text=True, encoding="utf-8", errors="replace")
         if done.returncode == 0:
             return [p for p in done.stdout.split("\0") if p]

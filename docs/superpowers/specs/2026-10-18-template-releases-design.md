@@ -36,9 +36,11 @@ release, made once, with the same guarantee.
    - the provenance in the pull request names a release, its commit and an approval of that
      same release and commit by the space's owner (the owner read from the base branch);
    - that tag, fetched from the template named on the base branch, still points at that commit;
-   - every changed path under a `protected:` prefix exists in the release with the same blob,
-     so byte-identical (a deletion, a file the release lacks, `space.yaml`, `rules.md`,
-     `identity/`, any local edit: no match).
+   - the release is not older than the one on the base branch;
+   - every changed path under a `protected:` prefix is machinery template sync installs (never
+     `space.yaml`, `rules.md`, `identity/` or the template marker, though the template's tree
+     has them) and is a plain file with the release's blob, so byte-identical (a deletion, a
+     link or submodule entry, a file the release lacks, any local edit: no match).
 
 ## The trust argument
 
@@ -71,7 +73,13 @@ good as the code that checks it:
 
 So a tampered `gate.py`, a `space.yaml` with an emptier `protected:` list, an added
 `.github/template-marker`, or a provenance file pointing at another template all still wait
-for the click.
+for the click. The gate also reads the template's name only as a URL, an absolute path or
+`owner/name` on GitHub, never as a folder in the checkout, which the pull request could fill.
+
+An independent review found three older holes in the same gate, closed here too: a move listed
+only its new path (the diff now lists both), prefixes matched case-sensitively (a checkout that
+ignores case puts `.Claude/x` into `.claude/`), and a file standing where a protected folder was
+(`.claude` itself) was not protected.
 
 What it cannot close: a pull request that changes a workflow file runs its own copy of that
 workflow, with the write permissions it declares. Nothing inside the repository can stop that

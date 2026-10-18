@@ -1,4 +1,5 @@
 """gate.py: protected paths and signatures at the landing gate."""
+import os
 import subprocess
 from pathlib import Path
 
@@ -148,7 +149,7 @@ def _edit_provenance(root: Path, **changes) -> None:
     _provenance(root, **data)
 
 
-def _released(tmp_path, monkeypatch, tag="v0.2.0", base_files=None):
+def _released(tmp_path, monkeypatch, tag="v0.2.0", base_files=None, template_extra=None, base_release=None):
     """A template tagged `tag`, a space whose base names it, and a pull request syncing it."""
     empty = tmp_path / "gitconfig"
     empty.write_text("", encoding="utf-8")
@@ -156,12 +157,13 @@ def _released(tmp_path, monkeypatch, tag="v0.2.0", base_files=None):
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     tpl = tmp_path / "tpl"
     tpl.mkdir()
-    _write(tpl, RELEASE_FILES)
+    _write(tpl, dict(RELEASE_FILES, **(template_extra or {})))
     _git(tpl, "init", "-q", "-b", "main")
     commit = _commit(tpl, "release")
     _git(tpl, "tag", "-a", tag, "-m", tag)
     space = make_space(tmp_path / "ada")
-    _provenance(space, repo=str(tpl), commit="0" * 40, files={})
+    _provenance(space, repo=str(tpl), commit="0" * 40, files={},
+                **({"release": base_release} if base_release else {}))
     _write(space, base_files or {})
     _git(space, "init", "-q", "-b", "main")
     base = _commit(space, "base")
@@ -280,8 +282,64 @@ def test_a_failed_fetch_says_why_and_needs_the_click(tmp_path, monkeypatch):
     assert cls == "protected" and any("could not be fetched" in r for r in reasons)
 
 
+def test_only_machinery_the_template_installs_can_match(tmp_path, monkeypatch):
+    # the template's own copies of the rules, the settings and the marker are in its tree too
+    extra = {"rules.md": "# Rules of the template\n", ".github/template-marker": "",
+             "identity/charter.md": "# Charter\n"}
+    _, space, base, _ = _released(tmp_path, monkeypatch, template_extra=extra)
+    for rel, text in extra.items():
+        _write(space, {rel: text})
+        _commit(space, f"take {rel}")
+        cls, reasons = _gate(space, base)
+        assert cls == "protected" and any(r.startswith(f"{rel}: not machinery") for r in reasons), rel
+        (space / rel).unlink()
+        _commit(space, "back")
+
+
+def test_an_older_release_than_the_base_needs_the_click(tmp_path, monkeypatch):
+    _, space, base, _ = _released(tmp_path, monkeypatch, base_release="v0.3.0")
+    cls, reasons = _gate(space, base)
+    assert cls == "protected" and any("older than v0.3.0" in r for r in reasons)
+
+
+def test_a_release_files_id_under_another_mode_needs_the_click(tmp_path, monkeypatch):
+    _, space, base, _ = _released(tmp_path, monkeypatch)
+    rel = ".claude/skills/sweep/SKILL.md"
+    sha = _git(space, "rev-parse", f"HEAD:{rel}").strip()
+    _git(space, "rm", "-q", "--cached", rel)
+    _git(space, "update-index", "--add", "--cacheinfo", f"160000,{sha},{rel}")
+    _git(space, "commit", "-q", "-m", "a submodule entry with the file's id")
+    cls, reasons = _gate(space, base)
+    assert cls == "protected" and any(r.startswith(f"{rel}: not byte-identical") for r in reasons)
+
+
+def test_a_moved_or_renamed_protected_path_needs_the_click(tmp_path, monkeypatch):
+    empty = tmp_path / "gitconfig"
+    empty.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
+    space = make_space(tmp_path / "ada")
+    _write(space, {"_meta/tools/guard.py": "print('guard')\n"})
+    _git(space, "init", "-q", "-b", "main")
+    base = _commit(space, "base")
+    _git(space, "mv", "_meta/tools/guard.py", "docs-guard.py")
+    _commit(space, "move")
+    assert "_meta/tools/guard.py" in gate.changed_files(space, base)
+    assert _gate(space, base)[0] == "protected"
+    # a path that is the protected folder itself (a link in its place), or differs only in case
+    for rel in (".claude", ".Claude/skills/x/SKILL.md", "Space.yaml"):
+        assert gate.classify(space, [rel])[0] == "protected", rel
+
+
+def test_the_template_name_is_never_a_folder_in_the_checkout(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "o" / "n").mkdir(parents=True)
+    assert gate.template_url("o/n") == "https://github.com/o/n"
+    assert gate.template_url(str(tmp_path / "o" / "n")) == str(tmp_path / "o" / "n")
+
+
 def test_the_fetch_drops_the_checkout_token_and_adds_the_template_token():
     env = gate._fetch_env("https://github.com/o/n", "t0k")
+    assert env["GIT_CONFIG_GLOBAL"] == os.devnull   # the job's url rewrite carries a mount token
     assert env["GIT_CONFIG_COUNT"] == "2"
     assert env["GIT_CONFIG_KEY_0"] == env["GIT_CONFIG_KEY_1"] == "http.https://github.com/.extraheader"
     assert env["GIT_CONFIG_VALUE_0"] == ""
