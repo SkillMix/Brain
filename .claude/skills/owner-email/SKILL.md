@@ -13,7 +13,8 @@ notices (this skill).
 
 - A tool queued one: the sweep after a password or key showed up in a record, the request
   lane when an answer arrived. `python _meta/tools/owner_email.py pending --root <space>`
-  lists them; both chains send them.
+  lists them; both chains send them. Security findings wait in one digest, and at most one
+  security email goes out in any 24 hours; the rest wait for the next.
 - In a session, when the person must know now and is not in the chat (a credential in a
   shared document, a deadline only they can meet). Write the notice, queue it, send it.
 

@@ -180,3 +180,74 @@ def test_a_notice_that_fails_the_check_is_not_queued(tmp_path):
     root = make_space(tmp_path / "ada", owner_email="ada@lantern.example")
     with pytest.raises(oe.NoticeError):
         oe.queue(root, {"kind": "security", "sender": "sweep", "title": "x", "summary": "y"})
+
+
+def leak(n, where="mail", when="2 February 2026"):
+    """The sweep's notice for one record with a password or key in it."""
+    return {"kind": "security", "sender": "sweep",
+            "title": f"A password or key showed up in your {where}",
+            "summary": f"Something in your {where} from {when} looks like a password or key. "
+                       "Its value was not stored anywhere.",
+            "steps": [f"Open that {where} item and check whether the key is real.",
+                      "If it is, change it where it was issued and tell whoever shared it."],
+            "reassure": "Nothing was copied: the item was kept without the value.",
+            "where": where, "when": when, "key": f"security-m-{n}"}
+
+
+def test_one_security_finding_reads_as_its_own_notice(tmp_path):
+    root = make_space(tmp_path / "ada", owner_email="ada@lantern.example")
+    oe.queue(root, leak(1))
+    (path,) = oe.pending(root)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["payload"]["subject"] == "Security check: A password or key showed up in your mail"
+
+
+def test_security_findings_wait_in_one_digest(tmp_path):
+    """Many findings make one email: each security notice joins the one pending digest, which
+    counts them by where they showed up, gives the dates and passes the plain-language check."""
+    root = make_space(tmp_path / "ada", owner_email="ada@lantern.example")
+    oe.queue(root, leak(1, "mail", "16 October 2026"))
+    oe.queue(root, leak(2, "mail", "2 February 2026"))
+    oe.queue(root, leak(3, "calendar", "9 January 2026"))
+    assert oe.queue(root, leak(2, "mail", "2 February 2026")) is None   # the same key: once
+    (path,) = oe.pending(root)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["kind"] == "security" and len(data["keys"]) == 3
+    assert oe.check(data["notice"]) == []
+    assert data["payload"]["subject"] == "Security check: 3 passwords or keys showed up in your records"
+    stats = {s["label"]: s for s in data["notice"]["stats"]}
+    assert stats["in your mail"]["count"] == 2
+    assert stats["in your mail"]["hint"] == "from 2 February 2026 to 16 October 2026"
+    assert stats["in your calendar"] == {"count": 1, "label": "in your calendar", "hint": "on 9 January 2026"}
+    oe.record(root, path, message_id="m-1")
+    assert oe.queue(root, leak(3, "calendar", "9 January 2026")) is None   # sent: never twice
+
+
+def test_at_most_one_security_email_a_day(tmp_path):
+    """After a security email went out, the next one waits until 24 hours have passed; other
+    notices are never held. A sent notice from before `sent_at` was recorded counts by its file
+    time."""
+    import datetime as dt
+    import os
+    root = make_space(tmp_path / "ada", owner_email="ada@lantern.example")
+    sent = dt.datetime(2026, 10, 18, 11, 0, tzinfo=dt.timezone.utc)
+    oe.queue(root, leak(1))
+    (path,) = oe.pending(root, now=sent)
+    oe.record(root, path, message_id="m-1", now=sent)
+    oe.queue(root, leak(2))
+    oe.queue(root, {"kind": "action", "sender": "request", "title": "One answer arrived",
+                    "summary": "Your question was answered. It waits on your list.",
+                    "steps": ["Open your list and read the answer."], "key": "answer-1"})
+
+    def kinds(now):
+        return sorted(json.loads(p.read_text(encoding="utf-8"))["kind"] for p in oe.pending(root, now=now))
+
+    assert kinds(sent + dt.timedelta(hours=23)) == ["action"]
+    assert kinds(sent + dt.timedelta(hours=24, minutes=1)) == ["action", "security"]
+
+    (old,) = (root / "_meta/state/notices/sent").glob("*.json")
+    data = json.loads(old.read_text(encoding="utf-8"))
+    del data["sent_at"]
+    old.write_text(json.dumps(data), encoding="utf-8")
+    os.utime(old, (sent.timestamp(), sent.timestamp()))
+    assert kinds(sent + dt.timedelta(hours=2)) == ["action"]

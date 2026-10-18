@@ -53,7 +53,9 @@ day; `always` added `{destination, kind}` to `standing_choices` and applied `yes
 verdict went to `_meta/state/check-verdicts.jsonl`; a leaving item's `no` went to `held/`;
 a `no` on an item that already left (listed under "left yesterday") retracted it, which
 pauses the path that let it through for four weeks; a verdict on a librarian item (a sample,
-an index, a test question, a reconnect) is read back by the next status run;
+an index, a test question, a reconnect) is read back by the next status run; a `yes` on a
+template release (`template-<tag>-<commit>`) is read by each space's template sync, which moves
+every space the person owns to that release;
 one `log.md` line per verdict. It refuses a `--by` that names a routine.
 
 An email reply to the morning briefing ("1-4 yes, 5 edit: ...") arrives as one `answer`

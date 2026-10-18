@@ -105,3 +105,173 @@ def test_a_readme_received_from_the_template_still_follows_it(tmp_path):
     report = template_sync.run(space, source=str(tpl))
     assert "README.md" in report.updated
     assert (space / "README.md").read_text(encoding="utf-8") == "# v2\n"
+
+
+# ----- releases: a space follows the newest release its owner said yes to -------------------
+import os  # noqa: E402
+import subprocess  # noqa: E402
+
+import chain  # noqa: E402
+import pages  # noqa: E402
+import spaceyaml  # noqa: E402
+
+PROV = Path("_meta") / "state" / "template-version.yaml"
+ITEMS = Path("_inbound") / "needs-you" / "template-release.yaml"
+CHANGELOG = "# Changelog\n\n## [0.2.0] - 2026-10-20\n\nFaster sweeps.\nFewer clicks.\n\n### Added\n\n- x\n\n" \
+            "## [0.1.0] - 2026-10-18\n\nThe first release.\n"
+
+
+def _git(cwd: Path, *args: str, date: str | None = None) -> str:
+    env = dict(os.environ, GIT_CONFIG_NOSYSTEM="1")
+    if date:
+        env.update(GIT_AUTHOR_DATE=date, GIT_COMMITTER_DATE=date)
+    cmd = ["git", "-c", "commit.gpgsign=false", "-c", "user.name=t", "-c", "user.email=t@example.test", *args]
+    return subprocess.run(cmd, cwd=str(cwd), check=True, capture_output=True, text=True, encoding="utf-8",
+                          env=env).stdout.strip()
+
+
+def _release(tpl: Path, tag: str | None, tool: str, date: str) -> str:
+    """Commit the template with `tool` as its sweep tool on `date`, tagged `tag` when given."""
+    (tpl / "_meta" / "tools" / "sweep.py").write_text(tool, encoding="utf-8")
+    _git(tpl, "add", "-A")
+    _git(tpl, "commit", "-q", "-m", tool.strip(), date=date)
+    if tag:
+        _git(tpl, "tag", "-a", tag, "-m", tag, date=date)
+    return _git(tpl, "rev-parse", "HEAD")
+
+
+def git_template(root: Path) -> Path:
+    make_template(root)
+    (root / "CHANGELOG.md").write_text(CHANGELOG, encoding="utf-8")
+    _git(root, "init", "-q", "-b", "main")
+    return root
+
+
+def _yes(root: Path, tag: str, commit: str, by: str = "Ada Okafor") -> None:
+    with (root / "log.md").open("a", encoding="utf-8") as fh:
+        fh.write(f"\n- 2026-10-18T09:00:00Z yes template-{tag}-{commit[:8]} by {by}\n")
+
+
+def _items(root: Path) -> list:
+    path = root / ITEMS
+    return (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("items") or [] if path.exists() else []
+
+
+def _prov(root: Path) -> dict:
+    return yaml.safe_load((root / PROV).read_text(encoding="utf-8"))
+
+
+def test_no_release_yet_changes_nothing(tmp_path):
+    tpl = git_template(tmp_path / "tpl")
+    _release(tpl, None, "print('v1')\n", "2026-10-01T09:00:00Z")
+    space = make_space(tmp_path / "ada")
+    report = template_sync.run(space, source=tpl.as_uri())
+    assert report.note == "no release yet" and not report.added
+    assert not (space / "_meta" / "tools" / "sweep.py").exists() and not (space / PROV).exists()
+    assert _items(space) == []
+
+
+def test_a_newer_release_asks_once_and_a_yes_moves_the_space(tmp_path):
+    tpl = git_template(tmp_path / "tpl")
+    first = _release(tpl, "v0.1.0", "print('v1')\n", "2026-10-01T09:00:00Z")
+    space = make_space(tmp_path / "ada")
+    for _ in range(2):
+        report = template_sync.run(space, source=tpl.as_uri())
+        assert report.note == "v0.1.0 waits for a yes" and not report.added
+    items = _items(space)
+    assert [i["id"] for i in items] == [f"template-v0.1.0-{first[:8]}"]
+    assert items[0]["text"] == "Update to v0.1.0? The first release."
+    assert not (space / "_meta" / "tools" / "sweep.py").exists()
+    _yes(space, "v0.1.0", first)
+    report = template_sync.run(space, source=tpl.as_uri())
+    assert report.release == "v0.1.0" and "_meta/tools/sweep.py" in report.added
+    prov = _prov(space)
+    assert prov["release"] == "v0.1.0" and prov["commit"] == first
+    assert prov["approved"] == {"release": "v0.1.0", "commit": first, "by": "Ada Okafor",
+                                "at": "2026-10-18T09:00:00Z", "in": "ada"}
+    assert _items(space) == []
+    # a newer release: the space stays where it is and asks again, with the new summary
+    second = _release(tpl, "v0.2.0", "print('v2')\n", "2026-10-02T09:00:00Z")
+    report = template_sync.run(space, source=tpl.as_uri())
+    assert report.release == "v0.1.0" and not report.updated
+    assert (space / "_meta" / "tools" / "sweep.py").read_text(encoding="utf-8") == "print('v1')\n"
+    assert _items(space)[0]["id"] == f"template-v0.2.0-{second[:8]}"
+    assert _items(space)[0]["text"] == "Update to v0.2.0? Faster sweeps. Fewer clicks."
+
+
+def test_someone_elses_yes_or_another_commits_does_not_count(tmp_path):
+    tpl = git_template(tmp_path / "tpl")
+    first = _release(tpl, "v0.1.0", "print('v1')\n", "2026-10-01T09:00:00Z")
+    space = make_space(tmp_path / "ada")
+    _yes(space, "v0.1.0", first, by="Bea Lund")
+    _yes(space, "v0.1.0", "1" * 40)
+    report = template_sync.run(space, source=tpl.as_uri())
+    assert report.note == "v0.1.0 waits for a yes" and not report.added
+
+
+def test_a_yes_in_the_owners_workspace_covers_their_project_space(tmp_path):
+    tpl = git_template(tmp_path / "tpl")
+    first = _release(tpl, "v0.1.0", "print('v1')\n", "2026-10-01T09:00:00Z")
+    workspace = make_space(tmp_path / "ada")
+    project = make_space(tmp_path / "harbor", profile="project")
+    machine = Path.home() / ".spaces"
+    machine.mkdir(parents=True, exist_ok=True)
+    (machine / "spaces.yaml").write_text(yaml.safe_dump({"spaces": [{"root": str(workspace)}, {"root": str(project)}]}),
+                                         encoding="utf-8")
+    report = template_sync.run(project, source=tpl.as_uri())
+    assert report.note == "v0.1.0 waits for a yes" and _items(project) == []   # the workspace asks
+    _yes(workspace, "v0.1.0", first)
+    report = template_sync.run(project, source=tpl.as_uri())
+    assert report.release == "v0.1.0" and _prov(project)["approved"]["in"] == "ada"
+
+
+def test_template_updates_main_follows_main_as_before(tmp_path):
+    tpl = git_template(tmp_path / "tpl")
+    _release(tpl, "v0.1.0", "print('v1')\n", "2026-10-01T09:00:00Z")
+    head = _release(tpl, None, "print('main')\n", "2026-10-02T09:00:00Z")
+    space = make_space(tmp_path / "ada", template_updates="main")
+    report = template_sync.run(space, source=tpl.as_uri())
+    assert (space / "_meta" / "tools" / "sweep.py").read_text(encoding="utf-8") == "print('main')\n"
+    prov = _prov(space)
+    assert prov["commit"] == head and "release" not in prov and "approved" not in prov
+    assert report.note == "" and _items(space) == []
+
+
+def test_a_space_never_moves_backwards(tmp_path):
+    tpl = git_template(tmp_path / "tpl")
+    first = _release(tpl, "v0.1.0", "print('v1')\n", "2026-10-01T09:00:00Z")
+    head = _release(tpl, None, "print('main')\n", "2026-10-02T09:00:00Z")
+    space = make_space(tmp_path / "ada")
+    _yes(space, "v0.1.0", first)
+    # synced main after the release: it waits for a release that descends from what it has
+    (space / PROV).write_text(yaml.safe_dump({"repo": tpl.as_uri(), "commit": head, "files": {}}), encoding="utf-8")
+    report = template_sync.run(space, source=tpl.as_uri())
+    assert report.note == "this space is at or past v0.1.0" and not report.added and _items(space) == []
+    # a commit the template's history does not hold (a rewritten history): the sync time decides
+    for synced_at, ahead in (("2026-10-03T00:00:00Z", True), ("2026-09-30T00:00:00Z", False)):
+        (space / PROV).write_text(yaml.safe_dump({"repo": tpl.as_uri(), "commit": "f" * 40, "synced_at": synced_at,
+                                                   "files": {}}), encoding="utf-8")
+        report = template_sync.run(space, source=tpl.as_uri())
+        assert (report.release == "") is ahead, synced_at
+
+
+def test_changelog_summary_reads_the_release_section():
+    assert template_sync.changelog_summary(CHANGELOG, "v0.2.0") == "Faster sweeps. Fewer clicks."
+    assert template_sync.changelog_summary(CHANGELOG, "v0.1.0") == "The first release."
+    assert template_sync.changelog_summary(CHANGELOG, "v0.3.0") == ""
+    assert template_sync.changelog_summary("## v1.0.0\n\nPlain heading.\n", "v1.0.0") == "Plain heading."
+
+
+def test_a_new_yes_makes_the_sync_due_once(tmp_path):
+    space_root = make_space(tmp_path / "ada")
+    now = pages.parse_iso("2026-10-18T12:00:00Z")
+    with (space_root / "_meta" / "state" / "runs.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write('{"routine": "template-sync", "at": "2026-10-17T12:00:00Z", "notes": {"guarded": true}}\n')
+    (space_root / PROV).write_text(yaml.safe_dump({"repo": "o/n", "commit": "a" * 40, "files": {}}), encoding="utf-8")
+    space = spaceyaml.load(space_root)
+    assert chain._template_sync_due(space, now) is False
+    _yes(space_root, "v0.2.0", "b" * 40)   # 2026-10-18T09:00Z, after the last guarded run
+    assert chain._template_sync_due(space, now) is True
+    with (space_root / "_meta" / "state" / "runs.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write('{"routine": "template-sync", "at": "2026-10-18T10:00:00Z", "notes": {"guarded": true}}\n')
+    assert chain._template_sync_due(space, now) is False
