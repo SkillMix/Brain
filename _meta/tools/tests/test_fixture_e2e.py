@@ -15,6 +15,9 @@ import pages
 TEMPLATE_ROOT = Path(__file__).resolve().parents[3]
 
 
+OUTPUT = {}   # what the fixture run printed
+
+
 @pytest.fixture(scope="module")
 def fixture_dir(tmp_path_factory):
     if not (TEMPLATE_ROOT / ".github" / "template-marker").exists():
@@ -31,6 +34,7 @@ def fixture_dir(tmp_path_factory):
                                                       if k != "SPACE_NOW"})
     if res.returncode != 0:
         print(res.stdout[-3000:], res.stderr[-2000:])
+    OUTPUT["stdout"] = res.stdout
     return target, res.returncode
 
 
@@ -39,6 +43,12 @@ def test_fixture_run_is_green(fixture_dir):
     assert code == 0
     for name in ("brain", "ada", "ben", "chloe", "harbor", "beacon", "channel-chloe-harbor", "channel-ada-ben"):
         assert (target / name / "space.yaml").exists()
+
+
+def test_the_run_ends_with_one_verdict_line_and_no_owner_steps(fixture_dir):
+    lines = OUTPUT["stdout"].rstrip().splitlines()
+    assert lines[-1] == "fixture: passed" and lines[-2].startswith("cand: candidates waiting")
+    assert not [line for line in lines if line.startswith("owner ")], "a sign-in reads like a to-do"
 
 
 def test_at_once_release_landed_in_harbor(fixture_dir):
