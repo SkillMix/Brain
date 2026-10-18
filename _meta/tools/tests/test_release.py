@@ -377,6 +377,40 @@ def test_destination_checkout_is_cloned_on_first_release(tmp_path, monkeypatch):
     assert len(list((spaces_home / "harbor" / "_inbound" / "candidates").glob("*.md"))) == 1
 
 
+def test_a_release_clone_of_another_repository_is_set_aside(tmp_path, monkeypatch):
+    """The spaces home keys release clones by space name. A clone left by an older space of the
+    same name (a company set up again, a deleted repository) is moved aside and the destination
+    cloned fresh, instead of publishing into the wrong repository or failing without a word."""
+    _, harbor, ada = build(tmp_path, sources=CREW_MAIL)
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.test"]
+    subprocess.run(git + ["init", "--quiet", "-b", "main"], cwd=harbor, check=True)
+    subprocess.run(git + ["add", "-A"], cwd=harbor, check=True)
+    subprocess.run(git + ["commit", "--quiet", "-m", "x"], cwd=harbor, check=True)
+    bare, older = tmp_path / "harbor.git", tmp_path / "older-harbor.git"
+    for target in (bare, older):
+        subprocess.run(["git", "clone", "--quiet", "--bare", str(harbor), str(target)], check=True)
+    spaces_home = tmp_path / "spaces-home"
+    subprocess.run(["git", "clone", "--quiet", str(older), str(spaces_home / "harbor")], check=True)
+    space_yaml = ada / "space.yaml"
+    data = yaml.safe_load(space_yaml.read_text(encoding="utf-8"))
+    for mount in data["mounts"]:
+        if mount["name"] == "harbor":
+            mount["repo"] = str(bare)
+    space_yaml.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    monkeypatch.setenv("SPACES_HOME", str(spaces_home))
+    monkeypatch.setattr(release, "publish", lambda checkout_path, slug, source, write: (write(), True)[1])
+    write_feed(ada, [record()])
+    sweep.run(ada, now=NOW)
+    report = release.ship(ada, now=NOW)
+    assert report.shipped == 1 and report.unreachable == 0
+    origin = subprocess.run(["git", "-C", str(spaces_home / "harbor"), "remote", "get-url", "origin"],
+                            capture_output=True, text=True, check=True).stdout.strip()
+    assert origin == str(bare)
+    (aside,) = (spaces_home / ".stale").iterdir()
+    assert subprocess.run(["git", "-C", str(aside), "remote", "get-url", "origin"],
+                          capture_output=True, text=True, check=True).stdout.strip() == str(older)
+
+
 def test_item_follows_its_subject_to_a_new_home(tmp_path):
     """Queued for a project space that was offboarded since: the item re-addresses itself to
     the subject's current home instead of staying unreachable forever."""
