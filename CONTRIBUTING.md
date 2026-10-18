@@ -29,6 +29,9 @@ Linux, macOS and Windows when the setup tools change.
 - A new skill comes with three behaviour scenarios (`_meta/tests/behaviour/<skill>-<n>.yaml`).
 - The tools use the standard library plus PyYAML, nothing else.
 - Docs and skills are plain prose: short sentences, concrete words.
+- The fixture copies root files such as `README.md` into every space it builds, and the leak
+  tests read them. An example in the docs must not quote a fixture fact that some space may
+  not see (see `_meta/tests/fixture/leaks.yaml`).
 
 ## Names and secrets
 

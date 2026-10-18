@@ -76,7 +76,7 @@ Ask in plain words. The answer ends with every page it rests on, with its tier a
 
 ```
 > When does Harbor go live?
-3 November, says the signed Harbor page. A mail of 17 October says 10 November;
+November 3, says the signed Harbor page. A mail of October 17 says November 10;
 that one is unverified, and it waits on Ada's Needs-you list.
 - Harbor (signed, mine, 2026-10-17, 0 days)
 - Harbor go-live date: 2026-11-10 (witness, mine, 2026-10-17, 0 days)
