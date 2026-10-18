@@ -83,6 +83,17 @@ crew on) and puts one item on your Needs-you list with the sentence to send them
 in Claude Code on their own machine; their agent does the rest in about fifteen minutes,
 mostly their sign-ins. Nothing is done for them.
 
+## Add a client
+
+In the brain, or ask your agent "add the client <name>":
+
+    python _meta/tools/registry.py . add "Dune Bakery" --kind clients --domain dune.example --owner "Ada Okafor"
+
+Mail from that domain is then matched to the client. Nothing about it leaves the workspace it
+came into until its owner's agent classifies it: your Needs-you list counts what waits ("2 wait
+for a classification (Dune Bakery)"), and a route to the brain is refused as unclassified.
+Projects and deals are added the same way (`--kind projects --part-of <client>`).
+
 ## Start a project from a desk seed
 
 When something on your desk gains a second reader, mint it:

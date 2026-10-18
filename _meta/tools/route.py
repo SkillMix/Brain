@@ -7,7 +7,7 @@ tool lists what waits, validates a decision, applies the gates, writes the proje
 under `routing.informs`, which this space's status page reads). It never decides a route.
 
 Gates (refused: nothing written, the reason printed): the destination must be the subject's
-home; every part must be a verbatim span of the record (whitespace aside); `whole` only when
+home (a client, project or deal not yet classified has none: refused as unclassified); every part must be a verbatim span of the record (whitespace aside); `whole` only when
 everyone on the record is inside the destination's audience (the client's own mail domain
 counts as inside). Then per projection: a never-leaves term in it -> held at home; a left-out
 term of the destination in it -> held; a never-leaves term elsewhere in the record, medium
@@ -408,7 +408,13 @@ def _validate(root: Path, space, reg, decision: dict, now: dt.datetime, strict: 
         subject = reg.get(str(r.get("subject") or ""))
         if subject is None:
             raise RouteError(f"{rid}: unknown subject {r.get('subject')}")
-        home = reg.home_of(subject.id) or space.name
+        home = reg.home_of(subject.id)
+        if home is None and str(r.get("space")) != space.name and classify.gated(reg, subject.id) \
+                and classify.effective(reg, subject.id) is None:   # its classification names the home
+            raise RouteError(f"{rid}: {subject.id} is unclassified, so nothing about it leaves {space.name} "
+                             "yet: its owner's agent classifies it (classify.py <root> pending), then record "
+                             "this decision again")
+        home = home or space.name
         if str(r.get("space")) != home:
             raise RouteError(f"{rid}: {subject.id}'s home is {home}, not {r.get('space')}")
         if r.get("tier", "window") not in TIERS:

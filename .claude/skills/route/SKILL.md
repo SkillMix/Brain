@@ -96,7 +96,8 @@ routes:
 7. **Record.** `python _meta/tools/route.py <root> record _meta/state/private/decisions/*.yaml`.
    A recorded file moves to `decisions/done/`; a record that already has a decision is skipped.
    A refused decision prints why and its file stays: fix it once and record again; refused
-   twice, record it with `confidence: low` so it becomes a question for the owner. The tool
+   twice, record it with `confidence: low` so it becomes a question for the owner. Refused as
+   unclassified, leave it as it is: it records once the subject is classified (step 0). The tool
    checks everything that would travel: the parts, what the projection informs and your `why`.
    To undo a route: `python _meta/tools/route.py <root> retract <record> --by <name>` (queued
    and held projections are withdrawn, shipped ones retracted); add `--queued-only` to change a decision
