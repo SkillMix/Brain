@@ -343,6 +343,11 @@ def create_space(report, root, dirname, repo_name, offline, org, home, tpl, dry_
                    "unknown: pass --org and write _meta/state/template-origin.yaml (repo: owner/name)",
                    needs_owner=True)
         return None, full
+    if full.lower() == re.sub(r"^https://github\.com/|\.git$", "", str(tpl).strip().rstrip("/")).lower():
+        # host names ignore case: Acme/brain is the template Acme/Brain, never a space to adopt
+        report.add(f"create {dirname}", False, f"gh repo view {full}", f"refused: {full} is the template "
+                   "itself; say the sentence again with --org <your account or organisation>", needs_owner=True)
+        return None, full
     if not dry_run and run_cmd(["gh", "repo", "view", full, "--json", "name"], dry_run, cwd=base).returncode == 0:
         # the name is taken: an earlier onboarding's space is adopted, anything else is the owner's call
         is_space = run_cmd(["gh", "api", f"repos/{full}/contents/space.yaml", "-q", ".path"],
