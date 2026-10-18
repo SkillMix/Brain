@@ -123,7 +123,14 @@ def _template_sync_due(space: spaceyaml.Space, now: dt.datetime) -> bool:
                 last = at if last is None or at > last else last
         except Exception:
             continue
-    return last is None or now - last >= space.scale(7 * 24)
+    if last is None or now - last >= space.scale(7 * 24):
+        return True
+    # the owner's yes to a template release moves their spaces the same day, not next week
+    try:
+        import template_sync
+        return any(pages.parse_iso(yes["at"]) > last for yes in template_sync.approvals(space))
+    except Exception:
+        return False
 
 
 def _run_line(space: spaceyaml.Space, ctx: dict, now: dt.datetime) -> None:

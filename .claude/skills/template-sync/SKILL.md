@@ -11,19 +11,28 @@ registry, pages, `space.yaml`, `rules.md`, `identity/`, `.github/CODEOWNERS` sta
 
 ## When
 
-- Scheduled: weekly (the `routines` block of `space.yaml`, default Monday early).
+- Scheduled: weekly in the daily chain, and on the first day after the owner says yes to a
+  newer release.
 - By hand: when a fix in the template must reach this space now.
 
 ## Run
 
 `python _meta/tools/template_sync.py <root>` (adds `--from owner/name` or `--from <path>`
 when the template is not recorded yet; `--check` lists what would change and changes
-nothing). The template is read through a shallow clone into a temp directory; nothing is
-pushed. The sync script lands the copied files like any other edit.
+nothing). The template is read through a clone into a temp directory; nothing is pushed. The
+sync script lands the copied files like any other edit.
 
 ## What the tool already did
 
-Compared every machinery file with the version this space received last time
+Picked the template's newest release (`vX.Y.Z` tags), unless `space.yaml` says
+`template_updates: main` or `--from <path>` named a local copy. It moves forwards only, and
+only to a release the space's owner said yes to, here or in their workspace. Without that yes
+the space stays where it is and the owner's workspace has one Needs-you item,
+`template-<tag>-<commit>`: "Update to vX.Y.Z? <the release's summary>". Their yes covers every
+space they own; the receipt goes into the provenance as `approved`, and the protected pull
+request lands on green when its protected files are the release's, byte for byte.
+
+Then compared every machinery file with the version this space received last time
 (`_meta/state/template-version.yaml`): a missing file was added, an unchanged-here file was
 updated, a file this space changed was kept and listed as `kept`. Nothing was deleted. One
 run line (`template-sync`) was appended.
@@ -38,7 +47,8 @@ move on. Never overwrite a kept file yourself.
 ## Never
 
 Never edit the template from here; never delete a file; never run git; never touch
-`space.yaml`, `rules.md`, `identity/`, the registry or any page.
+`space.yaml`, `rules.md`, `identity/`, the registry or any page. Never write a yes to a
+release, and never edit `approved` in the provenance: only the person answers, through `sign`.
 
 ## Scheduled invocation
 

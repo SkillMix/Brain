@@ -1,6 +1,7 @@
 # Template releases: one yes per release
 
-Status: draft for the owner's review. Goes to `docs/superpowers/specs/` in the template's PR.
+Status: approved 2026-10-18. The owner accepted that the release yes is as strong as a signature
+(see the trust argument).
 
 ## Why
 
