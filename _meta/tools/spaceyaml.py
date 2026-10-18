@@ -76,7 +76,6 @@ DEFAULTS = {
     "budget": {"tokens_per_day": 100_000_000_000},
     "window_hours": 24,
     "models": ["any"],
-    "routines": {"sweep": "0 1,10,16 * * *", "daily": "0 11 * * *"},
 }
 
 # Top-level entries each profile must have, and must not have (vision section 5).
@@ -284,12 +283,6 @@ class Space:
     @property
     def models(self) -> list:
         return list(self.data.get("models") or DEFAULTS["models"])
-
-    @property
-    def routines(self) -> dict:
-        merged = dict(DEFAULTS["routines"])
-        merged.update(self.data.get("routines") or {})
-        return merged
 
     @property
     def windows(self) -> dict:

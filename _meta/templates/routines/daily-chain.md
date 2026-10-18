@@ -1,6 +1,7 @@
 ---
 name: daily-chain
 schedule: "30 6 * * *"
+timezone: local   # the machine's own clock, as the harness and the OS scheduler read it
 description: Once a day, the daily chain for {person}'s spaces on this machine, their morning briefing and the owner notices; the sync tasks land the files
 ---
 

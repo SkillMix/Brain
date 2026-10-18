@@ -37,7 +37,4 @@ never_leaves: {never_leaves}
 protected: {protected}
 sources: {sources}
 mounts: []
-routines:
-  sweep: "0 1,10,16 * * *"
-  daily: "0 11 * * *"
 {extra}
