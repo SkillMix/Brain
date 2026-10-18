@@ -127,14 +127,39 @@ def _discard(path: Path) -> None:
     shutil.rmtree(path, ignore_errors=True)
 
 
+def _origin(checkout: Path) -> str | None:
+    """The origin a release clone was made from; None when it has none or git cannot say."""
+    try:
+        res = subprocess.run(["git", "--git-dir", str(checkout / ".git"), "config", "--get",
+                              "remote.origin.url"], capture_output=True, text=True)
+    except OSError:
+        return None
+    return res.stdout.strip() or None if res.returncode == 0 else None
+
+
+def _set_aside(checkout: Path) -> None:
+    """Move a release clone out of the way under `.stale/`; nothing is deleted."""
+    stale = checkout.parent / ".stale"
+    stale.mkdir(parents=True, exist_ok=True)
+    target, n = stale / checkout.name, 1
+    while target.exists():
+        n += 1
+        target = stale / f"{checkout.name}-{n}"
+    checkout.rename(target)
+
+
 def ensure_checkout(space: spaceyaml.Space, destination: str) -> Path | None:
     """The destination's online checkout, cloned on first use from the repository its mount (or
     its registry subject) names. No repository, a failed clone or a clone that is not the space
-    so named: None, and the items stay queued as unreachable."""
+    so named: None, and the items stay queued as unreachable. A clone of another repository under
+    that name (an older space of the same name) is set aside and the destination cloned fresh."""
     found = checkout_of(destination)
-    if found is not None:
-        return found
     repo = _mount_repo(space, destination)
+    if found is not None:
+        origin = _origin(found)
+        if not (repo and origin) or registry_mod.same_repo(origin, repo):
+            return found
+        _set_aside(found)
     if not repo:
         return None
     target = spaces_home() / destination

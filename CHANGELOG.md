@@ -15,6 +15,14 @@ the shape and ships its migration. Each choice behind a change has a line in
   One self-contained file in the house style, dark by default with a switch to light, no
   server, no script and nothing fetched.
 
+### Fixed
+
+- **A release clone of another repository.** Release clones under `~/.spaces/.release/` are
+  kept by space name. A clone left there by an older space of the same name (a company set up
+  again after its repositories were deleted) was reused: releases and classification notes
+  went nowhere while the run line said nothing failed. Such a clone is now moved to
+  `.stale/` and the destination cloned fresh.
+
 ## [0.1.0] - 2026-10-18
 
 The first public release.
