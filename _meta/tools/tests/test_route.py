@@ -754,3 +754,34 @@ def test_pending_carries_lessons_briefs_and_the_archive_switch(tmp_path):
     data["routing"] = {"archives": True}
     (root / "space.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
     assert route.pending(root, now=NOW)["archives"] is True
+
+
+def _company_world(tmp_path):
+    """A brain named for its company (mounted as `brain`) and a client nobody classified yet."""
+    brain = make_space(tmp_path / "brain", profile="brain", name="lantern-works", subjects=[
+        {"id": "dune", "kind": "clients", "title": "Dune Bakery", "match": {"domain": "dune.example"}}])
+    root = make_space(tmp_path / "ada", name="ada", owner_email="ada@lantern.example", routing={},
+                      sources=[{"name": "calls", "adapter": "files", "audience": "owner"}])
+    mount_brain(root, brain)
+    captured(root, participants=["ada@lantern.example", "baker@dune.example"])
+    return root, brain
+
+
+def test_an_unclassified_client_is_refused_as_unclassified_then_routes_once_classified(tmp_path, capsys):
+    root, brain = _company_world(tmp_path)
+    path = tmp_path / "decisions" / "c-1.yaml"
+    path.parent.mkdir()
+    path.write_text(yaml.safe_dump(decision(routes=route_with(space="lantern-works", subject="dune"))),
+                    encoding="utf-8")
+    assert route.main([str(root), "record", str(path)]) == 1
+    out = capsys.readouterr().out
+    assert "unclassified" in out and "home is ada" not in out, out
+    # the brain applies the owner's classification; the same file records, no `pending` first
+    reg_path = brain / "_meta" / "subjects.yaml"
+    data = yaml.safe_load(reg_path.read_text(encoding="utf-8"))
+    data["subjects"][0].update(home="lantern-works", classification={
+        "class": "company", "state": "settled", "home": "lantern-works", "reason": "ordinary work",
+        "decided_by": "Ada Okafor", "at": "2026-10-12T08:30:00Z"})
+    reg_path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    assert route.main([str(root), "record", str(path)]) == 0, capsys.readouterr().out
+    assert [fm["destination"] for fm, _ in queued(root)] == ["lantern-works"]

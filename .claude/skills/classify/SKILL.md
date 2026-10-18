@@ -8,8 +8,10 @@ description: Classify every client, project and deal before anything about it le
 A client, project or deal (and anything part of one) sends nothing out of the space where its
 material came in until the agent of the person who holds the relationship has classified it.
 Until then its routes, releases, backfills and candidates are held at home and counted on the
-doubt line ("N wait for a classification"). The classification lives on the subject's entry in
-the brain's registry, with the obligations seen: their kind and date only.
+doubt line ("N wait for a classification", with their names). The classification lives on the
+subject's entry in the brain's registry, with the obligations seen: their kind and date only. A
+new client, project or deal enters that registry with `python _meta/tools/registry.py <brain> add
+"<name>" --kind clients --domain <their mail domain> --owner "<who handles it>"`.
 
 | class | means | home |
 |---|---|---|

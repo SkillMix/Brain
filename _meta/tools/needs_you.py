@@ -326,11 +326,16 @@ def doubt_items(root) -> list:
     return out
 
 
-def _doubt(root: Path) -> list:
-    count, waiting = len(doubt_pages(root)), len(unclassified_pages(root))
+def _doubt(root: Path, space: spaceyaml.Space | None = None) -> list:
+    count, waiting = len(doubt_pages(root)), unclassified_pages(root)
     if not count and not waiting:
         return []
-    text = f"held in doubt: {count}" + (f", {waiting} wait for a classification" if waiting else "")
+    parts = [f"held in doubt: {count}"] if count else []
+    if waiting:   # which clients, projects or deals wait: their owners classify them
+        sids = sorted({str(fm.get("subject")) for _, fm, _ in waiting if fm.get("subject")})
+        names = ", ".join(_subject_title(root, space, sid) if space else sid for sid in sids)
+        parts.append(f"{len(waiting)} wait for a classification" + (f" ({names})" if names else ""))
+    text = ", ".join(parts)
     return [Item(id="doubt", kind="doubt", text=text,
                  recommendation="leave them home", default="stay home", deadline=None,
                  payload=HELD.as_posix() + "/", fingerprint="")]
@@ -433,7 +438,7 @@ def collect(root, now: dt.datetime | None = None, online: bool = True, person: s
     answered = answered_ids(root)
     items = (_candidates(root) + _checks(root) + _queue(root, space, now) + _outbox(root, space, now)
              + _questions(root) + _answers(root)
-             + [i for i in routine_items(root) if i.id not in answered] + _doubt(root) + _tracker(root)
+             + [i for i in routine_items(root) if i.id not in answered] + _doubt(root, space) + _tracker(root)
              + (_protected_prs(root) if online else []))
     person = person if person is not None else (space.owner if space.profile == "personal" else "")
     if person:

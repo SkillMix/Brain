@@ -356,7 +356,7 @@ def test_doubt_line_counts_unclassified_but_does_not_offer_them(tmp_path):
     held_page(ada, "p-00000c01", "unclassified")
     held_page(ada, "p-00000c02", "unclassified")
     line = next(i for i in needs_you.collect(ada, NOW, online=False) if i.id == "doubt")
-    assert line.text == "held in doubt: 1, 2 wait for a classification"
+    assert line.text == "held in doubt: 1, 2 wait for a classification (Harbor)"
     assert needs_you.doubt_count(ada) == 3
     assert [i.id for i in needs_you.doubt_items(ada)] == ["p-00000d01"]
     report = sign.apply(ada, {"p-00000c01": "yes"}, by="Ada Okafor", now=NOW)
@@ -486,3 +486,10 @@ def test_mint_needs_no_home_item_after_a_walled_classification(tmp_path, monkeyp
     mint.run(ada, seed="work/projects/lighthouse/kickoff", name="lighthouse", crew=["Ada Okafor"], online=False)
     ids = [i["id"] for i in yaml.safe_load((ada / "_inbound" / "needs-you" / "mint.yaml").read_text())["items"]]
     assert "mint-lighthouse-team" in ids and "mint-lighthouse-home" not in ids
+
+
+def test_a_client_waiting_only_for_its_classification_is_named_on_needs_you(tmp_path):
+    _, _, ada = world(tmp_path)
+    held_page(ada, "p-00000c03", "unclassified")
+    line = next(i for i in needs_you.collect(ada, NOW, online=False) if i.id == "doubt")
+    assert line.text == "1 wait for a classification (Harbor)"

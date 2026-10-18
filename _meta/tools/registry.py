@@ -16,6 +16,9 @@ fields say what an engagement was (the brain's projects page shows them): `perio
 
     python registry.py <root> check     report loops, duplicates, unknown kinds
     python registry.py <root> find <x>  show a subject by id or alias
+    python registry.py <root> add <name> --kind clients [--title T] [--domain D ...] [--owner NAME]
+                                        [--part-of ID]
+                                        add one subject (a client, project, deal, person, ...)
 """
 from __future__ import annotations
 
@@ -468,6 +471,44 @@ def load(root, space: spaceyaml.Space | None = None) -> Registry:
     return Registry(root, space)
 
 
+def add_command(root, argv) -> int:
+    """`add`: one subject, checked like the rest of the registry before it is written. A client,
+    project or deal says the gate's rule: nothing about it leaves until it is classified."""
+    import argparse
+    ap = argparse.ArgumentParser(prog="registry.py <root> add")
+    ap.add_argument("name", help="its id, or its name (made into the id)")
+    ap.add_argument("--kind", required=True, help="one of the space's kinds: clients, projects, deals, people, ...")
+    ap.add_argument("--title", help="how people name it (default: the name given)")
+    ap.add_argument("--domain", action="append", default=[], help="a mail domain of theirs; repeat for more")
+    ap.add_argument("--owner", help="who handles it: that person's agent classifies it")
+    ap.add_argument("--part-of", dest="part_of", help="the subject it is part of (a project's client)")
+    args = ap.parse_args(argv)
+    sid = re.sub(r"[^a-z0-9]+", "-", args.name.lower()).strip("-")
+    data = {"id": sid, "kind": args.kind, "title": args.title or args.name}
+    for key in ("owner", "part_of"):
+        if getattr(args, key):
+            data[key] = getattr(args, key)
+    if args.domain:
+        data["match"] = {"domain": args.domain[0] if len(args.domain) == 1 else list(args.domain)}
+    reg = Registry(root)
+    try:
+        reg.add(data, by="registry")
+    except ValueError as exc:
+        print(f"refused: {exc}")
+        return 1
+    errs = [e for e in reg.check() if f"`{sid}`" in e]
+    if not sid or errs:
+        print(f"refused: {'; '.join(errs) or 'a name is needed'}")
+        return 1
+    reg.save()
+    print(f"added {sid} ({args.kind}) to {REGISTRY_PATH.as_posix()}")
+    if args.kind in GATED_KINDS:
+        who = f"{args.owner}'s agent" if args.owner else "its owner's agent"
+        print(f"nothing about {data['title']} leaves the space it came into until {who} classifies it: "
+              "what waits is counted on Needs you")
+    return 0
+
+
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if not argv:
@@ -481,6 +522,8 @@ def main(argv=None) -> int:
             print(err)
         print(f"{len(reg.subjects)} subjects, {len(reg.ancestors)} inherited, {len(errs)} errors")
         return 1 if errs else 0
+    if cmd == "add" and len(argv) > 2:
+        return add_command(argv[0], argv[2:])
     if cmd == "find" and len(argv) > 2:
         subject = reg.find(argv[2])
         print(json.dumps(subject.to_dict(), indent=2) if subject else "not found")

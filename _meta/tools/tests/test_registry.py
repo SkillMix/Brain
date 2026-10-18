@@ -180,3 +180,17 @@ def test_only_the_home_adds_names(tmp_path):
     mount_brain(ada, brain)
     _mount(ada, "beacon", other)
     assert registry.Registry(ada, spaceyaml.load(ada)).get("harbor").aliases == []
+
+
+def test_add_puts_one_client_in_the_registry_with_its_domain_and_owner(tmp_path, capsys):
+    root = make_space(tmp_path / "brain", profile="brain", name="lantern-works")
+    assert registry.main([str(root), "add", "Dune Bakery", "--kind", "clients", "--domain", "dune.example",
+                          "--owner", "Ada Okafor"]) == 0
+    out = capsys.readouterr().out
+    assert "added dune-bakery" in out and "classifies it" in out
+    subject = registry.Registry(root).get("dune-bakery")
+    assert subject.kind == "clients" and subject.title == "Dune Bakery" and subject.owner == "Ada Okafor"
+    assert subject.match == {"domain": "dune.example"} and registry.Registry(root).check() == []
+    assert registry.main([str(root), "add", "dune-bakery", "--kind", "clients"]) == 1   # an id is never re-minted
+    assert registry.main([str(root), "add", "Pier", "--kind", "planets"]) == 1           # not one of the kinds
+    assert "refused" in capsys.readouterr().out and registry.Registry(root).get("pier") is None
