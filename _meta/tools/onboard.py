@@ -1786,10 +1786,11 @@ def _late_feeds(spaces: dict):
 
 
 def fixture(target) -> int:
-    """Onboard the fixture company, run the chain over it and the tests; 1 on any failure."""
+    """Onboard the fixture company, run the chain over it and the tests; 1 on any failure. Ends
+    with one line, `fixture: passed` or `fixture: failed (what)`."""
     report = fixture_spaces(target)
-    print_steps(report.steps)
-    failed, missing = bool(report.failed()), []
+    print_steps([s for s in report.steps if not s.needs_owner])   # sign-ins belong to a real setup
+    problems, missing = [f"step {s.name}" for s in report.failed()], []
     persons = {p["slug"]: p["name"] for p in people_of(company_answers(read_yaml(FIXTURE / "company.yaml", {}) or {}))}
     roots = dict(report.spaces)
     # corridors carry requests; they run no chain of their own
@@ -1811,7 +1812,8 @@ def fixture(target) -> int:
         missing.append("tests_run")
     try:
         import behaviour
-        failed = failed or bool(getattr(behaviour.run_all(TEMPLATE_ROOT), "failed", 0))
+        if getattr(behaviour.run_all(TEMPLATE_ROOT), "failed", 0):
+            problems.append("behaviour scenarios")
     except ImportError:
         missing.append("behaviour")
     try:
@@ -1833,11 +1835,16 @@ def fixture(target) -> int:
                 continue
             rep = getattr(tests_run, fn)(*arg)
             cells.append(f"{rep.passed}/{rep.failed}")
-            failed = failed or bool(rep.failed)
+            if rep.failed:
+                problems.append(f"{name} {fn}")
         print(f"{name:10} {len(cands):>5} {signed:>6} {released:>8} {held:>4} {cells[0]:>9} {cells[1]:>9}")
+    print("cand: candidates waiting, signed: pages signed, released: releases received, held: items "
+          "held at home, answers and leaks: tests passed/failed, -: none in that space")
     for mod in missing:
         print(f"missing: {mod}.py is not available; the fixture run is incomplete")
-    return 1 if failed or missing else 0
+        problems.append(f"{mod}.py missing")
+    print("fixture: passed" if not problems else f"fixture: failed ({'; '.join(problems)})")
+    return 1 if problems else 0
 
 
 def main(argv=None) -> int:
