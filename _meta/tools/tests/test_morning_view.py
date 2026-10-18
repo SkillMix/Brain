@@ -127,6 +127,23 @@ def test_high_stakes_window_item_is_listed_so_it_can_leave(tmp_path):
     assert "p-00000301" in report.listed
 
 
+def test_an_approved_high_stakes_item_is_listed_but_not_asked(tmp_path):
+    root = setup(tmp_path)
+    write_page(root, "_outbound/queue/p-00000302.md", id="p-00000302", type="source", title="Risk answers",
+               **{"class": "window"}, destination="brain", subject="sales", high_stakes="a security answer",
+               stage_after=pages.iso(NOW - dt.timedelta(hours=1)), from_space="ada", kind="mail",
+               evidence=["m-9"], approved_by="Ada Okafor", approved_at=pages.iso(NOW - dt.timedelta(days=1)),
+               path="approved:Ada Okafor", body="Risk answers.\n")
+    report = morning_view.run(root, "Ada Okafor", now=NOW)
+    fm, _ = pages.read(root / "_outbound/queue/p-00000302.md")
+    assert fm["listed"] is True and "p-00000302" in report.listed
+    assert "high_stakes" not in report.counts and report.counts["approved_leaving"] == 1
+    day = json.loads((root / "_meta/state/morning/2026-10-12.json").read_text(encoding="utf-8"))
+    assert "p-00000302" not in [i["id"] for i in day["items"]]   # no number: never answered twice
+    md = Path(report.markdown_path).read_text(encoding="utf-8")
+    assert "## Leaving, approved by you\n- 1 item for brain, from 2026-10-12T08:00:00Z" in md
+
+
 def test_sent_today_reads_any_send_line_of_this_day(tmp_path):
     root = setup(tmp_path)
     assert morning_view.sent_today(root, now=NOW) is False

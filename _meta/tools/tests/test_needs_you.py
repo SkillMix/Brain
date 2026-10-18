@@ -6,6 +6,7 @@ import yaml
 
 import needs_you
 import pages
+import spaceyaml
 from conftest import NOW, make_space, write_page
 
 
@@ -213,3 +214,19 @@ def test_a_mounted_space_the_person_owns_brings_its_unaddressed_items_to_their_l
     assert {"onboard-identity", "invite-ben"} <= set(mine) and "onboard-domains" not in mine   # answered there
     assert mine["onboard-identity"].text.startswith("[brain]")
     assert not {"onboard-identity", "invite-ben"} & {i.id for i in needs_you.collect(ben, now=NOW, online=False)}
+
+
+def test_an_approved_high_stakes_item_is_never_asked_again(tmp_path):
+    root = make_space(tmp_path / "ada")
+    queue_item(root, "p-00000601", "Risk review answers", NOW - dt.timedelta(hours=2),
+               high_stakes="a security answer", approved_by="Ada Okafor", approved_at=pages.iso(NOW),
+               path="approved:Ada Okafor", listed_at=pages.iso(NOW - dt.timedelta(days=1)))
+    queue_item(root, "p-00000602", "Price list", NOW + dt.timedelta(hours=5), high_stakes="a price")
+    (root / "log.md").write_text("---\ntitle: Log\n---\n# Log\n\n"
+                                 "- 2026-10-11T09:00:00Z yes p-00000601 by Ada Okafor\n", encoding="utf-8")
+    items = needs_you.collect(root, now=NOW, online=False)
+    assert [(i.id, i.kind) for i in items] == [("p-00000602", "high_stakes")]
+    # a requeue dropped its listing: the morning view lists it again, nobody is asked
+    approved = needs_you.approved_leaving(root, spaceyaml.load(root), NOW)
+    assert [(i.id, i.kind, i.default) for i in approved] == [("p-00000601", "leaving", "leaves")]
+    assert approved[0].text.endswith("(approved by Ada Okafor)")

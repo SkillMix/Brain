@@ -31,8 +31,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Mounts are submodules read with a read-only token. Without the token the
-      # checks run without them; validate treats an absent mount as a warning.
+      # Mounts are submodules read with a read-only token, one at a time: a mount the token cannot
+      # read is skipped (validate warns and skips its cross-space checks) and the rest still load.
+      # The brain is the mount every space's checks need, so a token that cannot read it fails
+      # here, the day it expires or loses access. Without a token (a fork's pull request) the
+      # checks run without mounts.
       - name: Check out mounts
         if: hashFiles('.gitmodules') != ''
         env:
@@ -40,11 +43,19 @@ jobs:
           # own account needs the same token as a repository secret (onboard lists it).
           TOKEN: ${{ secrets.BRAIN_READ_TOKEN || secrets.MOUNT_READ_TOKEN }}
         run: |
-          if [ -n "$TOKEN" ]; then
-            git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
-            git submodule update --init --recursive || echo "mounts unavailable; continuing without them"
-          else
+          if [ -z "$TOKEN" ]; then
             echo "no mount token (BRAIN_READ_TOKEN or MOUNT_READ_TOKEN); continuing without mounts"
+            exit 0
+          fi
+          git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
+          git config -f .gitmodules --get-regexp '^submodule\..*\.path$' | while read -r _ path; do
+            git submodule update --init --recursive -- "$path" ||
+              echo "::warning::mount $path is unavailable to the mount token; its cross-space checks are skipped"
+          done
+          brain=$(git config -f .gitmodules --get submodule.brain.path || true)
+          if [ -n "$brain" ] && [ ! -e "$brain/.git" ]; then
+            echo "::error::the mount token cannot read the brain ($brain): give it read access to the brain repository"
+            exit 1
           fi
 
       - name: Fetch the base branch

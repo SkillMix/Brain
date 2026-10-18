@@ -42,6 +42,7 @@ RUNS = Path("_meta") / "state" / "runs.jsonl"
 # One plain label per item kind for the email's counts (they pass the plain-language check).
 LABELS = {
     "leaving": "updates leaving for another space within a day",
+    "approved_leaving": "updates you approved, leaving within a day",
     "high_stakes": "high-stakes items waiting for the domain owner",
     "answer": "answers that arrived",
     "request": "requests waiting for you",
@@ -239,12 +240,24 @@ def _left_yesterday(root: Path, space: spaceyaml.Space, now: dt.datetime) -> lis
     return out
 
 
+def _approved_lines(root: Path, approved: list) -> list:
+    """One line per destination for the approved high-stakes items this view lists."""
+    groups: dict = {}
+    for item in approved:
+        dest = str(pages.read(root / item.payload)[0].get("destination") or "its destination")
+        groups.setdefault(dest, []).append(item.deadline)
+    return [f"- {len(whens)} item{'s' if len(whens) != 1 else ''} for {dest}, from {pages.iso(min(whens))}"
+            for dest, whens in sorted(groups.items())]
+
+
 def _markdown(root: Path, space: spaceyaml.Space, person: str, items: list, now: dt.datetime,
-              limit: int, health: list) -> str:
+              limit: int, health: list, approved: list = ()) -> str:
     lines = needs_you.render(root, now=now, limit=limit, items=items).rstrip("\n").splitlines()
     lines.insert(1, f"For {person}, as of {pages.iso(now)}.")
     left = _left_yesterday(root, space, now)
     today = _today_lines(root)
+    if approved:   # listed here, never asked again; `no <id>` still pulls one back
+        lines += ["", "## Leaving, approved by you"] + _approved_lines(root, approved)
     if today:
         lines += ["", "## Today's meetings"] + today
     lines += ["", "## Left yesterday"] + (left or ["Nothing left at once."])
@@ -359,12 +372,15 @@ def run(root, person: str, now: dt.datetime | None = None, shadow: bool = False,
     meetings = sum(1 for line in _today_lines(root) if not line.startswith("  "))
     if meetings:
         counts["meetings"] = meetings
-    listed = _mark_listed(root, space, items, now)
+    approved = needs_you.approved_leaving(root, space, now)
+    if approved:
+        counts["approved_leaving"] = len(approved)
+    listed = _mark_listed(root, space, items + approved, now)
     health = _health_lines(root)
     page_fm = {"id": _page_id(root), "type": "snapshot", "title": "Needs you", "status": "draft",
                "generated": pages.generated(ROUTINE, now), "person": person}
     if PAGE.parts[0] not in spaceyaml.PROFILE_TABLE.get(space.profile, {}).get("forbidden", []):
-        pages.write(root / PAGE, page_fm, _markdown(root, space, person, items, now, limit, health))
+        pages.write(root / PAGE, page_fm, _markdown(root, space, person, items, now, limit, health, approved))
     notice, base = _notice(space, items, counts, health, shadow)
     unsure.expire(root, now)
     asked = _unsure_also(notice, unsure.waiting(root))
