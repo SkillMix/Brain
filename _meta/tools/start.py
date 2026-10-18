@@ -269,7 +269,7 @@ def render_routines(workspace: Path, person: str) -> list:
         dst.write_text(text, encoding="utf-8", newline="\n")
         meta = yaml.safe_load(text.split("---")[1]) or {}
         out.append({"name": meta.get("name") or src.stem, "schedule": meta.get("schedule"),
-                    "prompt_file": dst.as_posix()})
+                    "timezone": meta.get("timezone") or "local", "prompt_file": dst.as_posix()})
     return out
 
 
@@ -417,7 +417,7 @@ def setup(report, here, invitation, brain, company, name, email, feeds, org, hom
         routines = render_routines(workspace, person)
         report.add("routines", True, f"test -f {Path(workspace).as_posix()}/_meta/state/routines/daily-chain.md",
                    "; ".join(f"{r['name']} at {r['schedule']}" for r in routines)
-                   + ": the agent schedules them in its harness")
+                   + " (cron, this machine's local time): the agent schedules them in its harness")
         report.workspace = workspace
         report.routines = routines
         report.who = who
@@ -470,7 +470,7 @@ def main(argv=None) -> int:
         if result["workspace"]:
             print(f"\nworkspace: {result['workspace']}")
         for r in result["routines"]:
-            print(f"routine {r['name']} ({r['schedule']}): {r['prompt_file']}")
+            print(f"routine {r['name']} ({r['schedule']}, {r['timezone']} time): {r['prompt_file']}")
         for line in result["plan"]:
             print(f"plan: {line}")
         for row in result["yours"]:

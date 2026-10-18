@@ -34,7 +34,4 @@ protected: {protected}
 sources: {sources}
 # Read-only, pinned windows: the brain and the projects this person works on.
 mounts: {mounts}
-routines:
-  sweep: "0 1,10,16 * * *"
-  daily: "0 11 * * *"
 {extra}

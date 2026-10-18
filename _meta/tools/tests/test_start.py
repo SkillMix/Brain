@@ -75,6 +75,9 @@ def test_one_sentence_sets_a_person_up_from_their_invitation(tmp_path, monkeypat
     assert onboard.instruction_present(ui, ws)
     names = {r["name"]: r for r in report.routines}
     assert set(names) == {"sweep-chain", "daily-chain"}
+    # one schedule, from the routine's own prompt, in the machine's local time
+    assert all(r["timezone"] == "local" and r["schedule"] for r in report.routines)
+    assert "routines" not in spaceyaml.load(ws).data
     text = Path(names["daily-chain"]["prompt_file"]).read_text(encoding="utf-8")
     assert Path(ws).as_posix() in text and "Ada Okafor" in text and "{workspace}" not in text
     result = start.summary(report)

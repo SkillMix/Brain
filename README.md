@@ -54,7 +54,8 @@ When a person asks to be set up, onboarded or to start, and names this repositor
 3. Each `doctor:` row in `yours` is one sentence for the person with the exact command (a
    sign-in, a password, a dialog, an access grant): ask once, wait, then run step 2 again.
 4. Schedule the two routines it rendered under `_meta/state/routines/` in the new workspace
-   with your harness's scheduled tasks, each at its `schedule`. Without scheduled tasks, run
+   with your harness's scheduled tasks, each at its `schedule` (cron in the machine's local
+   time). Without scheduled tasks, run
    `python <workspace>/_meta/tools/onboard.py <workspace> --os-routines`: the OS scheduler runs
    them through `claude -p`.
 5. Follow steps 7 to 9 of `.claude/skills/onboard/SKILL.md` in the clone: quiet GitHub

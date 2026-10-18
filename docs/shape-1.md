@@ -89,7 +89,7 @@ personal/  academic/  _scratch/   gitignored in every profile; outside every too
 | `protected` | paths whose pull requests wait for the owner's one click instead of merging on green |
 | `sources` | `[{name, adapter, audience}]`: connected systems and who can already read their records (`owner`, `crew`, `everyone` or names) |
 | `mounts` | `[{name, repo, branch, path}]`: read-only, pinned windows on ancestors; the brain at `./brain`, flat, never nested |
-| `routines` | UTC cron for `sweep` and `daily`; the chain is driven by dependency, not by the clocks alone |
+| `routines` | retired, not read: each routine runs at the `schedule` of its prompt in `_meta/templates/routines/`, cron in the machine's local time; the chain is driven by dependency, not by the clocks alone |
 | `routing` | turns the judgment router on (a personal workspace): `since` the oldest witness page it reads with full judgment, `history_since` (optional, at most 365 days back) the start of the history window before it (background only, no open items, no question per record), `archives` (default false) whether archive-derived pages count as evidence for briefs and distill, `review_until` (optional, off unless set; onboard never sets it) every projection waits the window until then; without it, evidence attaches by identifier and the sweep releases |
 | `time_scale` | fixture and shadow only; divides every duration, so a 24-hour window at `48` is 30 minutes |
 | `transcripts` | personal only: `{path, switch}`; the harness's session transcripts folder; `off` measures the capture rate only, `on` also turns missed sessions into witness pages here |

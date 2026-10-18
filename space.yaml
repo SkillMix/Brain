@@ -54,5 +54,3 @@ sources: []                # [{name: mail, adapter: gmail, audience: owner}]
 # Read-only, pinned windows on other spaces. The brain is mounted at ./brain.
 mounts: []                 # [{name: brain, repo: https://..., branch: main, path: brain}]
 
-# Cadences (UTC cron). The chain is driven by dependency, not by these clocks alone.
-routines: {sweep: "0 1,10,16 * * *", daily: "0 11 * * *"}

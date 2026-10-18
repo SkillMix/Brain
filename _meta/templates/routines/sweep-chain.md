@@ -1,6 +1,7 @@
 ---
 name: sweep-chain
 schedule: "0 7,13,19 * * *"
+timezone: local   # the machine's own clock, as the harness and the OS scheduler read it
 description: Three times a day, export {person}'s feeds into their spaces on this machine, then run the sweep chain, the tracker step and the owner notices; the sync tasks land the files
 ---
 
