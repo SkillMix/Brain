@@ -56,4 +56,7 @@ The first public release.
 - **CI that costs little.** One `checks` job per pull request (about one billed minute); the
   tool tests run only when the machinery changed; `platforms` runs the setup on Linux, macOS
   and Windows in the template only.
+- **One security email a day.** Passwords or keys found in records are told to the person in
+  one digest, counted by where they showed up; at most one security email goes out in any
+  24 hours.
 - `SECURITY.md`, `CONTRIBUTING.md`, this changelog and `docs/data-protection.md`.

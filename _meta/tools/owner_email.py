@@ -16,6 +16,9 @@ to rewrite.
 A notice: {"kind": security|action|fyi|briefing, "sender": <routine>, "title", "summary",
 "steps": [...], "stats": [{"count", "label", "hint"}], "link": {"label", "url"},
 "reassure", "also": [{"title", "text"}], "allow_terms": [...]}.
+
+Queued security notices join one pending digest, and `pending` holds it back while a
+security email went out in the last 24 hours: at most one a day, however many findings.
 """
 from __future__ import annotations
 
@@ -277,10 +280,93 @@ def _known_keys(root: Path) -> set:
     for folder in ("pending", "sent"):
         for path in (Path(root) / NOTICES / folder).glob("*.json"):
             try:
-                keys.add(json.loads(path.read_text(encoding="utf-8")).get("key"))
+                data = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
+            keys.add(data.get("key"))
+            keys.update(data.get("keys") or [])
     return keys
+
+
+# Security findings make one email: every one joins the pending digest, and at most one
+# security email leaves in any 24 hours; the rest wait for the next.
+SECURITY_GAP = dt.timedelta(hours=24)
+
+
+def _kind(path: Path) -> str | None:
+    try:
+        return json.loads(path.read_text(encoding="utf-8")).get("kind")
+    except (OSError, ValueError):
+        return None
+
+
+def _day(text: str) -> dt.datetime | None:
+    try:
+        return dt.datetime.strptime(str(text).strip(), "%d %B %Y")
+    except ValueError:
+        return None
+
+
+def _security_digest(notices: list) -> dict:
+    """One notice for several findings: counted by where they showed up, with their dates."""
+    groups: dict = {}
+    for n in notices:
+        groups.setdefault(n.get("where") or "other places", []).append(n.get("when") or "")
+    stats = []
+    for where, whens in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))[:LIMITS["stats"]]:
+        stat = {"count": len(whens), "label": f"in your {where}"}
+        dates = sorted({d for d in map(_day, whens) if d})
+        if dates:
+            first, last = (f"{d.day} {d:%B %Y}" for d in (dates[0], dates[-1]))
+            stat["hint"] = f"on {first}" if first == last else f"from {first} to {last}"
+        stats.append(stat)
+    return {"kind": "security", "sender": notices[-1].get("sender", "sweep"),
+            "title": f"{len(notices)} passwords or keys showed up in your records",
+            "summary": f"{len(notices)} items look like they hold a password or key. "
+                       "None of the values was stored anywhere.",
+            "stats": stats,
+            "steps": ["Open the items from those dates and check whether each key is real.",
+                      "If one is, change it where it was issued and tell whoever shared it."],
+            "reassure": "Nothing was copied: each item was kept without the value. "
+                        "You get at most one of these emails a day."}
+
+
+def _queue_security(root: Path, notice: dict, space, today: str) -> Path:
+    """Add a security notice to the one pending digest (a single notice renders as itself)."""
+    to = recipient(root)
+    render(notice, to, today)   # the notice itself must pass the check
+    folder = root / NOTICES / "pending"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = next((p for p in sorted(folder.glob("*.json")) if _kind(p) == "security"), None)
+    data = json.loads(path.read_text(encoding="utf-8")) if path else {}
+    notices = list(data.get("notices") or ([data["notice"]] if data.get("notice") else [])) + [notice]
+    combined = notices[0] if len(notices) == 1 else _security_digest(notices)
+    if path is None:
+        path = folder / f"{space.now():%Y%m%dT%H%M%S}-security-{len(list(folder.glob('*.json'))) + 1}.json"
+    data.update({"key": notices[0].get("key"), "keys": [n["key"] for n in notices if n.get("key")],
+                 "kind": "security", "queued_at": data.get("queued_at") or f"{space.now():%Y-%m-%dT%H:%M:%SZ}",
+                 "notices": notices, "notice": combined, "payload": render(combined, to, today)})
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
+    return path
+
+
+def _security_sent_within(root: Path, now: dt.datetime) -> bool:
+    """Whether a security email went out less than SECURITY_GAP before `now` (a sent notice
+    without `sent_at` counts by its file time)."""
+    for path in (root / NOTICES / "sent").glob("*.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if data.get("kind") != "security":
+            continue
+        try:
+            sent = dt.datetime.fromisoformat(str(data["sent_at"]).replace("Z", "+00:00"))
+        except (KeyError, ValueError):
+            sent = dt.datetime.fromtimestamp(path.stat().st_mtime, dt.timezone.utc)
+        if now - sent < SECURITY_GAP:
+            return True
+    return False
 
 
 def queue(root, notice: dict, today: str | None = None) -> Path | None:
@@ -292,6 +378,8 @@ def queue(root, notice: dict, today: str | None = None) -> Path | None:
         return None
     space = spaceyaml.load(root)
     today = today or f"{space.now():%Y-%m-%d}"
+    if notice.get("kind") == "security":
+        return _queue_security(root, notice, space, today)
     payload = render(notice, recipient(root), today)
     folder = root / NOTICES / "pending"
     folder.mkdir(parents=True, exist_ok=True)
@@ -303,11 +391,18 @@ def queue(root, notice: dict, today: str | None = None) -> Path | None:
     return path
 
 
-def pending(root) -> list:
-    return sorted((Path(root) / NOTICES / "pending").glob("*.json"))
+def pending(root, now: dt.datetime | None = None) -> list:
+    """The notices to send now: a security one waits while one went out in the last 24 hours."""
+    paths = sorted((Path(root) / NOTICES / "pending").glob("*.json"))
+    if any(_kind(p) == "security" for p in paths):
+        now = now or spaceyaml.load(root).now()
+        if _security_sent_within(Path(root), now):
+            paths = [p for p in paths if _kind(p) != "security"]
+    return paths
 
 
-def record(root, path, message_id: str | None = None, failed: str | None = None) -> Path:
+def record(root, path, message_id: str | None = None, failed: str | None = None,
+           now: dt.datetime | None = None) -> Path:
     """After the send: move the notice to sent/ with its message id, or note the failure and
     leave it pending for the next chain."""
     path = Path(path)
@@ -317,6 +412,7 @@ def record(root, path, message_id: str | None = None, failed: str | None = None)
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
         return path
     data["message_id"] = message_id
+    data["sent_at"] = f"{now or spaceyaml.load(root).now():%Y-%m-%dT%H:%M:%SZ}"
     target = Path(root) / NOTICES / "sent" / path.name
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
