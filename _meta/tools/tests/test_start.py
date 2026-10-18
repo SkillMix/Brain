@@ -127,6 +127,20 @@ def test_offline_without_a_home_makes_the_workspace_beside_the_template_copy(tmp
     assert not (tmp_path / "userhome" / "spaces").exists()
 
 
+def test_start_keeps_the_onboarding_page_outside_every_repository(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "run_cmd", lambda *a, **k: (_ for _ in ()).throw(AssertionError(a)))
+    monkeypatch.setattr(start, "_out", lambda *a, **k: "")
+    tpl, brain = template_copy(tmp_path), brain_with_invitation(tmp_path)
+    report = start.start(tpl, invitation=f"{brain.as_posix()}:ada", offline=True, home=tmp_path / "home",
+                         user_instructions=tmp_path / "CLAUDE.md")
+    assert not report.failed(), [s.row() for s in report.failed()]
+    assert report.page == Path.home() / ".spaces" / "onboarding.html"   # beside the machine's spaces list
+    assert start.summary(report)["page"] == str(report.page)
+    html = report.page.read_text(encoding="utf-8")
+    assert "Ada Okafor's workspace" in html and 'http-equiv="refresh"' not in html   # the run is over
+    assert not any(Path(p) in report.page.parents for p in report.spaces.values())
+
+
 def test_a_dry_run_prints_the_plan_and_stops_before_onboard(tmp_path, monkeypatch, capsys):
     import subprocess
     calls = []

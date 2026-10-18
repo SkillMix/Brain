@@ -9,6 +9,10 @@ root is tokenized and each token's hash is compared with the list.
 Tokens: `[A-Za-z][A-Za-z0-9]{2,}`. A run joined by `-` or `_` is also tried whole
 (`lantern-works`), with the joiners removed (`lanternworks`) and part by part.
 
+One exception (docs/decisions.md, 2026-10-18): the project's public brand is on the list like
+any company name, and may appear in its one brand file, `BRAND_FILE`, and nowhere else. That
+file is still checked for every other name.
+
     python no_company_names.py [root]      prints `path:line` per hit; exit 1 on any hit
 """
 from __future__ import annotations
@@ -24,6 +28,8 @@ SKIP_PREFIXES = ("_meta/state/feed/",)
 MAX_BYTES = 1024 * 1024
 SNIFF_BYTES = 8192
 TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9]{2,}")
+BRAND_FILE = "_meta/templates/onboarding.css"
+BRAND = "59bcbc833b166b267b9ae14b6d07dd886cc66294aad86779f2fdc7fef7ab7f96"   # the sha256 of the brand, as on the list
 COMPOUND = re.compile(r"[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)+")
 
 
@@ -90,7 +96,7 @@ def check(root, hashes_path=None) -> list:
         if not _is_text(path):
             continue
         text = path.read_bytes().decode("utf-8", errors="replace")
-        hits.extend((rel, number) for number in line_hits(text, hashes))
+        hits.extend((rel, number) for number in line_hits(text, hashes - {BRAND} if rel == BRAND_FILE else hashes))
     return hits
 
 

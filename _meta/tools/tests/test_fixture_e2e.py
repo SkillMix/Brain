@@ -51,6 +51,13 @@ def test_the_run_ends_with_one_verdict_line_and_no_owner_steps(fixture_dir):
     assert not [line for line in lines if line.startswith("owner ")], "a sign-in reads like a to-do"
 
 
+def test_the_fixture_writes_the_onboarding_page_its_top_owner_sees(fixture_dir):
+    target, _ = fixture_dir
+    html = (target / "onboarding.html").read_text(encoding="utf-8")
+    assert "Lantern Works | company brain" in html and "Ada Okafor's workspace" in html
+    assert f"page: {target / 'onboarding.html'}" in OUTPUT["stdout"]
+
+
 def test_at_once_release_landed_in_harbor(fixture_dir):
     target, _ = fixture_dir
     # harbor's own weekly review batch (a contested page) is the one candidate made at home

@@ -40,6 +40,9 @@ line what you are doing and go on, without asking again.
    blocks an install the doctor tries, give the person that row's command the same way; a gh or
    git installed with winget is found without restarting the app. Never type a
    password and never work around a row with a different fix. `--doctor` runs only this check.
+   Open the page start prints (`page`, `~/.spaces/onboarding.html`) for the person, in the
+   app's browser pane or their own browser: it shows the same rows as stages, what only they
+   can do with each command, and how the system works. Reload it after each step below.
 6. Schedule the routines in the result (`routines`: name, `schedule` as cron, `prompt_file`)
    with your harness's scheduled tasks, one task each, the prompt file's text as the task's
    prompt. In the Claude desktop app these tools may be deferred: search for "scheduled task"
@@ -98,7 +101,8 @@ reads OS routine tasks back.
 
 `python _meta/tools/onboard.py <space> --check`: it changes nothing that is right, re-runs
 every read-back, writes each owner step still failing to `_inbound/needs-you/onboard-owner.yaml`,
-and names the fix for the rest. Show only the failing rows.
+and names the fix for the rest. It also rewrites the onboarding page (`page:`). Show only the
+failing rows.
 
 ## What the tools already did
 

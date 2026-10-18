@@ -94,10 +94,13 @@ class Report:
     steps: list = field(default_factory=list)
     spaces: dict = field(default_factory=dict)
     user_instructions: Path | None = None
+    progress: object = None   # called with (report, step) after every step: the onboarding page
 
     def add(self, name, done, check, result="", needs_owner=False) -> Step:
         step = Step(name, bool(done), check, str(result), needs_owner)
         self.steps.append(step)
+        if self.progress is not None:
+            self.progress(self, step)
         return step
 
     def failed(self) -> list:
@@ -1110,14 +1113,14 @@ def resolve_brain(root, brain, offline):
 
 
 def run(root, answers, offline=False, org=None, dry_run=False, home=None, user_instructions=None,
-        brain=None, everyone=False, with_projects=False) -> Report:
+        brain=None, everyone=False, with_projects=False, progress=None) -> Report:
     root = Path(root).resolve()
     answers = dict(answers or {})
     skipped = answers.pop("_skipped", [])
     case = detect(root, brain=brain)
     if case == "configured":
         case = PROFILE_CASE.get(spaceyaml.load(root).profile, "person")
-    report = Report(case=case)
+    report = Report(case=case, progress=progress)
     now = spaceyaml.load(root).now()
     org = org or answers.get("org") or (git_remote(root) or "/").split("/")[0] or None
     repo = None if offline else git_remote(root)
@@ -1263,7 +1266,8 @@ def run(root, answers, offline=False, org=None, dry_run=False, home=None, user_i
     for feed in feeds:
         report.add(f"connect {feed['name']}", False,
                    f"test -s {workspace or root}/_meta/state/feed/{feed['name']}.jsonl",
-                   "the owner signs in to the connector; its records then appear in the feed file",
+                   f"sign in to your {feed['name']} connector, if you have not (claude.ai: Settings, Connectors; "
+                   "Claude Code: `/mcp`); the first sweep then fills the feed file, which proves it",
                    needs_owner=True)
     write_needs_you(root, skipped)
     if workspace is not None and not feeds:
@@ -1790,6 +1794,8 @@ def fixture(target) -> int:
     with one line, `fixture: passed` or `fixture: failed (what)`."""
     report = fixture_spaces(target)
     print_steps([s for s in report.steps if not s.needs_owner])   # sign-ins belong to a real setup
+    import onboarding_page   # the page as the top owner sees it when setup finishes, before the week
+    print(f"page: {onboarding_page.write(Path(target) / 'onboarding.html', report.steps, report.spaces)}")
     problems, missing = [f"step {s.name}" for s in report.failed()], []
     persons = {p["slug"]: p["name"] for p in people_of(company_answers(read_yaml(FIXTURE / "company.yaml", {}) or {}))}
     roots = dict(report.spaces)
@@ -1915,6 +1921,10 @@ def main(argv=None) -> int:
     if args.check:
         steps = check(root)
         print_steps(steps)
+        import onboarding_page
+        page = onboarding_page.after_check(root, steps)
+        if page:
+            print(f"page: {page}")
         return 0 if all(s.done or s.needs_owner for s in steps) else 1
     if args.seed:
         import mint

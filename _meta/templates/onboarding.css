@@ -1,0 +1,206 @@
+/* The onboarding page's house style, inlined by _meta/tools/onboarding_page.py.
+
+   The brand: SkillMix is the project's public brand (docs/decisions.md, 2026-10-18), and this
+   file is the one place the names check allows it. Everything else on the page names the
+   company that adopted the template. Colours and type follow the house style: one red, ink,
+   warm hairlines, Arial, a black banner closed by a red keyline. */
+
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --surface: #f8f6f4;
+  --ink: #1a1a1a;
+  --body: #222222;
+  --soft: #444444;
+  --muted: #6b6b6b;
+  --hair: #e3dfdb;
+  --tint: #fbecea;
+  --red: #ce3a32;
+  --on-red: #ffffff;
+  --banner: #000000;
+  --banner-sub: #b5b5b5;
+  --brand-red: #de3a3c;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141414;
+    --surface: #1d1c1b;
+    --ink: #f2f0ee;
+    --body: #e4e1de;
+    --soft: #c9c5c1;
+    --muted: #a39e99;
+    --hair: #34312e;
+    --tint: #3a1f1d;
+    --red: #f0605a;
+    --on-red: #141414;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--body);
+  font: 16px/1.55 Arial, Helvetica, sans-serif;
+}
+
+/* The banner and the wordmark */
+.banner {
+  background: var(--banner);
+  border-bottom: 4px solid var(--brand-red);
+  color: #ffffff;
+}
+.banner .inner { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.wordmark { font-weight: 700; font-size: 22px; letter-spacing: 0.01em; color: #ffffff; }
+.wordmark::before { content: "Skill"; }
+.wordmark::after { content: "Mix"; color: var(--brand-red); }
+.banner .label { text-align: right; }
+.banner .label strong { display: block; font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase; }
+.banner .label span { display: block; font-size: 13px; color: var(--banner-sub); }
+
+.inner { max-width: 880px; margin: 0 auto; padding: 18px 28px; }
+main.inner { padding-top: 34px; padding-bottom: 8px; }
+
+/* Title block */
+.eyebrow {
+  margin: 0 0 6px;
+  color: var(--red);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+h1 { margin: 0 0 10px; color: var(--ink); font-size: 34px; line-height: 1.2; }
+.lede { margin: 0 0 22px; color: var(--soft); font-size: 18px; }
+.lede code { font-size: 15px; }
+
+/* Progress */
+.bar { height: 8px; background: var(--hair); overflow: hidden; }
+.bar span { display: block; height: 100%; background: var(--red); }
+.count { margin: 8px 0 28px; color: var(--muted); font-size: 14px; }
+
+/* Sections */
+h2 {
+  margin: 38px 0 14px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--hair);
+  color: var(--red);
+  font-size: 20px;
+}
+h3 { margin: 0 0 4px; color: var(--ink); font-size: 16px; }
+p { margin: 0 0 12px; }
+a { color: var(--red); }
+code {
+  padding: 1px 5px;
+  background: var(--surface);
+  border: 1px solid var(--hair);
+  color: var(--ink);
+  font: 0.9em/1.4 Consolas, Menlo, "Courier New", monospace;
+  overflow-wrap: anywhere;
+}
+
+/* The stages */
+ol.stages { list-style: none; margin: 0; padding: 0; counter-reset: stage; }
+ol.stages > li {
+  counter-increment: stage;
+  display: grid;
+  grid-template-columns: 34px 1fr auto;
+  gap: 2px 12px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--hair);
+}
+ol.stages > li::before {
+  content: counter(stage);
+  grid-row: span 2;
+  color: var(--red);
+  font-weight: 700;
+  font-size: 18px;
+}
+.stage-title { color: var(--ink); font-weight: 700; }
+.stage-summary { grid-column: 2 / 4; color: var(--soft); font-size: 15px; }
+.stage-summary details { margin-top: 6px; }
+summary { cursor: pointer; color: var(--muted); font-size: 14px; }
+
+.badge {
+  align-self: start;
+  padding: 2px 10px;
+  border: 1px solid var(--muted);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.state-done .badge { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+.state-needs-you .badge { background: var(--red); border-color: var(--red); color: var(--on-red); }
+.state-failed .badge { border-color: var(--red); color: var(--red); }
+.state-running .badge { border-color: var(--red); color: var(--red); }
+.state-running .badge::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--red);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+.state-next .stage-title { color: var(--soft); }
+@keyframes pulse { 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) { .state-running .badge::before { animation: none; } }
+
+/* The step rows behind a stage: a gridless table, hairlines only */
+table { width: 100%; margin-top: 8px; border-collapse: collapse; font-size: 14px; }
+td { padding: 6px 8px; border-bottom: 1px solid var(--hair); vertical-align: top; }
+tr:nth-child(even) td { background: var(--surface); }
+td.mark { width: 1%; white-space: nowrap; color: var(--muted); font-weight: 700; }
+tr.not-done td.mark { color: var(--red); }
+
+/* Only you can do this */
+.yours { margin: 0 0 12px; padding: 12px 16px; background: var(--surface); border-left: 3px solid var(--red); }
+.yours p { margin: 4px 0 0; }
+.proof { color: var(--muted); font-size: 14px; }
+.quiet { color: var(--soft); }
+
+/* Today */
+dl.today { display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; margin: 0 0 12px; }
+dl.today dt { color: var(--muted); }
+dl.today dd { margin: 0; color: var(--ink); font-weight: 700; }
+ul { margin: 0 0 12px; padding-left: 20px; }
+li { margin: 0 0 6px; }
+
+/* How it works: the README's diagram */
+figure { margin: 4px 0 18px; }
+svg.how { width: 100%; height: auto; }
+.how .node rect { fill: var(--bg); stroke: var(--soft); stroke-width: 1.2; }
+.how .brain rect { fill: var(--tint); stroke: var(--red); stroke-width: 1.6; }
+.how .t { fill: var(--ink); font: 700 14px Arial, Helvetica, sans-serif; }
+.how .s { fill: var(--soft); font: 12.5px Arial, Helvetica, sans-serif; }
+.how .edge { fill: none; stroke: var(--muted); stroke-width: 1.4; }
+.how .arrow { fill: var(--muted); }
+.how .lbl { fill: var(--muted); font: 12px Arial, Helvetica, sans-serif; }
+ol.points { padding-left: 22px; }
+ol.points li { margin-bottom: 10px; }
+ol.points li::marker { color: var(--red); font-weight: 700; }
+
+/* Footer */
+footer.inner { padding-top: 0; padding-bottom: 36px; }
+footer p {
+  margin-top: 34px;
+  padding-top: 10px;
+  border-top: 1px solid var(--red);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+@media (max-width: 640px) {
+  .inner { padding: 14px 16px; }
+  h1 { font-size: 26px; }
+  .lede { font-size: 16px; }
+  ol.stages > li { grid-template-columns: 26px 1fr; }
+  ol.stages > li .badge { grid-column: 2; justify-self: start; }
+  .stage-summary { grid-column: 2; }
+}
