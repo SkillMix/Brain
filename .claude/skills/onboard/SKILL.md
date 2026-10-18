@@ -19,7 +19,7 @@ line what you are doing and go on, without asking again.
    `AGENTS.md` (a fresh copy), else the `repo` in `_meta/state/template-version.yaml` of the
    person's workspace. Clone it to a short folder when you are not already in a copy:
    `gh repo clone <owner>/<repo> ~/.spaces/template` (on Windows first
-   `git config --global core.longpaths true`: a long session folder breaks the clone). The template is private: without `gh`,
+   `git config --global core.longpaths true`: a long session folder breaks the clone). Without `gh`,
    install it from https://cli.github.com (the official release); not signed in, ask the person
    to run `! gh auth login --web --git-protocol https` once and finish in the browser.
 2. Read the sentence for: an invitation (`<brain>:<slug>`, or "my invitation is <slug> in
