@@ -107,6 +107,9 @@ def test_one_sentence_starts_a_company_with_its_owners_workspace(tmp_path, monke
     skipped = yaml.safe_load((brain / "_inbound" / "needs-you" / "onboard.yaml").read_text(encoding="utf-8"))
     assert any("domains" in str(i) for i in skipped["items"])
     assert any(i["id"] == "onboard-identity" for i in skipped["items"])   # the identity draft, to sign
+    # and they reach the owner's own list, which the personal instruction shows
+    import needs_you
+    assert "onboard-identity" in {i.id for i in needs_you.collect(ws, online=False)}
 
 
 def test_offline_without_a_home_makes_the_workspace_beside_the_template_copy(tmp_path, monkeypatch):
