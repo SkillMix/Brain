@@ -1266,8 +1266,7 @@ def run(root, answers, offline=False, org=None, dry_run=False, home=None, user_i
     for feed in feeds:
         report.add(f"connect {feed['name']}", False,
                    f"test -s {workspace or root}/_meta/state/feed/{feed['name']}.jsonl",
-                   f"sign in to your {feed['name']} connector, if you have not (claude.ai: Settings, Connectors; "
-                   "Claude Code: `/mcp`); the first sweep then fills the feed file, which proves it",
+                   "sign in with `/mcp` in Claude Code, or Settings, Connectors on claude.ai",
                    needs_owner=True)
     write_needs_you(root, skipped)
     if workspace is not None and not feeds:

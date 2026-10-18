@@ -54,7 +54,7 @@ def test_the_run_ends_with_one_verdict_line_and_no_owner_steps(fixture_dir):
 def test_the_fixture_writes_the_onboarding_page_its_top_owner_sees(fixture_dir):
     target, _ = fixture_dir
     html = (target / "onboarding.html").read_text(encoding="utf-8")
-    assert "Lantern Works | company brain" in html and "Ada Okafor's workspace" in html
+    assert "<title>Lantern Works: onboarding</title>" in html and "Welcome, Ada</p>" in html
     assert f"page: {target / 'onboarding.html'}" in OUTPUT["stdout"]
 
 

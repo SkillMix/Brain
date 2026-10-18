@@ -137,7 +137,7 @@ def test_start_keeps_the_onboarding_page_outside_every_repository(tmp_path, monk
     assert report.page == Path.home() / ".spaces" / "onboarding.html"   # beside the machine's spaces list
     assert start.summary(report)["page"] == str(report.page)
     html = report.page.read_text(encoding="utf-8")
-    assert "Ada Okafor's workspace" in html and 'http-equiv="refresh"' not in html   # the run is over
+    assert "Welcome, Ada</p>" in html and 'http-equiv="refresh"' not in html   # the run is over
     assert not any(Path(p) in report.page.parents for p in report.spaces.values())
 
 

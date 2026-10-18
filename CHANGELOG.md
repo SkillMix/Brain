@@ -10,11 +10,10 @@ the shape and ships its migration. Each choice behind a change has a line in
 ### Added
 
 - **Onboarding page.** `start.py` keeps `~/.spaces/onboarding.html` up to date after every step:
-  what is done, what runs now, what is next, what only the person can do (each with its exact
-  command and check), what happens tomorrow and how the system works. `onboard --check`
-  rewrites it, and after setup it also shows the day: the last sweep, the Needs-you count and
-  what leaves within the window. One self-contained file in the house style, dark by default
-  with a switch to light, no server, no script and nothing fetched.
+  the stages as a row of steps, what only the person can do (each with its command), when the
+  first briefing comes, and how the system works as a diagram. `onboard --check` rewrites it.
+  One self-contained file in the house style, dark by default with a switch to light, no
+  server, no script and nothing fetched.
 
 ## [0.1.0] - 2026-10-18
 

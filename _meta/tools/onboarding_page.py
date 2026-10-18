@@ -1,18 +1,19 @@
-"""The onboarding page: one self-contained HTML file that shows a newcomer what is done, what
-runs now, what is next and what only they can do, and how the system works.
+"""The onboarding page: one self-contained HTML file that shows a newcomer, in as few words as
+it can, where their setup stands, what only they can do, and how the system works, the last as
+a diagram.
 
 It is rendered from the onboarding report, the rows `start.py` and `onboard.py --check` print,
 each with its check; nothing on it is written by hand, so the progress it shows is the
 report's. `start.py` rewrites it after every step and once at the end, `onboard.py --check`
 rewrites it from the recorded onboarding and the read-backs, and the fixture writes one beside
-the spaces it builds. After onboarding it also shows the day: the last sweep, the Needs-you
-count and what leaves within the window.
+the spaces it builds. The rows themselves stay in the agent's terminal: the page shows only the
+stages, the one thing the person must do, and the first briefing's time.
 
 It lives at `~/.spaces/onboarding.html`, outside every repository, beside the machine's list
-of spaces: it names local paths and the person's sign-ins, it exists before any space does
-(a doctor that stops), and a file that changes on every run would open a sync pull request
-each time. No server, no scripts, no external fonts or images; dark by default, light by a
-switch in the banner that needs no script. The house style, and the brand, are in
+of spaces: it names the person's sign-ins, it exists before any space does (a doctor that
+stops), and a file that changes on every run would open a sync pull request each time. No
+server, no scripts, no external fonts or images; dark by default, light by a switch in the
+banner that needs no script. The house style, and the brand, are in
 `_meta/templates/onboarding.css`, the one brand file.
 """
 from __future__ import annotations
@@ -39,20 +40,14 @@ STATE = Path("_meta") / "state" / "onboard.yaml"
 REFRESH_SECONDS = 2
 
 # The stages of a setup, in order, each with the step names that belong to it (by prefix). A
-# step no stage names belongs to "Connect them".
+# step no stage names belongs to "Connect".
 STAGES = (
-    ("Check this machine", ("doctor:", "one start at a time"),
-     "git, gh, Python and your GitHub sign-in"),
-    ("Create your spaces", ("invitation", "namespace", "dry run", "create ", "fill ", "remove ", "registry"),
-     "your workspace, made from this template, beside the company brain"),
-    ("Connect them", (),
-     "the brain and your projects mounted, the sync task, the instruction every session reads"),
-    ("First run", ("AGENTS.md", "ids ", "first sweep", "status ", "validate", "answers ", "space.yaml validates"),
-     "the first sweep, the status pass and the tests"),
-    ("Your routines", ("routine",),
-     "three sweeps and one daily chain a day, which your agent schedules"),
-    ("Your sources", ("connect ",),
-     "say \"connect my mail\" (or calendar, chat, calls) in a session"),
+    ("Your machine", ("doctor:", "one start at a time")),
+    ("Your spaces", ("invitation", "namespace", "dry run", "create ", "fill ", "remove ", "registry")),
+    ("Connect", ()),
+    ("First run", ("AGENTS.md", "ids ", "first sweep", "status ", "validate", "answers ", "space.yaml validates")),
+    ("Routines", ("routine",)),
+    ("Sources", ("connect ",)),
 )
 OTHER = 2
 LABELS = {"done": "Done", "running": "Running now", "next": "Next", "needs-you": "Needs you",
@@ -72,7 +67,7 @@ def _row(step) -> dict:
 
 
 def stage_of(name: str) -> int:
-    for i, (_, prefixes, _) in enumerate(STAGES):
+    for i, (_, prefixes) in enumerate(STAGES):
         if any(name.startswith(p) for p in prefixes):
             return i
     return OTHER
@@ -98,28 +93,25 @@ def stages(rows: list, live: bool = False, workspace=None, now=None) -> list:
             groups[i].append(fact)   # read from the workspace itself: only what is already there
     latest = stage_of(rows[-1]["name"]) if live and rows else None
     out = []
-    for i, (title, _, hint) in enumerate(STAGES):
+    for i, (title, _) in enumerate(STAGES):
         group = groups[i]
         if not group and any(groups[i + 1:]):
             continue
         state = _state(group, i == latest) if group else "next"
-        out.append({"title": title, "state": state, "rows": group, "summary": _summary(state, group, hint)})
-    out.append(_briefing(workspace, now))
+        out.append({"title": title, "state": state, "rows": group, "sub": "", "note": _note(state, group)})
+    ready = all(s["state"] == "done" for s in out if s["title"] != "Sources")
+    out.append(_briefing(workspace, now, ready))
     return out
 
 
-def _summary(state: str, rows: list, hint: str) -> str:
-    if state == "next":
-        return hint
+def _note(state: str, rows: list) -> str:
+    """The one line under the stages: the step running now, or the one that did not work."""
     if state == "running":
-        return f"now: {rows[-1]['name']}"
+        return f"Now: {rows[-1]['name']}"
     if state == "failed":
         first = next(r for r in rows if not r["done"] and not r["needs_owner"])
         return f"{first['name']}: {first['result']}"[:220]
-    waiting = sum(1 for r in rows if not r["done"])
-    if waiting:
-        return f"{waiting} step{'s' if waiting != 1 else ''} only you can take: see below"
-    return f"{len(rows)} steps done" if len(rows) > 1 else rows[0]["result"][:160] or "done"
+    return ""
 
 
 # ----- facts read from the workspace ----------------------------------------------------
@@ -172,29 +164,29 @@ def _run_lines(workspace) -> list:
     return out
 
 
-def _times(schedule: str) -> str:
+def _first_time(schedule: str) -> str:
+    """The first time of day a daily cron line runs at, `30 6 * * *` as 06:30; "" otherwise."""
     fields = str(schedule).split()
     if len(fields) != 5 or fields[2:] != ["*", "*", "*"]:
-        return schedule
+        return ""
     try:
-        pairs = sorted((int(h), int(m)) for h in fields[1].split(",") for m in fields[0].split(","))
+        h, m = min((int(h), int(m)) for h in fields[1].split(",") for m in fields[0].split(","))
     except ValueError:
-        return schedule
-    said = [f"{h:02d}:{m:02d}" for h, m in pairs]
-    return said[0] if len(said) == 1 else ", ".join(said[:-1]) + " and " + said[-1]
+        return ""
+    return f"{h:02d}:{m:02d}"
 
 
-def _briefing(workspace, now) -> dict:
+def _briefing(workspace, now, ready: bool = True) -> dict:
+    """The first morning briefing: sent, or when it comes; "tomorrow" only once setup is done."""
     import morning_view
     sent = [r for r in _run_lines(workspace) if r.get("routine") in morning_view.SEND_ROUTINES
             and isinstance(r.get("notes"), dict) and (r["notes"].get("email") or r["notes"].get("message_id"))]
     if sent:
-        return {"title": "First morning briefing", "state": "done", "rows": [],
-                "summary": f"sent {_local(sent[0].get('at'))}"}
-    daily = next((s for n, s in _routines(workspace) if n == "daily-chain"), "")
-    when = f"tomorrow at {_times(daily)}, this machine's time" if daily else "the morning after setup"
-    return {"title": "First morning briefing", "state": "next", "rows": [],
-            "summary": f"{when}: one mail from your own mailbox to you"}
+        return {"title": "Briefing", "state": "done", "rows": [], "note": "",
+                "sub": f"sent {_local(sent[0].get('at'))[:10]}"}
+    when = _first_time(next((s for n, s in _routines(workspace) if n == "daily-chain"), ""))
+    return {"title": "Briefing", "state": "next", "rows": [], "note": "",
+            "sub": f"tomorrow {when}".strip() if ready else when}
 
 
 def _local(value) -> str:
@@ -231,23 +223,6 @@ def context(spaces: dict) -> dict:
     return {"workspace": ws[0] if ws else None, "person": ws[1].owner if ws else "", "company": company}
 
 
-# ----- the daily state, after onboarding --------------------------------------------------
-def today(workspace) -> dict | None:
-    """The last sweep, the Needs-you count and what leaves within the window; None before the
-    first sweep, or when the workspace cannot be read."""
-    sweeps = [r for r in _run_lines(workspace) if r.get("routine") == "sweep"]
-    if not sweeps:
-        return None
-    try:
-        import needs_you
-        items = needs_you.collect(workspace, online=False)
-    except Exception:
-        return None
-    leaving = [i for i in items if i.kind == "leaving"]
-    return {"last_sweep": _local(sweeps[-1].get("at")), "needs_you": len(items),
-            "leaving": [i.text for i in leaving]}
-
-
 # ----- rendering ----------------------------------------------------------------------------
 def _e(text) -> str:
     return html.escape(str(text), quote=True)
@@ -271,7 +246,7 @@ def _headline(found: list, live: bool) -> str:
         return "A step did not work"
     if "needs-you" in states.values():
         return "Waiting for you"
-    setup = [state for title, state in states.items() if title not in ("Your sources", "First morning briefing")]
+    setup = [state for title, state in states.items() if title not in ("Sources", "Briefing")]
     return "You are set up" if all(s == "done" for s in setup) else "Setup has not finished"
 
 
@@ -280,97 +255,53 @@ ICONS = {"done": '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l
          "needs-you": "!"}
 
 
-def _stage_html(number: int, stage: dict) -> str:
-    rows = "".join(
-        f'<tr class="{"done" if r["done"] else "not-done"}"><td class="mark">'
-        f'{"ok" if r["done"] else ("you" if r["needs_owner"] else "fail")}</td>'
-        f'<td>{_e(r["name"])}</td><td>{_code(r["result"])}</td></tr>' for r in stage["rows"])
-    details = (f'<details><summary>{len(stage["rows"])} step{"s" if len(stage["rows"]) != 1 else ""}'
-               f'</summary><table>{rows}</table></details>') if stage["rows"] else ""
-    return (f'<li class="stage state-{stage["state"]}"><span class="dot">{ICONS.get(stage["state"], number)}</span>'
-            f'<div class="stage-body"><div class="stage-head"><span class="stage-title">{_e(stage["title"])}</span>'
-            f'<span class="badge">{LABELS[stage["state"]]}</span></div>'
-            f'<div class="stage-summary">{_code(stage["summary"])}</div>{details}</div></li>')
+def _step_html(number: int, stage: dict) -> str:
+    sub = f'<small>{_e(stage["sub"])}</small>' if stage["sub"] else ""
+    return (f'<li class="step state-{stage["state"]}" title="{LABELS[stage["state"]]}">'
+            f'<span class="dot">{ICONS.get(stage["state"], number)}</span>'
+            f'<span class="name">{_e(stage["title"])}</span>{sub}</li>')
 
 
-def _bar_html(found: list) -> str:
-    done = sum(1 for s in found if s["state"] == "done")
-    segments = "".join(f'<span class="seg seg-{s["state"]}" title="{_e(s["title"])}: {LABELS[s["state"]]}"></span>'
-                       for s in found)
-    return (f'<div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="{len(found)}" '
-            f'aria-valuenow="{done}" aria-label="{done} of {len(found)} stages done">{segments}</div>')
+def _joined(titles: list) -> str:
+    """`Connect mail`, `Connect calls` as `Connect mail and calls`."""
+    if len(titles) == 1:
+        return titles[0]
+    verb = titles[0].split(" ", 1)[0]
+    if all(" " in t and t.split(" ", 1)[0] == verb for t in titles):
+        rest = [t.split(" ", 1)[1] for t in titles]
+    else:
+        verb, rest = "", titles
+    return f"{verb} {', '.join(rest[:-1])} and {rest[-1]}".strip()
 
 
-def _yours_html(rows: list, workspace) -> str:
-    waiting = [r for r in rows if r["needs_owner"] and not r["done"]]
-    cards = "".join(
-        f'<div class="yours"><h3>{_e(_title(r["name"]))}</h3><p>{_code(r["result"])}</p>'
-        f'<p class="proof">The check that proves it: <code>{_e(r["check"])}</code></p></div>' for r in waiting)
-    if not waiting:
-        cards = '<p class="quiet">Nothing waits for you right now.</p>'
-    if workspace:
-        ws = Path(workspace).as_posix()
-        cards += ('<p class="note">The defaults you may want to change wait on your Needs-you list: ask your agent '
-                  f"\"what needs me\", or run <code>python {_e(ws)}/_meta/tools/needs_you.py {_e(ws)}</code>.</p>")
-    return cards
+def _yours_html(rows: list) -> str:
+    """The steps only the person can take, each with its command; steps with the same
+    instruction share one card. Nothing when none waits."""
+    groups = {}
+    for r in rows:
+        if r["needs_owner"] and not r["done"]:
+            groups.setdefault(r["result"], []).append(_title(r["name"]))
+    if not groups:
+        return ""
+    return "<h2>Only you can do this</h2>" + "".join(
+        f'<div class="yours"><h3>{_e(_joined(titles))}</h3><p>{_code(said[:1].upper() + said[1:])}</p></div>'
+        for said, titles in groups.items())
 
 
-def _chips(schedule: str) -> str:
-    """One chip per time of day: `07:00, 13:00 and 19:00` becomes three."""
-    return "".join(f'<span class="time">{_e(t)}</span>' for t in re.split(r", | and ", _times(schedule)))
-
-
-def _tomorrow_html(workspace) -> str:
-    said = {"daily-chain": "The daily chain rebuilds your status pages and your Needs-you list, and your "
-                           "morning briefing arrives: one mail from your own mailbox to you, counts only, "
-                           "the items stay in your workspace.",
-            "sweep-chain": "The sweep reads your sources, keeps each record with its source and decides "
-                           "what may travel."}
-    items = [f'<li><span class="times-of">{_chips(schedule)}</span><span>{said.get(name, _e(name) + " runs.")}</span></li>'
-             for name, schedule in _routines(workspace)]
-    return (f'<ul class="times">{"".join(items)}</ul><p class="note">Times are this machine\'s own. Nothing is '
-            "signed or sent without you: drafts wait on your Needs-you list, and mail waits in your outbox.</p>")
-
-
-def _today_html(day: dict) -> str:
-    leaving = "".join(f"<li>{_e(t)}</li>" for t in day["leaving"][:5])
-    tiles = (("Last sweep", day["last_sweep"]), ("Needs you", day["needs_you"]),
-             ("Leaves within the window", len(day["leaving"])))
-    return ('<div class="tiles">' + "".join(f'<div class="tile"><span class="k">{_e(k)}</span>'
-                                             f'<span class="v">{_e(v)}</span></div>' for k, v in tiles)
-            + "</div>" + (f'<ul class="leaving">{leaving}</ul>' if leaving else ""))
-
-
-DIAGRAM = """<figure class="how-card"><svg class="how" viewBox="0 0 920 300" role="img" aria-labelledby="how-title">
-<title id="how-title">Your sources feed your workspace; facts travel to the company brain and to walled project spaces; nothing is signed or sent without a person's yes.</title>
+DIAGRAM = """<figure class="how-card"><svg class="how" viewBox="0 0 900 262" role="img" aria-labelledby="how-title">
+<title id="how-title">Your sources feed your workspace, which only you read. A gate sorts each fact: company facts go to the company brain, which everyone reads; a project's facts go to its walled project space, which only its crew reads. Nothing is signed or sent without your yes.</title>
 <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrow" d="M0 0 L10 5 L0 10 z"/></marker></defs>
-<g class="node"><rect x="330" y="10" width="200" height="60" rx="10"/><text class="t" x="430" y="36" text-anchor="middle">A colleague's workspace</text><text class="s" x="430" y="55" text-anchor="middle">only they read it</text></g>
-<g class="node"><rect x="10" y="120" width="190" height="60" rx="10"/><text class="t" x="105" y="146" text-anchor="middle">Your mail, chat, calls,</text><text class="s" x="105" y="165" text-anchor="middle">calendar and documents</text></g>
-<g class="node"><rect x="330" y="120" width="200" height="60" rx="10"/><text class="t" x="430" y="146" text-anchor="middle">Your workspace</text><text class="s" x="430" y="165" text-anchor="middle">only you read it</text></g>
-<g class="node brain"><rect x="710" y="10" width="200" height="60" rx="30"/><text class="t" x="810" y="36" text-anchor="middle">Company brain</text><text class="s" x="810" y="55" text-anchor="middle">everyone reads it</text></g>
-<g class="node"><rect x="710" y="120" width="200" height="60" rx="10"/><text class="t" x="810" y="146" text-anchor="middle">Walled project space</text><text class="s" x="810" y="165" text-anchor="middle">only its crew reads it</text></g>
-<g class="node"><rect x="710" y="230" width="200" height="60" rx="10"/><text class="t" x="810" y="256" text-anchor="middle">Signed pages,</text><text class="s" x="810" y="275" text-anchor="middle">sent mail</text></g>
-<path class="edge" marker-end="url(#arrow)" d="M200 150 H328"/><text class="lbl" x="265" y="128" text-anchor="middle">records in,</text><text class="lbl" x="265" y="142" text-anchor="middle">each with its source</text>
-<path class="edge" marker-end="url(#arrow)" d="M530 40 H708"/><text class="lbl" x="619" y="31" text-anchor="middle">facts released</text>
-<path class="edge" marker-end="url(#arrow)" d="M530 132 L708 62"/><text class="lbl" x="598" y="82" text-anchor="middle">facts released</text>
-<path class="edge" marker-end="url(#arrow)" d="M530 150 H708"/><text class="lbl" x="619" y="142" text-anchor="middle">project facts</text>
-<path class="edge" marker-end="url(#arrow)" d="M530 168 L708 248"/><text class="lbl" x="585" y="232" text-anchor="middle">nothing without</text><text class="lbl" x="585" y="246" text-anchor="middle">a person's yes</text>
+<g class="node"><rect x="1" y="80" width="170" height="64" rx="12"/><text class="t" x="86" y="108">Your sources</text><text class="s" x="86" y="128">mail, chat, calls</text></g>
+<g class="node you"><rect x="225" y="80" width="190" height="64" rx="12"/><text class="t" x="320" y="108">Your workspace</text><text class="s" x="320" y="128">only you</text></g>
+<g class="gate"><path d="M510 78 L544 112 L510 146 L476 112 Z"/><text class="t" x="510" y="174">The gate</text><text class="s" x="510" y="193">sorts each fact</text></g>
+<g class="node brain"><rect x="640" y="20" width="258" height="64" rx="32"/><text class="t" x="769" y="48">Company brain</text><text class="s" x="769" y="68">everyone</text></g>
+<g class="node"><rect x="640" y="140" width="258" height="64" rx="12"/><text class="t" x="769" y="168">Walled project space</text><text class="s" x="769" y="188">its crew only</text></g>
+<path class="edge" marker-end="url(#arrow)" d="M171 112 H223"/>
+<path class="edge" marker-end="url(#arrow)" d="M415 112 H474"/>
+<path class="edge" marker-end="url(#arrow)" d="M544 112 C592 112 592 52 638 52"/>
+<path class="edge" marker-end="url(#arrow)" d="M544 112 C592 112 592 172 638 172"/>
+<g class="rule"><circle cx="292" cy="240" r="10"/><path d="M287 240.5l3.5 3.5 6-7"/><text x="462" y="245">Nothing is signed or sent without your yes</text></g>
 </svg></figure>"""
-
-POINTS = (
-    ("Your workspace", "a private git repository only you read. The sweep copies your mail, chat, calls, "
-     "calendar and documents into it, each record with its source. Personal and school records are "
-     "counted, never stored."),
-    ("The company brain", "the repository everyone reads. It is mounted read-only in every workspace and "
-     "project, so every agent starts from what the company already knows."),
-    ("Walled project spaces", "what only a project's crew may read lives in a space of its own, mounted "
-     "for that crew alone."),
-    ("The classification gate", "nothing about a client, project or deal leaves the space it came into "
-     "until its owner's agent classifies it: company (to the brain), walled (to its crew's space) or "
-     "owner (it stays home). A second agent checks every decision that sends anything out."),
-    ("Nothing signed or sent without a person", "pages the agent drafts wait on your Needs-you list for "
-     "a yes, and mail waits in your outbox until you send it."),
-)
 
 
 def render(steps, spaces=None, live: bool = False, now=None) -> str:
@@ -380,17 +311,15 @@ def render(steps, spaces=None, live: bool = False, now=None) -> str:
     now = now or dt.datetime.now(dt.timezone.utc)
     found = stages(rows, live=live, workspace=workspace, now=now)
     done = sum(1 for s in found if s["state"] == "done")
-    day = None if live or workspace is None else today(workspace)
+    failed = next((s["note"] for s in found if s["state"] == "failed"), "")
+    note = failed or next((s["note"] for s in found if s["note"]), "")
     theme = THEME.read_text(encoding="utf-8") if THEME.exists() else ""
-    lede = (f"{_e(who['person'])}'s workspace: <code>{_e(Path(workspace).as_posix())}</code>. " if workspace
-            else "Your workspace is made once this machine is ready. ")
-    lede += f"Updated {_e(_local(pages.iso(now)))}."
-    if live:
-        lede += " This page reloads itself every two seconds while setup runs."
     refresh = f'<meta http-equiv="refresh" content="{REFRESH_SECONDS}">' if live else ""
-    check = (f"<code>python {_e(Path(workspace).as_posix())}/_meta/tools/onboard.py "
-             f"{_e(Path(workspace).as_posix())} --check</code>") if workspace else "the sentence again"
     title = company[:1].upper() + company[1:]
+    first = who["person"].split()[0] if who["person"].split() else ""
+    hello = f'<p class="hello">Welcome, {_e(first)}</p>' if first else ""
+    updated = f"Updated {_e(_local(pages.iso(now)))}. " + (
+        "This page updates itself while setup runs." if live else 'To refresh it, ask your agent "is this set up?"')
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="dark light">{refresh}<title>{_e(title)}: onboarding</title>
@@ -401,24 +330,15 @@ def render(steps, spaces=None, live: bool = False, now=None) -> str:
 <span class="label"><strong>Onboarding</strong><span>{_e(title)}</span></span>
 <label for="light" class="theme"></label></div></header>
 <main class="inner">
-<section class="hero"><div>
-<p class="eyebrow">{_e(title) + " | " if who["company"] else ""}company brain</p>
-<h1>{_e(_headline(found, live))}</h1>
-<p class="lede">{lede}</p></div>
-<p class="score"><span class="big">{done}<small>/{len(found)}</small></span><span>stages done</span></p></section>
-{_bar_html(found)}
-<ol class="stages">{''.join(_stage_html(i, s) for i, s in enumerate(found, 1))}</ol>
-<h2>Only you can do this</h2>
-{_yours_html(rows, workspace)}
-{f'<h2>Today</h2>{_today_html(day)}' if day else ''}
-<h2>What happens tomorrow</h2>
-{_tomorrow_html(workspace)}
+<section class="hero">{hello}<h1>{_e(_headline(found, live))}</h1>
+<p class="count">{done} of {len(found)} done</p></section>
+<ol class="steps" aria-label="{done} of {len(found)} steps done">{''.join(_step_html(i, s) for i, s in enumerate(found, 1))}</ol>
+{f'<p class="now{" failed" if failed else ""}">{_code(note)}</p>' if note else ''}
+{_yours_html(rows)}
 <h2>How it works</h2>
 {DIAGRAM}
-<ol class="points">{''.join(f'<li><strong>{_e(t)}</strong><span>{_e(b[:1].upper() + b[1:])}</span></li>' for t, b in POINTS)}</ol>
 </main>
-<footer class="inner"><p>Rendered from the onboarding report by <code>_meta/tools/onboarding_page.py</code>.
-To bring it up to date, ask your agent "is this set up?", or run {check}.</p></footer>
+<footer class="inner"><p>{updated}</p></footer>
 </body></html>
 """
 

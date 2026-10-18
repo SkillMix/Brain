@@ -233,9 +233,8 @@ to your own mail, calendar and chat when you connect them. The tool lists each w
 that proves it. Your first morning briefing arrives the next day.
 
 While it runs, `start.py` keeps a page at `~/.spaces/onboarding.html` and your agent opens it:
-what is done, what runs now, what is next, what only you can do, and how the system works.
-After setup the same page shows your day: the last sweep, what needs you and what leaves
-tomorrow. `onboard.py --check` brings it up to date.
+how far setup is, what only you can do, and how the system works, as a diagram.
+`onboard.py --check` brings it up to date.
 
 ![The onboarding page of the fixture company's owner, Ada, when setup finishes](docs/onboarding-page.png)
 
