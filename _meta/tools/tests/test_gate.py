@@ -355,3 +355,13 @@ def test_checks_runs_the_gate_from_the_base_branch():
     assert 'git archive "origin/${{ github.base_ref }}" _meta/tools | tar -x -C "$RUNNER_TEMP/base"' in text
     assert 'python "$RUNNER_TEMP/base/_meta/tools/gate.py" "origin/${{ github.base_ref }}" .' in text
     assert "secrets.TEMPLATE_READ_TOKEN || secrets.BRAIN_READ_TOKEN || secrets.MOUNT_READ_TOKEN" in text
+
+
+def test_the_gate_step_fails_on_the_gates_exit_code():
+    # gate.py exits 1 on a signature error; piped into tee, only pipefail lets that fail the job.
+    text = (Path(__file__).resolve().parents[3] / ".github" / "workflows" / "checks.yml").read_text(encoding="utf-8")
+    step = next(s for s in yaml.safe_load(text)["jobs"]["checks"]["steps"]
+                if s.get("name") == "Gate (protected paths and signatures)")
+    lines = [line.strip() for line in step["run"].splitlines()]
+    tee = next(i for i, line in enumerate(lines) if "gate.py" in line and '| tee "$RUNNER_TEMP/gate.txt"' in line)
+    assert "set -o pipefail" in lines[:tee]

@@ -102,11 +102,14 @@ jobs:
       # pull request cannot loosen the rule that judges it. A protected sync of a template release
       # the owner approved lands on green when its protected files are that release's, byte for
       # byte; the release is fetched from the template, with a token when the template is private.
+      # pipefail: the tee keeps the gate's output for the arming step, and a signature error
+      # (gate.py exits 1) still fails the job.
       - name: Gate (protected paths and signatures)
         if: github.event_name == 'pull_request'
         env:
           TEMPLATE_TOKEN: ${{ secrets.TEMPLATE_READ_TOKEN || secrets.BRAIN_READ_TOKEN || secrets.MOUNT_READ_TOKEN }}
         run: |
+          set -o pipefail
           mkdir -p "$RUNNER_TEMP/base"
           git archive "origin/${{ github.base_ref }}" _meta/tools | tar -x -C "$RUNNER_TEMP/base"
           python "$RUNNER_TEMP/base/_meta/tools/gate.py" "origin/${{ github.base_ref }}" . | tee "$RUNNER_TEMP/gate.txt"
