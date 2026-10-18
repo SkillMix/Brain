@@ -395,7 +395,7 @@ def test_an_invitation_carries_the_crew_projects_and_the_colleague_onboards_offl
     items = yaml.safe_load((brain / "_inbound" / "needs-you" / "invitations.yaml").read_text(encoding="utf-8"))["items"]
     assert items[0]["id"] == "invite-ben" and items[0]["check"].startswith("gh repo view")
     # the one sentence the colleague says, in the invitation and on the owner's item
-    assert answers["say"].startswith("Onboard me to lantern-org: https://github.com/")
+    assert answers["say"].startswith("Onboard me to Lantern: https://github.com/")   # the company, not the host owner
     assert answers["say"].endswith("with my invitation lantern-org/brain:ben")
     assert answers["say"] in items[0]["text"]
     # no host login known: access cannot be checked, so the owner gets the access item anyway
@@ -453,9 +453,9 @@ def test_an_invitation_checks_the_colleagues_read_access_and_asks_the_owner_for_
     assert "team" in rec and "lantern-org/brain-template" in rec and "lantern-org/brain" in rec and "Ben Liu" in rec
     for repo in ("lantern-org/brain-template", "lantern-org/brain"):
         assert f"gh api repos/{repo}/collaborators/ben-lw/permission" in access["check"]
-    # reads only: an agent never grants access
-    assert calls and all(c[:2] == ["gh", "api"] and c[2].endswith("/permission") and "-X" not in c
-                         and "--method" not in c for c in calls)
+    # reads only (the permissions, the template's visibility): an agent never grants access
+    assert calls and all(c[:2] == ["gh", "api"] and (c[2].endswith("/permission") or c[2] ==
+                         "repos/lantern-org/brain-template") and "-X" not in c and "--method" not in c for c in calls)
 
 
 def test_the_access_item_leaves_once_the_colleague_can_read_both(tmp_path, monkeypatch):
@@ -541,3 +541,45 @@ def test_a_new_live_workspace_starts_routing_live(tmp_path):
     assert spaceyaml.load(tmp_path / "ben").routing_on is False, "the fixture keeps the identifier path"
     onboard.fill_space(tmp_path / "harbor", "project", **values)
     assert spaceyaml.load(tmp_path / "harbor").routing_on is False, "a project routes nothing of its own"
+
+
+def test_a_public_template_leaves_only_the_brain_to_grant(tmp_path, monkeypatch):
+    calls = []
+    world = _access_world({"lantern-org/brain-template": "none", "lantern-org/brain": "none"}, calls)
+
+    def fake(argv, dry_run=False, cwd=None):
+        if [str(a) for a in argv] == ["gh", "api", "repos/lantern-org/brain-template", "-q", ".private"]:
+            return subprocess.CompletedProcess(argv, 0, "false\n", "")
+        return world(argv, dry_run, cwd)
+    monkeypatch.setattr(onboard, "run_cmd", fake)
+    brain = _invited_brain(tmp_path)
+    onboard.invite(brain, "ben")
+    items = yaml.safe_load((brain / "_inbound" / "needs-you" / "invitations.yaml").read_text(encoding="utf-8"))["items"]
+    by_id = {i["id"]: i for i in items}
+    assert by_id["invite-ben"]["text"].endswith("once they can read lantern-org/brain")
+    access = by_id["invite-ben-access"]
+    for key in ("text", "recommendation", "check"):
+        assert "brain-template" not in access[key], key
+    assert "lantern-org/brain" in access["recommendation"]
+
+
+def test_inviting_someone_not_yet_registered_registers_them_or_says_how(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(onboard, "run_cmd", lambda argv, *a, **k: subprocess.CompletedProcess(argv, 1, "", ""))
+    brain = make_space(tmp_path / "brain", profile="brain", name="lantern-works", subjects=[
+        {"id": "harbor", "kind": "clients", "title": "Harbor"}])
+    onboard.write_text(brain / "identity" / "charter.md", "---\ntitle: Charter\n---\n# Charter\n\n"
+                       "This space is the brain of Lantern Works. Everyone in the company reads it.\n")
+    onboard.write_yaml(brain / "_meta" / "state" / "onboard.yaml", {"case": "company", "repo": "lantern-org/brain"})
+    assert onboard.main([str(brain), "--invite", "ravi"]) == 1
+    out = capsys.readouterr().out.strip()
+    assert out.count("\n") == 0 and "--name" in out and "Traceback" not in out
+    assert onboard.main([str(brain), "--invite", "harbor"]) == 1
+    assert "not a person" in capsys.readouterr().out
+    assert onboard.main([str(brain), "--invite", "ravi", "--name", "Ravi Mendes",
+                         "--email", "ravi@lantern.example"]) == 0
+    person = registry.Registry(brain, spaceyaml.load(brain)).get("ravi")
+    assert person.kind == "people" and person.title == "Ravi Mendes"
+    assert person.extra.get("email") == "ravi@lantern.example"
+    answers = yaml.safe_load((brain / "_meta" / "state" / "invitations" / "ravi.yaml").read_text(encoding="utf-8"))
+    assert answers["name"] == "Ravi Mendes" and answers["say"].startswith("Onboard me to Lantern Works:")
+    assert registry.Registry(brain, spaceyaml.load(brain)).check() == []
