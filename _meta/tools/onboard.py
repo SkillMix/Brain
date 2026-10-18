@@ -1290,19 +1290,47 @@ def can_read(repo: str, login: str) -> bool:
     return res.returncode == 0 and (res.stdout or "").strip() in READ_LEVELS
 
 
-def invite(root, slug: str, org: str | None = None, workspace_org: str | None = None) -> Path:
+def is_public(repo: str) -> bool:
+    """True when the host says anyone can read `repo` (a read, like can_read)."""
+    res = run_cmd(["gh", "api", f"repos/{repo}", "-q", ".private"])
+    return res.returncode == 0 and (res.stdout or "").strip() == "false"
+
+
+def company_name(root, space) -> str:
+    """The company as the brain's charter names it (onboard drafts that sentence), else the
+    space's name in words; never the host account that holds the repository."""
+    charter = Path(root) / "identity" / "charter.md"
+    text = charter.read_text(encoding="utf-8") if charter.exists() else ""
+    found = re.search(r"This space is the brain of (.+?)\. ", text)
+    return space.data.get("company") or (found.group(1).strip() if found else humanize(space.name))
+
+
+def invite(root, slug: str, org: str | None = None, workspace_org: str | None = None,
+           name: str | None = None, email: str | None = None) -> Path:
     """Write `_meta/state/invitations/<slug>.yaml` (the colleague's answers: name, parent, the
     brain, the projects they are crew on, their host login when the registry has it) and one
     Needs-you item for the owner with its read-back. The sentence works only once the colleague
     can read the template and the brain: when the host does not confirm both (or no login is
     known), a second item recommends the access, which only the owner grants (decision
-    2026-10-12, Organization teams). Nothing is sent: the owner hands the file over."""
+    2026-10-12, Organization teams). Nothing is sent: the owner hands the file over. A colleague
+    not yet in the registry is added as a person when `name` is given; else a ValueError says how.
+    A public template needs no grant: then the item asks for the brain alone."""
     root = Path(root).resolve()
     space = spaceyaml.load(root)
     reg = registry.Registry(root, space)
+    slug = slugify(slug)
     person = reg.get(slug)
-    if person is None or person.kind != "people":
-        raise ValueError(f"{slug} is not a person in the registry")
+    if person is None and name:
+        reg.add({"id": slug, "kind": "people", "title": name, **({"email": email} if email else {})},
+                by="onboard")
+        reg.save()
+        person = reg.get(slug)
+    if person is None:
+        raise ValueError(f"{slug} is not in the registry yet: run again with --name \"<their full name>\" "
+                         "(and --email <their address>) to register and invite them")
+    if person.kind != "people":
+        raise ValueError(f"{slug} is one of the {person.kind} in the registry, not a person: invite them "
+                         "under another slug")
     state = read_yaml(root / "_meta" / "state" / "onboard.yaml", {}) or {}
     repo = state.get("repo") or git_remote(root)
     org = org or (str(repo).split("/")[0] if repo else None)
@@ -1318,7 +1346,7 @@ def invite(root, slug: str, org: str | None = None, workspace_org: str | None = 
             crew.append({"name": other.name, "repo": f"https://github.com/{other_repo}" if other_repo else None})
     template = (read_yaml(root / "_meta" / "state" / "template-version.yaml", {}) or {}).get("repo") \
         or template_repo(root) or "<template>"
-    company = space.data.get("company") or (str(repo).split("/")[0] if repo else humanize(space.name))
+    company = company_name(root, space)
     say = (f"Onboard me to {company}: https://github.com/{template} with my invitation "
            f"{repo or '<brain>'}:{slug}")
     login = str(person.match.get("github") or "").strip()
@@ -1336,21 +1364,25 @@ def invite(root, slug: str, org: str | None = None, workspace_org: str | None = 
              if i.get("id") not in (f"invite-{slug}", access_id)]
     workspace = f"{workspace_org or org}/{slug}-workspace" if (workspace_org or org) else f"<org>/{slug}-workspace"
     both = [template, repo or "<brain>"]
+    if not template.startswith("<") and is_public(template):
+        both = both[1:]   # anyone can clone a public template: the brain is the one grant
+    readable = " and ".join(both)
     items.append({"id": f"invite-{slug}", "kind": "question",
                   "text": (f"Invite {person.title}: send them this one sentence to say in Claude Code "
                            f"on their own machine: \"{say}\". Their agent does the rest (about fifteen "
                            f"minutes, mostly their sign-ins); the answers are in "
                            f"{target.relative_to(root).as_posix()}. The sentence works once they can "
-                           f"read {both[0]} and {both[1]}"),
+                           f"read {readable}"),
                   "recommendation": "yes, on their first day", "default": "they work without a workspace for now "
                   "(rules.md section 10)", "depends": 1, "check": f"gh repo view {workspace}"})
     blocked = [r for r in both if not login or r.startswith("<") or not can_read(r, login)]
     if blocked:
         text = (f"{person.title} cannot read {' and '.join(blocked)} yet (checked as {login}), so the "
                 "invitation sentence stops at its first step" if login else
-                f"{person.title}'s host login is unknown, so their read access to {both[0]} and {both[1]} "
-                "cannot be checked; the invitation sentence works only once they can read both")
-        rec = f"give a company-wide team read access to both {both[0]} and {both[1]}, and add {person.title} to it"
+                f"{person.title}'s host login is unknown, so their read access to {readable} cannot be "
+                f"checked; the invitation sentence works only once they can read {readable}")
+        rec = (f"give a company-wide team read access to {'both ' if len(both) > 1 else ''}{readable}, and add "
+               f"{person.title} to it")
         if not login:
             rec += (f"; then add their host login to the registry (`match: {{github: <login>}}` on {slug}) "
                     "and invite again, so this check runs itself")
@@ -1823,6 +1855,8 @@ def main(argv=None) -> int:
                     help="with --connect: what to read (channels=C1,C2, team=KEY, project=ID, repo=owner/name)")
     ap.add_argument("--invite", metavar="SLUG", help="in the brain: write a colleague's invitation answers "
                     "and the owner's Needs-you item")
+    ap.add_argument("--name", help="with --invite: the colleague's full name, to register them when new")
+    ap.add_argument("--email", help="with --invite: the colleague's address (optional)")
     ap.add_argument("--go-live", action="store_true",
                     help="switch this shadow space to live (mounts by name from --answers `mounts:`)")
     ap.add_argument("--with-projects", action="store_true",
@@ -1845,7 +1879,11 @@ def main(argv=None) -> int:
         print(f"{args.connect}: {'added to the sources' if added else 'already a source'}")
         return 0
     if args.invite:
-        print(f"invitation: {invite(root, args.invite, org=args.org)}")
+        try:
+            print(f"invitation: {invite(root, args.invite, org=args.org, name=args.name, email=args.email)}")
+        except ValueError as exc:
+            print(f"invite: {exc}")
+            return 1
         return 0
     if args.register_sync:
         report = Report(case="sync")
