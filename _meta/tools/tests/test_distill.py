@@ -232,6 +232,23 @@ def test_an_informs_decision_becomes_a_decision_candidate(tmp_path):
     assert fm["type"] == "decision" and fm["subject"] == "harbor" and "forty leads." in body
 
 
+def test_a_record_that_lands_after_its_window_is_new_evidence(tmp_path):
+    root = make_space(tmp_path / "ada", subjects=[{"id": "harbor", "kind": "projects", "title": "Harbor",
+                                                   "important": True}])
+    witness(root, "rec-1", "harbor", "Kickoff agreed.\n", NOW - 2 * D)
+    distill.run(root, now=NOW)
+    # generated before that run, released after it: the window held it in the other space
+    pages.write(root / "_inbound" / "candidates" / "p-0000aaaa.md",
+                {"id": "p-0000aaaa", "type": "source", "title": "Scope", "status": "draft",
+                 "generated": pages.generated("sweep", NOW - D), "record": "rec-2", "subject": "harbor",
+                 "at": pages.iso(NOW - 3 * D), "released_from": "bob", "released_at": pages.iso(NOW + H)},
+                "Scope confirmed.\n")
+    second = distill.run(root, now=NOW + 2 * H)
+    assert second.refreshed == 1
+    fm, _ = pages.read(root / "_inbound" / "candidates" / "harbor.md")
+    assert "rec-2" in fm["evidence"]
+
+
 def test_a_routed_page_is_evidence_for_its_subject_here(tmp_path):
     root = make_space(tmp_path / "ada", subjects=[{"id": "harbor", "kind": "projects", "title": "Harbor",
                                                    "important": True}])

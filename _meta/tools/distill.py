@@ -14,7 +14,7 @@ Evidence for a subject = witness pages under knowledge/sources/ carrying
 `subject: <id>` or `<id>` in `mentions`, landed records in _inbound/candidates/
 (frontmatter `released_from` and `subject: <id>`), and entries of the daily notes under
 journal/ that name the subject (a `subject: <id>` line or a desk path `work/<kind>/<id>/`). A page is
-new when `at` or `generated.at` is after the watermark. With `routing.archives` off (the
+new when `at`, `generated.at` or `released_at` is after the watermark. With `routing.archives` off (the
 default) a page `provenance.is_archive_derived` flags is no evidence, and an archive-derived
 target page lends no body.
 
@@ -121,7 +121,7 @@ class Evidence:
     record: str
     rel: str
     at: dt.datetime            # the record's own time
-    arrived: dt.datetime       # max(at, generated.at): when it reached this space
+    arrived: dt.datetime       # max(at, generated.at, released_at): when it reached this space
     title: str
     body: str
     subjects: list             # ids it is evidence for (subject first, then mentions)
@@ -140,7 +140,8 @@ def _evidence(root: Path, path: Path, fm: dict, body: str, landed: bool, space_n
     at = stamp_of(fm.get("at")) or gen_at
     if at is None:
         return None
-    arrived = max(at, gen_at) if gen_at else at
+    # a record that waited out a release window lands long after it was generated
+    arrived = max(t for t in (at, gen_at, stamp_of(fm.get("released_at"))) if t is not None)
     # evidence attaches by identifier or by a routing decision: a record joins the subjects it
     # matched or was routed to here, never one it merely mentions; a person the router named
     # (`informs` kind person) is a subject too
