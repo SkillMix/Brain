@@ -246,7 +246,7 @@ def test_a_space_never_moves_backwards(tmp_path):
     # synced main after the release: it waits for a release that descends from what it has
     (space / PROV).write_text(yaml.safe_dump({"repo": tpl.as_uri(), "commit": head, "files": {}}), encoding="utf-8")
     report = template_sync.run(space, source=tpl.as_uri())
-    assert report.note == "this space is ahead of v0.1.0" and not report.added and _items(space) == []
+    assert report.note == "this space is at or past v0.1.0" and not report.added and _items(space) == []
     # a commit the template's history does not hold (a rewritten history): the sync time decides
     for synced_at, ahead in (("2026-10-03T00:00:00Z", True), ("2026-09-30T00:00:00Z", False)):
         (space / PROV).write_text(yaml.safe_dump({"repo": tpl.as_uri(), "commit": "f" * 40, "synced_at": synced_at,

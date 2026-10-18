@@ -281,7 +281,7 @@ def _pick_release(root: Path, space, source: str, workdir: Path, previous: dict,
                 _ask(root, space, tpl, newest, tags[newest], previous)
     else:
         if not version(previous.get("release")):
-            report.note = f"this space is ahead of {newest}"
+            report.note = f"this space is at or past {newest}"
         if not check:
             _ask(root, space, None)
     current = str(previous.get("release") or "")
