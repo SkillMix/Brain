@@ -29,8 +29,9 @@ minutes, never `personal/`, `academic/`, `_scratch/` or a mount; ran the secret 
 unstaged every hit, counted, never quoted; committed `chore: sync`; advanced clean mount
 pins (`chore: pins`); fetched without recursing into mounts; merged `origin/main`
 (append-only files by union; a conflict aborts the merge and is recorded); pushed the
-changes to `sync/<hostname>` and opened a pull request when none was open, with changes under
-`protected:` paths on their own branch `sync/<hostname>-protected` and pull request; one run
+changes to `sync/<machine>` (a hash, never the machine's name) and opened a pull request
+when none was open, with changes under `protected:` paths on their own branch
+`sync/<machine>-protected` and pull request; one run
 line. The platform merges the first on green; the protected one waits for the space owner's
 one click, and nothing else waits behind it. Every push costs a paid check, so journal lines
 and run logs alone wait up to an hour, run lines and mount pins alone up to six hours (the run

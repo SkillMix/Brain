@@ -4,6 +4,7 @@ this file passes the scan itself."""
 import datetime as dt
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -480,3 +481,13 @@ def test_the_quiet_clock_moves_only_when_something_is_pushed(repo, monkeypatch):
 def test_the_private_state_zone_is_never_staged():
     import sync
     assert "_meta/state/private/" in sync.PRIVATE_ZONES
+
+
+def test_the_sync_branch_never_carries_the_machines_name(monkeypatch):
+    import socket
+    monkeypatch.setattr(socket, "gethostname", lambda: "Ada-Okafor-Laptop")
+    first = sync.hostname()
+    assert re.fullmatch(r"m-[0-9a-f]{8}", first) and "ada" not in first and "laptop" not in first
+    assert sync.hostname() == first   # stable: the same machine pushes the same branch
+    monkeypatch.setattr(socket, "gethostname", lambda: "other-machine")
+    assert sync.hostname() != first

@@ -13,10 +13,10 @@ routines only edit files. Each run:
      where origin holds only an earlier copy of this checkout's own change keeps ours
      (the rebuilt commits of step 6 share no history with it); any other conflict is
      aborted and recorded
-  6. when local main differs from origin/main: push it to sync/<hostname> and open the pull
-     request the platform merges. Changes under a `protected:` path go to their own branch
-     sync/<hostname>-protected (their own pull request, the owner's one click), so the
-     journal, desk and run lines never wait behind them; each branch is rebuilt on
+  6. when local main differs from origin/main: push it to sync/<machine> (a hash, never the
+     machine's name) and open the pull request the platform merges. Changes under a
+     `protected:` path go to their own branch sync/<machine>-protected (their own pull
+     request, the owner's one click), so the journal, desk and run lines never wait behind them; each branch is rebuilt on
      origin/main and pushed only when its content changed (main moving under a waiting pull
      request is no reason to rebuild it: every push reruns the checks). A change that is
      only run lines and mount pins goes out at most every QUIET_HOURS, one that is only
@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import importlib
 import json
 import os
@@ -72,7 +73,9 @@ def git(root, *args, check: bool = False, input: str | None = None, env: dict | 
 
 
 def hostname() -> str:
-    return re.sub(r"[^a-z0-9]+", "-", socket.gethostname().lower()).strip("-") or "host"
+    """This machine's part of its sync branch names: stable per machine, never its name, which
+    would put a computer's (often its person's) name into every company repository."""
+    return "m-" + hashlib.sha256(socket.gethostname().lower().encode("utf-8")).hexdigest()[:8]
 
 
 def git_dir(root: Path) -> Path | None:
