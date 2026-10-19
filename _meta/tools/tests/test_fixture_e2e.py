@@ -60,9 +60,11 @@ def test_the_fixture_writes_the_onboarding_page_its_top_owner_sees(fixture_dir):
 
 def test_at_once_release_landed_in_harbor(fixture_dir):
     target, _ = fixture_dir
-    # harbor's own weekly review batch (a contested page) is the one candidate made at home
+    # harbor's own weekly review batch (a contested page) and distill's candidates for its
+    # subjects (the landed records are their evidence) are made at home
     landed = [p for p in (target / "harbor" / "_inbound" / "candidates").glob("*.md")
-              if not p.name.startswith("review-")]
+              if not p.name.startswith("review-")
+              and (pages.read(p)[0].get("generated") or {}).get("by") != "distill"]
     # records handed sideways are evidence at their home, never something to sign
     records = [p for p in (target / "harbor" / "knowledge" / "sources").rglob("*.md")
                if pages.read(p)[0].get("landed_from")]
