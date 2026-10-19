@@ -1,6 +1,6 @@
-"""routine: run one of the person's routines headless through Claude Code's command line, for a
-machine whose harness has no scheduled tasks (Claude Code in a terminal rather than the desktop
-app). The OS scheduler starts it at the routine's times (`onboard.py <workspace> --os-routines`).
+"""routine: run one of the person's routines headless through Claude Code's command line, so the
+routines outlive the session that set them up. The OS scheduler starts it at the routine's times
+(`onboard.py <workspace> --os-routines`).
 
 The prompt is the rendered routine file without its frontmatter. Claude runs in the workspace
 with its permission profile; nobody is there to answer a permission prompt, so anything that

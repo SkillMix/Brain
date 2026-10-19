@@ -120,13 +120,16 @@ The agent registers a systemd user timer instead when `systemctl --user` works (
 person is logged in; `loginctl enable-linger` keeps it running otherwise); with neither, it asks
 once: `! sudo apt install cron`.
 
-### The harness has no scheduled tasks
+### The routines stopped when the session closed
 
-Claude Code in a terminal cannot schedule the sweep and daily chains. `onboard.py <workspace>
---os-routines` registers each routine with the OS scheduler at its times; it runs
-`routine.py`, which hands the prompt to `claude -p` in the workspace. Nobody answers a permission
-prompt there, so anything that would ask is refused and the routine goes on without it. The log
-is `~/.spaces/logs/<routine>-<space>.log`.
+Scheduled tasks of Claude Code in a terminal fire only while that session is open and expire
+after a few days, so no briefing comes once it closes. `onboard.py <workspace> --os-routines`
+registers each routine with the OS scheduler at its times; it runs `routine.py`, which hands the
+prompt to `claude -p` in the workspace. Nobody answers a permission prompt there, so anything
+that would ask is refused and the routine goes on without it. The log is
+`~/.spaces/logs/<routine>-<space>.log`. A harness whose scheduled tasks persist may hold the
+routines instead, recorded with `--routines-scheduled "<read-back>" ...`; `onboard.py --check`
+shows "routines scheduled" failing until one of the two reads back.
 
 ### macOS asks for access to Documents, Desktop or Downloads
 

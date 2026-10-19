@@ -900,8 +900,11 @@ def register_sync(report, root, name, minutes, offline, dry_run) -> dict:
     return record
 
 
+ROUTINE_PROMPTS = Path("_meta") / "state" / "routines"
+
+
 def register_routines(report, workspace, offline=False, dry_run=False) -> list:
-    """For a harness without scheduled tasks: each routine rendered under
+    """The routines' schedule that outlives the session: each routine rendered under
     `_meta/state/routines/` becomes an OS task that runs `routine.py <prompt>` at the routine's
     times, which hands the prompt to `claude -p`. Recorded as `routine_tasks` for `--check`."""
     workspace = Path(workspace).resolve()
@@ -912,7 +915,8 @@ def register_routines(report, workspace, offline=False, dry_run=False) -> list:
         if routine.find_claude() is None:   # the desktop app alone installs no `claude` command
             report.add("routines as OS tasks", False, "claude --version",
                        "no `claude` command on this machine, so OS tasks would never run: schedule the "
-                       "routines with the app's own scheduled tasks instead")
+                       "routines with the app's own scheduled tasks if they persist, and record them "
+                       "with --routines-scheduled")
             return records
     for prompt in sorted((workspace / "_meta" / "state" / "routines").glob("*.md")):
         meta = yaml.safe_load(prompt.read_text(encoding="utf-8").split("---")[1]) or {}
@@ -934,6 +938,53 @@ def register_routines(report, workspace, offline=False, dry_run=False) -> list:
         state["routine_tasks"] = records
         write_yaml(path, state)
     return records
+
+
+def record_routine_checks(report, workspace, checks) -> list:
+    """The harness's own scheduled tasks hold the routines and outlive the session: one read-back
+    per rendered routine (`test -f <path>`, `grep -c '<text>' <path>` or a `gh` command), run now
+    and recorded as `routine_checks` for `--check` only when every one passes."""
+    workspace = Path(workspace).resolve()
+    prompts = sorted((workspace / ROUTINE_PROMPTS).glob("*.md"))
+    checks = [str(c).strip() for c in checks or [] if str(c).strip()]
+    if len(checks) < len(prompts) or not prompts:
+        report.add("routines scheduled", False, f"ls {ROUTINE_PROMPTS.as_posix()}",
+                   f"one read-back per routine: {len(prompts)} rendered, {len(checks)} given")
+        return []
+    rows = []
+    for n, check in enumerate(checks, 1):
+        passed = readback(check)
+        rows.append({"name": f"routine scheduled {n}", "check": check})
+        report.add(f"routine scheduled {n}", passed is True, check,
+                   "reads back" if passed else ("the read-back fails" if passed is False
+                                                else "not a read-back --check can run: test -f, grep -c or gh"))
+    if all(s.done for s in report.steps[-len(rows):]):
+        path = workspace / "_meta" / "state" / "onboard.yaml"
+        state = read_yaml(path, {}) or {}
+        state["routine_checks"] = rows
+        write_yaml(path, state)
+        return rows
+    return []
+
+
+def routine_schedule(workspace) -> list:
+    """The routines' schedule read back: each OS routine task, each recorded harness read-back.
+    Empty when nothing is recorded: rendered prompts alone schedule nothing."""
+    state = read_yaml(Path(workspace) / "_meta" / "state" / "onboard.yaml", {}) or {}
+    steps = [task_step(f"routine task {t['name']}", t) for t in state.get("routine_tasks") or [] if t.get("check")]
+    for row in state.get("routine_checks") or []:
+        passed = readback(row.get("check", "")) is True
+        steps.append(Step(row.get("name") or "routine scheduled", passed, row.get("check", ""),
+                          "reads back" if passed else "the read-back fails: schedule the routine again"))
+    return steps
+
+
+def unscheduled_step(workspace) -> Step:
+    """The row for rendered routines nothing has scheduled yet, with the command that does."""
+    ws = Path(workspace).as_posix()
+    return Step("routines scheduled", False, f"python {ws}/_meta/tools/onboard.py {ws} --os-routines",
+                "not scheduled: run the check's command (the OS scheduler outlives this session), or "
+                "record the harness's own persistent tasks with --routines-scheduled")
 
 
 def platform_settings(report, root, repo, org, dry_run) -> None:
@@ -1465,7 +1516,10 @@ def check(root) -> list:
                           "cat _meta/state/sync-task.txt", "offline: recorded, not registered"))
     elif task.get("check"):
         steps.append(task_step("sync task", task))
-    steps.extend(task_step(f"routine task {t['name']}", t) for t in state.get("routine_tasks") or [] if t.get("check"))
+    scheduled = routine_schedule(root)
+    if not scheduled and not state.get("offline") and any((root / ROUTINE_PROMPTS).glob("*.md")):
+        scheduled = [unscheduled_step(root)]   # rendered is not scheduled: done only once it reads back
+    steps.extend(scheduled)
     steps.extend(routine_run_step(t["name"]) for t in state.get("routine_tasks") or [] if t.get("name"))
     if state and not state.get("offline"):
         # this machine's prerequisites, read only: what broke since onboarding is named with its fix
@@ -1882,7 +1936,11 @@ def main(argv=None) -> int:
                     help="register this checkout's sync task (every 15 minutes) and add it to the "
                          "spaces on this machine, which the chains run over")
     ap.add_argument("--os-routines", action="store_true",
-                    help="a harness without scheduled tasks: the OS runs this workspace's routines via `claude -p`")
+                    help="schedule this workspace's routines so they outlive the session: the OS runs them "
+                         "via `claude -p`")
+    ap.add_argument("--routines-scheduled", nargs="+", metavar="CHECK",
+                    help="the harness's own scheduled tasks hold the routines and persist: one read-back per "
+                         "routine (test -f <path>, grep -c '<text>' <path>, or a gh command)")
     args = ap.parse_args(argv)
     if args.fixture:
         return fixture(args.fixture)
@@ -1907,10 +1965,18 @@ def main(argv=None) -> int:
         register_sync(report, root, spaceyaml.load(root).name, 15, args.offline, args.dry_run)
         print_steps(report.steps)
         return 1 if report.failed() else 0
-    if args.os_routines:
+    if args.os_routines or args.routines_scheduled:
         report = Report(case="routines")
-        register_routines(report, root, offline=args.offline, dry_run=args.dry_run)
+        if args.os_routines:
+            register_routines(report, root, offline=args.offline, dry_run=args.dry_run)
+        else:
+            record_routine_checks(report, root, args.routines_scheduled)
         print_steps(report.steps or [Step("routines", False, "ls _meta/state/routines", "none rendered yet: run start.py")])
+        if report.steps and not args.dry_run and not args.offline:
+            import onboarding_page   # the page shows Routines done once the schedule reads back
+            page = onboarding_page.after_check(root, routine_schedule(root) or report.steps)
+            if page:
+                print(f"page: {page}")
         return 1 if report.failed() or not report.steps else 0
     if args.go_live:
         report = go_live(root, read_yaml(args.answers, {}) if args.answers else {}, offline=args.offline,

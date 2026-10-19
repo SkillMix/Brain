@@ -43,13 +43,19 @@ line what you are doing and go on, without asking again.
    Open the page start prints (`page`, `~/.spaces/onboarding.html`) for the person, in the
    app's browser pane or their own browser: it shows the same rows as stages, what only they
    can do with each command, and how the system works. Reload it after each step below.
-6. Schedule the routines in the result (`routines`: name, `schedule` as cron, `prompt_file`)
-   with your harness's scheduled tasks, one task each, the prompt file's text as the task's
-   prompt. In the Claude desktop app these tools may be deferred: search for "scheduled task"
-   and load them before deciding there are none. Only without scheduled tasks (Claude Code in a
-   terminal, where the `claude` command exists), run
-   `python <workspace>/_meta/tools/onboard.py <workspace> --os-routines` instead: the OS
-   scheduler runs each routine at its times through `claude -p`.
+6. Schedule the routines in the result (`routines`: name, `schedule` as cron, `prompt_file`) so
+   they outlive this session: `python <workspace>/_meta/tools/onboard.py <workspace>
+   --os-routines`. The OS scheduler runs each routine at its times through `claude -p`, whether
+   or not a session is open. Never use scheduled tasks that end with the session (Claude Code's
+   in a terminal fire only while that session is open and expire). When there is no `claude`
+   command (the desktop app alone), the tool says so: then use the harness's own scheduled
+   tasks only if they persist after it closes (in the Claude desktop app these tools may be
+   deferred: search for "scheduled task" and load them), one task each with the prompt file's
+   text as its prompt, and record one read-back per routine with `python
+   <workspace>/_meta/tools/onboard.py <workspace> --routines-scheduled "<read-back>" ...` (`test
+   -f <file>`, `grep -c '<text>' <file>` or a `gh` command; the desktop app keeps each task in
+   `~/.claude/scheduled-tasks/<task>/SKILL.md`). It runs each read-back and records them only
+   when all pass. The page and `onboard --check` show Routines done only once they read back.
 7. Quiet GitHub: the sync opens and merges its own pull requests several times a day, and
    GitHub emails everyone watching. For the brain and each mounted project repository the
    person did not have before, `gh api -X DELETE repos/<owner>/<repo>/subscription` (watch
@@ -93,9 +99,10 @@ added. Read-back: the feed file `_meta/state/feed/<feed>.jsonl` has records.
 ## "Schedule my routines"
 
 The rendered prompts are in `<workspace>/_meta/state/routines/`; schedule each as in step 6
-above (`--os-routines` when the harness has no scheduled tasks). Read-back: the next day's run
-lines in `_meta/state/runs.jsonl` carry `sweep-chain` and `daily-chain`; `onboard --check`
-reads OS routine tasks back.
+above (`--os-routines`, or persistent harness tasks recorded with `--routines-scheduled`).
+Read-back: `onboard --check` reads each OS routine task, or each recorded read-back, back, and
+shows "routines scheduled" failing with the command when nothing is scheduled; the next day's
+run lines in `_meta/state/runs.jsonl` carry `sweep-chain` and `daily-chain`.
 
 ## "Is this set up?"
 
