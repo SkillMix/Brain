@@ -22,6 +22,21 @@ new client, project or deal enters that registry with `python _meta/tools/regist
 The tool decides nothing. You judge from the records; `classify.py` checks who may say what,
 carries the notes to the brain and enforces the gate at every exit.
 
+## When a classification takes effect
+
+- **In the workspace that decided: at once.** `decide` checks the note against the brain's own
+  rules first (a refusal comes now, nothing is sent), and the classification governs this
+  workspace while the note travels. Record a route that was refused as unclassified again right
+  after.
+- **In the brain: on its next sync.** The note leaves with this workspace's sync and arrives as a
+  pull request. The brain's sync applies registry notes in its release leg (`classify.py <brain>
+  land`, which `release.py ship` runs) and logs each one, applied or refused, in
+  `_meta/state/registry-notes.jsonl`.
+- **In every other workspace: once its sync brings the new brain in**, a few sync runs after the
+  decision (about an hour). A refusal there names whose workspace classifies the subject.
+- A note the brain refused stops counting here as soon as the brain's log shows it; the refusal
+  says why.
+
 ## Who decides
 
 - The subject's owner's workspace decides. A project or deal without its own owner follows its

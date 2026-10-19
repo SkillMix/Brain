@@ -171,6 +171,21 @@ def gate(space, reg, sid, destination) -> tuple | None:
     return None
 
 
+def next_step(space, reg, sid) -> str:
+    """What opens the gate for an unclassified subject, said to the agent that met it."""
+    who = decider(space, reg, sid)
+    if who in ("self", "stand_in"):
+        return (f"classify it here: classify.py <root> decide {sid} --class company|walled|owner --reason "
+                "\"<one line>\" (the classify skill); it takes effect in this workspace at once, then "
+                "record this decision again")
+    if who == "no_owner":
+        return (f"nobody handles it yet: classify.py <root> owner {sid} --person \"<name>\" --evidence <record id>, "
+                "then that person's workspace classifies it")
+    return (f"{subject_owner(reg, sid)}'s workspace classifies it; it reaches this workspace once the brain's "
+            "sync has applied it and this workspace's sync has brought the brain in (a few sync runs, about "
+            "an hour); record this decision again then")
+
+
 def gate_all(space, reg, sid, also, destination) -> tuple | None:
     """The gate for a projection about `sid` that is also about the subjects in `also`: each must
     let it go; one whose classification names another home keeps it home for good."""
@@ -296,7 +311,7 @@ def requeue(root, space=None, reg=None, now=None) -> dict:
 
 # ----- registry notes: how a space changes the registry that holds a subject -----------------------
 NOTE_KINDS = ("owner", "workspace", "ask", "classification", "obligation", "checked")
-NOTES_LOG = Path("_meta") / "state" / "registry-notes.jsonl"
+NOTES_LOG = registry_mod.NOTES_LOG
 SIGNALS_OUT = Path("_outbound") / "signals"
 SIGNALS_IN = Path("_inbound") / "signals"
 
@@ -318,9 +333,27 @@ def _holder_name(space, subject) -> str | None:
         return subject.space
 
 
-def note(root, sid, kind, data, now=None) -> Path | None:
+def _as_holder(space, subject, signal, now) -> tuple:
+    """What the registry that holds `subject` would do with `signal`, read through its mount:
+    ("applied", "", the classification it would write) or ("refused", why, None). Nothing is
+    saved; an unreadable holder answers ("unknown", "", None)."""
+    holder = space.mount_root(subject.space) if subject.space else None
+    try:
+        holder_space = spaceyaml.load(holder)
+        holder_reg = registry_mod.Registry(holder, holder_space)
+    except Exception:
+        return "unknown", "", None
+    outcome, why = apply_note(holder, holder_space, holder_reg, signal, now)
+    entry = holder_reg.subjects.get(subject.id)
+    return outcome, why, classification_of(entry) if outcome == "applied" else None
+
+
+def note(root, sid, kind, data, now=None, sent=None) -> Path | None:
     """Tell the registry that holds `sid` something: applied at once when this space's own
-    registry holds it (returns None), else a `kind: registry` signal to the holding space."""
+    registry holds it (returns None), else a `kind: registry` signal to the holding space. A
+    classification for another registry is first checked against that registry's rules, so a
+    refusal comes now; `sent` (a dict) then gets the classification it will write, which governs
+    this space at once while the note travels (registry.Registry)."""
     if kind not in NOTE_KINDS:
         raise ClassifyError(f"a note is one of {', '.join(NOTE_KINDS)}")
     root = Path(root)
@@ -341,6 +374,13 @@ def note(root, sid, kind, data, now=None) -> Path | None:
     if subject is None:
         raise ClassifyError(f"{sid} is not in the registry")
     signal["destination"] = _holder_name(space, subject)
+    if kind == "classification":
+        outcome, why, result = _as_holder(space, subject, signal, now)
+        if outcome == "refused":
+            raise ClassifyError(why)
+        if result and sent is not None:
+            sent["classification"] = {k: v for k, v in result.items()
+                                      if k in ("class", "state", "home", "crew", "at", "decided_by", "for")}
     path = root / SIGNALS_OUT / f"{signal['id']}.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
     import yaml
@@ -554,7 +594,7 @@ def land_notes(root, space=None, now=None) -> dict:
 
 
 # ----- the verbs: what this space's agent says ------------------------------------------------------
-SENT_LOG = Path("_meta") / "state" / "classify.jsonl"
+SENT_LOG = registry_mod.SENT_NOTES
 ITEMS = Path("_inbound") / "needs-you" / "classify.yaml"
 PROPOSALS = Path("_meta") / "state" / "classify-proposals"
 PENDING = Path("_meta") / "state" / "private" / "classify-pending.json"
@@ -567,9 +607,10 @@ def _load(root, now=None):
 
 
 def _send(root: Path, sid, kind, data, now) -> Path | None:
-    path = note(root, sid, kind, data, now)
+    sent: dict = {}
+    path = note(root, sid, kind, data, now, sent=sent)
     _append(root / SENT_LOG, json.dumps({"at": pages.iso(now), "note": kind, "subject": str(sid),
-                                         "signal": path.stem if path else None}))
+                                         "signal": path.stem if path else None, **sent}))
     return path
 
 

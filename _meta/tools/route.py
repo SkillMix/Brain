@@ -412,8 +412,7 @@ def _validate(root: Path, space, reg, decision: dict, now: dt.datetime, strict: 
         if home is None and str(r.get("space")) != space.name and classify.gated(reg, subject.id) \
                 and classify.effective(reg, subject.id) is None:   # its classification names the home
             raise RouteError(f"{rid}: {subject.id} is unclassified, so nothing about it leaves {space.name} "
-                             "yet: its owner's agent classifies it (classify.py <root> pending), then record "
-                             "this decision again")
+                             f"yet: {classify.next_step(space, reg, subject.id)}")
         home = home or space.name
         if str(r.get("space")) != home:
             raise RouteError(f"{rid}: {subject.id}'s home is {home}, not {r.get('space')}")

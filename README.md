@@ -301,6 +301,13 @@ came into until its owner's agent classifies it: your Needs-you list counts what
 for a classification (Dune Bakery)"), and a route to the brain is refused as unclassified.
 Projects and deals are added the same way (`--kind projects --part-of <client>`).
 
+The owner's agent classifies it with `python _meta/tools/classify.py . decide dune-bakery --class
+company --reason "<one line>"` in their workspace, or the classify skill does it in the next
+sweep. The classification counts in that workspace at once: record the refused route again. It
+travels to the brain as a note; the brain's sync applies it (its release leg runs
+`classify.py <brain> land`), and every other workspace sees it once its own sync brings the new
+brain in, a few sync runs later.
+
 ## Start a project from a desk seed
 
 When something on your desk gains a second reader, mint it:

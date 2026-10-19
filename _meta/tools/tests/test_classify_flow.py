@@ -149,6 +149,61 @@ def test_retract_withdraws_an_unclassified_projection(tmp_path):
     assert out["withdrawn"] == [fm["id"]] and fm["reason"] == "withdrawn"
 
 
+# ----- a classification takes effect where it was made, at once -----------------------------------
+def add_client(brain, sid="copper", owner="Ada Okafor", *others):
+    """A client as `registry.py <brain> add` writes it: no home, no classification."""
+    path = brain / "_meta" / "subjects.yaml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data["subjects"] += list(others) + [{"id": sid, "kind": "clients", "title": "Copperleaf", "owner": owner,
+                                         "match": {"domain": "copper.example"}}]
+    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+
+def refusal(root, dec):
+    try:
+        route.record(root, dec, now=NOW)
+    except route.RouteError as exc:
+        return str(exc)
+    return None
+
+
+def test_a_classification_opens_the_deciding_workspace_at_once(tmp_path):
+    brain, _, ada = world(tmp_path)
+    add_client(brain)
+    captured(ada, participants=["ada@lantern.example", "kim@copper.example"])
+    why = refusal(ada, decision("lantern", "copper"))
+    assert "classify.py <root> decide copper" in why and "at once" in why
+    classify.decide(ada, "copper", "company", "ordinary client work", now=NOW)
+    out = route.record(ada, decision("lantern", "copper"), now=NOW)   # no sync run in between
+    (fm, _), = folder(ada, "queue")
+    assert out["queued"] == [fm["id"]] and fm["first_release"] == "copper"
+    # the note travels; once the brain applied it, the brain's own entry governs
+    release.ship(ada, now=NOW, offline_roots={"lantern": brain})
+    classify.land_notes(brain, now=NOW)
+    c = registry.Registry(ada).get("copper").extra["classification"]
+    assert c["class"] == "company" and c["home"] == "lantern" and "travelling" not in c
+
+
+def test_a_refused_classification_opens_nothing(tmp_path):
+    brain, _, ada = world(tmp_path)
+    add_client(brain)
+    captured(ada, participants=["ada@lantern.example", "kim@copper.example"])
+    path = classify.decide(ada, "copper", "company", "ordinary client work", now=NOW)["note"]
+    log = brain / "_meta" / "state" / "registry-notes.jsonl"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text(json.dumps({"id": path.stem, "outcome": "refused", "why": "test"}) + "\n", encoding="utf-8")
+    assert "unclassified" in refusal(ada, decision("lantern", "copper"))
+
+
+def test_the_refusal_names_whose_workspace_classifies(tmp_path):
+    brain, _, ada = world(tmp_path)
+    add_client(brain, "copper", "Chloe Martin",
+               {"id": "chloe", "kind": "people", "title": "Chloe Martin", "workspace": "chloe"})
+    captured(ada, participants=["ada@lantern.example", "kim@copper.example"])
+    why = refusal(ada, decision("lantern", "copper"))
+    assert "Chloe Martin's workspace classifies it" in why and "record this decision again then" in why
+
+
 # ----- the sweep without the router --------------------------------------------------------------
 def test_sweep_holds_an_unclassified_subject(tmp_path):
     _, _, ada = world(tmp_path, routing=False)
