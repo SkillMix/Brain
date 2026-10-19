@@ -48,6 +48,13 @@ the shape and ships its migration. Each choice behind a change has a line in
   inviter cannot administer is its owner's to share; on a personal account it advises a
   collaborator, with the `gh api -X PUT repos/<owner>/<repo>/collaborators/<login>` line for the
   owner to run; in an organisation, a team as before.
+- **The fixture on Windows.** The README said the fixture takes a few minutes on Windows; a
+  newcomer's run took 24. Before each of its 61 behaviour scenarios the runner read back every
+  file it had just copied, and on Windows the first read of a new file waits for the virus
+  scanner: about two and a half seconds per scenario. The copy now hashes each file as it copies
+  it and both snapshots read only what changed since; on the machine measured the fixture went
+  from about four minutes to under two. The README gives the time as measured, says the output
+  comes at the end when sent to a file, and shows the table the fixture prints today.
 - **A release clone of another repository.** Release clones under `~/.spaces/.release/` are
   kept by space name. A clone left there by an older space of the same name (a company set up
   again after its repositories were deleted) was reused: releases and classification notes

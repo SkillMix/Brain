@@ -89,13 +89,41 @@ def module_of(data: dict) -> str | None:
 
 # ----- the run -----------------------------------------------------------------------
 
-def _snapshot(root: Path) -> dict:
+def _copy(root: Path, temp_root: Path) -> dict:
+    """Copy the space and return each copied file's size, mtime and sha1, taken from the bytes
+    as they are copied. On Windows the first read of a file just written is the slow part (the
+    virus scanner reads it first), so both snapshots reuse these."""
+    copied: dict = {}
+
+    def copy(src, dst):
+        data = Path(src).read_bytes()
+        Path(dst).write_bytes(data)
+        shutil.copystat(src, dst)
+        stat = os.stat(dst)
+        copied[Path(dst).relative_to(temp_root).as_posix()] = (
+            stat.st_size, stat.st_mtime_ns, hashlib.sha1(data).hexdigest())
+        return dst
+
+    shutil.copytree(root, temp_root, ignore=_copy_ignore(root), copy_function=copy)
+    return copied
+
+
+def _snapshot(root: Path, copied: dict | None = None) -> dict:
+    """Path to sha1 of every file. A copied file whose size and mtime are still the copy's is
+    not read again: any write since moves its mtime."""
     table: dict = {}
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in COPY_SKIP]
         for name in filenames:
             path = Path(dirpath) / name
-            table[path.relative_to(root).as_posix()] = hashlib.sha1(path.read_bytes()).hexdigest()
+            rel = path.relative_to(root).as_posix()
+            known = (copied or {}).get(rel)
+            if known:
+                stat = path.stat()
+                if known[:2] == (stat.st_size, stat.st_mtime_ns):
+                    table[rel] = known[2]
+                    continue
+            table[rel] = hashlib.sha1(path.read_bytes()).hexdigest()
     return table
 
 
@@ -222,10 +250,10 @@ def run(root, scenario_path) -> Report:
     name = str(data.get("name"))
     with tempfile.TemporaryDirectory(prefix="behaviour-", ignore_cleanup_errors=True) as tmp:
         temp_root = Path(tmp) / "space"
-        shutil.copytree(root, temp_root, ignore=_copy_ignore(root))
+        copied = _copy(root, temp_root)
         _hermetic(temp_root)
         _write_setup(temp_root, (data.get("setup") or {}).get("files") or {})
-        before = _snapshot(temp_root)
+        before = _snapshot(temp_root, copied)
         env = os.environ.copy()
         env.update({"PYTHONDONTWRITEBYTECODE": "1", "PYTHONIOENCODING": "utf-8"})
         env.update({str(k): _substitute(v, temp_root) for k, v in (data.get("env") or {}).items()})
@@ -239,7 +267,7 @@ def run(root, scenario_path) -> Report:
             code, output = None, f"timed out after {TIMEOUT_SECONDS}s"
         except OSError as exc:
             code, output = None, str(exc)
-        after = _snapshot(temp_root)
+        after = _snapshot(temp_root, copied)
         checks = _compare(temp_root, before, after, data.get("expect") or {}, code, output)
     for check in checks:
         check["scenario"] = name
