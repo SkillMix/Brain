@@ -292,7 +292,11 @@ crew on) and puts one item on your Needs-you list with the sentence to send them
 in Claude Code on their own machine and their agent does the rest in about fifteen minutes,
 mostly their sign-ins. Nothing is done for them. Someone not in the registry yet is added by the
 same command with `--name "<full name>"` (and `--email <address>`). Until they can read the
-brain, a second item asks you to give them access.
+brain and the template, a second item says how they get access and who gives it. In an
+organisation that is a team with read access. On a personal account, which has no teams, it is
+adding them as a collaborator, and the item has the exact command for you to run. A private
+template can only be shared by its owner; a public one needs no grant. Agents never grant
+access themselves.
 
 ## Add a client
 
