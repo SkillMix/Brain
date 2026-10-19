@@ -31,6 +31,12 @@ the shape and ships its migration. Each choice behind a change has a line in
   scheduler, through `claude -p`), or with a harness's tasks only when they persist, recorded
   with `--routines-scheduled <read-back>`. The page and `--check` show Routines done only once
   the schedule reads back; until then `--check` shows "routines scheduled" with the command.
+- **Needs you counts what waits for a classification.** The count covered only projections held
+  at home, so a route refused as unclassified left no trace, and a draft page about a client
+  nobody had classified was offered for a signature. One line now counts held projections,
+  refused routes (the router logs each refusal) and candidates about the client, names the
+  clients and says who classifies each. Such a candidate is not offered or signed until the
+  client is classified. The doubt line counts only what is held in doubt.
 - **A release clone of another repository.** Release clones under `~/.spaces/.release/` are
   kept by space name. A clone left there by an older space of the same name (a company set up
   again after its repositories were deleted) was reused: releases and classification notes

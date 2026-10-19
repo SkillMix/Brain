@@ -69,6 +69,15 @@ class AlreadyRouted(RouteError):
     """The record has a decision: a rerun is skipped, never routed twice."""
 
 
+class Unclassified(RouteError):
+    """A route to a client, project or deal nobody has classified yet: logged, so Needs you
+    counts the record as waiting for its classification."""
+
+    def __init__(self, subject: str, text: str) -> None:
+        super().__init__(text)
+        self.subject = subject
+
+
 def _flat(text) -> str:
     return " ".join(str(text or "").split())
 
@@ -411,8 +420,8 @@ def _validate(root: Path, space, reg, decision: dict, now: dt.datetime, strict: 
         home = reg.home_of(subject.id)
         if home is None and str(r.get("space")) != space.name and classify.gated(reg, subject.id) \
                 and classify.effective(reg, subject.id) is None:   # its classification names the home
-            raise RouteError(f"{rid}: {subject.id} is unclassified, so nothing about it leaves {space.name} "
-                             f"yet: {classify.next_step(space, reg, subject.id)}")
+            raise Unclassified(subject.id, f"{rid}: {subject.id} is unclassified, so nothing about it leaves "
+                               f"{space.name} yet: {classify.next_step(space, reg, subject.id)}")
         home = home or space.name
         if str(r.get("space")) != home:
             raise RouteError(f"{rid}: {subject.id}'s home is {home}, not {r.get('space')}")
@@ -495,7 +504,12 @@ def record(root, decision: dict, now: dt.datetime | None = None, by: str | None 
                          "by identifier, and two paths must never release the same record")
     reg = registry.Registry(root, space)
     asks = decision.get("confidence") == "low" and not by
-    path, fm, body, rec = _validate(root, space, reg, decision, now, strict=not asks)
+    try:
+        path, fm, body, rec = _validate(root, space, reg, decision, now, strict=not asks)
+    except Unclassified as exc:   # the record waits here for the classification: Needs you counts it
+        _log(root, {"at": pages.iso(now), "record": str(decision.get("record") or ""), "decision": "refused",
+                    "reason": "unclassified", "subject": exc.subject, "by": by or "router"})
+        raise
     history_low = asks and rec["history"]
     if history_low:   # history asks no question: a low-confidence call keeps it here, counted
         decision, asks = dict(decision, decision="private", routes=[]), False

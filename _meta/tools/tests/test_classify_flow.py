@@ -410,9 +410,11 @@ def test_doubt_line_counts_unclassified_but_does_not_offer_them(tmp_path):
     held_page(ada, "p-00000d01", "doubt")
     held_page(ada, "p-00000c01", "unclassified")
     held_page(ada, "p-00000c02", "unclassified")
-    line = next(i for i in needs_you.collect(ada, NOW, online=False) if i.id == "doubt")
-    assert line.text == "held in doubt: 1, 2 wait for a classification (Harbor)"
-    assert needs_you.doubt_count(ada) == 3
+    by_id = {i.id: i for i in needs_you.collect(ada, NOW, online=False)}
+    assert by_id["doubt"].text == "held in doubt: 1"
+    assert by_id["classification"].text == "2 wait for a classification (Harbor)"
+    assert by_id["classification"].recommendation == "ask your agent to classify Harbor (the classify skill)"
+    assert needs_you.doubt_count(ada) == 1 and needs_you.classification_waits(ada) == {"harbor": 2}
     assert [i.id for i in needs_you.doubt_items(ada)] == ["p-00000d01"]
     report = sign.apply(ada, {"p-00000c01": "yes"}, by="Ada Okafor", now=NOW)
     assert report.skipped == ["p-00000c01"]
@@ -546,5 +548,37 @@ def test_mint_needs_no_home_item_after_a_walled_classification(tmp_path, monkeyp
 def test_a_client_waiting_only_for_its_classification_is_named_on_needs_you(tmp_path):
     _, _, ada = world(tmp_path)
     held_page(ada, "p-00000c03", "unclassified")
-    line = next(i for i in needs_you.collect(ada, NOW, online=False) if i.id == "doubt")
-    assert line.text == "1 wait for a classification (Harbor)"
+    items = needs_you.collect(ada, NOW, online=False)
+    line, = [i for i in items if i.id == "classification"]
+    assert line.text == "1 wait for a classification (Harbor)" and not [i for i in items if i.id == "doubt"]
+
+
+def test_a_route_refused_as_unclassified_is_counted(tmp_path):
+    brain, _, ada = world(tmp_path)
+    add_client(brain)
+    captured(ada, participants=["ada@lantern.example", "kim@copper.example"])
+    try:
+        route.record(ada, decision("lantern", "copper"), now=NOW)
+        raise AssertionError("the route should be refused")
+    except route.Unclassified as exc:
+        assert exc.subject == "copper"
+    line, = [i for i in needs_you.collect(ada, NOW, online=False) if i.id == "classification"]
+    assert line.text == "1 wait for a classification (Copperleaf)"
+    classify_in_brain(brain, "copper", COMPANY)
+    assert needs_you.classification_waits(ada) == {}
+
+
+def test_a_candidate_about_an_unclassified_client_is_not_offered(tmp_path):
+    brain, _, ada = world(tmp_path)
+    add_client(brain)
+    write_page(ada, "_inbound/candidates/copper.md", id="p-0000aa01", type="entity", title="Copperleaf",
+               subject="copper", kind="clients", evidence=["m-1"])
+    items = needs_you.collect(ada, NOW, online=False)
+    assert "p-0000aa01" not in [i.id for i in items]
+    line, = [i for i in items if i.id == "classification"]
+    assert line.text == "1 wait for a classification (Copperleaf)"
+    assert sign.apply(ada, {"p-0000aa01": "yes"}, by="Ada Okafor", now=NOW).skipped == ["p-0000aa01"]
+    assert (ada / "_inbound" / "candidates" / "copper.md").exists()
+    classify_in_brain(brain, "copper", COMPANY)
+    offered, = [i for i in needs_you.collect(ada, NOW, online=False) if i.id == "p-0000aa01"]
+    assert offered.text == "Copperleaf for copper: sign?"

@@ -52,6 +52,7 @@ LABELS = {
     "reconnect": "apps to reconnect",
     "protected_pr": "changes waiting for your one click",
     "outbox": "drafts older than two weeks, not sent",
+    "classification": "items waiting for a client's classification",
     "doubt": "items held back in doubt",
     "landed_silently": "updates that landed here silently this week",
     "meetings": "meetings today and tomorrow, with who is who on your page",
@@ -366,6 +367,8 @@ def run(root, person: str, now: dt.datetime | None = None, shadow: bool = False,
     counts = dict(Counter(item.kind for item in items))
     if "doubt" in counts:  # one list line, but the mail counts the held pages
         counts["doubt"] = needs_you.doubt_count(root)
+    if "classification" in counts:   # one line too; the mail counts what waits
+        counts["classification"] = sum(needs_you.classification_waits(root, space).values())
     silent = sum(_landed_this_week(home, space, now) for home in _owned_homes(root, space))
     if silent:
         counts["landed_silently"] = silent

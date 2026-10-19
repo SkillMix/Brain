@@ -21,8 +21,10 @@ Only a person signs. The read-back shows the exact text that will land and its f
    `python _meta/tools/needs_you.py <root> --doubt` lists each held page with its reason and
    recommendation; its id takes the same verbs (yes releases it, no keeps it home for good,
    `edit <subject>` names the one subject it is about, always adds the standing choice). The
-   line's ", M wait for a classification" part is counted, never offered: those leave on their
-   own once their owner's workspace classifies the client, project or deal. A line
+   line "M wait for a classification (names)" is counted, never offered: held projections,
+   records whose route was refused and candidates about a client, project or deal nobody has
+   classified yet. Its recommendation says who classifies each; once classified, the held ones
+   leave on their own and the candidates come back to be signed. A line
    "<subject>: the first N items since it was classified company leave for ..." stands for every
    one of them: its verdict applies to each.
 2. Brief and take verdicts (contract below). Verbs: `yes`, `edit <note>`, `no`, `later`,

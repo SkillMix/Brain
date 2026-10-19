@@ -302,8 +302,9 @@ In the brain, or ask your agent "add the client <name>":
 
 Mail from that domain is then matched to the client. Nothing about it leaves the workspace it
 came into until its owner's agent classifies it: your Needs-you list counts what waits ("2 wait
-for a classification (Dune Bakery)"), and a route to the brain is refused as unclassified.
-Projects and deals are added the same way (`--kind projects --part-of <client>`).
+for a classification (Dune Bakery)") and says who classifies it, and a route to the brain is
+refused as unclassified. A draft page about the client is not offered for your signature until
+then. Projects and deals are added the same way (`--kind projects --part-of <client>`).
 
 The owner's agent classifies it with `python _meta/tools/classify.py . decide dune-bakery --class
 company --reason "<one line>"` in their workspace, or the classify skill does it in the next

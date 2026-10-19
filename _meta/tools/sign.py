@@ -79,10 +79,12 @@ def index(root: Path) -> dict:
             if key:
                 found.setdefault(key, entry)
 
+    waiting = {rel for rel, _, _ in needs_you.waiting_candidates(root)}   # signed once classified
     for folder, kind in ((needs_you.CANDIDATES, "candidate"), (needs_you.CHECKS, "check"),
                          (needs_you.QUESTIONS, "question"), (needs_you.ANSWERS, "answer")):
         for rel, fm, body in needs_you.pages_in(root, folder):
-            add(kind, rel, fm, body)
+            if rel not in waiting:
+                add(kind, rel, fm, body)
     firsts: dict = {}
     for rel, fm, body in needs_you.pages_in(root, needs_you.QUEUE):
         add("high_stakes" if fm.get("high_stakes") else "leaving", rel, fm, body)
