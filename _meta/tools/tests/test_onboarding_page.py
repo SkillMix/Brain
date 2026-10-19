@@ -18,14 +18,18 @@ def states(html: str) -> list:
     return re.findall(r'<li class="step state-([a-z-]+)"[^>]*>.*?<span class="name">([^<]+)', html, re.S)
 
 
-def company(tmp_path, schedule="30 6 * * *"):
-    """A brain and Ada's workspace, her daily chain rendered at `schedule`."""
+def company(tmp_path, schedule="30 6 * * *", scheduled=True):
+    """A brain and Ada's workspace, her daily chain rendered at `schedule` and, when `scheduled`,
+    recorded with a read-back that passes (as `--routines-scheduled` records a harness task)."""
     brain = make_space(tmp_path / "brain", profile="brain", name="lantern-works", company="Lantern Works")
     ws = make_space(tmp_path / "ada", profile="personal", name="ada", owner="Ada Okafor")
     prompt = ws / "_meta" / "state" / "routines" / "daily-chain.md"
     prompt.parent.mkdir(parents=True, exist_ok=True)
     prompt.write_text(f'---\nname: daily-chain\nschedule: "{schedule}"\n---\nRun the daily chain.\n',
                       encoding="utf-8")
+    if scheduled:
+        onboard.write_yaml(ws / "_meta" / "state" / "onboard.yaml", {"routine_checks": [
+            {"name": "routine scheduled 1", "check": f"test -f {prompt.as_posix()}"}]})
     return brain, ws, {"lantern-works": brain, "ada": ws}
 
 
@@ -79,7 +83,7 @@ def test_a_setup_names_the_company_the_person_and_the_briefing_time_from_the_spa
     assert "<title>Lantern Works: onboarding</title>" in html
     found = dict((title, state) for state, title in states(html))
     assert "Your machine" not in found   # no doctor rows: it did not apply here
-    assert found["Routines"] == "done"   # read from the rendered prompt in the workspace
+    assert found["Routines"] == "done"   # the recorded read-back passes
     assert found["Sources"] == "needs-you" and found["Briefing"] == "next"
     assert "<small>tomorrow 07:15</small>" in html   # the time from the rendered daily chain
     assert "<h3>Connect mail</h3>" in html and "<code>/mcp</code>" in html and "Waiting for you" in html
@@ -138,3 +142,20 @@ def test_check_rewrites_the_page_from_what_onboarding_recorded_and_the_read_back
     html = out.read_text(encoding="utf-8")
     assert "failed then" not in html and dict((t, s) for s, t in states(html))["Your spaces"] == "done"
     assert "<h2>Only you can do this</h2>" not in html   # the sign-in reads back as done
+
+
+def test_routines_are_done_only_once_their_schedule_reads_back(tmp_path, monkeypatch):
+    _, ws, spaces = company(tmp_path, schedule="15 7 * * *", scheduled=False)
+    rows = [Step("create ada", True, "test -f ada/space.yaml", "made"),
+            Step("routine prompts", True, "test -f daily-chain.md", "daily-chain at 15 7 * * *"),
+            Step("connect mail", False, "test -s mail", "sign in", True)]
+    html = page.render(rows, spaces)
+    found = dict((title, state) for state, title in states(html))
+    assert found["First run"] == "done" and found["Routines"] == "next"   # rendered, not scheduled
+    assert "tomorrow" not in html
+    onboard.write_yaml(ws / "_meta" / "state" / "onboard.yaml", {"routine_tasks": [
+        {"name": "space-daily-chain-ada", "kind": "cron", "line": "15 7 * * * routine", "check": ["crontab", "-l"]}]})
+    monkeypatch.setattr(onboard, "run_cmd", lambda argv, **kw: __import__("subprocess").CompletedProcess(
+        argv, 0, "15 7 * * * routine\n", ""))
+    found = dict((title, state) for state, title in states(page.render(rows, spaces)))
+    assert found["Routines"] == "done"

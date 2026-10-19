@@ -14,7 +14,7 @@ which does every step itself and asks nothing that has a default:
   once, nothing created), and runs onboard's company case, which also creates the person's
   own workspace;
 - renders the person's two routines (the sweep chain and the daily chain) for the agent to
-  schedule in its harness;
+  schedule so they outlive the session (`onboard.py <workspace> --os-routines`);
 - prints what only the person can do (sign-ins), each with the check that proves it;
 - keeps the onboarding page `~/.spaces/onboarding.html` (`onboarding_page.py`), rewritten after
   every step: what is done, what runs now, what is next, what only the person can do.
@@ -422,9 +422,11 @@ def setup(report, here, invitation, brain, company, name, email, feeds, org, hom
     report.user_instructions = sub.user_instructions
     if workspace is not None and not dry_run:
         routines = render_routines(workspace, person)
-        report.add("routines", True, f"test -f {Path(workspace).as_posix()}/_meta/state/routines/daily-chain.md",
+        ws = Path(workspace).as_posix()
+        report.add("routine prompts", True, f"test -f {ws}/_meta/state/routines/daily-chain.md",
                    "; ".join(f"{r['name']} at {r['schedule']}" for r in routines)
-                   + " (cron, this machine's local time): the agent schedules them in its harness")
+                   + f" (cron, this machine's local time): next, `python {ws}/_meta/tools/onboard.py {ws} "
+                   "--os-routines` schedules them so they outlive this session")
         report.workspace = workspace
         report.routines = routines
         report.who = who

@@ -1,5 +1,5 @@
-"""Routines as OS tasks, for a harness without scheduled tasks (Claude Code in a terminal): the
-OS starts routine.py at each routine's times, which runs the prompt through `claude -p`."""
+"""Routines as OS tasks, so they outlive the session: the OS starts routine.py at each routine's
+times, which runs the prompt through `claude -p`. Done only once the schedule reads back."""
 import os
 import subprocess
 import sys
@@ -147,3 +147,31 @@ def test_claude_is_found_where_its_windows_installer_puts_it(tmp_path, monkeypat
     exe.parent.mkdir(parents=True)
     exe.write_text("", encoding="utf-8")
     assert routine.find_claude() == str(exe)
+
+
+# ----- done only once the schedule reads back ------------------------------------------------------
+def test_rendered_routines_are_not_scheduled_routines(tmp_path, monkeypatch):
+    ws = workspace(tmp_path)
+    onboard.write_yaml(ws / "_meta" / "state" / "onboard.yaml", {"case": "person"})
+    monkeypatch.setattr(onboard, "run_cmd", world({}, []))
+    row = next(s for s in onboard.check(ws) if s.name.startswith("routine"))
+    assert row.name == "routines scheduled" and not row.done and not row.needs_owner
+    assert row.check.endswith("--os-routines")
+
+
+def test_a_persistent_harness_task_counts_once_its_read_back_passes(tmp_path, monkeypatch):
+    ws = workspace(tmp_path)
+    onboard.write_yaml(ws / "_meta" / "state" / "onboard.yaml", {"case": "person", "offline": True})
+    tasks = [tmp_path / "tasks" / name / "SKILL.md" for name in ("daily", "sweep")]
+    checks = [f"test -f {p.as_posix()}" for p in tasks]
+    report = onboard.Report("routines")
+    assert onboard.record_routine_checks(report, ws, checks[:1]) == []   # one per routine
+    assert onboard.record_routine_checks(onboard.Report("routines"), ws, checks) == []   # nothing there yet
+    assert onboard.routine_schedule(ws) == []
+    for path in tasks:
+        path.parent.mkdir(parents=True)
+        path.write_text("the routine\n", encoding="utf-8")
+    assert len(onboard.record_routine_checks(onboard.Report("routines"), ws, checks)) == 2
+    assert [s.done for s in onboard.routine_schedule(ws)] == [True, True]
+    tasks[0].unlink()   # the harness lost a task: the check says so
+    assert [s.done for s in onboard.routine_schedule(ws)] == [False, True]

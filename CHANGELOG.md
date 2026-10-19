@@ -24,6 +24,13 @@ the shape and ships its migration. Each choice behind a change has a line in
   rules and follows it at once, until the brain's log shows it applied or refused. The refusal
   names the real next step (classify it here, name an owner, or wait for the owner's
   workspace), and the README and the classify skill say when a classification takes effect where.
+- **Routines that outlive the session.** The README sent a Claude Code session to its own
+  scheduled tasks, which in a terminal end with the session, while the onboarding page showed
+  Routines done as soon as the prompts were rendered and `onboard --check` had no row for them.
+  The README and the onboard skill now schedule with `onboard.py --os-routines` (the OS
+  scheduler, through `claude -p`), or with a harness's tasks only when they persist, recorded
+  with `--routines-scheduled <read-back>`. The page and `--check` show Routines done only once
+  the schedule reads back; until then `--check` shows "routines scheduled" with the command.
 - **A release clone of another repository.** Release clones under `~/.spaces/.release/` are
   kept by space name. A clone left there by an older space of the same name (a company set up
   again after its repositories were deleted) was reused: releases and classification notes
