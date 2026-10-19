@@ -33,6 +33,7 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import distill  # noqa: E402
 import needs_you  # noqa: E402
 import pages  # noqa: E402
 import registry as registry_mod  # noqa: E402
@@ -119,7 +120,12 @@ def read_back(root, selection) -> str:
         if destination:
             lines.append(f"it will go to {destination}")
         if entry.path is not None:
-            body, fingerprint = entry.body, pages.fingerprint(entry.body)
+            body = entry.body
+            if entry.kind == "candidate" and str(entry.fm.get("type")) != "source":
+                body = landing_text(entry.body)
+                if body != pages.normalize(entry.body):
+                    lines.append("the New evidence list is for your review and does not land")
+            fingerprint = pages.fingerprint(body)
         else:
             body, fingerprint = entry.item.text, entry.item.fingerprint
         lines.append(f"fingerprint: {fingerprint}")
@@ -181,6 +187,12 @@ def target_of(fm: dict, path: Path, now: dt.datetime) -> str:
     return f"knowledge/{kind}/{fm.get('subject') or path.stem}/{path.stem}.md"
 
 
+def landing_text(body: str) -> str:
+    """What a signed candidate lands as, here and in any release: its text without the
+    tool-kept `## New evidence` list. The page's own `[src: ...]` markers stay."""
+    return pages.normalize(distill.without_evidence(body))
+
+
 # ----- one handler per item kind ---------------------------------------------------
 def _own_repo(root: Path) -> str | None:
     try:
@@ -232,7 +244,7 @@ def _candidate(root, space, entry: Found, item_id, verb, note, by, now, report: 
     if verb == "edit" and note.strip():
         body = note
         report.edited.append(item_id)
-    body = pages.normalize(body)
+    body = landing_text(body)
     fingerprint = pages.fingerprint(body)
     target = root / target_of(fm, path, now)
     signature = {"status": "stable", "signed_by": by, "signed_at": pages.iso(now),

@@ -17,6 +17,12 @@ the shape and ships its migration. Each choice behind a change has a line in
 
 ### Fixed
 
+- **Signing ships the evidence list.** A signed candidate kept the `## New evidence` list
+  that distill keeps at the bottom of the page, and a release sent it on. Its lines are record
+  titles, which can name prices, pay terms or other clients the page itself leaves out. `sign`
+  now leaves the list out of the signed page, its release and the read-back; the page keeps its
+  own `[src: ...]` markers and its `evidence` ids, and the candidate keeps the list for the review.
+
 - **A release clone of another repository.** Release clones under `~/.spaces/.release/` are
   kept by space name. A clone left there by an older space of the same name (a company set up
   again after its repositories were deleted) was reused: releases and classification notes

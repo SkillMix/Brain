@@ -198,6 +198,28 @@ def test_read_back_shows_the_exact_text_fingerprint_and_destination(tmp_path):
     assert "p-ffffffff: not found" in text
 
 
+PAGE = "# Harbor\n\n## Work\n- Harbor goes live on 3 November. [src: m-1]\n"
+EVIDENCE = ("\n## New evidence\n"
+            "- 2026-10-02: Harbor quote at EUR 48,000, paid in 30 days (witness, m-1)\n"
+            "- 2026-10-03: Beacon asks for the same rate (witness, m-2)\n")
+
+
+def test_signing_leaves_the_tool_kept_evidence_list_on_the_candidate(tmp_path):
+    root = make_space(tmp_path / "ada")
+    candidate(root, body=PAGE + EVIDENCE, evidence=["m-1", "m-2"])
+    back = sign.read_back(root, ["p-00000101"])
+    assert pages.fingerprint(PAGE) in back
+    sign.apply(root, {"p-00000101": "yes"}, by="Ada Okafor", now=NOW)
+    fm, body = pages.read(root / "knowledge/projects/harbor/harbor.md")
+    assert body == PAGE and "[src: m-1]" in body
+    assert fm["fingerprint"] == pages.fingerprint(PAGE) and fm["evidence"] == ["m-1", "m-2"]
+    qfm, qbody = pages.read(root / "_outbound/queue/p-00000101.md")
+    assert qbody == PAGE and qfm["fingerprint"] == fm["fingerprint"]
+    for text in (body, qbody, back):
+        assert "EUR 48,000" not in text and "Beacon" not in text and "## New evidence" not in text
+    assert clean(root) == []
+
+
 def test_cli_apply_reads_a_verdicts_file_with_bare_yes_and_no(tmp_path, monkeypatch, capsys):
     root = make_space(tmp_path / "ada")
     candidate(root, dest=None)

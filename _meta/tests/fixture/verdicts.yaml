@@ -1,6 +1,8 @@
 # Verdicts applied after day two of the fixture run, per person, by candidate id (the
 # subject slug) or, for a record held in doubt, by the record's id. Quoted on purpose: a
-# bare yes is a boolean in YAML.
-ada: {harbor: "yes", "m-ada-001": "yes"}
+# bare yes is a boolean in YAML. Ada's Harbor verdict is an edit with the page text: the
+# fixture has no agent to write it above the evidence list, and signing leaves that list out.
+ada: {harbor: [edit, "# Harbor\n\n## Work\n- The go-live moves to 3 November (go-live date: 2026-11-03). [src: m-ada-001]\n"],
+      "m-ada-001": "yes"}
 chloe: {sales: "yes", "2026-10-04-pilots-run-for-one-quarter-before-any-rollout": "yes", "m-chloe-002": "yes"}
 ben: {}

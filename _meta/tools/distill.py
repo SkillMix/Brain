@@ -534,6 +534,19 @@ def body_units(body: str) -> list:
     return units
 
 
+def without_evidence(body: str) -> str:
+    """The body without its `## New evidence` section, which runs to the next heading of its
+    level. That list is for the signer: record titles can name what the page leaves out."""
+    kept, in_evidence = [], False
+    for line in body.splitlines(keepends=True):
+        head = HEADING_RE.match(line)
+        if head and len(head.group(1)) <= 2:
+            in_evidence = line.strip() == EVIDENCE_HEADING
+        if not in_evidence:
+            kept.append(line)
+    return "".join(kept)
+
+
 def candidate_path(root: Path, candidate) -> Path:
     path = Path(candidate)
     if path.is_absolute() or path.exists():
