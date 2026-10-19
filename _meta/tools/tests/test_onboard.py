@@ -382,7 +382,7 @@ def test_check_lists_open_owner_steps_on_needs_you_until_they_pass(tmp_path):
 
 
 def test_an_invitation_carries_the_crew_projects_and_the_colleague_onboards_offline(tmp_path, monkeypatch):
-    monkeypatch.setattr(onboard, "run_cmd", never)
+    monkeypatch.setattr(onboard, "run_cmd", lambda argv, *a, **k: subprocess.CompletedProcess(argv, 1, "", ""))
     brain = make_space(tmp_path / "brain", profile="brain", name="lantern", subjects=[
         {"id": "ben", "kind": "people", "title": "Ben Liu"}])
     harbor = make_space(tmp_path / "harbor", profile="project", name="harbor", audience=["Ada Okafor", "Ben Liu"])
@@ -403,6 +403,7 @@ def test_an_invitation_carries_the_crew_projects_and_the_colleague_onboards_offl
     access = next(i for i in items if i["id"] == "invite-ben-access")
     assert "host login" in access["text"] and "team" in access["recommendation"]
     # on the colleague's machine (offline here): a template copy, the answers, the brain
+    monkeypatch.setattr(onboard, "run_cmd", never)
     ws = tmp_path / "ben-workspace"
     onboard.copy_template(onboard.TEMPLATE_ROOT, ws)
     answers["crew_projects"][0]["path"] = str(harbor)
@@ -415,13 +416,16 @@ def test_an_invitation_carries_the_crew_projects_and_the_colleague_onboards_offl
     assert errors(ws) == []
 
 
-def _access_world(levels: dict, calls: list):
-    """A fake host that answers only permission reads: `levels` maps a repository to the
-    colleague's permission on it; every call is recorded."""
+def _access_world(levels: dict, calls: list, reads: dict | None = None):
+    """A fake host that answers permission reads (`levels` maps a repository to the colleague's
+    permission on it) and the reads in `reads` (the command after `gh api` -> its output); every
+    call is recorded."""
     def fake(argv, dry_run=False, cwd=None):
         argv = [str(a) for a in argv]
         calls.append(argv)
-        repo = argv[2].split("repos/")[1].split("/collaborators/")[0] if len(argv) > 2 else ""
+        if " ".join(argv[2:]) in (reads or {}):
+            return subprocess.CompletedProcess(argv, 0, reads[" ".join(argv[2:])] + "\n", "")
+        repo = argv[2].split("repos/")[1].split("/collaborators/")[0] if len(argv) > 2 and "repos/" in argv[2] else ""
         if argv[:2] == ["gh", "api"] and argv[2].endswith("/permission") and repo in levels:
             return subprocess.CompletedProcess(argv, 0, levels[repo] + "\n", "")
         return subprocess.CompletedProcess(argv, 1, "", "not found")
@@ -453,9 +457,24 @@ def test_an_invitation_checks_the_colleagues_read_access_and_asks_the_owner_for_
     assert "team" in rec and "lantern-org/brain-template" in rec and "lantern-org/brain" in rec and "Ben Liu" in rec
     for repo in ("lantern-org/brain-template", "lantern-org/brain"):
         assert f"gh api repos/{repo}/collaborators/ben-lw/permission" in access["check"]
-    # reads only (the permissions, the template's visibility): an agent never grants access
-    assert calls and all(c[:2] == ["gh", "api"] and (c[2].endswith("/permission") or c[2] ==
-                         "repos/lantern-org/brain-template") and "-X" not in c and "--method" not in c for c in calls)
+    # reads only (permissions, visibility, admin rights, the account's kind): an agent never grants access
+    assert calls and all(c[:2] == ["gh", "api"] and "-X" not in c and "--method" not in c for c in calls)
+
+
+def test_on_a_personal_account_the_access_item_names_a_collaborator_and_the_templates_owner(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(onboard, "run_cmd", _access_world({}, calls, reads={
+        "repos/lantern-org/brain -q .permissions.admin": "true", "users/lantern-org -q .type": "User",
+        "repos/lantern-org/brain-template -q .permissions.admin": "false"}))
+    brain = _invited_brain(tmp_path)
+    onboard.invite(brain, "ben")
+    items = yaml.safe_load((brain / "_inbound" / "needs-you" / "invitations.yaml").read_text(encoding="utf-8"))["items"]
+    rec = next(i for i in items if i["id"] == "invite-ben-access")["recommendation"]
+    assert "company-wide team" not in rec
+    assert "add Ben Liu as a collaborator on lantern-org/brain: `gh api -X PUT " \
+           "repos/lantern-org/brain/collaborators/ben-lw`" in rec
+    assert "only lantern-org, who owns lantern-org/brain-template, can give Ben Liu read access" in rec
+    assert all("-X" not in c for c in calls)   # the command is the owner's to run
 
 
 def test_the_access_item_leaves_once_the_colleague_can_read_both(tmp_path, monkeypatch):

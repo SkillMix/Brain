@@ -1355,6 +1355,30 @@ def is_public(repo: str) -> bool:
     return res.returncode == 0 and (res.stdout or "").strip() == "false"
 
 
+def grant_advice(repos: list, title: str, login: str | None) -> str:
+    """How the read access to each repository is given and by whom (reads only, never a grant):
+    one this person cannot administer is its owner's to share (a private template, say); on a
+    personal account, a collaborator; in an organisation, a company-wide team."""
+    teams, steps = [], []
+    for repo in repos:
+        owner = repo.split("/")[0]
+        admin = run_cmd(["gh", "api", f"repos/{repo}", "-q", ".permissions.admin"])
+        if admin.returncode == 0 and (admin.stdout or "").strip() == "false":
+            steps.append(f"only {owner}, who owns {repo}, can give {title} read access to it while it is private: "
+                         "ask them")
+            continue
+        kind = run_cmd(["gh", "api", f"users/{owner}", "-q", ".type"])
+        if kind.returncode == 0 and (kind.stdout or "").strip() == "User":
+            steps.append(f"add {title} as a collaborator on {repo}: `gh api -X PUT repos/{repo}/collaborators/"
+                         f"{login or '<login>'}` (a personal account has no teams; a collaborator can also push)")
+        else:
+            teams.append(repo)
+    if teams:
+        steps.insert(0, f"give a company-wide team read access to {'both ' if len(teams) > 1 else ''}"
+                        f"{' and '.join(teams)}, and add {title} to it")
+    return "; ".join(steps)
+
+
 def company_name(root, space) -> str:
     """The company as the brain's charter names it (onboard drafts that sentence), else the
     space's name in words; never the host account that holds the repository."""
@@ -1370,8 +1394,10 @@ def invite(root, slug: str, org: str | None = None, workspace_org: str | None = 
     brain, the projects they are crew on, their host login when the registry has it) and one
     Needs-you item for the owner with its read-back. The sentence works only once the colleague
     can read the template and the brain: when the host does not confirm both (or no login is
-    known), a second item recommends the access, which only the owner grants (decision
-    2026-10-12, Organization teams). Nothing is sent: the owner hands the file over. A colleague
+    known), a second item recommends the access and who grants it (`grant_advice`: a team, a
+    collaborator on a personal account, or the owner of a repository this person cannot
+    administer); agents never grant it (decision 2026-10-12, Organization teams). Nothing is
+    sent: the owner hands the file over. A colleague
     not yet in the registry is added as a person when `name` is given; else a ValueError says how.
     A public template needs no grant: then the item asks for the brain alone."""
     root = Path(root).resolve()
@@ -1440,8 +1466,8 @@ def invite(root, slug: str, org: str | None = None, workspace_org: str | None = 
                 "invitation sentence stops at its first step" if login else
                 f"{person.title}'s host login is unknown, so their read access to {readable} cannot be "
                 f"checked; the invitation sentence works only once they can read {readable}")
-        rec = (f"give a company-wide team read access to {'both ' if len(both) > 1 else ''}{readable}, and add "
-               f"{person.title} to it")
+        rec = grant_advice([r for r in both if not r.startswith("<")], person.title, login) or \
+            f"give {person.title} read access to {readable}"
         if not login:
             rec += (f"; then add their host login to the registry (`match: {{github: <login>}}` on {slug}) "
                     "and invite again, so this check runs itself")
