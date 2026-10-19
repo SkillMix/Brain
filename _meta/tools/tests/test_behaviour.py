@@ -144,3 +144,31 @@ def test_run_starts_from_an_empty_question_log(tmp_path):
                     expect={"exit": 0})
     report = behaviour.run(root, path)
     assert (report.passed, report.failed) == (1, 0)
+
+
+def test_the_snapshots_do_not_read_the_copy_again(tmp_path, monkeypatch):
+    """On Windows the first read of a file just copied waits for the virus scanner; the copy
+    already hashed every file, so a snapshot reads only what changed since."""
+    root = make_space(tmp_path / "ada")
+    temp = tmp_path / "copy"
+    copied = behaviour._copy(root, temp)
+    (temp / "_inbound" / "candidates").mkdir(parents=True, exist_ok=True)
+    (temp / "_inbound" / "candidates" / "seed.md").write_text("status: draft\n", encoding="utf-8")
+    full = behaviour._snapshot(temp)
+    reads = []
+    real = Path.read_bytes
+    monkeypatch.setattr(Path, "read_bytes", lambda self: reads.append(self.name) or real(self))
+    assert behaviour._snapshot(temp, copied) == full
+    assert reads == ["seed.md"]
+
+
+def test_a_copied_file_rewritten_at_the_same_size_still_counts_as_written(tmp_path):
+    root = make_space(tmp_path / "ada")
+    size = len((root / "space.yaml").read_bytes())
+    code = f"import pathlib; pathlib.Path('space.yaml').write_bytes(b'x' * {size})"
+    path = scenario(tmp_path / "same.yaml", command=py(code),
+                    expect={"exit": 0, "writes_only_under": ["_outbound/"]})
+    report = behaviour.run(root, path)
+    checks = {d["check"]: d for d in report.details}
+    assert checks["writes_only_under"]["ok"] is False
+    assert "space.yaml" in json.dumps(checks["writes_only_under"])

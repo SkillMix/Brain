@@ -153,7 +153,9 @@ environment (`python -m venv .venv`, then activate it).
 The fixture builds Lantern Works offline from `_meta/tests/fixture/`: a brain, three
 workspaces, two projects and two corridors. It runs a week of sweeps on a fast clock, applies
 the owners' verdicts, then runs the answer and leak tests. That takes about half a minute on
-Linux and a few minutes on Windows, and ends with one table:
+Linux and about two minutes on Windows. On a machine busy with other jobs it can take much
+longer; let it finish. Sent to a file, its output appears only at the end. It ends with one
+table:
 
 ```
 space       cand signed released held   answers     leaks
@@ -161,8 +163,8 @@ brain          0      0        0    0         -       1/0
 ada            2      1        0    4       1/0         -
 ben            2      0        0    1       2/0         -
 chloe          2      1        0    0       2/0       2/0
-harbor         1      1        0    0         -       1/0
-beacon         0      0        0    0         -       1/0
+harbor         2      1        0    0         -       1/0
+beacon         1      0        0    0         -       1/0
 ```
 
 The columns are candidates waiting, pages signed, releases received, items held at home, and
