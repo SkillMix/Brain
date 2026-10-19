@@ -11,7 +11,9 @@ import sign
 import spaceyaml
 from conftest import NOW, make_space, write_page
 
-HARBOR = {"id": "harbor", "kind": "projects", "title": "Harbor"}
+HARBOR = {"id": "harbor", "kind": "projects", "title": "Harbor",
+          "classification": {"class": "walled", "state": "settled", "home": "harbor", "crew": ["ada"],
+                             "decided_by": "Ada Okafor", "at": "2026-10-01T09:00:00Z"}}   # classified: its pages may be signed
 
 
 def test_signing_writes_the_fingerprint_line_and_names_the_repository(tmp_path, monkeypatch):

@@ -225,7 +225,8 @@ creates your repositories from this template and clones them, fills `space.yaml`
 the brain and the projects you are crew on. It installs one instruction at user level so every
 session in any repository journals in your workspace, and allows your workspace for the
 harness. It registers the sync task, arms auto-merge and the required check, runs the first
-sweep, the status pass and the tests, and renders your two routines for the agent to schedule.
+sweep, the status pass and the tests, and renders your two routines, which the agent then
+schedules with your operating system's scheduler so they run after the session ends.
 Every question has a default; the ones you may want to change come back on your Needs-you list.
 
 What only you can do: sign in to GitHub once (`gh auth login`) if you never did, and sign in
@@ -257,11 +258,14 @@ When a person asks to be set up, onboarded or to start, and names this repositor
    `~/.spaces/onboarding.html`) in the person's browser; reload it after each step below.
 3. Each `doctor:` row in `yours` is one sentence for the person with the exact command (a
    sign-in, a password, a dialog, an access grant): ask once, wait, then run step 2 again.
-4. Schedule the two routines it rendered under `_meta/state/routines/` in the new workspace
-   with your harness's scheduled tasks, each at its `schedule` (cron in the machine's local
-   time). Without scheduled tasks, run
-   `python <workspace>/_meta/tools/onboard.py <workspace> --os-routines`: the OS scheduler runs
-   them through `claude -p`.
+4. Schedule the two routines it rendered under `_meta/state/routines/` so they outlive this
+   session: `python <workspace>/_meta/tools/onboard.py <workspace> --os-routines`. The OS
+   scheduler runs each at its `schedule` (cron in the machine's local time) through `claude -p`.
+   Scheduled tasks that end with the session, such as those of Claude Code in a terminal, are
+   not enough. Use your harness's scheduled tasks only when they persist after it closes, then
+   record one read-back per routine: `python <workspace>/_meta/tools/onboard.py <workspace>
+   --routines-scheduled "test -f <the task's file>" ...`. The page and `onboard.py --check` show
+   Routines done only once the schedule reads back.
 5. Follow steps 7 to 9 of `.claude/skills/onboard/SKILL.md` in the clone: quiet GitHub
    notifications for the repositories they just got, one sweep chain now, and an answer that
    shows the open items of the projects they are crew on.
@@ -298,8 +302,16 @@ In the brain, or ask your agent "add the client <name>":
 
 Mail from that domain is then matched to the client. Nothing about it leaves the workspace it
 came into until its owner's agent classifies it: your Needs-you list counts what waits ("2 wait
-for a classification (Dune Bakery)"), and a route to the brain is refused as unclassified.
-Projects and deals are added the same way (`--kind projects --part-of <client>`).
+for a classification (Dune Bakery)") and says who classifies it, and a route to the brain is
+refused as unclassified. A draft page about the client is not offered for your signature until
+then. Projects and deals are added the same way (`--kind projects --part-of <client>`).
+
+The owner's agent classifies it with `python _meta/tools/classify.py . decide dune-bakery --class
+company --reason "<one line>"` in their workspace, or the classify skill does it in the next
+sweep. The classification counts in that workspace at once: record the refused route again. It
+travels to the brain as a note; the brain's sync applies it (its release leg runs
+`classify.py <brain> land`), and every other workspace sees it once its own sync brings the new
+brain in, a few sync runs later.
 
 ## Start a project from a desk seed
 

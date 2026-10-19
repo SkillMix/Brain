@@ -22,7 +22,26 @@ the shape and ships its migration. Each choice behind a change has a line in
   titles, which can name prices, pay terms or other clients the page itself leaves out. `sign`
   now leaves the list out of the signed page, its release and the read-back; the page keeps its
   own `[src: ...]` markers and its `evidence` ids, and the candidate keeps the list for the review.
-
+- **A classification counts at once where it was made.** After `classify.py decide`, recording
+  the refused route again was refused again until the note had gone to the brain, been applied
+  there and come back through the mount: up to four sync runs, while the refusal only said to
+  record the decision again. The deciding workspace now checks the note against the brain's
+  rules and follows it at once, until the brain's log shows it applied or refused. The refusal
+  names the real next step (classify it here, name an owner, or wait for the owner's
+  workspace), and the README and the classify skill say when a classification takes effect where.
+- **Routines that outlive the session.** The README sent a Claude Code session to its own
+  scheduled tasks, which in a terminal end with the session, while the onboarding page showed
+  Routines done as soon as the prompts were rendered and `onboard --check` had no row for them.
+  The README and the onboard skill now schedule with `onboard.py --os-routines` (the OS
+  scheduler, through `claude -p`), or with a harness's tasks only when they persist, recorded
+  with `--routines-scheduled <read-back>`. The page and `--check` show Routines done only once
+  the schedule reads back; until then `--check` shows "routines scheduled" with the command.
+- **Needs you counts what waits for a classification.** The count covered only projections held
+  at home, so a route refused as unclassified left no trace, and a draft page about a client
+  nobody had classified was offered for a signature. One line now counts held projections,
+  refused routes (the router logs each refusal) and candidates about the client, names the
+  clients and says who classifies each. Such a candidate is not offered or signed until the
+  client is classified. The doubt line counts only what is held in doubt.
 - **A release clone of another repository.** Release clones under `~/.spaces/.release/` are
   kept by space name. A clone left there by an older space of the same name (a company set up
   again after its repositories were deleted) was reused: releases and classification notes

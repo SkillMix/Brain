@@ -45,7 +45,8 @@ STAGES = (
     ("Your machine", ("doctor:", "one start at a time")),
     ("Your spaces", ("invitation", "namespace", "dry run", "create ", "fill ", "remove ", "registry")),
     ("Connect", ()),
-    ("First run", ("AGENTS.md", "ids ", "first sweep", "status ", "validate", "answers ", "space.yaml validates")),
+    ("First run", ("AGENTS.md", "ids ", "first sweep", "status ", "validate", "answers ", "space.yaml validates",
+                   "routine prompts")),
     ("Routines", ("routine",)),
     ("Sources", ("connect ",)),
 )
@@ -92,10 +93,11 @@ def stages(rows: list, live: bool = False, workspace=None, now=None) -> list:
         if fact and not groups[i]:
             groups[i].append(fact)   # read from the workspace itself: only what is already there
     latest = stage_of(rows[-1]["name"]) if live and rows else None
+    rendered = _rendered(workspace)   # routines to schedule: their stage is never left out
     out = []
     for i, (title, _) in enumerate(STAGES):
         group = groups[i]
-        if not group and any(groups[i + 1:]):
+        if not group and any(groups[i + 1:]) and not (i == 4 and rendered):
             continue
         state = _state(group, i == latest) if group else "next"
         out.append({"title": title, "state": state, "rows": group, "sub": "", "note": _note(state, group)})
@@ -130,12 +132,24 @@ def _routines(workspace) -> list:
     return out
 
 
+def _rendered(workspace) -> bool:
+    folder = Path(workspace) / ROUTINES if workspace else None
+    return bool(folder and folder.is_dir() and any(folder.glob("*.md")))
+
+
 def _routines_fact(workspace):
-    path = Path(workspace) / ROUTINES / "daily-chain.md" if workspace else None
-    if path is None or not path.exists():
+    """Routines are done once their schedule reads back (`onboard.routine_schedule`: an OS task,
+    or a persistent harness task with its recorded read-back); rendered prompts schedule nothing.
+    None while nothing is scheduled: the stage is next."""
+    if not _rendered(workspace):
         return None
-    return {"name": "routines", "done": True, "check": f"test -f {path.as_posix()}",
-            "result": "rendered: your agent schedules them", "needs_owner": False}
+    import onboard
+    rows = [_row(s) for s in onboard.routine_schedule(workspace)]
+    if not rows:
+        return None
+    failed = next((r for r in rows if not r["done"]), None)
+    return failed or {"name": "routines", "done": True, "check": rows[0]["check"],
+                      "result": "scheduled: the schedule reads back", "needs_owner": False}
 
 
 def _sources_fact(workspace):

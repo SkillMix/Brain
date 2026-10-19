@@ -7,8 +7,10 @@ description: Classify every client, project and deal before anything about it le
 
 A client, project or deal (and anything part of one) sends nothing out of the space where its
 material came in until the agent of the person who holds the relationship has classified it.
-Until then its routes, releases, backfills and candidates are held at home and counted on the
-doubt line ("N wait for a classification", with their names). The classification lives on the
+Until then its routes, releases, backfills and candidates are held at home and counted on one
+Needs-you line ("N wait for a classification", with their names and who classifies each): held
+projections, routes refused as unclassified, and candidates about it, which are not offered for
+a signature until it is classified. The classification lives on the
 subject's entry in the brain's registry, with the obligations seen: their kind and date only. A
 new client, project or deal enters that registry with `python _meta/tools/registry.py <brain> add
 "<name>" --kind clients --domain <their mail domain> --owner "<who handles it>"`.
@@ -21,6 +23,21 @@ new client, project or deal enters that registry with `python _meta/tools/regist
 
 The tool decides nothing. You judge from the records; `classify.py` checks who may say what,
 carries the notes to the brain and enforces the gate at every exit.
+
+## When a classification takes effect
+
+- **In the workspace that decided: at once.** `decide` checks the note against the brain's own
+  rules first (a refusal comes now, nothing is sent), and the classification governs this
+  workspace while the note travels. Record a route that was refused as unclassified again right
+  after.
+- **In the brain: on its next sync.** The note leaves with this workspace's sync and arrives as a
+  pull request. The brain's sync applies registry notes in its release leg (`classify.py <brain>
+  land`, which `release.py ship` runs) and logs each one, applied or refused, in
+  `_meta/state/registry-notes.jsonl`.
+- **In every other workspace: once its sync brings the new brain in**, a few sync runs after the
+  decision (about an hour). A refusal there names whose workspace classifies the subject.
+- A note the brain refused stops counting here as soon as the brain's log shows it; the refusal
+  says why.
 
 ## Who decides
 

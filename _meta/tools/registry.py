@@ -53,6 +53,23 @@ OBLIGATION_KINDS = {"confidentiality": "confidentiality agreement", "named_peopl
                     "data_processor": "data processing agreement", "other": "other obligation"}
 OBLIGATION_KEYS = ("kind", "date", "seen_in", "at", "evidence")   # kind and date only: never wording
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+# The notes a space sent to the registry that holds a subject (classify.py), and the log in which
+# that registry records each one it applied or refused.
+SENT_NOTES = Path("_meta") / "state" / "classify.jsonl"
+NOTES_LOG = Path("_meta") / "state" / "registry-notes.jsonl"
+
+
+def _jsonl(path: Path) -> list:
+    rows = []
+    if path.exists():
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+    return rows
 
 
 def _is_date(value) -> bool:
@@ -291,6 +308,29 @@ class Registry:
                 base = self.ancestors.get(str(entry["id"]))
                 if base is not None and base.home and base.home == space_name:
                     _add_names(base, entry)
+            self._travelling()
+
+    def _travelling(self) -> None:
+        """A classification this space sent to the registry that holds the subject governs here
+        at once, while it travels: until that registry's notes log shows it applied or refused.
+        `classify.note` sends one only after the holder's own rules accepted it."""
+        sent = {}
+        for row in _jsonl(self.root / SENT_NOTES):
+            if row.get("note") == "classification" and isinstance(row.get("classification"), dict):
+                sent[str(row.get("subject"))] = row   # the latest per subject
+        logs: dict = {}
+        for sid, row in sent.items():
+            subject = self.ancestors.get(sid)
+            if subject is None:
+                continue
+            if subject.space not in logs:
+                holder = self.space.mount_root(subject.space)
+                logs[subject.space] = {str(r.get("id")) for r in _jsonl(holder / NOTES_LOG)} if holder else set()
+            if str(row.get("signal")) in logs[subject.space]:
+                continue   # the holder applied or refused it: its own entry says what holds
+            subject.extra["classification"] = dict(row["classification"], travelling=str(row.get("signal")))
+            if row["classification"].get("home"):
+                subject.home = str(row["classification"]["home"])
 
     def homed_here(self, sid: str) -> bool:
         """An ancestor's subject whose home is this space: this registry may add its names."""

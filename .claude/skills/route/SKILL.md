@@ -97,7 +97,9 @@ routes:
    A recorded file moves to `decisions/done/`; a record that already has a decision is skipped.
    A refused decision prints why and its file stays: fix it once and record again; refused
    twice, record it with `confidence: low` so it becomes a question for the owner. Refused as
-   unclassified, leave it as it is: it records once the subject is classified (step 0). The tool
+   unclassified, the refusal says the next step: when this workspace classifies the subject,
+   classify it (step 0) and record again at once; when another workspace does, leave the file as
+   it is and record it after a later sync brings the classification in. The tool
    checks everything that would travel: the parts, what the projection informs and your `why`.
    To undo a route: `python _meta/tools/route.py <root> retract <record> --by <name>` (queued
    and held projections are withdrawn, shipped ones retracted); add `--queued-only` to change a decision
