@@ -27,7 +27,7 @@ import pages  # noqa: E402
 import spaceyaml  # noqa: E402
 
 KIND_ORDER = ["leaving", "high_stakes", "answer", "request", "question", "check", "candidate",
-              "reconnect", "protected_pr", "outbox", "doubt", "sample"]
+              "reconnect", "protected_pr", "outbox", "classification", "doubt", "sample"]
 VERBS_LINE = "Answer with the number and yes, edit, no, later or always; then submit."
 OUTBOX_DAYS = 14
 # A verdict line in log.md, as sign.apply writes it: "- <ISO> <verb> <id> by <name>".
@@ -41,6 +41,7 @@ NEEDS_YOU = Path("_inbound") / "needs-you"
 QUEUE = Path("_outbound") / "queue"
 HELD = Path("_outbound") / "held"
 OUTBOX = Path("outbox")
+ROUTING_LOG = Path("_meta") / "state" / "routing.jsonl"
 
 
 @dataclass
@@ -146,9 +147,12 @@ def answered_ids(root: Path) -> set:
 
 
 # ----- the kinds -----------------------------------------------------------------
-def _candidates(root: Path) -> list:
+def _candidates(root: Path, space: spaceyaml.Space | None = None) -> list:
     out = []
+    waiting = {rel for rel, _, _ in waiting_candidates(root, space)}
     for rel, fm, body in pages_in(root, CANDIDATES):
+        if rel in waiting:   # counted on the classification line, never offered for a signature
+            continue
         title = _text(fm.get("title"), Path(rel).stem)
         subject = fm.get("subject")
         text = f"{title} for {subject}: sign?" if subject else f"{title}: sign?"
@@ -325,15 +329,73 @@ def doubt_pages(root) -> list:
 
 def unclassified_pages(root) -> list:
     """The pages held at home until their client, project or deal is classified. Counted on the
-    doubt line, never offered there: only the subject's owner classifies, and the gate lets them go."""
+    classification line, never offered: only the subject's owner classifies, and the gate lets them go."""
     return [(rel, fm, body) for rel, fm, body in pages_in(Path(root), HELD)
             if fm.get("reason") == "unclassified" and not fm.get("kept")]
 
 
 def doubt_count(root) -> int:
-    """How many pages are held at home in doubt or waiting for a classification (one Needs-you
-    line counts them all)."""
-    return len(doubt_pages(root)) + len(unclassified_pages(root))
+    """How many pages are held at home in doubt (one Needs-you line counts them)."""
+    return len(doubt_pages(root))
+
+
+def _registry(root: Path, space: spaceyaml.Space | None):
+    try:
+        import registry
+        return registry.Registry(root, space)
+    except Exception:   # an unreadable registry: only what is held is counted
+        return None
+
+
+def _waits(reg, sid) -> bool:
+    """A client, project or deal (or a part of one) that nobody has classified yet."""
+    if reg is None or not sid:
+        return False
+    import classify
+    return classify.gated(reg, str(sid)) and classify.effective(reg, str(sid)) is None
+
+
+def waiting_candidates(root, space: spaceyaml.Space | None = None, reg=None) -> list:
+    """This space's own candidates about a client, project or deal nobody has classified yet:
+    counted on the classification line and never offered for a signature until it is classified."""
+    root = Path(root)
+    found = list(pages_in(root, CANDIDATES))
+    if not any(fm.get("subject") and not fm.get("released_from") for _, fm, _ in found):
+        return []
+    reg = reg if reg is not None else _registry(root, space)
+    return [(rel, fm, body) for rel, fm, body in found
+            if not fm.get("released_from") and _waits(reg, fm.get("subject"))]
+
+
+def refused_unclassified(root, reg) -> list:
+    """The routing log's rows of records whose last word was a route refused as unclassified,
+    while their subject still waits: the records stay here, unrouted, until it is classified."""
+    path = Path(root) / ROUTING_LOG
+    last: dict = {}
+    if path.exists():
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and row.get("record"):
+                last[str(row["record"])] = row
+    return [row for row in last.values() if row.get("decision") == "refused"
+            and row.get("reason") == "unclassified" and _waits(reg, row.get("subject"))]
+
+
+def classification_waits(root, space: spaceyaml.Space | None = None) -> dict:
+    """subject id -> how many things in this space wait for its classification: projections held
+    at home, records whose route was refused as unclassified, and candidates about it."""
+    root = Path(root)
+    reg = _registry(root, space)
+    out: dict = {}
+    sids = [str(fm.get("subject") or "") for _, fm, _ in unclassified_pages(root)]
+    sids += [str(row.get("subject")) for row in refused_unclassified(root, reg)]
+    sids += [str(fm.get("subject")) for _, fm, _ in waiting_candidates(root, space, reg)]
+    for sid in sids:
+        out[sid] = out.get(sid, 0) + 1
+    return out
 
 
 def doubt_items(root) -> list:
@@ -349,19 +411,44 @@ def doubt_items(root) -> list:
     return out
 
 
-def _doubt(root: Path, space: spaceyaml.Space | None = None) -> list:
-    count, waiting = len(doubt_pages(root)), unclassified_pages(root)
-    if not count and not waiting:
+def _doubt(root: Path) -> list:
+    count = len(doubt_pages(root))
+    if not count:
         return []
-    parts = [f"held in doubt: {count}"] if count else []
-    if waiting:   # which clients, projects or deals wait: their owners classify them
-        sids = sorted({str(fm.get("subject")) for _, fm, _ in waiting if fm.get("subject")})
-        names = ", ".join(_subject_title(root, space, sid) if space else sid for sid in sids)
-        parts.append(f"{len(waiting)} wait for a classification" + (f" ({names})" if names else ""))
-    text = ", ".join(parts)
-    return [Item(id="doubt", kind="doubt", text=text,
+    return [Item(id="doubt", kind="doubt", text=f"held in doubt: {count}",
                  recommendation="leave them home", default="stay home", deadline=None,
                  payload=HELD.as_posix() + "/", fingerprint="")]
+
+
+def _classification(root: Path, space: spaceyaml.Space) -> list:
+    """One line for everything that waits for a classification, naming the clients, projects and
+    deals and who classifies each: this person's agent, or their owner's workspace."""
+    waits = classification_waits(root, space)
+    if not waits:
+        return []
+    reg = _registry(root, space)
+    import classify
+
+    def title(sid):
+        subject = reg.get(sid) if reg is not None and sid else None
+        return (subject.title if subject is not None else "") or sid
+
+    sids = sorted(s for s in waits if s)
+    mine = [s for s in sids if reg is not None and classify.decider(space, reg, s) in ("self", "stand_in")]
+    others = [s for s in sids if s not in mine]
+    steps = []
+    if mine:
+        steps.append(f"ask your agent to classify {', '.join(title(s) for s in mine)} (the classify skill)")
+    for sid in others:
+        owner = classify.subject_owner(reg, sid) if reg is not None else None
+        steps.append(f"{title(sid)}: {owner}'s workspace classifies it" if owner
+                     else f"{title(sid)}: say who handles it")
+    count = sum(waits.values())
+    names = ", ".join(title(s) for s in sids)
+    return [Item(id="classification", kind="classification",
+                 text=f"{count} wait for a classification" + (f" ({names})" if names else ""),
+                 recommendation="; ".join(steps) or "classify them", default="they stay in this space",
+                 deadline=None, payload=HELD.as_posix() + "/", fingerprint="")]
 
 
 # ----- one list per person: items routed to them in the spaces they mount -------------------
@@ -459,9 +546,10 @@ def collect(root, now: dt.datetime | None = None, online: bool = True, person: s
     space = spaceyaml.load(root)
     now = now or space.now()
     answered = answered_ids(root)
-    items = (_candidates(root) + _checks(root) + _queue(root, space, now) + _outbox(root, space, now)
+    items = (_candidates(root, space) + _checks(root) + _queue(root, space, now) + _outbox(root, space, now)
              + _questions(root) + _answers(root)
-             + [i for i in routine_items(root) if i.id not in answered] + _doubt(root, space) + _tracker(root)
+             + [i for i in routine_items(root) if i.id not in answered] + _classification(root, space)
+             + _doubt(root) + _tracker(root)
              + (_protected_prs(root) if online else []))
     person = person if person is not None else (space.owner if space.profile == "personal" else "")
     if person:

@@ -17,7 +17,9 @@ import status
 import sweep
 from conftest import NOW, make_space, write_page
 
-HARBOR = {"id": "harbor", "kind": "projects", "title": "Harbor", "home": "harbor"}
+HARBOR = {"id": "harbor", "kind": "projects", "title": "Harbor", "home": "harbor",
+          "classification": {"class": "walled", "state": "settled", "home": "harbor", "crew": ["ada"],
+                             "decided_by": "Ada Okafor", "at": "2026-10-01T09:00:00Z"}}   # classified: its pages may be signed
 BEN = {"id": "ben", "kind": "people", "title": "Ben Liu"}
 
 
