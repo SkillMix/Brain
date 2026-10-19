@@ -49,7 +49,8 @@ Only a person signs. The read-back shows the exact text that will land and its f
 
 `apply`: `yes` moved the candidate to `knowledge/<kind>/<subject>/` (or `decisions/`) with
 `status: stable`, `signed_by`, `signed_at`, `signed_in`, `fingerprint`, and queued its
-release when `destination` is set; `edit` took the note as the new body, then signed; `no`
+release when `destination` is set, both without the `## New evidence` list (it is for the
+review; the read-back already leaves it out); `edit` took the note as the new body, then signed; `no`
 wrote a tombstone line to `log.md` and removed the candidate; `later` moved the deadline a
 day; `always` added `{destination, kind}` to `standing_choices` and applied `yes`; a check
 verdict went to `_meta/state/check-verdicts.jsonl`; a leaving item's `no` went to `held/`;

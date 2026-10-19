@@ -17,6 +17,11 @@ the shape and ships its migration. Each choice behind a change has a line in
 
 ### Fixed
 
+- **Signing ships the evidence list.** A signed candidate kept the `## New evidence` list
+  that distill keeps at the bottom of the page, and a release sent it on. Its lines are record
+  titles, which can name prices, pay terms or other clients the page itself leaves out. `sign`
+  now leaves the list out of the signed page, its release and the read-back; the page keeps its
+  own `[src: ...]` markers and its `evidence` ids, and the candidate keeps the list for the review.
 - **A classification counts at once where it was made.** After `classify.py decide`, recording
   the refused route again was refused again until the note had gone to the brain, been applied
   there and come back through the mount: up to four sync runs, while the refusal only said to

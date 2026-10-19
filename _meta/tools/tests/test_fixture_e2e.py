@@ -93,7 +93,7 @@ def test_signed_page_carries_fingerprint_and_travels(fixture_dir):
     target, _ = fixture_dir
     signed = [p for p in (target / "ada" / "knowledge").rglob("*.md")
               if pages.read(p)[0].get("status") == "stable"]
-    assert signed, "Ada's yes should have produced a stable page"
+    assert signed, "Ada's verdict should have produced a stable page"
     fm, body = pages.read(signed[0])
     assert fm["fingerprint"] == pages.fingerprint(body)
     assert fm["signed_by"] == "Ada Okafor" and fm["signed_in"] == "ada"

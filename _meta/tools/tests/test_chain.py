@@ -278,6 +278,7 @@ def test_fixture_answers_leaks_and_verdicts_shape():
     assert "paid search ads" in by_root["chloe"] and "3 November" in by_root["beacon"]
     verdicts = yaml.safe_load((FIXTURE / "verdicts.yaml").read_text(encoding="utf-8"))
     # a record held in doubt is answered by its id: without the router nothing else lets it go
-    assert verdicts == {"ada": {"harbor": "yes", "m-ada-001": "yes"}, "ben": {},
+    page = "# Harbor\n\n## Work\n- The go-live moves to 3 November (go-live date: 2026-11-03). [src: m-ada-001]\n"
+    assert verdicts == {"ada": {"harbor": ["edit", page], "m-ada-001": "yes"}, "ben": {},
                         "chloe": {"sales": "yes", "m-chloe-002": "yes",
                                   "2026-10-04-pilots-run-for-one-quarter-before-any-rollout": "yes"}}
