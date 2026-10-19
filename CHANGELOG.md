@@ -17,6 +17,13 @@ the shape and ships its migration. Each choice behind a change has a line in
 
 ### Fixed
 
+- **A classification counts at once where it was made.** After `classify.py decide`, recording
+  the refused route again was refused again until the note had gone to the brain, been applied
+  there and come back through the mount: up to four sync runs, while the refusal only said to
+  record the decision again. The deciding workspace now checks the note against the brain's
+  rules and follows it at once, until the brain's log shows it applied or refused. The refusal
+  names the real next step (classify it here, name an owner, or wait for the owner's
+  workspace), and the README and the classify skill say when a classification takes effect where.
 - **A release clone of another repository.** Release clones under `~/.spaces/.release/` are
   kept by space name. A clone left there by an older space of the same name (a company set up
   again after its repositories were deleted) was reused: releases and classification notes
