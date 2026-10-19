@@ -37,6 +37,12 @@ the shape and ships its migration. Each choice behind a change has a line in
   refused routes (the router logs each refusal) and candidates about the client, names the
   clients and says who classifies each. Such a candidate is not offered or signed until the
   client is classified. The doubt line counts only what is held in doubt.
+- **Inviting a colleague from a personal account.** The access item always advised a
+  company-wide team, which a personal account does not have, and did not say that a private
+  template can only be shared by its owner. It now reads who can grant each repository: one the
+  inviter cannot administer is its owner's to share; on a personal account it advises a
+  collaborator, with the `gh api -X PUT repos/<owner>/<repo>/collaborators/<login>` line for the
+  owner to run; in an organisation, a team as before.
 - **A release clone of another repository.** Release clones under `~/.spaces/.release/` are
   kept by space name. A clone left there by an older space of the same name (a company set up
   again after its repositories were deleted) was reused: releases and classification notes

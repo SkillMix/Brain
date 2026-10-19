@@ -85,7 +85,11 @@ in the registry (`people`), then `python _meta/tools/onboard.py <brain> --invite
 writes the invitation and one Needs-you item whose text holds the sentence to send. Show the
 person that sentence and where to send it; you never send it yourself. When the colleague is
 not in the registry yet, add `--name "<full name>"` (and `--email <address>` when known): the
-same command registers them as a `people` subject first (the sync script lands it).
+same command registers them as a `people` subject first (the sync script lands it). Until the
+colleague can read the brain and the template, a second item says how and who grants it: a
+team in an organisation; on a personal account, a collaborator, with the
+`gh api -X PUT repos/<owner>/<repo>/collaborators/<login>` line for the person to run; a
+private template this person does not administer, its owner. Never run that line yourself.
 
 ## "Connect my mail" (calendar, chat, calls, tracker, documents)
 
