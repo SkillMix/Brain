@@ -310,7 +310,7 @@ def requeue(root, space=None, reg=None, now=None) -> dict:
 
 
 # ----- registry notes: how a space changes the registry that holds a subject -----------------------
-NOTE_KINDS = ("owner", "workspace", "ask", "classification", "obligation", "checked")
+NOTE_KINDS = ("owner", "workspace", "ask", "classification", "obligation", "checked", "state")
 NOTES_LOG = registry_mod.NOTES_LOG
 SIGNALS_OUT = Path("_outbound") / "signals"
 SIGNALS_IN = Path("_inbound") / "signals"
@@ -479,6 +479,14 @@ def apply_note(root, space, reg, signal: dict, now) -> tuple:
     subject = reg.subjects.get(sid)
     if subject is None:
         return "refused", f"{sid} is not held in this registry"
+    if kind == "state":   # dormancy is judged where the subject's evidence lives: its home
+        state, home = str(data.get("state") or ""), reg.home_of(sid)
+        if state not in ("active", "dormant") or subject.state not in ("active", "dormant"):
+            return "refused", f"a state note moves {sid} between active and dormant only"
+        if not home or sender != home:
+            return "refused", f"only {sid}'s home ({home or 'none'}) says it is {state}"
+        subject.state = state
+        return "applied", ""
     c = classification_of(subject)
     if kind == "owner":
         if subject_owner(reg, sid):
@@ -611,6 +619,15 @@ def _send(root: Path, sid, kind, data, now) -> Path | None:
     path = note(root, sid, kind, data, now, sent=sent)
     _append(root / SENT_LOG, json.dumps({"at": pages.iso(now), "note": kind, "subject": str(sid),
                                          "signal": path.stem if path else None, **sent}))
+    return path
+
+
+def send_state(root, sid, state: str, now) -> Path | None:
+    """The home tells the registry that holds `sid` it went dormant or woke; the home reads the
+    new state at once while the note travels (registry.Registry)."""
+    path = note(root, sid, "state", {"state": state}, now)
+    _append(Path(root) / SENT_LOG, json.dumps({"at": pages.iso(now), "note": "state", "subject": str(sid),
+                                               "signal": path.stem if path else None, "state": state}))
     return path
 
 

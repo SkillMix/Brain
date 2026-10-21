@@ -314,23 +314,31 @@ class Registry:
         """A classification this space sent to the registry that holds the subject governs here
         at once, while it travels: until that registry's notes log shows it applied or refused.
         `classify.note` sends one only after the holder's own rules accepted it."""
-        sent = {}
+        sent, states = {}, {}
         for row in _jsonl(self.root / SENT_NOTES):
             if row.get("note") == "classification" and isinstance(row.get("classification"), dict):
                 sent[str(row.get("subject"))] = row   # the latest per subject
+            elif row.get("note") == "state" and row.get("state") in ("active", "dormant"):
+                states[str(row.get("subject"))] = row   # a dormancy the home judged, the latest
         logs: dict = {}
-        for sid, row in sent.items():
-            subject = self.ancestors.get(sid)
-            if subject is None:
-                continue
+
+        def arrived(subject, row) -> bool:
             if subject.space not in logs:
                 holder = self.space.mount_root(subject.space)
                 logs[subject.space] = {str(r.get("id")) for r in _jsonl(holder / NOTES_LOG)} if holder else set()
-            if str(row.get("signal")) in logs[subject.space]:
+            return str(row.get("signal")) in logs[subject.space]
+
+        for sid, row in sent.items():
+            subject = self.ancestors.get(sid)
+            if subject is None or arrived(subject, row):
                 continue   # the holder applied or refused it: its own entry says what holds
             subject.extra["classification"] = dict(row["classification"], travelling=str(row.get("signal")))
             if row["classification"].get("home"):
                 subject.home = str(row["classification"]["home"])
+        for sid, row in states.items():
+            subject = self.ancestors.get(sid)
+            if subject is not None and not arrived(subject, row):
+                subject.state = str(row["state"])
 
     def homed_here(self, sid: str) -> bool:
         """An ancestor's subject whose home is this space: this registry may add its names."""

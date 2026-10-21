@@ -534,3 +534,57 @@ def test_status_rewrites_a_stale_agents_file(tmp_path):
     (root / "AGENTS.md").write_text("stale", encoding="utf-8")
     status.run(root, now=NOW)
     assert agents_md.check(root)
+
+
+# ----- dormancy at the home, whichever registry holds the subject -------------------------
+def _quiet_and_fresh():
+    return NOW - dt.timedelta(hours=9 * 7 * 24 / 48), NOW - dt.timedelta(hours=1)
+
+
+def test_a_subject_the_brain_holds_goes_dormant_at_its_home_and_the_brain_learns_it(tmp_path):
+    import classify
+    import release
+    brain = make_space(tmp_path / "brain", profile="brain", name="brain", mode="fixture", time_scale=48,
+                       subjects=[{**HARBOR, "home": "harbor"}])
+    harbor = make_space(tmp_path / "harbor", profile="project", name="harbor", mode="fixture", time_scale=48,
+                        audience=["Ada Okafor"])
+    mount_brain(harbor, brain)
+    quiet, _ = _quiet_and_fresh()
+    witness(harbor, "m-old", "harbor", pages.iso(quiet), generated=pages.generated("sweep", quiet))
+    report = status.run(harbor, now=NOW)
+    assert report.dormant == ["harbor"], "the home judges dormancy for the subjects homed there"
+    assert registry.Registry(harbor).get("harbor").state == "dormant", "the home reads it at once"
+    release.ship(harbor, now=NOW, offline_roots={"brain": brain})
+    classify.land_notes(brain, now=NOW)
+    assert registry.Registry(brain).get("harbor").state == "dormant", "the brain applied the home's note"
+    assert status.run(harbor, now=NOW + dt.timedelta(hours=1)).dormant == [], "said once"
+
+
+def test_a_dormant_subject_wakes_when_evidence_arrives_again(tmp_path):
+    import distill
+    root = make_space(tmp_path / "ada", mode="fixture", time_scale=48, subjects=[HARBOR])
+    quiet, fresh = _quiet_and_fresh()
+    witness(root, "m-old", "harbor", pages.iso(quiet), generated=pages.generated("sweep", quiet))
+    assert status.run(root, now=NOW).dormant == ["harbor"]
+    witness(root, "m-new", "harbor", pages.iso(fresh), title="Harbor starts again",
+            generated=pages.generated("sweep", fresh))
+    report = status.run(root, now=NOW)
+    assert report.woken == ["harbor"]
+    assert registry.Registry(root).get("harbor").state == "active"
+    distill.run(root, now=NOW)
+    assert list((root / "_inbound" / "candidates").glob("*.md")), "distill reads it again"
+
+
+def test_only_the_home_moves_a_subject_between_active_and_dormant(tmp_path):
+    import classify
+    brain = make_space(tmp_path / "brain", profile="brain", name="brain",
+                       subjects=[{**HARBOR, "home": "harbor"}])
+    reg = registry.Registry(brain)
+    signal = {"id": "p-0000d001", "kind": "registry", "note": "state", "subject": "harbor",
+              "at": pages.iso(NOW), "by": "Ben Liu", "from": "ben", "data": {"state": "dormant"}}
+    outcome, why = classify.apply_note(brain, spaceyaml.load(brain), reg, signal, NOW)
+    assert outcome == "refused" and "home" in why
+    outcome, _ = classify.apply_note(brain, spaceyaml.load(brain), reg, dict(signal, **{"from": "harbor"}), NOW)
+    assert outcome == "applied" and reg.get("harbor").state == "dormant"
+    archived = dict(signal, **{"from": "harbor", "data": {"state": "archived"}})
+    assert classify.apply_note(brain, spaceyaml.load(brain), reg, archived, NOW)[0] == "refused"
