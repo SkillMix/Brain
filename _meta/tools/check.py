@@ -3,7 +3,8 @@
 Runs after distill in every sweep chain. It reads what moved: the subjects with
 evidence since `_meta/state/check-watermark.yaml` and the pages they touch; once a
 scaled day (`window_pass` in that file) it adds every signed page whose window
-closes within seven scaled days. Named checks, one function each: `disagree`,
+closes within seven scaled days, and the subjects of pages signed since the last pass.
+Named checks, one function each: `disagree`,
 `newer_evidence`, `past_window`, `person_claim`, `named_number` (each has its
 docstring). Every hit is one item `_inbound/checks/<chk-id>.md` with evidence, a
 recommendation in words and a route (signer, subject owner, domain owner, space
@@ -572,6 +573,10 @@ def run(root, now: dt.datetime | None = None) -> CheckReport:
         for page in store.all():
             if page.signed and (closes_soon(page, space, now) or _departed(reg, page)):
                 in_scope.setdefault(page.rel, page)
+            # a page signed since the last pass is what moved too, with or without new evidence
+            fresh = last_pass is None or (page.stamp is not None and page.stamp > last_pass)
+            if page.signed and page.subject and fresh and page.subject not in subject_pages:
+                subject_pages[page.subject] = store.of_subject(page.subject)
     scoped = sorted(in_scope.values(), key=lambda p: p.rel)
     signed = [p for p in scoped if p.signed]
 
@@ -581,7 +586,7 @@ def run(root, now: dt.datetime | None = None) -> CheckReport:
             found += check_disagree([p for p in plist if p.signed], reg, space)
     if "newer_evidence" in report.checks_run:
         for sid, plist in subject_pages.items():
-            found += check_newer_evidence([p for p in plist if p.signed], moved[sid], reg, space)
+            found += check_newer_evidence([p for p in plist if p.signed], moved.get(sid, []), reg, space)
     # window findings are not items of their own: they bundle into the weekly review batch
     if "past_window" in report.checks_run:
         report.batch_lines = write_batch(root, space, reg, store, reader, now)
