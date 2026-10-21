@@ -33,6 +33,7 @@ import datetime as dt
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -430,6 +431,19 @@ def migrations_pending(root: Path, space, folder: Path | None = None) -> list:
     return sorted(found)
 
 
+def _files(root: Path, space) -> dict:
+    """path -> (size, mtime) of every file a migration may change: never git's own, never a mount."""
+    skip = {".git"} | {str(m.get("path") or "").replace("\\", "/").strip("/") for m in space.mounts}
+    out = {}
+    for base, dirs, files in os.walk(root):
+        rel = Path(base).relative_to(root).as_posix()
+        dirs[:] = [d for d in dirs if (d if rel == "." else f"{rel}/{d}") not in skip]
+        for name in files:
+            stat = (Path(base) / name).stat()
+            out[name if rel == "." else f"{rel}/{name}"] = (stat.st_size, stat.st_mtime_ns)
+    return out
+
+
 def migrate(root, folder: Path | None = None, now=None, land_it: bool = False, scorer=None, runner=None) -> list:
     """Run every pending shape migration in order, each verified and landed as one commit."""
     root = Path(root)
@@ -443,7 +457,12 @@ def migrate(root, folder: Path | None = None, now=None, land_it: bool = False, s
         spec.loader.exec_module(module)
         before = scorer(root)
         backup = (root / "space.yaml").read_text(encoding="utf-8")
+        files = _files(root, space)
         module.migrate(root)
+        after = _files(root, space)
+        # its one commit carries what it changed, never another session's work in progress
+        paths = sorted({p for p in set(files) | set(after) if files.get(p) != after.get(p)}
+                       | {"space.yaml", "log.md"})
         data = yaml.safe_load((root / "space.yaml").read_text(encoding="utf-8")) or {}
         data["shape"] = number
         (root / "space.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8", newline="\n")
@@ -455,10 +474,10 @@ def migrate(root, folder: Path | None = None, now=None, land_it: bool = False, s
         _append(root / "log.md", f"- {pages.iso(now)} librarian ran shape migration {number}")
         done.append(number)
         if land_it:
-            land(root, ["."], runner)
+            land(root, paths, runner)
         else:
             _append(root / CHANGES, json.dumps({"id": f"shape-{number}-{pages.iso(now)}", "at": pages.iso(now),
-                                                "kind": "migration", "paths": ["."]}))
+                                                "kind": "migration", "paths": paths}))
     return done
 
 
