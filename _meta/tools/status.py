@@ -764,17 +764,21 @@ def _probe_items(root: Path, given: dict) -> list:
         out.append({"id": item_id, "kind": "question",
                     "text": (f"Add \"{question}\" to this space's test questions? It needed steering; "
                              f"the pages that answered: {pages_used}."),
-                    "recommendation": "yes; edit with the facts the answer must contain, separated by ;",
+                    "recommendation": ("yes; edit with the facts the answer must contain, as the pages "
+                                       "write them, separated by ;"),
                     "default": "not added", "depends": 0,
                     "payload": json.dumps({"question": question, "subject": entry.get("subject"),
                                            "pages": list(entry.get("pages") or [])})})
     return out
 
 
-def _apply_probe(root: Path, item: dict, verdict: dict) -> bool:
+def _apply_probe(root: Path, item: dict, verdict: dict) -> dict | None:
+    """Add the question with the facts given. A fact no page carries would fail the answer test
+    from birth and block every landing: the question stays out, and the item returned asks again."""
     import yaml
+    import tests_run
     if verdict.get("verb") not in ("yes", "edit", "always"):
-        return False
+        return None
     data = json.loads(item.get("payload") or "{}")
     facts = [f.strip() for f in str(verdict.get("note") or "").split(";") if f.strip()]
     if not facts:
@@ -785,16 +789,29 @@ def _apply_probe(root: Path, item: dict, verdict: dict) -> bool:
             if path.is_file():
                 facts.append(str(pages.read(path)[0].get("title") or path.stem))
     if not facts:
-        return False
+        return None
+    question = {"question": data.get("question"), "subject": data.get("subject"),
+                "expect": facts, "asker": "owner", "via": "both",
+                "kind": "walk", "added_by": verdict.get("by") or "owner"}
+    missing = tests_run.missing_facts(root, question)
+    if missing:
+        found = re.fullmatch(r"(probe-q-[0-9a-f]+)(?:-(\d+))?", str(item["id"]))
+        base, attempt = (found.group(1), int(found.group(2) or 1)) if found else (str(item["id"]), 1)
+        shown = "; ".join(f"\"{fact}\"" for fact in missing)
+        return {"id": f"{base}-{attempt + 1}", "kind": "question",
+                "text": (f"\"{data.get('question')}\" was not added to the test questions: no page the "
+                         f"answer test reads carries {shown}. The test looks for each fact as a page writes "
+                         f"it, under knowledge/, live/ or work/. Add it with such facts?"),
+                "recommendation": ("edit with the facts as the pages write them, separated by ; "
+                                   "(later, until a page carries them)"),
+                "default": "not added", "depends": 0, "payload": item.get("payload")}
     path = root / "_meta" / "tests" / "answers.yaml"
     doc = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else None
     doc = doc if isinstance(doc, dict) else {}
-    doc.setdefault("questions", []).append({"question": data.get("question"), "subject": data.get("subject"),
-                                            "expect": facts, "asker": "owner", "via": "both",
-                                            "kind": "walk", "added_by": verdict.get("by") or "owner"})
+    doc.setdefault("questions", []).append(question)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(doc, sort_keys=False, allow_unicode=True), encoding="utf-8", newline="\n")
-    return True
+    return None
 
 
 def _transcripts_item(root: Path, space, now, given: dict) -> dict | None:
@@ -831,7 +848,7 @@ def librarian_items(root: Path, space, reg, now, check: bool = False) -> tuple[s
     given = verdicts(root)
     old = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else None
     old_items = (old or {}).get("items") if isinstance(old, dict) else None
-    applied = []
+    applied, asked_again = [], []
     for item in old_items or []:
         verdict = given.get(str(item.get("id")))
         if not verdict or verdict.get("verb") in (None, "later") or check:
@@ -839,7 +856,9 @@ def librarian_items(root: Path, space, reg, now, check: bool = False) -> tuple[s
         if str(item["id"]).startswith("index-"):
             _apply_index(root, verdict)
         elif str(item["id"]).startswith("probe-q-"):
-            _apply_probe(root, item, verdict)
+            again = _apply_probe(root, item, verdict)
+            if again:
+                asked_again.append(again)
         elif str(item["id"]).startswith("sample-"):
             import landing
             landing.apply_sample(root, item, verdict, now=now)
@@ -857,7 +876,7 @@ def librarian_items(root: Path, space, reg, now, check: bool = False) -> tuple[s
     have = {str(i.get("id")) for i in items}
     import landing
     fresh = ([_index_item(root, space, given), _transcripts_item(root, space, now, given)]
-             + _probe_items(root, given) + _reconnect_items(root, given))
+             + asked_again + _probe_items(root, given) + _reconnect_items(root, given))
     if not any(str(i.get("id")).startswith("sample-") for i in items):
         fresh.append(landing.sample_item(root, space, reg, now, given))
     for new in fresh:
