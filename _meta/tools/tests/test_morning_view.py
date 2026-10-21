@@ -244,3 +244,17 @@ def test_the_old_tracked_briefing_files_are_removed(tmp_path):
     morning_view.run(root, person="Ada Okafor", now=NOW)
     assert not (root / "_meta" / "state" / "morning-payload.json").exists()
     assert not (root / "_meta" / "state" / "morning-notice.json").exists()
+
+
+def test_what_the_machinery_fixed_by_itself_is_one_line_in_the_briefing(tmp_path):
+    root = setup(tmp_path)
+    runs = root / "_meta" / "state" / "runs.jsonl"
+    old = {"what": "reran a failed check", "pr": 5}
+    new = {"what": "set aside 1 answer test the checks could not pass: Who runs Harbor?", "pr": 7}
+    runs.write_text("".join(json.dumps({"routine": "sync", "at": pages.iso(at), "notes": {"healed": healed}}) + "\n"
+                            for at, healed in ((NOW - dt.timedelta(days=3), old), (NOW - dt.timedelta(hours=2), new))),
+                    encoding="utf-8")
+    morning_view.run(root, "Ada Okafor", now=NOW)
+    page = (root / "live" / "needs-you.md").read_text(encoding="utf-8")
+    assert "## Fixed by itself" in page and "Who runs Harbor?" in page and "pull request #7" in page
+    assert "reran a failed check" not in page

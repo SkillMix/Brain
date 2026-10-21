@@ -17,6 +17,13 @@ the shape and ships its migration. Each choice behind a change has a line in
 
 ### Fixed
 
+- **A red sync pull request heals itself.** When the checks of a machine's sync pull request
+  fail, the next `sync` run reads the failed log. Answer tests it names are set aside for CI
+  (`held: {by: ci}`, since a pass on this machine does not prove one there) and land with that
+  run's push. Any other failure is rerun once per head, as a flaky one. Once the pull request
+  merges, the run line says `healed` and the morning view lists it under "Fixed by itself".
+  What is still red after the rerun stays in the run line (`pr_red`) for the maintenance
+  agent. Nothing asks the owner.
 - **A test question its pages cannot answer is asked again, not added.** A yes or edit on a
   steered question wrote the given facts into `answers.yaml` as they were typed. The answer
   test looks for each fact as a page writes it, so a summary in other words, another
