@@ -222,7 +222,7 @@ def collect(root: Path, space, reg, now) -> dict:
         # evidence attaches by identifier or by a routing decision, wherever the route went (the
         # record is this space's own); a mention alone stays out
         sids = [s for s in registry_mod.routed_subjects(fm, None) if s in known]
-        if not sids or at is None:
+        if not sids or at is None or pages.withdrawn(fm):
             continue
         rel, pid, title = path.relative_to(root).as_posix(), str(fm.get("id") or ""), str(fm.get("title") or path.stem)
         tier = "system" if _is_system(fm, space) else "witness"
