@@ -51,8 +51,13 @@ SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", "personal", "academic", "_s
 MOUNT_DIRS = ("brain", "mounts")
 # Never copied from the space a new one is made from: its fixture, its settings and the company's
 # own test questions (they name real facts).
+# The template's files as an open-source project: a company's private space never presents them
+# (template sync never carries them either; it reads CHANGELOG.md from the release itself).
+PROJECT_FILES = ("CONTRIBUTING.md", "SECURITY.md", "CHANGELOG.md", "CODE_OF_CONDUCT.md",
+                 ".github/ISSUE_TEMPLATE", ".github/PULL_REQUEST_TEMPLATE.md", "requirements-dev.txt")
 SKIP_PATHS = ("_meta/tests/fixture", ".github/template-marker", "_meta/state/feed", "AGENTS.md",
-              "space.yaml", "_meta/tests/answers.yaml", "_meta/tests/leaks.yaml", "_meta/search.yaml")
+              "space.yaml", "_meta/tests/answers.yaml", "_meta/tests/leaks.yaml",
+              "_meta/search.yaml") + PROJECT_FILES
 # Content never travels into a new space: a space made from another (offline, or a corridor)
 # takes only its machinery and empty skeleton. `live/` is all generated content; `docs/` keeps
 # only the conformance page.
@@ -272,7 +277,13 @@ def remove_forbidden(report, dst, profile) -> None:
         else:
             shutil.rmtree(folder)
     marker = dst / spaceyaml.TEMPLATE_MARKER
-    if marker.exists():
+    if marker.exists():   # a fresh copy of the template (a repository made from it online)
+        for rel in PROJECT_FILES:
+            path = dst / rel
+            if path.is_dir():
+                shutil.rmtree(path)
+            elif path.exists():
+                path.unlink()
         marker.unlink()
 
 

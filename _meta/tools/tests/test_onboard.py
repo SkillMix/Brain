@@ -511,6 +511,37 @@ def test_copy_template_never_copies_mounted_spaces(tmp_path):
     assert not (dst / "brain").exists() and not (dst / "mounts").exists()
 
 
+
+PROJECT_FILES = ("CONTRIBUTING.md", "SECURITY.md", "CHANGELOG.md", "CODE_OF_CONDUCT.md",
+                 ".github/ISSUE_TEMPLATE/bug.md", ".github/PULL_REQUEST_TEMPLATE.md", "requirements-dev.txt")
+
+
+def test_a_new_space_never_presents_the_open_source_projects_files(tmp_path):
+    """Offline (a copy) and online (a repository made from the template, marker still in it): the
+    project's contributing guide, security policy, changelog and issue forms stay with the template."""
+    src = make_space(tmp_path / "tpl", profile="template")
+    for rel in PROJECT_FILES + ("README.md", "LICENSE", ".github/workflows/checks.yml"):
+        (src / rel).parent.mkdir(parents=True, exist_ok=True)
+        (src / rel).write_text("x\n", encoding="utf-8")
+    dst = tmp_path / "offline"
+    assert onboard.copy_template(src, dst)
+    assert not [rel for rel in PROJECT_FILES if (dst / rel).exists()]
+    assert not (dst / ".github" / "ISSUE_TEMPLATE").exists()
+    assert (dst / "README.md").exists() and (dst / "LICENSE").exists()
+    assert (dst / ".github" / "workflows" / "checks.yml").exists()
+    onboard.remove_forbidden(onboard.Report("company"), src, "brain")   # the online clone
+    assert not [rel for rel in PROJECT_FILES if (src / rel).exists()]
+    assert not (src / ".github" / "ISSUE_TEMPLATE").exists() and not (src / ".github" / "template-marker").exists()
+    assert (src / "README.md").exists() and (src / ".github" / "workflows" / "checks.yml").exists()
+
+
+def test_a_space_keeps_its_own_files_of_those_names(tmp_path):
+    """Only a fresh copy of the template drops them: a configured space's own changelog stays."""
+    space = make_space(tmp_path / "ada", profile="project")
+    (space / "CHANGELOG.md").write_text("# Our changes\n", encoding="utf-8")
+    onboard.remove_forbidden(onboard.Report("person"), space, "project")
+    assert (space / "CHANGELOG.md").exists()
+
 def test_the_workspace_is_allowed_once_and_offboard_takes_it_back(tmp_path):
     import json
     settings = tmp_path / ".claude" / "settings.json"
