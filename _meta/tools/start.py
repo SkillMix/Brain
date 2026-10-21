@@ -113,8 +113,9 @@ import onboarding_page  # noqa: E402
 import spaceyaml  # noqa: E402
 
 HERE = Path(__file__).resolve().parents[2]
-# One start at a time on this machine; a lock older than LOCK_HOURS is a crashed run's.
-LOCK = Path(tempfile.gettempdir()) / "spaces-start.lock"
+# One start at a time on this machine; a lock older than LOCK_HOURS is a crashed run's. The lock
+# lives in the machine's temporary folder; SPACES_START_LOCK moves it (the tests use their own).
+LOCK = None
 LOCK_HOURS = 1
 ROUTINES = HERE / "_meta" / "templates" / "routines"
 INVITATIONS = "_meta/state/invitations"
@@ -277,9 +278,13 @@ def render_routines(workspace: Path, person: str) -> list:
 
 
 # ----- start ---------------------------------------------------------------------------
+def lock_path() -> Path:
+    return Path(LOCK or os.environ.get("SPACES_START_LOCK") or Path(tempfile.gettempdir()) / "spaces-start.lock")
+
+
 def take_lock(path=None) -> Path | None:
     """The sentence said twice: the second start waits for the first instead of racing it."""
-    path = Path(path or LOCK)
+    path = Path(path or lock_path())
     try:
         if time.time() - path.stat().st_mtime < LOCK_HOURS * 3600:
             return None
@@ -326,7 +331,7 @@ def start(here=HERE, invitation=None, brain=None, company=None, name=None, email
     report = onboard.Report(case="start")
     lock = take_lock()
     if lock is None:
-        report.add("one start at a time", False, f"test -f {LOCK}", "another start is running on this machine: "
+        report.add("one start at a time", False, f"test -f {lock_path()}", "another start is running on this machine: "
                    "it finishes on its own; say the sentence again when it has")
         return report   # the running start keeps the page
     if not dry_run:
