@@ -98,5 +98,8 @@ drives the clock by hand.
 ## Forbidden names
 
 `forbidden-names.sha256` lists the sha256 of lowercased tokens that must never appear in
-the template: the names of a real company, its people, clients and projects. The names
-themselves live outside this repository. `validate.py . --template` checks every token.
+the template: the names of a real company, its people, clients and projects. Neither the
+names nor the list are in this repository: the `checks` workflow writes the list here from
+the `FORBIDDEN_NAMES_SHA256` secret for the run, and `.gitignore` keeps it out of commits.
+`validate.py . --template` checks every token against it; without the file there is nothing
+to compare.

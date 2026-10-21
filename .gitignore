@@ -13,3 +13,6 @@ __pycache__/
 
 # Harness scratch
 .claude/settings.local.json
+
+# The template's forbidden names list: a CI secret written here for the run, never committed
+_meta/tests/forbidden-names.sha256
