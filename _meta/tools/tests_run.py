@@ -358,6 +358,47 @@ def set_aside(root, now: dt.datetime | None = None, path=None) -> tuple[list, li
     return held, back
 
 
+def failures_in(log: str, root, path=None) -> dict:
+    """question -> missing facts, for each question of this space a printed run (a CI log)
+    reports as failing."""
+    import ast
+    path = Path(path) if path else Path(root) / ANSWERS_PATH
+    out: dict = {}
+    for question in (_load_yaml(path).get("questions") or []) if path.exists() else []:
+        text = str(question.get("question") or "") if isinstance(question, dict) else ""
+        marker = f"FAIL {text} ("
+        line = next((ln for ln in log.splitlines() if text and marker in ln), None)
+        if line is None:
+            continue
+        try:
+            missing = [str(m) for m in ast.literal_eval(line.partition("): missing ")[2].strip())]
+        except (ValueError, SyntaxError):
+            missing = []
+        out[text] = missing
+    return out
+
+
+def hold(root, failures: dict, by: str, now: dt.datetime | None = None, path=None) -> list:
+    """Set aside the named questions (question -> missing facts) that are not held yet, recording
+    who held them. Returns the questions set aside."""
+    import yaml
+    root = Path(root)
+    now = now or spaceyaml.load(root).now()
+    path = Path(path) if path else root / ANSWERS_PATH
+    if not failures or not path.exists():
+        return []
+    doc = _load_yaml(path)
+    held = []
+    for question in doc.get("questions") or []:
+        text = str(question.get("question") or "") if isinstance(question, dict) else ""
+        if text in failures and not isinstance(question.get("held"), dict):
+            question["held"] = {"since": pages.iso(now), "by": by, "missing": list(failures[text])}
+            held.append(text)
+    if held:
+        path.write_text(yaml.safe_dump(doc, sort_keys=False, allow_unicode=True), encoding="utf-8", newline="\n")
+    return held
+
+
 # ----- the probe ---------------------------------------------------------------------
 
 @dataclass

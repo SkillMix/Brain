@@ -30,7 +30,9 @@ answer must contain, matched without regard to case), `asker` and `via`.
 A question may carry `held: {since, by, missing}`: it is set aside, not run, and every run
 names it with its missing facts (never counted as passed). The sync sets aside a question that
 fails before it publishes (`by: sync`), so one test cannot turn the pull request red and hold
-every desk and journal change back, and brings it back once it passes again. A hold placed by
+every desk and journal change back, and brings it back once it passes again. When the checks
+fail a question that passed on the machine, the next sync sets it aside `by: ci`: a pass on
+the machine does not prove one in CI, so only a person brings that one back. A hold placed by
 anyone else stays until they remove it.
 
 A question runs in the asker's space. It runs here when the asker is this space's name, its

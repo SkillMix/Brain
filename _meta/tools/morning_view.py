@@ -1,10 +1,10 @@
 """The morning view: the Needs-you list as it stands today, rendered and ready to mail.
 
-Writes `live/needs-you.md` (the list, what left yesterday, the health lines), marks
-every release leaving within the window as listed (a `window` item ships only after a
-morning view showed it), writes the notice and the mail payload under `_meta/state/`,
-and records one run line. It never sends: the agent hands the payload to its mail
-connector. In the shadow the subject and title say so.
+Writes `live/needs-you.md` (the list, what left yesterday, what the sync fixed by itself in the
+last day, the health lines), marks every release leaving within the window as listed (a
+`window` item ships only after a morning view showed it), writes the notice and the mail
+payload under `_meta/state/`, and records one run line. It never sends: the agent hands the
+payload to its mail connector. In the shadow the subject and title say so.
 
     python morning_view.py [root] --person <name> [--shadow] [--limit N]
     python morning_view.py [root] sent-today        exit 0 when today's briefing was sent
@@ -242,6 +242,23 @@ def _left_yesterday(root: Path, space: spaceyaml.Space, now: dt.datetime) -> lis
     return out
 
 
+def _fixed_lines(root: Path, space: spaceyaml.Space, now: dt.datetime) -> list:
+    """What the machinery repaired by itself in the last scaled day (sync run lines `healed`)."""
+    path = root / RUNS
+    since = now - space.scale(24)
+    out = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if path.exists() else []:
+        try:
+            run = json.loads(line)
+            healed = run["notes"]["healed"]
+            at = pages.parse_iso(run["at"])
+        except (ValueError, KeyError, TypeError):
+            continue
+        if isinstance(healed, dict) and since < at <= now:
+            out.append(f"- {healed.get('what') or 'a red check'} (pull request #{healed.get('pr')})")
+    return out
+
+
 def _approved_lines(root: Path, approved: list) -> list:
     """One line per destination for the approved high-stakes items this view lists."""
     groups: dict = {}
@@ -263,6 +280,9 @@ def _markdown(root: Path, space: spaceyaml.Space, person: str, items: list, now:
     if today:
         lines += ["", "## Today's meetings"] + today
     lines += ["", "## Left yesterday"] + (left or ["Nothing left at once."])
+    fixed = _fixed_lines(root, space, now)
+    if fixed:
+        lines += ["", "## Fixed by itself"] + fixed
     lines += ["", "## Health"] + (health or ["No health line yet."])
     return "\n".join(lines) + "\n"
 
