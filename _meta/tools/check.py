@@ -601,8 +601,8 @@ def run(root, now: dt.datetime | None = None) -> CheckReport:
         seen.add(hid)
         report.hits.append(write_hit(root, hit, now))
 
-    distill.write_watermark(root, ROUTINE, {
-        "at": pages.iso(now), "window_pass": pages.iso(now if report.window_pass else last_pass)})
+    distill.write_watermark(root, ROUTINE, dict(distill.read_watermark(root, ROUTINE), **{   # keeps review_at
+        "at": pages.iso(now), "window_pass": pages.iso(now if report.window_pass else last_pass)}))
     report.pages_read, report.cost_tokens = reader.pages, reader.cost_tokens
     distill.append_run(root, ROUTINE, space, now, report.cost_tokens, {
         "hits": len(report.hits), "checks_run": report.checks_run, "pages_read": report.pages_read,
