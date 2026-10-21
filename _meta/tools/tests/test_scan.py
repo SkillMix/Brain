@@ -169,11 +169,11 @@ ORDINARY_LINKS = [
     "https://docs.google.com/document/d/1Xy2AbC3dEf4GhI5jKl6MnO7pQr8StU9vWx0YzAbCdE/edit?usp=sharing",
     "https://drive.google.com/file/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/view?resourcekey=0-AbCdEfGhIjKlMnOp",
     "https://docs.google.com/document/d/1AbC/edit?usp=sharing&token=AHk9fL2xQpR7mN3vB8cZ1wE5tY6uI0oP",
-    "https://calendar.google.com/calendar/event?eid=NnRhMmNkZXJ0eWJ6dWFzZGZnaGprbCB4&ctz=Europe/Brussels",
+    "https://calendar.google.com/calendar/event?eid=NnRhMmNkZXJ0eWJ6dWFzZGZnaGprbCB4&ctz=Etc/UTC",
     "https://us02web.zoom.us/j/81234567890?" + "p" + "wd=QWErtyUIopASdfGHjkLZxcVBnm1234.1",
     "https://accounts.google.com/o/oauth2/auth?state=" + "eyJ" + "hbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dQw4w9WgXcQabcdefghij",
-    "https://claude.ai/artifact/LCaZpkmrGMvhECJSfcebZK",
-    "https://claude.ai/code/artifact/9b7b8072-39ae-4461-839e-320a8bb98092",
+    "https://claude.ai/artifact/AbCdEfGhIjKlMnOpQrStUv",
+    "https://claude.ai/code/artifact/0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
 ]
 
 
