@@ -244,22 +244,26 @@ def copy_template(src, dst) -> bool:
     return True
 
 
+def _keep(folder: Path) -> None:
+    """A folder git keeps while it is empty."""
+    folder.mkdir(parents=True, exist_ok=True)
+    if not any(folder.iterdir()):
+        write_text(folder / ".gitkeep", "")
+
+
 def ensure_required(dst, profile) -> None:
+    """The profile's required files and folders and the zone folders. The template ships none of
+    them, so a repository made from it gets each one here, kept by a `.gitkeep` while empty."""
     dst = Path(dst)
+    for sub in SUBDIRS if profile != "channel" else SUBDIRS[:8]:
+        _keep(dst / sub)
     for entry in spaceyaml.PROFILE_TABLE[profile]["required"]:
         target = dst / entry
         if "." in Path(entry).name:
             if not target.exists():
                 write_text(target, FRESH.get(entry, f"---\ntitle: {Path(entry).stem}\n---\n"))
         else:
-            target.mkdir(parents=True, exist_ok=True)
-            if not any(target.iterdir()):
-                write_text(target / ".gitkeep", "")
-    if profile != "channel":
-        for sub in SUBDIRS:
-            (dst / sub).mkdir(parents=True, exist_ok=True)
-    for sub in SUBDIRS[:8]:
-        (dst / sub).mkdir(parents=True, exist_ok=True)
+            _keep(target)
 
 
 def remove_forbidden(report, dst, profile) -> None:

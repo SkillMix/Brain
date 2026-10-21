@@ -197,6 +197,28 @@ def test_skipped_questions_become_needs_you_items(tmp_path, monkeypatch):
     assert all(reg.get(d).owner == "Ada Okafor" for d in ("sales", "delivery", "operations"))
 
 
+
+def test_a_repository_made_from_the_template_gets_every_folder(tmp_path, monkeypatch):
+    """Online a new space starts as a full copy of the template, which ships no zone folders and
+    no index, log, identity or live pages: onboard makes each one, and git keeps every folder."""
+    import shutil
+    monkeypatch.setattr(onboard, "run_cmd", never)
+    root = tmp_path / "co"
+    shutil.copytree(TEMPLATE, root, ignore=shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache"))
+    assert (root / ".github" / "template-marker").exists()
+    answers = onboard.interview({"company": "Lantern Works", "owner": "Ada Okafor"},
+                                interactive=False, case="company")
+    report = onboard.run(root, answers, offline=True)
+    assert not report.failed(), [s.row() for s in report.failed()]
+    for space in (root, tmp_path / "ada-okafor"):
+        for sub in onboard.SUBDIRS:
+            assert any((space / sub).iterdir()), f"{space.name}/{sub} is empty: git would drop it"
+        for rel in ("index.md", "log.md", "knowledge/index.md", "live/now.md", "live/health.md"):
+            assert (space / rel).exists(), f"{space.name}/{rel}"
+        assert errors(space) == []
+    assert (root / "identity" / "charter.md").exists() and (root / "identity" / "spine.md").exists()
+    assert not [rel for rel in onboard.PROJECT_FILES if (root / rel).exists()]
+
 def test_instruction_block_is_idempotent(tmp_path):
     path = tmp_path / "home" / ".claude" / "CLAUDE.md"
     workspace = tmp_path / "ada"
