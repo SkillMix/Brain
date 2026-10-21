@@ -303,6 +303,11 @@ def answers(root, path=None, now: dt.datetime | None = None, roots: dict | None 
     for question in _load_yaml(path).get("questions") or []:
         if not isinstance(question, dict):
             continue
+        held = question.get("held")
+        if isinstance(held, dict):
+            report.skipped.append(f"{question.get('question')}: set aside since {held.get('since')} by "
+                                  f"{held.get('by')}, no page carries {held.get('missing')}")
+            continue
         asker = str(question.get("asker") or "")
         if asker in roots:
             target = roots[asker]
@@ -320,6 +325,37 @@ def answers(root, path=None, now: dt.datetime | None = None, roots: dict | None 
     if record:
         _append_line(root, now, report)
     return report
+
+
+def set_aside(root, now: dt.datetime | None = None, path=None) -> tuple[list, list]:
+    """Mark each failing question asked here `held` (since, by, missing), so one test cannot hold
+    every other change back, and bring back each one the sync held that passes again. A hold
+    someone else placed stays theirs. Returns (set aside, brought back) as question texts."""
+    import yaml
+    root = Path(root)
+    space = spaceyaml.load(root)
+    now = now or space.now()
+    path = Path(path) if path else root / ANSWERS_PATH
+    if not path.exists():
+        return [], []
+    doc = _load_yaml(path)
+    held, back = [], []
+    for question in doc.get("questions") or []:
+        if not isinstance(question, dict) or not _asks_here(root, space, str(question.get("asker") or "")):
+            continue
+        mark = question.get("held")
+        if isinstance(mark, dict) and mark.get("by") != "sync":
+            continue
+        detail = _answer_one(root, question)
+        if detail["ok"] and isinstance(mark, dict):
+            del question["held"]
+            back.append(detail["question"])
+        elif not detail["ok"] and not isinstance(mark, dict):
+            question["held"] = {"since": pages.iso(now), "by": "sync", "missing": detail["missing"]}
+            held.append(detail["question"])
+    if held or back:
+        path.write_text(yaml.safe_dump(doc, sort_keys=False, allow_unicode=True), encoding="utf-8", newline="\n")
+    return held, back
 
 
 # ----- the probe ---------------------------------------------------------------------
