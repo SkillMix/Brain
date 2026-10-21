@@ -7,7 +7,8 @@ closes within seven scaled days. Named checks, one function each: `disagree`,
 `newer_evidence`, `past_window`, `person_claim`, `named_number` (each has its
 docstring). Every hit is one item `_inbound/checks/<chk-id>.md` with evidence, a
 recommendation in words and a route (signer, subject owner, domain owner, space
-owner). The checker never edits a page. Labels compare by their last word.
+owner). The checker never edits a page. Labels compare by their last word. A verdict
+holds for the value it answered: evidence that later gives another value is a new hit.
 
 Verdicts in `_meta/state/check-verdicts.jsonl` (`no` means noise) give `hit_rate`;
 under 0.3 over 30 scaled days with ten or more verdicts the run drops `past_window`
@@ -78,6 +79,7 @@ class Hit:
     recommendation: str
     route: list
     hit_id: str = ""
+    value: str = ""   # the value the evidence gives: another value later is another hit
     path: str = ""
 
 
@@ -226,8 +228,10 @@ def narrowed(root, space, now) -> list:
 
 
 # ----- routing and items -------------------------------------------------------
-def hit_id(check: str, page: str, label: str) -> str:
-    return "chk-" + hashlib.sha1(f"{check}|{page}|{label}".encode("utf-8")).hexdigest()[:8]
+def hit_id(check: str, page: str, label: str, value: str = "") -> str:
+    """One finding: a verdict on it holds for that value only, so a later value asks again."""
+    key = f"{check}|{page}|{label}" + (f"|{value}" if value else "")
+    return "chk-" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]
 
 
 def route_for(page: Page, reg: registry_mod.Registry, space) -> list:
@@ -251,7 +255,7 @@ def _date(moment) -> str:
 
 
 def write_hit(root: Path, hit: Hit, now: dt.datetime) -> Hit:
-    hit.hit_id = hit_id(hit.check, hit.page, hit.label)
+    hit.hit_id = hit_id(hit.check, hit.page, hit.label, hit.value)
     path = root / CHECKS_DIR / f"{hit.hit_id}.md"
     hit.path = path.relative_to(root).as_posix()
     title = f"{hit.check}: {hit.page}"
@@ -280,7 +284,7 @@ def check_disagree(signed: list, reg, space) -> list:
             text = (f"the page says {label_a}: {value_a}; {newer.rel} of {_date(newer.stamp)} "
                     f"says {label_b}: {value_b}; I think {value_b}. Still {value_a}?")
             hits.append(Hit("disagree", older.rel, older.subject, key, [newer.rel], text,
-                            route_for(older, reg, space)))
+                            route_for(older, reg, space), value=value_b))
     return hits
 
 
@@ -303,7 +307,7 @@ def check_newer_evidence(signed: list, evidence: list, reg, space) -> list:
                         f"{_date(ev.at)} says {label}: {value}; I think {value}. "
                         f"Still {page_labels[key][1]}?")
                 hits.append(Hit("newer_evidence", page.rel, page.subject, key, [ev.rel], text,
-                                route_for(page, reg, space)))
+                                route_for(page, reg, space), value=value))
     return hits
 
 
@@ -372,7 +376,7 @@ def check_named_number(signed: list, space) -> list:
                     f"({b.subject}) says {labels_b[key][0]}: {labels_b[key][1]}; informational, "
                     f"for the space owner.")
             hits.append(Hit("named_number", a.rel, a.subject, key, [b.rel], text,
-                            [space.owner] if space.owner else []))
+                            [space.owner] if space.owner else [], value=labels_b[key][1]))
     return hits
 
 
@@ -527,7 +531,7 @@ def conflict_notes(root: Path, space, reg, moved: dict, now) -> int:
             if owner_space == space.name:
                 continue
             for hit in check_newer_evidence([page], evidence, reg, space):
-                hid = hit_id("conflict", f"{mount_name}:{hit.page}", hit.label)
+                hid = hit_id("conflict", f"{mount_name}:{hit.page}", hit.label, hit.value)
                 if hid in sent or hid in done:
                     continue
                 note_id = "p-" + hid[4:]
@@ -595,7 +599,7 @@ def run(root, now: dt.datetime | None = None) -> CheckReport:
     answered = {str(r.get("check_id")) for r in read_verdicts(root)}
     seen: set = set()
     for hit in found:
-        hid = hit_id(hit.check, hit.page, hit.label)
+        hid = hit_id(hit.check, hit.page, hit.label, hit.value)
         if hid in seen or {hid, "p-" + hid[4:]} & answered or (root / CHECKS_DIR / f"{hid}.md").exists():
             continue
         seen.add(hid)
