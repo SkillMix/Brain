@@ -24,6 +24,13 @@ the shape and ships its migration. Each choice behind a change has a line in
   pull request could not land anything after it. `status` now checks the facts first: one no
   page carries keeps the question out, and the item comes back as `probe-q-<id>-2` naming
   the missing facts. The first item asks for the facts as the pages write them.
+- **A failing answer test no longer holds every other change back.** The checks run the answer
+  tests on every pull request, so one question no page answered kept a space's sync pull
+  request red, and its desk notes, journal and run lines waited behind it (a day, on 20 Oct).
+  Before it publishes, `sync` now runs the answer tests and sets aside each question that
+  fails: `held: {since, by: sync, missing}` in `answers.yaml`, the question named in the run
+  line. `tests_run` names a held question in every run and never counts it as passed. Once a
+  page carries its facts again, the next sync brings it back.
 - **Signing ships the evidence list.** A signed candidate kept the `## New evidence` list
   that distill keeps at the bottom of the page, and a release sent it on. Its lines are record
   titles, which can name prices, pay terms or other clients the page itself leaves out. `sign`

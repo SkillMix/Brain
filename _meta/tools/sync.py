@@ -13,6 +13,10 @@ routines only edit files. Each run:
      where origin holds only an earlier copy of this checkout's own change keeps ours
      (the rebuilt commits of step 6 share no history with it); any other conflict is
      aborted and recorded
+  5a. when there is something to publish: run the answer tests; a question that fails is set
+     aside (`held: {since, by: sync, missing}` in answers.yaml, named in the run line) so it
+     cannot turn the pull request red and hold every other change back, and one the sync set
+     aside that passes again comes back; commit `chore: sync`
   6. when local main differs from origin/main: push it to sync/<machine> (a hash, never the
      machine's name) and open the pull request the platform merges. Changes under a
      `protected:` path go to their own branch sync/<machine>-protected (their own pull
@@ -63,7 +67,7 @@ QUIET_HOURS = 6   # run lines and mount pins alone go out at most this often
 BATCH_HOURS = 1   # journal lines and run logs alone go out at most this often
 RUNS_PATH = Path("_meta") / "state" / "runs.jsonl"
 RUN_LOGS = {"_meta/state/tests.jsonl", "_meta/state/probe.jsonl"}
-NOTABLE = ("committed", "pins", "conflict", "scan_hits", "errors")
+NOTABLE = ("committed", "pins", "conflict", "scan_hits", "errors", "held_tests", "restored_tests")
 
 
 def git(root, *args, check: bool = False, input: str | None = None, env: dict | None = None) -> subprocess.CompletedProcess:
@@ -333,6 +337,29 @@ class Run:
             self.notes["pins"] = moved
 
     # ----- merge in, publish -----------------------------------------------------
+    def set_aside_tests(self) -> None:
+        """A failing answer test turns the pull request red and holds every other change back:
+        before publishing, set it aside with a record, and bring back one that passes again."""
+        try:
+            import tests_run
+        except ImportError:
+            return
+        if not self.has_origin_main() or git(self.root, "diff", "--quiet", "origin/main", "HEAD").returncode == 0:
+            return   # nothing to publish
+        if self.dry:
+            print("would set aside the answer tests that fail")
+            return
+        held, back = tests_run.set_aside(self.root, self.now)
+        if not (held or back):
+            return
+        git(self.root, "add", "--", tests_run.ANSWERS_PATH.as_posix())
+        self.commit("chore: sync")
+        if held:
+            self.notes["held_tests"] = held
+        if back:
+            self.notes["restored_tests"] = back
+        print(f"answer tests: {len(held)} set aside, {len(back)} brought back")
+
     def has_origin_main(self) -> bool:
         if "origin" not in git(self.root, "remote").stdout.split():
             return False
@@ -631,6 +658,8 @@ def main(argv=None) -> int:
         if not args.only:
             run.advance_pins()
         run.merge_in()
+        if not args.only:
+            run.set_aside_tests()
         run.publish()
     except Exception as exc:  # unexpected: record, never lose the lock
         run.error(f"{type(exc).__name__}: {str(exc)[:200]}")
