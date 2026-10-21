@@ -491,3 +491,36 @@ def test_the_sync_branch_never_carries_the_machines_name(monkeypatch):
     assert sync.hostname() == first   # stable: the same machine pushes the same branch
     monkeypatch.setattr(socket, "gethostname", lambda: "other-machine")
     assert sync.hostname() != first
+
+
+def test_a_failing_answer_test_is_set_aside_so_the_desk_still_lands(repo, monkeypatch):
+    """A question no page answers would turn the sync pull request red and hold every desk and
+    journal line behind it. The sync sets it aside with a record, lands the rest, and brings
+    it back once a page carries its facts."""
+    import tests_run
+    import yaml
+    monkeypatch.setattr(sync.Run, "gh", lambda self, *args: None)
+    answers = repo / "_meta" / "tests" / "answers.yaml"
+    write(answers, yaml.safe_dump({"questions": [
+        {"question": "Who runs Harbor?", "subject": "harbor", "expect": ["Ben Liu"], "asker": "owner"},
+        {"question": "What are the notes?", "subject": "", "expect": ["line one"], "asker": "owner"}]},
+        sort_keys=False), minutes_old=20)
+    write(repo / "work" / "notes.md", "# Notes\n\nline one\nline two\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    host = sync.hostname()
+    git(repo, "fetch", "-q", "origin")
+    pushed = yaml.safe_load(git(repo, "show", f"origin/sync/{host}:_meta/tests/answers.yaml").stdout)
+    held = {q["question"]: q.get("held") for q in pushed["questions"]}
+    assert held["Who runs Harbor?"]["missing"] == ["Ben Liu"] and held["Who runs Harbor?"]["by"] == "sync"
+    assert held["What are the notes?"] is None
+    assert "line two" in git(repo, "show", f"origin/sync/{host}:work/notes.md").stdout
+    report = tests_run.answers(repo, record=False)
+    assert report.failed == 0 and report.passed == 1
+    assert any("Who runs Harbor?" in note and "Ben Liu" in note for note in report.skipped)
+    assert run_lines(repo)[-1]["notes"]["held_tests"] == ["Who runs Harbor?"]
+    write(repo / "work" / "harbor.md", "# Harbor\n\nBen Liu runs it.\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    git(repo, "fetch", "-q", "origin")
+    pushed = yaml.safe_load(git(repo, "show", f"origin/sync/{host}:_meta/tests/answers.yaml").stdout)
+    assert all(not q.get("held") for q in pushed["questions"])
+    assert tests_run.answers(repo, record=False).passed == 2
