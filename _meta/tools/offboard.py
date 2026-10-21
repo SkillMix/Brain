@@ -5,9 +5,10 @@
 Prints what still waits (queue, held, candidates) and moves nothing; removes the sync task
 (online: the Windows task, the cron line by its `# <task>` marker, or the systemd user timer
 and its two unit files) and the personal instruction block from the user-level file; archives
-the repository (online, `gh repo archive`); sets `state: archived` on this space's own
-subjects whose home is this space; writes `_meta/state/offboard.yaml`. Deletes no file of the
-space.
+the repository (online, `gh repo archive`); sets `state: archived` on the subjects whose home
+is this space: in its own registry at once, and in the registry that holds one (the brain) by
+a registry note that ships at once, alone (online, or to `offline_roots`); writes
+`_meta/state/offboard.yaml`. Deletes no file of the space.
 """
 from __future__ import annotations
 
@@ -83,7 +84,8 @@ def raw_records(root: Path) -> list:
     return out
 
 
-def run(root, online, dry_run=False, forget_records: bool = False) -> onboard.Report:
+def run(root, online, dry_run=False, forget_records: bool = False,
+        offline_roots: dict | None = None) -> onboard.Report:
     root = Path(root).resolve()
     space = spaceyaml.load(root)
     now = space.now()
@@ -158,8 +160,22 @@ def run(root, online, dry_run=False, forget_records: bool = False) -> onboard.Re
             archived.append(subject.id)
     if archived and not dry_run:
         reg.save()
+    # a subject homed here that another registry holds: that registry hears it from its home
+    held = sorted(sid for sid, s in reg.ancestors.items()
+                  if sid not in reg.subjects and s.state in ("active", "dormant") and reg.home_of(sid) == space.name)
+    notes = 0
+    if held and not dry_run:
+        import classify
+        import release
+        for sid in held:
+            notes += classify.send_state(root, sid, "archived", now) is not None
+        if online or offline_roots:
+            release.ship(root, now, offline_roots=offline_roots, notes_only=True)
+    archived += held
+    waiting = len(list((root / "_outbound" / "signals").glob("*.yaml"))) if notes else 0
     report.add("registry archived", True, "python _meta/tools/registry.py . check",
-               ", ".join(archived) or "no subject has its home here")
+               (", ".join(archived) or "no subject has its home here")
+               + (f"; {waiting} signals wait for the next ship" if waiting else ""))
     if not dry_run:
         onboard.write_yaml(root / "_meta" / "state" / "offboard.yaml",
                            {"at": pages.iso(now), "space": space.name, "counts": counts, "archived": archived,

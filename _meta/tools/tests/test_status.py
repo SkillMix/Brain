@@ -586,5 +586,5 @@ def test_only_the_home_moves_a_subject_between_active_and_dormant(tmp_path):
     assert outcome == "refused" and "home" in why
     outcome, _ = classify.apply_note(brain, spaceyaml.load(brain), reg, dict(signal, **{"from": "harbor"}), NOW)
     assert outcome == "applied" and reg.get("harbor").state == "dormant"
-    archived = dict(signal, **{"from": "harbor", "data": {"state": "archived"}})
-    assert classify.apply_note(brain, spaceyaml.load(brain), reg, archived, NOW)[0] == "refused"
+    unknown = dict(signal, **{"from": "harbor", "data": {"state": "gone"}})
+    assert classify.apply_note(brain, spaceyaml.load(brain), reg, unknown, NOW)[0] == "refused"

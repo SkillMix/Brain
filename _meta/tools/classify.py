@@ -481,8 +481,8 @@ def apply_note(root, space, reg, signal: dict, now) -> tuple:
         return "refused", f"{sid} is not held in this registry"
     if kind == "state":   # dormancy is judged where the subject's evidence lives: its home
         state, home = str(data.get("state") or ""), reg.home_of(sid)
-        if state not in ("active", "dormant") or subject.state not in ("active", "dormant"):
-            return "refused", f"a state note moves {sid} between active and dormant only"
+        if state not in ("active", "dormant", "archived") or subject.state not in ("active", "dormant"):
+            return "refused", f"a state note moves {sid} between active and dormant, or archives it"
         if not home or sender != home:
             return "refused", f"only {sid}'s home ({home or 'none'}) says it is {state}"
         subject.state = state
@@ -623,8 +623,8 @@ def _send(root: Path, sid, kind, data, now) -> Path | None:
 
 
 def send_state(root, sid, state: str, now) -> Path | None:
-    """The home tells the registry that holds `sid` it went dormant or woke; the home reads the
-    new state at once while the note travels (registry.Registry)."""
+    """The home tells the registry that holds `sid` it went dormant, woke or was archived at
+    offboard; the home reads the new state at once while the note travels (registry.Registry)."""
     path = note(root, sid, "state", {"state": state}, now)
     _append(Path(root) / SENT_LOG, json.dumps({"at": pages.iso(now), "note": "state", "subject": str(sid),
                                                "signal": path.stem if path else None, "state": state}))
