@@ -810,3 +810,41 @@ def test_an_unclassified_client_is_refused_as_unclassified_then_routes_once_clas
     reg_path.write_text(yaml.safe_dump(data), encoding="utf-8")
     assert route.main([str(root), "record", str(path)]) == 0, capsys.readouterr().out
     assert [fm["destination"] for fm, _ in queued(root)] == ["lantern-works"]
+
+
+# ----- the router's at-once path pauses like any other ---------------------------------------
+def test_pulling_a_routers_at_once_item_pauses_the_router_for_that_destination(tmp_path):
+    root, harbor, _ = space_set(tmp_path)
+    captured(root)
+    route.record(root, decision(), now=NOW)
+    (fm, _), = queued(root)
+    assert fm["path"] == "router:harbor", "the item names the path that let it through"
+    release.ship(root, now=NOW, offline_roots={"harbor": harbor})
+    release.retract(root, fm["id"], now=NOW + dt.timedelta(hours=1))
+    later = NOW + dt.timedelta(hours=2)
+    assert release.is_paused(root, "router:harbor", later)
+    captured(root, rid="c-9")
+    route.record(root, decision(record="c-9"), now=later)
+    (nxt, _), = [(f, b) for f, b in queued(root) if f["class"] != "retraction"]
+    assert nxt["class"] == "window", "the next at-once judgment to that destination waits the window"
+    assert "router:harbor is paused" in nxt["why"]
+    four_weeks = NOW + dt.timedelta(hours=1) + dt.timedelta(days=28, minutes=1)
+    assert not release.is_paused(root, "router:harbor", four_weeks)
+
+
+def test_an_at_once_release_without_a_path_pauses_the_router_when_pulled_or_failed(tmp_path):
+    """Items the router sent before it named its path: their released line has no path."""
+    import status
+    root, harbor, _ = space_set(tmp_path)
+    for n, rid in enumerate(("p-0000aa01", "p-0000aa02")):
+        release.append_line(root / release.RELEASED, json.dumps({
+            "id": rid, "at": pages.iso(NOW), "destination": "harbor", "class": "at_once",
+            "subject": "harbor", "evidence": ["c-1"], "kind": "call", "path": None}))
+    release.retract(root, "p-0000aa01", now=NOW)
+    paused = [json.loads(l) for l in (root / release.PAUSED).read_text(encoding="utf-8").splitlines()]
+    assert [p["path"] for p in paused] == ["router:harbor"]
+    signal = {"id": "p-5160aa02", "destination": "ada", "kind": "sample_failed", "item": "p-0000aa02",
+              "subject": "harbor", "at": pages.iso(NOW)}
+    (root / "_inbound" / "signals").mkdir(parents=True, exist_ok=True)
+    (root / "_inbound" / "signals" / "p-5160aa02.yaml").write_text(yaml.safe_dump(signal), encoding="utf-8")
+    assert status.read_signals(root, spaceyaml.load(root), NOW) == ["router:harbor"]
