@@ -284,6 +284,11 @@ def _answer_one(target: Path, question: dict) -> dict:
             "found_in": found_in, "missing": missing}
 
 
+def missing_facts(root, question: dict) -> list:
+    """The expected facts of one question that no page it would read here carries."""
+    return _answer_one(Path(root), question)["missing"]
+
+
 def answers(root, path=None, now: dt.datetime | None = None, roots: dict | None = None,
             record: bool = True) -> Report:
     """Run the answer tests. `roots` maps asker names to the spaces where they ask."""

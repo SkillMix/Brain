@@ -17,6 +17,13 @@ the shape and ships its migration. Each choice behind a change has a line in
 
 ### Fixed
 
+- **A test question its pages cannot answer is asked again, not added.** A yes or edit on a
+  steered question wrote the given facts into `answers.yaml` as they were typed. The answer
+  test looks for each fact as a page writes it, so a summary in other words, another
+  language, or a source no page carries failed from its first run, and the space's sync
+  pull request could not land anything after it. `status` now checks the facts first: one no
+  page carries keeps the question out, and the item comes back as `probe-q-<id>-2` naming
+  the missing facts. The first item asks for the facts as the pages write them.
 - **Signing ships the evidence list.** A signed candidate kept the `## New evidence` list
   that distill keeps at the bottom of the page, and a release sent it on. Its lines are record
   titles, which can name prices, pay terms or other clients the page itself leaves out. `sign`
