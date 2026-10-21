@@ -491,3 +491,11 @@ def test_the_sync_branch_never_carries_the_machines_name(monkeypatch):
     assert sync.hostname() == first   # stable: the same machine pushes the same branch
     monkeypatch.setattr(socket, "gethostname", lambda: "other-machine")
     assert sync.hostname() != first
+
+
+def test_the_template_keeps_no_run_lines(repo):
+    """A sync run in the template writes no run line, so nothing there grows a diff on its own."""
+    write(repo / ".github" / "template-marker", "")
+    write(repo / "work" / "notes.md", "# Notes\n\nedited\n")
+    assert run(repo) == 0
+    assert run_lines(repo) == []

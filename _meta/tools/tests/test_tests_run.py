@@ -285,3 +285,15 @@ def test_a_crew_members_walk_reads_the_home_projects_status_signed_and_candidate
     assert "harbor:live/subjects/harbor.md" in found
     assert "harbor:_inbound/candidates/p-0000beef.md" in found
     assert not any("p-0000feed" in f for f in found)
+
+
+def test_the_template_records_no_test_lines(tmp_path):
+    """The template keeps no run state: a contributor's test run leaves no diff behind."""
+    root = make_space(tmp_path / "tpl", profile="template")
+    path = questions_file(tmp_path / "answers.yaml", {
+        "question": "Anything?", "expect": ["nothing"], "asker": "owner", "via": "walk"})
+    tests_run.answers(root, path=path, now=NOW)
+    tests_run.leaks(root, path=leaks_file(tmp_path / "leaks.yaml"), now=NOW)
+    assert not (root / "_meta" / "state" / "tests.jsonl").exists()
+    tests_run.probe(root, path=path, now=NOW)
+    assert not (root / "_meta" / "state" / "probe.jsonl").exists()
