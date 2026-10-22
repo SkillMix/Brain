@@ -912,8 +912,9 @@ def read_signals(root: Path, space, now) -> list:
             continue
         shipped = release.released_record(root, str(data.get("item") or ""))
         row = None
-        if shipped and shipped.get("path"):
-            row = release.pause(root, shipped["path"], now, "failed sample", str(data.get("item")), space)
+        path = release.path_of(shipped) if shipped else None
+        if path:
+            row = release.pause(root, path, now, "failed sample", str(data.get("item")), space)
         release.append_line(root / SIGNALS_READ, json.dumps({"id": sid, "at": pages.iso(now),
                                                              "item": data.get("item"),
                                                              "paused": (row or {}).get("path")}))

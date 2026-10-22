@@ -260,8 +260,8 @@ def append_run_line(root: Path, routine: str, now: dt.datetime, space: spaceyaml
 # ----- the path pause (vision section 10) ---------------------------------------
 def pause(root, path: str | None, now: dt.datetime, reason: str, item: str | None = None,
           space: spaceyaml.Space | None = None) -> dict | None:
-    """Pause the path that let an at-once item through (a standing choice or a source's
-    audience) for four scaled weeks. Lowering is automatic; only a person raises a level."""
+    """Pause the path that let an at-once item through (a standing choice, a source's
+    audience or the router's judgment for a destination) for four scaled weeks. Lowering is automatic; only a person raises a level."""
     if not path:
         return None
     space = space or spaceyaml.load(root)
@@ -269,6 +269,20 @@ def pause(root, path: str | None, now: dt.datetime, reason: str, item: str | Non
            "reason": reason, "item": item}
     append_line(Path(root) / PAUSED, json.dumps(row))
     return row
+
+
+def router_path(destination: str) -> str:
+    return f"router:{destination}"
+
+
+def path_of(shipped: dict) -> str | None:
+    """The path that let a shipped item through. An at-once item that names none was the
+    router's judgment, sent before its items carried the path: the router's for that destination."""
+    if shipped.get("path"):
+        return str(shipped["path"])
+    if shipped.get("class") == "at_once" and shipped.get("destination"):
+        return router_path(str(shipped["destination"]))
+    return None
 
 
 def is_paused(root, path: str | None, now: dt.datetime) -> bool:
@@ -713,8 +727,8 @@ def retract(root, item_id: str, now: dt.datetime | None = None,
     if dest_root is not None:
         mark_retracted(Path(dest_root), item_id)
     append_line(root / "log.md", f"- {pages.iso(now)} retraction queued for {item_id}")
-    if shipped.get("class") == "at_once" and shipped.get("path"):
-        pause(root, shipped["path"], now, "pulled back", item_id, space)
+    if shipped.get("class") == "at_once" and path_of(shipped):
+        pause(root, path_of(shipped), now, "pulled back", item_id, space)
     return path
 
 

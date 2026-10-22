@@ -576,6 +576,13 @@ def record(root, decision: dict, now: dt.datetime | None = None, by: str | None 
             tier = "window"
             extra["first_release"] = sid
             reasons.append(f"the first release since {sid} was classified company")
+        if tier == "at_once" and not by:   # the router's own judgment is a path a pull or failed sample pauses
+            via = release.router_path(dest_name)
+            if release.is_paused(root, via, now):
+                tier = "window"
+                reasons.append(f"{via} is paused")
+            else:
+                extra["path"] = via
         stage_after = now if tier == "at_once" else now + space.window()
         extra.update({"why": "; ".join(x for x in reasons if x), "informs": list(r.get("informs") or []),
                       "confidence": decision["confidence"], "routed_by": by or "router",
