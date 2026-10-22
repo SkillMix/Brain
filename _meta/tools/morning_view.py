@@ -51,6 +51,7 @@ LABELS = {
     "candidate": "notes waiting for your signature",
     "reconnect": "apps to reconnect",
     "protected_pr": "changes waiting for your one click",
+    "fork_pr": "changes proposed from outside, waiting for your review",
     "outbox": "drafts older than two weeks, not sent",
     "classification": "items waiting for a client's classification",
     "doubt": "items held back in doubt",
@@ -389,6 +390,8 @@ def run(root, person: str, now: dt.datetime | None = None, shadow: bool = False,
         counts["doubt"] = needs_you.doubt_count(root)
     if "classification" in counts:   # one line too; the mail counts what waits
         counts["classification"] = sum(needs_you.classification_waits(root, space).values())
+    if "fork_pr" in counts:   # one line for every pull request from a fork; the mail counts them
+        counts["fork_pr"] = needs_you.fork_pr_count(items)
     silent = sum(_landed_this_week(home, space, now) for home in _owned_homes(root, space))
     if silent:
         counts["landed_silently"] = silent
