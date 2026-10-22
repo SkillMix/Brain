@@ -126,7 +126,9 @@ Scheduled tasks of Claude Code in a terminal fire only while that session is ope
 after a few days, so no briefing comes once it closes. `onboard.py <workspace> --os-routines`
 registers each routine with the OS scheduler at its times; it runs `routine.py`, which hands the
 prompt to `claude -p` in the workspace. Nobody answers a permission prompt there, so anything
-that would ask is refused and the routine goes on without it. The log is
+that would ask is refused and the routine goes on without it; the routine profile it adds
+(`~/.spaces/routines/<routine>-<space>.settings.json`) refuses edits to the machinery and every
+tool the chains do not run (`SECURITY.md`). The log is
 `~/.spaces/logs/<routine>-<space>.log`. A harness whose scheduled tasks persist may hold the
 routines instead, recorded with `--routines-scheduled "<read-back>" ...`; `onboard.py --check`
 shows "routines scheduled" failing until one of the two reads back.

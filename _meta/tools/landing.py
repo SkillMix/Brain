@@ -17,6 +17,9 @@ The destination's librarian runs this before anything reads the space. For every
 | one of two releases for one page with other text    | both pending, `disagrees_with`  |
 | the same text as the page already there             | a duplicate: dropped, logged    |
 | a body that does not match its fingerprint          | pending, never filed            |
+| a retraction from the release's sender              | that release withdrawn: never   |
+|                                                     |   lands, or kept deprecated and |
+|                                                     |   no longer evidence            |
 
 Once a scaled week `sample_item` draws up to five silent landings, at-once arrivals and
 request answers sent under a standing choice of the week for the domain owner (else the space owner); `apply_sample` records the verdict in
@@ -66,6 +69,7 @@ class LandingReport:
     conflicts: list = field(default_factory=list)
     records: list = field(default_factory=list)
     record_duplicates: list = field(default_factory=list)
+    withdrawn: list = field(default_factory=list)
 
 
 def record_key(fm: dict, body: str) -> str:
@@ -111,6 +115,33 @@ def _file_record(root: Path, path: Path, fm: dict, body: str, now: dt.datetime, 
                                        "by": None, "subject": fm.get("subject"),
                                        "class": fm.get("release_class"), "record": True}))
     report.records.append(pid)
+
+
+def _apply_retraction(root: Path, path: Path, fm: dict, now: dt.datetime, report) -> None:
+    """A retraction that arrived withdraws the release it names, wherever that went here: still
+    a candidate, it is marked and never lands; filed, it stays as it is, deprecated, and stops
+    counting as evidence. Only the sender's own release is withdrawn; nothing is deleted but the
+    retraction itself, which is a message, not a record."""
+    target_id, sender = str(fm.get("retracts") or ""), str(fm.get("released_from") or "")
+    found = root / CANDIDATES / f"{target_id}.md"
+    if not found.exists():
+        base = root / "knowledge"
+        found = next((p for p in sorted(base.rglob(f"{target_id}.md")) if pages.is_page_path(p)), None)             if target_id and base.is_dir() else None
+    tfm, tbody = pages.read(found) if found is not None else ({}, "")
+    if found is not None and str(tfm.get("landed_from") or tfm.get("released_from") or "") == sender:
+        if not pages.withdrawn(tfm):
+            update = {"retracted": True}
+            if found.parent != root / CANDIDATES:
+                update.update(status="deprecated", retracted_by=fm.get("released_by") or sender,
+                              retracted_at=pages.iso(now))
+            pages.write(found, dict(tfm, **update), tbody)
+        _append(root / "log.md", f"- {pages.iso(now)} withdrew {target_id} at "
+                                 f"{found.relative_to(root).as_posix()}: {sender} retracted it")
+        report.withdrawn.append(target_id)
+    else:
+        _append(root / "log.md", f"- {pages.iso(now)} retraction of {target_id} from {sender}: "
+                                 "nothing here carries it")
+    path.unlink()
 
 
 CONFLICTS = Path("_inbound") / "conflicts"
@@ -239,10 +270,24 @@ def land(root, space: spaceyaml.Space | None = None, reg=None, now: dt.datetime 
     distrusted = pending_releasers(root)
     signer_cache: dict = {}
     groups: dict = {}
+    for path in sorted((root / CANDIDATES).glob("*.md")):   # retractions first: what they name never lands
+        try:
+            fm, body = pages.read(path)
+        except Exception:
+            continue
+        if fm.get("released_from") and fm.get("release_class") == "retraction":
+            _apply_retraction(root, path, fm, now, report)
     for path in sorted((root / CANDIDATES).glob("*.md")):
         try:
             fm, body = pages.read(path)
         except Exception:
+            continue
+        if fm.get("released_from") and pages.withdrawn(fm):
+            pid = str(fm.get("id") or path.stem)
+            path.unlink()
+            _append(root / "log.md", f"- {pages.iso(now)} dropped {pid} from {fm.get('released_from')}: "
+                                     "retracted before it landed")
+            report.withdrawn.append(pid)
             continue
         if fm.get("released_from") and fm.get("conflict_note"):
             if _land_conflict(root, path, fm, body, now):

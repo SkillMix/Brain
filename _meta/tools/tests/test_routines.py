@@ -1,5 +1,6 @@
 """Routines as OS tasks, so they outlive the session: the OS starts routine.py at each routine's
 times, which runs the prompt through `claude -p`. Done only once the schedule reads back."""
+import json
 import os
 import subprocess
 import sys
@@ -30,7 +31,11 @@ def test_a_routine_runs_its_prompt_through_claude_headless(tmp_path, monkeypatch
         return subprocess.CompletedProcess(argv, 0, "chain done\n", "")
     prompt = ws / "_meta" / "state" / "routines" / "daily-chain.md"
     assert routine.main([str(prompt)], run=run) == 0
-    assert seen["argv"] == ["claude", "-p", "--permission-mode", "acceptEdits", "--permission-prompts", "none"]
+    assert seen["argv"][:6] == ["claude", "-p", "--permission-mode", "acceptEdits", "--permission-prompts", "none"]
+    assert seen["argv"][6] == "--settings" and len(seen["argv"]) == 8
+    profile = Path(seen["argv"][7])   # the routine profile, written outside every space
+    assert profile.parent == tmp_path / "home" / ".spaces" / "routines" and not profile.is_relative_to(ws)
+    assert "Edit(//**/_meta/tools/**)" in json.loads(profile.read_text(encoding="utf-8"))["permissions"]["deny"]
     assert Path(seen["cwd"]) == ws and not seen["input"].startswith("---") and "daily chain" in seen["input"]
     log = (tmp_path / "home" / ".spaces" / "logs" / "daily-chain-ada.log").read_text(encoding="utf-8")
     assert "chain done" in log and "exit 0" in log
