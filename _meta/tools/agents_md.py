@@ -10,6 +10,7 @@ toolbox. Agents read it; nobody edits it by hand.
 """
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -158,10 +159,14 @@ def check(root) -> bool:
 
 
 def main(argv=None) -> int:
-    argv = sys.argv[1:] if argv is None else argv
-    roots = [a for a in argv if not a.startswith("--")]
-    root = Path(roots[0]) if roots else Path(".")
-    if "--check" in argv:
+    parser = argparse.ArgumentParser(
+        prog="agents_md.py", description="Write AGENTS.md, the operating contract, from space.yaml.")
+    parser.add_argument("root", nargs="?", default=".", help="the space (default: here)")
+    parser.add_argument("--check", action="store_true",
+                        help="write nothing; exit 1 when AGENTS.md differs from the render")
+    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    root = Path(args.root)
+    if args.check:
         if check(root):
             print("AGENTS.md is current")
             return 0

@@ -1,7 +1,6 @@
 # Understand first: briefs, research, placement and checked pages
 
-Status: approved by the owner, 2026-10-15 ("write the spec, and implement the things we
-discussed"). Date: 2026-10-15.
+Status: approved by the owner, 2026-10-15. Date: 2026-10-15.
 Builds on: `2026-10-14-judgment-routing-design.md` (the router) and
 `2026-10-14-history-backfill-design.md` (a year of history). Changes how the router and distill
 work: both understand a subject before they place or write anything about it.
@@ -13,9 +12,8 @@ answers lean on first. Two candidates for the same client, a day apart, showed w
 
 - **Written before understood.** The first draft carried six bracketed questions for the owner
   ("who are these two people?", "what would this project do?", a contact's full name). Every
-  answer was findable in mail, calls and documents the agent could read. The owner's reply: "you
-  can figure out those questions yourself, that's your job". The rewrite, after research, was
-  far better.
+  answer was findable in mail, calls and documents the agent could read, and the owner sent the
+  questions back for the agent to research. The rewrite, after research, was far better.
 - **Rich is not the same as right for the page.** The rewrite also carried an ownership remark
   (never-leaves), a contact's private situation (a claim about a named person) and prices (the
   high-stakes list): lines that hold a page at the door or do not belong on a company page.
@@ -27,10 +25,9 @@ answers lean on first. Two candidates for the same client, a day apart, showed w
 - **Status inside pages.** "As of the 9th nothing is signed; a call is set for the 13th" is stale
   within days. The vision: status is rebuilt from evidence; only lasting conclusions are signed.
 
-The owner's direction: "it's VERY VERY important that an agent first understands the project
-before it actually puts information into certain pages": first what the subject is, then the
-research the new content needs, then where it goes and which pages change. Tokens are not the
-constraint: "rather high quality".
+The owner's direction: above all, an agent first understands the project before it puts
+information into any page: first what the subject is, then the research the new content needs,
+then where it goes and which pages change. Tokens are not the constraint; quality is.
 
 ## 2. The owner's decisions (2026-10-14 and 15)
 

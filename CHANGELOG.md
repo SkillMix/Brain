@@ -5,70 +5,7 @@ versioning](https://semver.org); while the version starts with 0, a minor releas
 the shape and ships its migration. Each choice behind a change has a line in
 `docs/decisions.md`.
 
-## [Unreleased]
-
-### Added
-
-- **Onboarding page.** `start.py` keeps `~/.spaces/onboarding.html` up to date after every step:
-  the stages as a row of steps, what only the person can do (each with its command), when the
-  first briefing comes, and how the system works as a diagram. `onboard --check` rewrites it.
-  One self-contained file in the house style, dark by default with a switch to light, no
-  server, no script and nothing fetched.
-
-### Fixed
-
-- **A test question its pages cannot answer is asked again, not added.** A yes or edit on a
-  steered question wrote the given facts into `answers.yaml` as they were typed. The answer
-  test looks for each fact as a page writes it, so a summary in other words, another
-  language, or a source no page carries failed from its first run, and the space's sync
-  pull request could not land anything after it. `status` now checks the facts first: one no
-  page carries keeps the question out, and the item comes back as `probe-q-<id>-2` naming
-  the missing facts. The first item asks for the facts as the pages write them.
-- **Signing ships the evidence list.** A signed candidate kept the `## New evidence` list
-  that distill keeps at the bottom of the page, and a release sent it on. Its lines are record
-  titles, which can name prices, pay terms or other clients the page itself leaves out. `sign`
-  now leaves the list out of the signed page, its release and the read-back; the page keeps its
-  own `[src: ...]` markers and its `evidence` ids, and the candidate keeps the list for the review.
-- **A classification counts at once where it was made.** After `classify.py decide`, recording
-  the refused route again was refused again until the note had gone to the brain, been applied
-  there and come back through the mount: up to four sync runs, while the refusal only said to
-  record the decision again. The deciding workspace now checks the note against the brain's
-  rules and follows it at once, until the brain's log shows it applied or refused. The refusal
-  names the real next step (classify it here, name an owner, or wait for the owner's
-  workspace), and the README and the classify skill say when a classification takes effect where.
-- **Routines that outlive the session.** The README sent a Claude Code session to its own
-  scheduled tasks, which in a terminal end with the session, while the onboarding page showed
-  Routines done as soon as the prompts were rendered and `onboard --check` had no row for them.
-  The README and the onboard skill now schedule with `onboard.py --os-routines` (the OS
-  scheduler, through `claude -p`), or with a harness's tasks only when they persist, recorded
-  with `--routines-scheduled <read-back>`. The page and `--check` show Routines done only once
-  the schedule reads back; until then `--check` shows "routines scheduled" with the command.
-- **Needs you counts what waits for a classification.** The count covered only projections held
-  at home, so a route refused as unclassified left no trace, and a draft page about a client
-  nobody had classified was offered for a signature. One line now counts held projections,
-  refused routes (the router logs each refusal) and candidates about the client, names the
-  clients and says who classifies each. Such a candidate is not offered or signed until the
-  client is classified. The doubt line counts only what is held in doubt.
-- **Inviting a colleague from a personal account.** The access item always advised a
-  company-wide team, which a personal account does not have, and did not say that a private
-  template can only be shared by its owner. It now reads who can grant each repository: one the
-  inviter cannot administer is its owner's to share; on a personal account it advises a
-  collaborator, with the `gh api -X PUT repos/<owner>/<repo>/collaborators/<login>` line for the
-  owner to run; in an organisation, a team as before.
-- **The fixture on Windows.** The README said the fixture takes a few minutes on Windows; a
-  newcomer's run took 24. Before each of its 61 behaviour scenarios the runner read back every
-  file it had just copied, and on Windows the first read of a new file waits for the virus
-  scanner: about two and a half seconds per scenario. The copy now hashes each file as it copies
-  it and both snapshots read only what changed since; on the machine measured the fixture went
-  from about four minutes to under two. The README gives the time as measured, says the output
-  comes at the end when sent to a file, and shows the table the fixture prints today.
-- **A release clone of another repository.** Release clones under `~/.spaces/.release/` are
-  kept by space name. A clone left there by an older space of the same name (a company set up
-  again after its repositories were deleted) was reused: releases and classification notes
-  went nowhere while the run line said nothing failed. Such a clone is now moved to
-  `.stale/` and the destination cloned fresh.
-
-## [0.1.0] - 2026-10-18
+## [0.1.0] - 2026-10-23
 
 The first public release.
 
@@ -122,4 +59,98 @@ The first public release.
 - **One security email a day.** Passwords or keys found in records are told to the person in
   one digest, counted by where they showed up; at most one security email goes out in any
   24 hours.
-- `SECURITY.md`, `CONTRIBUTING.md`, this changelog and `docs/data-protection.md`.
+- **Onboarding page.** `start.py` keeps `~/.spaces/onboarding.html` up to date after every step:
+  the stages as a row of steps, what only the person can do (each with its command), when the
+  first briefing comes, and how the system works as a diagram. `onboard --check` rewrites it.
+  One self-contained file in the house style, dark by default with a switch to light, no
+  server, no script and nothing fetched.
+- **Public docs.** `SECURITY.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, this changelog and
+  `docs/data-protection.md`; a status line at the top of the README and the template's real
+  address in it; issue and pull request templates; `requirements.txt` and
+  `requirements-dev.txt`; the design pages in one folder, `docs/design/`.
+  `agents_md.py --help` prints its usage instead of writing `AGENTS.md`.
+
+### Security
+
+- **Pull request code runs read-only.** CI is split so that a pull request's own code runs
+  with read-only permissions; the part that may write does not run it.
+- **Fork pull requests are not recommended for merge.** Needs you no longer recommends yes
+  for a pull request from a fork.
+- **Routines cannot edit the tools or the settings.** A routine started by `routine.py` runs
+  with its own permission profile: it may not change the tools, tests or harness settings, and
+  runs only the tools its prompts name. The space's own profile names each tool it allows, so a
+  newly written script asks before it runs.
+- **The forbidden-names list is a CI secret.** The hashes the name gate compares with are no
+  longer in the repository; CI reads them from a secret, and a local run without the list
+  skips the name check.
+- **Run state is not tracked in the template.** What a run writes under `_meta/state/` no
+  longer lives in the template repository.
+
+### Fixed
+
+Found during the private preview, before the first release.
+
+- **A red sync pull request heals itself.** When the checks of a machine's sync pull request
+  fail, the next `sync` run reads the failed log. Answer tests it names are set aside for CI
+  (`held: {by: ci}`, since a pass on this machine does not prove one there) and land with that
+  run's push. Any other failure is rerun once per head, as a flaky one. Once the pull request
+  merges, the run line says `healed` and the morning view lists it under "Fixed by itself".
+  What is still red after the rerun stays in the run line (`pr_red`) for the maintenance
+  agent. Nothing asks the owner.
+- **A test question its pages cannot answer is asked again, not added.** A yes or edit on a
+  steered question wrote the given facts into `answers.yaml` as they were typed. The answer
+  test looks for each fact as a page writes it, so a summary in other words, another
+  language, or a source no page carries failed from its first run, and the space's sync
+  pull request could not land anything after it. `status` now checks the facts first: one no
+  page carries keeps the question out, and the item comes back as `probe-q-<id>-2` naming
+  the missing facts. The first item asks for the facts as the pages write them.
+- **A failing answer test no longer holds every other change back.** The checks run the answer
+  tests on every pull request, so one question no page answered kept a space's sync pull
+  request red, and its desk notes, journal and run lines waited behind it (a day, on 20 Oct).
+  Before it publishes, `sync` now runs the answer tests and sets aside each question that
+  fails: `held: {since, by: sync, missing}` in `answers.yaml`, the question named in the run
+  line. `tests_run` names a held question in every run and never counts it as passed. Once a
+  page carries its facts again, the next sync brings it back.
+- **Signing ships the evidence list.** A signed candidate kept the `## New evidence` list
+  that distill keeps at the bottom of the page, and a release sent it on. Its lines are record
+  titles, which can name prices, pay terms or other clients the page itself leaves out. `sign`
+  now leaves the list out of the signed page, its release and the read-back; the page keeps its
+  own `[src: ...]` markers and its `evidence` ids, and the candidate keeps the list for the review.
+- **A classification counts at once where it was made.** After `classify.py decide`, recording
+  the refused route again was refused again until the note had gone to the brain, been applied
+  there and come back through the mount: up to four sync runs, while the refusal only said to
+  record the decision again. The deciding workspace now checks the note against the brain's
+  rules and follows it at once, until the brain's log shows it applied or refused. The refusal
+  names the real next step (classify it here, name an owner, or wait for the owner's
+  workspace), and the README and the classify skill say when a classification takes effect where.
+- **Routines that outlive the session.** The README sent a Claude Code session to its own
+  scheduled tasks, which in a terminal end with the session, while the onboarding page showed
+  Routines done as soon as the prompts were rendered and `onboard --check` had no row for them.
+  The README and the onboard skill now schedule with `onboard.py --os-routines` (the OS
+  scheduler, through `claude -p`), or with a harness's tasks only when they persist, recorded
+  with `--routines-scheduled <read-back>`. The page and `--check` show Routines done only once
+  the schedule reads back; until then `--check` shows "routines scheduled" with the command.
+- **Needs you counts what waits for a classification.** The count covered only projections held
+  at home, so a route refused as unclassified left no trace, and a draft page about a client
+  nobody had classified was offered for a signature. One line now counts held projections,
+  refused routes (the router logs each refusal) and candidates about the client, names the
+  clients and says who classifies each. Such a candidate is not offered or signed until the
+  client is classified. The doubt line counts only what is held in doubt.
+- **Inviting a colleague from a personal account.** The access item always advised a
+  company-wide team, which a personal account does not have, and did not say that a private
+  template can only be shared by its owner. It now reads who can grant each repository: one the
+  inviter cannot administer is its owner's to share; on a personal account it advises a
+  collaborator, with the `gh api -X PUT repos/<owner>/<repo>/collaborators/<login>` line for the
+  owner to run; in an organisation, a team as before.
+- **The fixture on Windows.** The README said the fixture takes a few minutes on Windows; a
+  newcomer's run took 24. Before each of its 61 behaviour scenarios the runner read back every
+  file it had just copied, and on Windows the first read of a new file waits for the virus
+  scanner: about two and a half seconds per scenario. The copy now hashes each file as it copies
+  it and both snapshots read only what changed since; on the machine measured the fixture went
+  from about four minutes to under two. The README gives the time as measured, says the output
+  comes at the end when sent to a file, and shows the table the fixture prints today.
+- **A release clone of another repository.** Release clones under `~/.spaces/.release/` are
+  kept by space name. A clone left there by an older space of the same name (a company set up
+  again after its repositories were deleted) was reused: releases and classification notes
+  went nowhere while the run line said nothing failed. Such a clone is now moved to
+  `.stale/` and the destination cloned fresh.

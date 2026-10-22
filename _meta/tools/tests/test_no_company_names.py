@@ -11,6 +11,15 @@ import no_company_names
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
+def _template_with_its_list():
+    """Skip unless this is the template and its names list is here: the list is a CI secret,
+    written for the run, never committed (docs/decisions.md, 2026-10-21)."""
+    if not (REPO_ROOT / ".github" / "template-marker").exists():
+        pytest.skip("an instance carries its company's names by design; the check is for the template")
+    if not (REPO_ROOT / no_company_names.HASHES_PATH).exists():
+        pytest.skip("no forbidden names list here: CI writes it from the FORBIDDEN_NAMES_SHA256 secret")
+
+
 def _hash(word: str) -> str:
     return hashlib.sha256(word.lower().encode("utf-8")).hexdigest()
 
@@ -87,25 +96,29 @@ def test_cli_exit_code_and_output(tmp_path, capsys):
 
 
 def test_this_repository_passes():
-    if not (REPO_ROOT / ".github" / "template-marker").exists():
-        pytest.skip("an instance carries its company's names by design; the check is for the template")
+    _template_with_its_list()
     assert no_company_names.check(REPO_ROOT) == []
 
 
-def test_the_brand_may_appear_in_its_one_brand_file_and_nowhere_else(tmp_path, monkeypatch):
+def test_the_brand_may_appear_in_its_brand_file_and_the_root_readme_and_nowhere_else(tmp_path, monkeypatch):
     root = _space(tmp_path, "acmeco", "otherco")
     monkeypatch.setattr(no_company_names, "BRAND", _hash("acmeco"))
     brand = root / no_company_names.BRAND_FILE
     brand.parent.mkdir(parents=True)
     brand.write_text("/* AcmeCo is the brand */\n.x::before { content: 'OtherCo'; }\n", encoding="utf-8")
-    (root / "README.md").write_text("Made by AcmeCo.\n", encoding="utf-8")
-    # the brand passes in its file only; every other name is still a hit there
-    assert set(no_company_names.check(root)) == {("README.md", 1), (no_company_names.BRAND_FILE, 2)}
+    (root / "README.md").write_text("Clone AcmeCo/Brain.\nMade with OtherCo.\n", encoding="utf-8")
+    (root / "docs").mkdir()
+    (root / "docs" / "README.md").write_text("Made by AcmeCo.\n", encoding="utf-8")
+    (root / "CHANGELOG.md").write_text("AcmeCo/Brain 0.1.0\n", encoding="utf-8")
+    # the brand passes in those two files only; every other name is still a hit there, and a
+    # README anywhere but the root gets no exception
+    assert set(no_company_names.check(root)) == {
+        ("README.md", 2), (no_company_names.BRAND_FILE, 2), ("docs/README.md", 1), ("CHANGELOG.md", 1)}
 
 
-def test_the_brand_file_is_the_only_place_this_repository_needs_the_exception(monkeypatch):
-    if not (REPO_ROOT / ".github" / "template-marker").exists():
-        pytest.skip("an instance carries its company's names by design; the check is for the template")
-    monkeypatch.setattr(no_company_names, "BRAND_FILE", "")
+def test_the_brand_files_are_the_only_places_this_repository_needs_the_exception(monkeypatch):
+    _template_with_its_list()
+    assert no_company_names.BRAND_FILES == ("_meta/templates/onboarding.css", "README.md")
+    monkeypatch.setattr(no_company_names, "BRAND_FILES", ())
     hits = no_company_names.check(REPO_ROOT)
-    assert hits and {rel for rel, _ in hits} == {"_meta/templates/onboarding.css"}
+    assert hits and {rel for rel, _ in hits} == {"_meta/templates/onboarding.css", "README.md"}

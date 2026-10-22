@@ -1,8 +1,7 @@
 # A year of history and a project register: design
 
-Status: approved by the owner, 2026-10-15 ("implement the things we discussed, including the
-new rules regarding backfill period"). Date: 2026-10-14, revised 2026-10-15 after the check
-against the vision.
+Status: approved by the owner, 2026-10-15. Date: 2026-10-14, revised 2026-10-15 after the
+check against the vision.
 Builds on: `2026-10-14-judgment-routing-design.md` (section 4.6, backfill) and works with
 `2026-10-15-understand-first-design.md` (briefs, research, checked pages).
 
@@ -10,16 +9,15 @@ Builds on: `2026-10-14-judgment-routing-design.md` (section 4.6, backfill) and w
 
 The router went live on 2026-10-14, but it only judges what the workspace holds:
 
-- **Short and shallow.** The owner's feeds reached back two and a half weeks, a mail record's text
-  a 200-character median, one call in 32 with its transcript; 864 witness pages waited for a
+- **Short and shallow.** A first workspace's feeds reach back a few weeks, a mail record's text
+  is a short preview, few calls carry their transcript; hundreds of witness pages wait for a
   decision, built from snippets. The scheduled sweep chain is paused until the backfill is done.
-- **No company memory.** Asked "what projects have we done", the brain answers with seven names,
-  every one marked active, nothing signed, nothing about who, when or how it ended.
+- **No company memory.** Asked "what projects have we done", the brain answers with a handful
+  of names, every one marked active, nothing signed, nothing about who, when or how it ended.
 
-The owner's direction: read a year back, "where the last 90 days work as it currently does", the
-older months "also swept and taken into consideration, BUT the questions and signing
-significantly lower", "only on super high level", and the brain must answer "what are the
-projects we did".
+The owner's direction: read a year back; the last 90 days work as they do today, the older
+months are swept and taken into account with far fewer questions and signatures, at a high
+level only; and the brain must answer "what projects have we done".
 
 ## 2. The owner's decisions (2026-10-14 and 15)
 
