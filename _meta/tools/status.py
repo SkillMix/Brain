@@ -3,7 +3,8 @@
 The status routine is the only writer of structure in its space. One run: register new
 desk folders (personal spaces), rebuild `live/subjects/<id>.md` from this space's own
 evidence, regenerate the hubs, the kind indexes and the Subjects blocks, mark subjects
-dormant after eight scaled weeks without evidence (nothing moves), write `live/health.md`
+dormant after eight scaled weeks without evidence (nothing moves; new evidence wakes them,
+and a subject the brain holds changes there by a note from its home), write `live/health.md`
 and `live/now.md`, append one run line, and rebuild `_meta/state/ids.yaml` last so every
 id link resolves. It writes generated files only; it never signs and never touches a
 hand-written page.
@@ -82,6 +83,7 @@ class StatusReport:
     status_pages: list = field(default_factory=list)
     hubs: list = field(default_factory=list)
     dormant: list = field(default_factory=list)
+    woken: list = field(default_factory=list)
     health_lines: list = field(default_factory=list)
     see_also: dict = field(default_factory=dict)
     changed: list = field(default_factory=list)
@@ -1194,16 +1196,31 @@ def run(root, now=None, check: bool = False) -> StatusReport:
     # Dormancy: eight scaled weeks since evidence last ARRIVED here, judged only by the
     # space the subject's evidence lives in (its home, or the registering space). A subject
     # that never had evidence here is new, not dormant; content dates never count, since a
-    # sweep may backfill old records.
+    # sweep may backfill old records. New evidence wakes it. A subject another registry holds
+    # (the brain's, for a project or a person's topic) changes there by a note from its home.
     cutoff = now - space.scale(DORMANT_HOURS)
-    for subject in reg.all():
+    held, held_changed = set(reg.subjects), False
+    for subject in reg.all() + [s for s in reg.ancestors.values() if s.id not in held]:
         home = reg.home_of(subject.id)
-        if home and home != space.name:
+        if (home and home != space.name) or (not home and subject.id not in held):
             continue
         arrivals = [e.arrived or e.at for e in evidence.get(subject.id, [])]
-        if subject.state == "active" and arrivals and max(arrivals) < cutoff:
-            subject.state = "dormant"
-            report.dormant.append(subject.id)
+        if not arrivals:
+            continue
+        quiet = max(arrivals) < cutoff
+        if subject.state == "active" and quiet:
+            new, into = "dormant", report.dormant
+        elif subject.state == "dormant" and not quiet:
+            new, into = "active", report.woken
+        else:
+            continue
+        subject.state = new
+        into.append(subject.id)
+        if subject.id in held:
+            held_changed = True
+        elif not check:
+            import classify
+            classify.send_state(root, subject.id, new, now)
     outputs: dict = {}
     template = _template(root, "status-page.md")
     status_ids: dict = {}
@@ -1272,7 +1289,7 @@ def run(root, now=None, check: bool = False) -> StatusReport:
         if not check and current != text:
             (root / rel).parent.mkdir(parents=True, exist_ok=True)
             (root / rel).write_text(text, encoding="utf-8", newline="\n")
-    if report.registered or report.dormant:
+    if report.registered or held_changed:
         if check:
             report.changed.append(registry_mod.REGISTRY_PATH.as_posix())
         else:
