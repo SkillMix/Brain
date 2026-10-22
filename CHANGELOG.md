@@ -154,3 +154,28 @@ Found during the private preview, before the first release.
   again after its repositories were deleted) was reused: releases and classification notes
   went nowhere while the run line said nothing failed. Such a clone is now moved to
   `.stale/` and the destination cloned fresh.
+
+Found in a drill that sets off each never-used part of the template in a throwaway fixture
+company, before the first release.
+
+- **A retraction withdraws the release where it landed.** A landed record is marked
+  `retracted` and no longer read as evidence; a release retracted before landing is not filed.
+- **Pulling a router item pauses the router for that destination.** The router's at-once items
+  carry the path `router:<destination>`, so a pull or a failed sample pauses them for 4 weeks.
+- **Dormancy reaches every subject at its home and wakes on new evidence.** The home judges
+  every subject homed there, also those the brain holds, and tells the holder with a state note.
+- **Offboard archives a subject homed here in the registry that holds it.** A leaving space
+  sends an archive note for each such subject, and no note moves a subject out of `archived`.
+- **The librarian splits a desk subject that another registry holds.** The split check walks
+  the subjects a space sees from the brain, not only its own registry.
+- **The librarian files a loose page that sits right under `knowledge/`.**
+- **A shape migration's commit carries only what the migration changed.** The person's
+  unrelated uncommitted work stays out of the structure commit.
+- **An answered checker hit no longer silences a later different value.** A hit's id includes
+  the value it is about.
+- **The checker reads a newly signed page without waiting for new evidence.**
+- **The weekly review batch keeps its weekly stamp.** The checker's run no longer drops
+  `review_at` from its watermark.
+- **Each sending space's conflict note has an id of its own.** Two spaces contesting one page
+  both reach its owner.
+- **The forget listing finds doubt items and signals about the subject.**
