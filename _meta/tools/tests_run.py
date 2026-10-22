@@ -113,6 +113,8 @@ def _found(texts: dict, expect: list) -> tuple[list, list]:
 
 
 def _append_line(root: Path, now: dt.datetime, report: Report) -> None:
+    if not spaceyaml.keeps_run_state(root):
+        return
     path = root / TESTS_LOG
     path.parent.mkdir(parents=True, exist_ok=True)
     line = {"at": pages.iso(now), "kind": report.kind, "passed": report.passed,
@@ -447,10 +449,11 @@ def probe(root, path=None, now: dt.datetime | None = None, roots: dict | None = 
                 bucket[method][0] += int(ok)
                 bucket[method][1] += 1
         report.questions.append(row)
-    log = root / PROBE_LOG
-    log.parent.mkdir(parents=True, exist_ok=True)
-    with log.open("a", encoding="utf-8", newline="\n") as handle:
-        handle.write(json.dumps({"at": pages.iso(now), "kinds": report.kinds}) + "\n")
+    if spaceyaml.keeps_run_state(root):
+        log = root / PROBE_LOG
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps({"at": pages.iso(now), "kinds": report.kinds}) + "\n")
     return report
 
 

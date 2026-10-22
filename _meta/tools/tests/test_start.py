@@ -254,3 +254,15 @@ def test_a_rerun_adopts_the_brain_an_earlier_start_named_brain(tmp_path, monkeyp
     monkeypatch.setattr(start, "read_file", lambda repo, rel: space.get(repo))
     assert start.brain_name("trial-works", "tess-v", home, offline=False) == "brain"
     assert start.brain_name("trial-works", "acme", home, offline=False) == "trial-works-brain"
+
+
+def test_the_tests_take_the_start_lock_in_their_own_folder(tmp_path, monkeypatch):
+    """A killed test run leaves its lock in its own folder, never in the machine's temp folder
+    where it would block the person's real start for an hour."""
+    assert start.lock_path() == tmp_path / "_home" / "spaces-start.lock"
+    lock = start.take_lock()
+    assert lock == tmp_path / "_home" / "spaces-start.lock" and lock.exists()
+    lock.unlink()
+    monkeypatch.delenv("SPACES_START_LOCK")
+    import tempfile
+    assert start.lock_path() == Path(tempfile.gettempdir()) / "spaces-start.lock"

@@ -297,8 +297,11 @@ def run_all(root) -> Report:
 
 
 def record(root, report: Report) -> None:
-    """Append one line to `_meta/state/tests.jsonl`; a root without space.yaml records nothing."""
+    """Append one line to `_meta/state/tests.jsonl`; a root without space.yaml, or the template,
+    records nothing."""
     root = Path(root)
+    if not spaceyaml.keeps_run_state(root):
+        return
     try:
         now = spaceyaml.load(root).now()
     except (FileNotFoundError, ValueError):

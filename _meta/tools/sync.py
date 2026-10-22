@@ -676,6 +676,8 @@ class Run:
         return False
 
     def record(self) -> None:
+        if not spaceyaml.keeps_run_state(self.root):
+            return   # the template keeps no run lines
         path = self.root / RUNS_PATH
         if not any(self.notes.get(key) for key in NOTABLE):
             if self.heartbeat_today(path):

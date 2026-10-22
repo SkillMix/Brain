@@ -172,3 +172,12 @@ def test_a_copied_file_rewritten_at_the_same_size_still_counts_as_written(tmp_pa
     checks = {d["check"]: d for d in report.details}
     assert checks["writes_only_under"]["ok"] is False
     assert "space.yaml" in json.dumps(checks["writes_only_under"])
+
+
+def test_the_template_records_no_behaviour_line(tmp_path):
+    root = make_space(tmp_path / "tpl", profile="template")
+    folder = root / "_meta" / "tests" / "behaviour"
+    folder.mkdir(parents=True)
+    scenario(folder / "ok.yaml", command=py("pass"), expect={"exit": 0})
+    assert behaviour.run_all(root).passed == 1
+    assert not (root / "_meta" / "state" / "tests.jsonl").exists()

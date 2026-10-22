@@ -483,6 +483,12 @@ def load(root) -> Space:
     return Space(root=root, data=data)
 
 
+def keeps_run_state(root) -> bool:
+    """A space appends its run lines and test results under `_meta/state/`; the template
+    (`.github/template-marker`) keeps none, so a contributor's test or sync run leaves no diff."""
+    return not (Path(root) / TEMPLATE_MARKER).exists()
+
+
 def save(space: Space) -> None:
     text = yaml.safe_dump(space.data, sort_keys=False, allow_unicode=True, width=100)
     (space.root / "space.yaml").write_text(text, encoding="utf-8", newline="\n")

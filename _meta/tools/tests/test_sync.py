@@ -493,6 +493,14 @@ def test_the_sync_branch_never_carries_the_machines_name(monkeypatch):
     assert sync.hostname() != first
 
 
+def test_the_template_keeps_no_run_lines(repo):
+    """A sync run in the template writes no run line, so nothing there grows a diff on its own."""
+    write(repo / ".github" / "template-marker", "")
+    write(repo / "work" / "notes.md", "# Notes\n\nedited\n")
+    assert run(repo) == 0
+    assert run_lines(repo) == []
+
+
 def test_a_failing_answer_test_is_set_aside_so_the_desk_still_lands(repo, monkeypatch):
     """A question no page answers would turn the sync pull request red and hold every desk and
     journal line behind it. The sync sets it aside with a record, lands the rest, and brings

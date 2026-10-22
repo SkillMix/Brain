@@ -197,6 +197,28 @@ def test_skipped_questions_become_needs_you_items(tmp_path, monkeypatch):
     assert all(reg.get(d).owner == "Ada Okafor" for d in ("sales", "delivery", "operations"))
 
 
+
+def test_a_repository_made_from_the_template_gets_every_folder(tmp_path, monkeypatch):
+    """Online a new space starts as a full copy of the template, which ships no zone folders and
+    no index, log, identity or live pages: onboard makes each one, and git keeps every folder."""
+    import shutil
+    monkeypatch.setattr(onboard, "run_cmd", never)
+    root = tmp_path / "co"
+    shutil.copytree(TEMPLATE, root, ignore=shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache"))
+    assert (root / ".github" / "template-marker").exists()
+    answers = onboard.interview({"company": "Lantern Works", "owner": "Ada Okafor"},
+                                interactive=False, case="company")
+    report = onboard.run(root, answers, offline=True)
+    assert not report.failed(), [s.row() for s in report.failed()]
+    for space in (root, tmp_path / "ada-okafor"):
+        for sub in onboard.SUBDIRS:
+            assert any((space / sub).iterdir()), f"{space.name}/{sub} is empty: git would drop it"
+        for rel in ("index.md", "log.md", "knowledge/index.md", "live/now.md", "live/health.md"):
+            assert (space / rel).exists(), f"{space.name}/{rel}"
+        assert errors(space) == []
+    assert (root / "identity" / "charter.md").exists() and (root / "identity" / "spine.md").exists()
+    assert not [rel for rel in onboard.PROJECT_FILES if (root / rel).exists()]
+
 def test_instruction_block_is_idempotent(tmp_path):
     path = tmp_path / "home" / ".claude" / "CLAUDE.md"
     workspace = tmp_path / "ada"
@@ -510,6 +532,38 @@ def test_copy_template_never_copies_mounted_spaces(tmp_path):
     assert (dst / "_meta" / "tools" / "x.py").exists()
     assert not (dst / "brain").exists() and not (dst / "mounts").exists()
 
+
+
+PROJECT_FILES = ("CONTRIBUTING.md", "SECURITY.md", "CHANGELOG.md", "CODE_OF_CONDUCT.md",
+                 ".github/ISSUE_TEMPLATE/bug.md", ".github/PULL_REQUEST_TEMPLATE.md", "requirements.txt",
+                 "requirements-dev.txt")
+
+
+def test_a_new_space_never_presents_the_open_source_projects_files(tmp_path):
+    """Offline (a copy) and online (a repository made from the template, marker still in it): the
+    project's contributing guide, security policy, changelog and issue forms stay with the template."""
+    src = make_space(tmp_path / "tpl", profile="template")
+    for rel in PROJECT_FILES + ("README.md", "LICENSE", ".github/workflows/checks.yml"):
+        (src / rel).parent.mkdir(parents=True, exist_ok=True)
+        (src / rel).write_text("x\n", encoding="utf-8")
+    dst = tmp_path / "offline"
+    assert onboard.copy_template(src, dst)
+    assert not [rel for rel in PROJECT_FILES if (dst / rel).exists()]
+    assert not (dst / ".github" / "ISSUE_TEMPLATE").exists()
+    assert (dst / "README.md").exists() and (dst / "LICENSE").exists()
+    assert (dst / ".github" / "workflows" / "checks.yml").exists()
+    onboard.remove_forbidden(onboard.Report("company"), src, "brain")   # the online clone
+    assert not [rel for rel in PROJECT_FILES if (src / rel).exists()]
+    assert not (src / ".github" / "ISSUE_TEMPLATE").exists() and not (src / ".github" / "template-marker").exists()
+    assert (src / "README.md").exists() and (src / ".github" / "workflows" / "checks.yml").exists()
+
+
+def test_a_space_keeps_its_own_files_of_those_names(tmp_path):
+    """Only a fresh copy of the template drops them: a configured space's own changelog stays."""
+    space = make_space(tmp_path / "ada", profile="project")
+    (space / "CHANGELOG.md").write_text("# Our changes\n", encoding="utf-8")
+    onboard.remove_forbidden(onboard.Report("person"), space, "project")
+    assert (space / "CHANGELOG.md").exists()
 
 def test_the_workspace_is_allowed_once_and_offboard_takes_it_back(tmp_path):
     import json
