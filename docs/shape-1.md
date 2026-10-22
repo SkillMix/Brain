@@ -150,7 +150,7 @@ other space may add names to it.
 One list per person. Each routine writes its own file `_inbound/needs-you/<writer>.yaml`,
 a list of `{id, kind, text, recommendation, default, deadline, depends, payload,
 fingerprint}`; `kind` is one of `candidate`, `check`, `leaving`, `request`, `question`,
-`answer`, `reconnect`, `outbox`, `high_stakes`, `sample`, `protected_pr`. Candidates and
+`answer`, `reconnect`, `outbox`, `high_stakes`, `sample`, `protected_pr`, `fork_pr`. Candidates and
 checks are read from their folders directly; items held in doubt appear as one count line.
 An item may carry `check` (the read-back that proves an owner step done) and `for` (whom it
 is for, when not the space's owner). A personal space's list also shows the items its

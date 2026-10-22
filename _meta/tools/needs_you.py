@@ -16,6 +16,7 @@ import argparse
 import datetime as dt
 import json
 import re
+import subprocess
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -27,7 +28,7 @@ import pages  # noqa: E402
 import spaceyaml  # noqa: E402
 
 KIND_ORDER = ["leaving", "high_stakes", "answer", "request", "question", "check", "candidate",
-              "reconnect", "protected_pr", "outbox", "classification", "doubt", "sample"]
+              "reconnect", "protected_pr", "fork_pr", "outbox", "classification", "doubt", "sample"]
 VERBS_LINE = "Answer with the number and yes, edit, no, later or always; then submit."
 OUTBOX_DAYS = 14
 # A verdict line in log.md, as sign.apply writes it: "- <ISO> <verb> <id> by <name>".
@@ -513,16 +514,39 @@ def order(items: list) -> list:
                                         rank.get(i.kind, len(rank)), i.id))
 
 
+PR_TITLE_MAX = 80
+FORK_NUMBERS_SHOWN = 10
+# Control characters, line and paragraph separators, zero-width and bidirectional marks.
+_UNSAFE = re.compile(r"[\x00-\x1f\x7f-\x9f​-‏ -‮⁠-⁩﻿]")
+
+
+def untrusted_line(value, limit: int = PR_TITLE_MAX) -> str:
+    """Text someone outside the space chose (a pull request title) as one short plain line:
+    control characters and line breaks become spaces, runs of space collapse, and the result
+    is cut at `limit` characters. It still reaches agents and the page, so keep it short."""
+    flat = " ".join(_UNSAFE.sub(" ", str(value or "")).split())
+    return flat if len(flat) <= limit else flat[:limit - 3].rstrip() + "..."
+
+
+def _pr_number(pr) -> int | None:
+    try:
+        number = int(pr.get("number"))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
 def _protected_prs(root: Path) -> list:
     """Open pull requests on this repository that auto-merge did not arm: protected paths wait
-    for the owner's one click (rules.md section 8). Silent when offline or not a repository."""
-    import json
-    import subprocess
+    for the owner's one click (rules.md section 8). A pull request from a fork is never offered
+    for merging: its checks ran the fork's own workflow and its title is a stranger's text, so
+    all of them become one line with their numbers and no titles. Silent when offline or not
+    a repository."""
     if not (root / ".git").exists():
         return []
     try:
         res = subprocess.run(["gh", "pr", "list", "--state", "open", "--json",
-                              "number,title,url,autoMergeRequest,isDraft"],
+                              "number,title,url,autoMergeRequest,isDraft,isCrossRepository"],
                              capture_output=True, text=True, cwd=str(root), timeout=30)
     except (OSError, subprocess.TimeoutExpired):
         return []
@@ -532,11 +556,39 @@ def _protected_prs(root: Path) -> list:
         prs = json.loads(res.stdout or "[]")
     except ValueError:
         return []
-    return [Item(id=f"pr-{pr['number']}", kind="protected_pr",
-                 text=f"pull request {pr['number']} waits for your merge: {pr.get('title', '')}",
-                 recommendation="merge it if the change is yours or you have read it",
-                 default="it waits", depends=2, payload=str(pr.get("url", "")))
-            for pr in prs if not pr.get("autoMergeRequest") and not pr.get("isDraft")]
+    if not isinstance(prs, list):
+        return []
+    out, forks = [], []
+    for pr in prs:
+        number = _pr_number(pr)
+        if number is None or pr.get("isDraft"):
+            continue
+        if pr.get("isCrossRepository") is not False:   # a fork, or gh could not say: never "merge it"
+            forks.append(number)
+            continue
+        if pr.get("autoMergeRequest"):
+            continue
+        out.append(Item(id=f"pr-{number}", kind="protected_pr",
+                        text=f"pull request {number} waits for your merge: {untrusted_line(pr.get('title'))}",
+                        recommendation="merge it if the change is yours or you have read it",
+                        default="it waits", depends=2, payload=str(pr.get("url", ""))))
+    if forks:
+        forks.sort()
+        n = len(forks)
+        shown = ", ".join(str(f) for f in forks[:FORK_NUMBERS_SHOWN])
+        if n > FORK_NUMBERS_SHOWN:
+            shown += f" and {n - FORK_NUMBERS_SHOWN} more"
+        head = "1 pull request from a fork waits" if n == 1 else f"{n} pull requests from forks wait"
+        out.append(Item(id="pr-forks", kind="fork_pr",
+                        text=f"{head} for a review ({shown}); read the diff on GitHub before merging",
+                        recommendation="review the diff yourself; agents never merge",
+                        default="they wait", payload=",".join(str(f) for f in forks)))
+    return out
+
+
+def fork_pr_count(items: list) -> int:
+    """How many fork pull requests the one `fork_pr` line stands for (the mail counts them)."""
+    return sum(len([p for p in i.payload.split(",") if p]) for i in items if i.kind == "fork_pr")
 
 
 def collect(root, now: dt.datetime | None = None, online: bool = True, person: str | None = None) -> list:

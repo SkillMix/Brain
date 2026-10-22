@@ -72,8 +72,11 @@ every update that was approved for it until its owner answers again.
   test. Use the fixture's fictional people and companies (Lantern Works, Ada Okafor, Ben
   Liu, Harbor, Beacon) or plain placeholders. The name gate (`no_company_names.py`, run by
   `validate.py --template`) compares the sha256 of every word with a list of hashed names. That
-  list is a CI secret, so on your machine the name check finds no list and passes; CI runs it
-  on your pull request. Passing it is not proof either way, so read your diff too.
+  list is a CI secret, so on your machine the name check finds no list and passes. CI runs it
+  with the list on every push to `main` and on pull requests from this repository's own
+  branches; a pull request from a fork gets no secrets, so there it passes without a list and
+  the maintainer reads the diff for names. Passing it is not proof either way, so read your
+  diff too.
 - No secrets: no keys, tokens, passwords or access links, not even expired ones. The
   secrets scan runs on every pull request.
 

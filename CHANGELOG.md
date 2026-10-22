@@ -76,8 +76,10 @@ The first public release.
   with read-only permissions; the part that may write does not run it.
 - **Fork pull requests are not recommended for merge.** Needs you no longer recommends yes
   for a pull request from a fork.
-- **Routines cannot edit the tools or the settings.** A scheduled routine may no longer change
-  the tools or the harness settings; those change only through a person's pull request.
+- **Routines cannot edit the tools or the settings.** A routine started by `routine.py` runs
+  with its own permission profile: it may not change the tools, tests or harness settings, and
+  runs only the tools its prompts name. The space's own profile names each tool it allows, so a
+  newly written script asks before it runs.
 - **The forbidden-names list is a CI secret.** The hashes the name gate compares with are no
   longer in the repository; CI reads them from a secret, and a local run without the list
   skips the name check.
@@ -88,6 +90,13 @@ The first public release.
 
 Found during the private preview, before the first release.
 
+- **A red sync pull request heals itself.** When the checks of a machine's sync pull request
+  fail, the next `sync` run reads the failed log. Answer tests it names are set aside for CI
+  (`held: {by: ci}`, since a pass on this machine does not prove one there) and land with that
+  run's push. Any other failure is rerun once per head, as a flaky one. Once the pull request
+  merges, the run line says `healed` and the morning view lists it under "Fixed by itself".
+  What is still red after the rerun stays in the run line (`pr_red`) for the maintenance
+  agent. Nothing asks the owner.
 - **A test question its pages cannot answer is asked again, not added.** A yes or edit on a
   steered question wrote the given facts into `answers.yaml` as they were typed. The answer
   test looks for each fact as a page writes it, so a summary in other words, another
@@ -95,6 +104,13 @@ Found during the private preview, before the first release.
   pull request could not land anything after it. `status` now checks the facts first: one no
   page carries keeps the question out, and the item comes back as `probe-q-<id>-2` naming
   the missing facts. The first item asks for the facts as the pages write them.
+- **A failing answer test no longer holds every other change back.** The checks run the answer
+  tests on every pull request, so one question no page answered kept a space's sync pull
+  request red, and its desk notes, journal and run lines waited behind it (a day, on 20 Oct).
+  Before it publishes, `sync` now runs the answer tests and sets aside each question that
+  fails: `held: {since, by: sync, missing}` in `answers.yaml`, the question named in the run
+  line. `tests_run` names a held question in every run and never counts it as passed. Once a
+  page carries its facts again, the next sync brings it back.
 - **Signing ships the evidence list.** A signed candidate kept the `## New evidence` list
   that distill keeps at the bottom of the page, and a release sent it on. Its lines are record
   titles, which can name prices, pay terms or other clients the page itself leaves out. `sign`

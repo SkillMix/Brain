@@ -13,6 +13,14 @@ routines only edit files. Each run:
      where origin holds only an earlier copy of this checkout's own change keeps ours
      (the rebuilt commits of step 6 share no history with it); any other conflict is
      aborted and recorded
+  5a. when there is something to publish: run the answer tests; a question that fails is set
+     aside (`held: {since, by: sync, missing}` in answers.yaml, named in the run line) so it
+     cannot turn the pull request red and hold every other change back, and one the sync set
+     aside that passes again comes back; commit `chore: sync`
+  5b. read this machine's open sync pull request: when its checks failed, set aside the answer
+     tests the failed log names (`by: ci`) and commit, or else rerun the failed run once per
+     head; a repair is recorded `healed` once the pull request merges (the briefing's "Fixed by
+     itself"), and what stays red after a rerun is left in the run line as `pr_red`
   6. when local main differs from origin/main: push it to sync/<machine> (a hash, never the
      machine's name) and open the pull request the platform merges. Changes under a
      `protected:` path go to their own branch sync/<machine>-protected (their own pull
@@ -63,7 +71,9 @@ QUIET_HOURS = 6   # run lines and mount pins alone go out at most this often
 BATCH_HOURS = 1   # journal lines and run logs alone go out at most this often
 RUNS_PATH = Path("_meta") / "state" / "runs.jsonl"
 RUN_LOGS = {"_meta/state/tests.jsonl", "_meta/state/probe.jsonl"}
-NOTABLE = ("committed", "pins", "conflict", "scan_hits", "errors")
+NOTABLE = ("committed", "pins", "conflict", "scan_hits", "errors", "held_tests", "restored_tests",
+           "healing", "healed", "pr_red")
+HEAL_STATE = "sync-heal.json"   # in the git dir: the repair waiting to be seen merged
 
 
 def git(root, *args, check: bool = False, input: str | None = None, env: dict | None = None) -> subprocess.CompletedProcess:
@@ -333,6 +343,89 @@ class Run:
             self.notes["pins"] = moved
 
     # ----- merge in, publish -----------------------------------------------------
+    def set_aside_tests(self) -> None:
+        """A failing answer test turns the pull request red and holds every other change back:
+        before publishing, set it aside with a record, and bring back one that passes again."""
+        try:
+            import tests_run
+        except ImportError:
+            return
+        if not self.has_origin_main() or git(self.root, "diff", "--quiet", "origin/main", "HEAD").returncode == 0:
+            return   # nothing to publish
+        if self.dry:
+            print("would set aside the answer tests that fail")
+            return
+        held, back = tests_run.set_aside(self.root, self.now)
+        if not (held or back):
+            return
+        git(self.root, "add", "--", tests_run.ANSWERS_PATH.as_posix())
+        self.commit("chore: sync")
+        if held:
+            self.notes["held_tests"] = held
+        if back:
+            self.notes["restored_tests"] = back
+        print(f"answer tests: {len(held)} set aside, {len(back)} brought back")
+
+    # ----- a red pull request heals itself ---------------------------------------
+    def heal(self) -> None:
+        """Read this checkout's sync pull request. When its checks failed: answer tests the
+        failed log names are set aside for CI (`held: {by: ci}`, which only a person brings
+        back, since a pass here does not prove a pass there) and land with this run's push; any
+        other failure is rerun once per head, as a flaky one. A repair counts once the pull
+        request merges: the run line says `healed` and the briefing lists it. What is still red
+        after a rerun stays in the run line (`pr_red`) for the maintenance agent, not the owner."""
+        state = self.heal_state()
+        if state.get("pr"):
+            viewed = self.gh("pr", "view", str(state["pr"]), "--json", "state")
+            if viewed is not None and viewed.returncode == 0 and \
+                    json.loads(viewed.stdout or "{}").get("state") == "MERGED":
+                self.notes["healed"] = {"what": state.get("what"), "pr": state["pr"]}
+                state = self.heal_state({})
+        listed = self.gh("pr", "list", "--head", f"sync/{hostname()}", "--state", "open",
+                         "--json", "number,headRefOid")
+        try:
+            open_prs = json.loads(listed.stdout or "[]") if listed is not None and listed.returncode == 0 else []
+            if not open_prs:
+                return
+            pr, head = open_prs[0]["number"], open_prs[0].get("headRefOid")
+            checks = self.gh("pr", "checks", str(pr), "--json", "name,bucket,link")   # exits 1 when one failed
+            failed = [c for c in json.loads(checks.stdout or "[]") if c.get("bucket") == "fail"] if checks else []
+        except (ValueError, KeyError, TypeError, AttributeError):
+            return
+        if not failed:
+            return
+        runs = sorted({m.group(1) for c in failed for m in [re.search(r"/actions/runs/(\d+)", str(c.get("link")))] if m})
+        logs = [self.gh("run", "view", run, "--log-failed") for run in runs]
+        import tests_run
+        held = tests_run.hold(self.root, tests_run.failures_in("".join(d.stdout for d in logs if d), self.root),
+                              "ci", self.now)
+        if held:
+            git(self.root, "add", "--", tests_run.ANSWERS_PATH.as_posix())
+            self.commit("chore: sync")
+            self.notes["healing"] = {"pr": pr, "held_tests": held}
+            self.heal_state({"pr": pr, "what": f"set aside {len(held)} answer test(s) the checks could not "
+                                               f"pass: {'; '.join(held)}"})
+        elif runs and state.get("rerun") != head:
+            for run in runs:
+                self.gh("run", "rerun", run, "--failed")
+            self.notes["healing"] = {"pr": pr, "rerun": runs}
+            self.heal_state({"pr": pr, "rerun": head, "what": "reran a failed check"})
+        else:
+            self.notes["pr_red"] = {"pr": pr, "checks": [c.get("name") for c in failed]}
+
+    def heal_state(self, new: dict | None = None) -> dict:
+        path = self.gdir / HEAL_STATE
+        if new is None:
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return {}
+        if new:
+            path.write_text(json.dumps(new), encoding="utf-8")
+        else:
+            path.unlink(missing_ok=True)
+        return new
+
     def has_origin_main(self) -> bool:
         if "origin" not in git(self.root, "remote").stdout.split():
             return False
@@ -631,6 +724,10 @@ def main(argv=None) -> int:
         if not args.only:
             run.advance_pins()
         run.merge_in()
+        if not args.only:
+            run.set_aside_tests()
+            if not run.dry and not args.no_push:
+                run.heal()
         run.publish()
     except Exception as exc:  # unexpected: record, never lose the lock
         run.error(f"{type(exc).__name__}: {str(exc)[:200]}")

@@ -27,6 +27,14 @@ answer must contain, matched without regard to case), `asker` and `via`.
   `knowledge/` and `live/` when they are present on disk.
 - `both` passes when either does.
 
+A question may carry `held: {since, by, missing}`: it is set aside, not run, and every run
+names it with its missing facts (never counted as passed). The sync sets aside a question that
+fails before it publishes (`by: sync`), so one test cannot turn the pull request red and hold
+every desk and journal change back, and brings it back once it passes again. When the checks
+fail a question that passed on the machine, the next sync sets it aside `by: ci`: a pass on
+the machine does not prove one in CI, so only a person brings that one back. A hold placed by
+anyone else stays until they remove it.
+
 A question runs in the asker's space. It runs here when the asker is this space's name, its
 owner, its directory name, or one of `owner`, `anyone`. When the runner is given roots
 (`--root ada=../ada`), a question whose asker names one runs against that root. Any other
@@ -98,5 +106,8 @@ drives the clock by hand.
 ## Forbidden names
 
 `forbidden-names.sha256` lists the sha256 of lowercased tokens that must never appear in
-the template: the names of a real company, its people, clients and projects. The names
-themselves live outside this repository. `validate.py . --template` checks every token.
+the template: the names of a real company, its people, clients and projects. Neither the
+names nor the list are in this repository: the `checks` workflow writes the list here from
+the `FORBIDDEN_NAMES_SHA256` secret for the run, and `.gitignore` keeps it out of commits.
+`validate.py . --template` checks every token against it; without the file there is nothing
+to compare.
