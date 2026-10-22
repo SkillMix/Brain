@@ -482,12 +482,15 @@ def _signals(root: Path, now: dt.datetime) -> list:
 
 
 def ship(root, now: dt.datetime | None = None,
-         offline_roots: dict[str, Path] | None = None) -> ShipReport:
+         offline_roots: dict[str, Path] | None = None, notes_only: bool = False) -> ShipReport:
+    """`notes_only` ships the pending registry notes and nothing else (offboard's last word)."""
     root = Path(root)
     space = spaceyaml.load(root)
     now = now or space.now()
     offline_roots = {k: Path(v) for k, v in (offline_roots or {}).items()}
     report = ShipReport()
+    if notes_only:
+        return _ship_batches(root, space, now, offline_roots, report, notes_only=True)
     try:   # registry notes that arrived here (the brain applies them every sync)
         import classify
         classify.land_notes(root, space, now)
@@ -501,14 +504,21 @@ def ship(root, now: dt.datetime | None = None,
         report.rerouted += back["rerouted"]
     except Exception as exc:  # held items stay held: the safe side
         print(f"release: classification requeue skipped ({exc.__class__.__name__}: {exc})", file=sys.stderr)
+    return _ship_batches(root, space, now, offline_roots, report)
+
+
+def _ship_batches(root: Path, space, now: dt.datetime, offline_roots: dict, report: ShipReport,
+                  notes_only: bool = False) -> ShipReport:
     batches: dict = {}
-    for path, fm, body in _ready_items(root, now, report, space):
+    for path, fm, body in [] if notes_only else _ready_items(root, now, report, space):
         batches.setdefault(fm["destination"], ([], []))[0].append((path, fm, body))
     try:
         reg = registry_mod.Registry(root, space)
     except Exception:
         reg = None
     for path, data, view in _signals(root, now):
+        if notes_only and data.get("kind") != "registry":
+            continue
         home = None if data.get("kind") == "registry" else _current_home(reg, data)   # a note goes to its registry
         if home and home != data["destination"] and home != space.name:
             # a signal follows its subject to its current home, like a queue item
@@ -600,7 +610,8 @@ def ship(root, now: dt.datetime | None = None,
         for path, _ in outgoing_signals:
             path.unlink()
             report.signals += 1
-    ship_requests(root, space, now, offline_roots, report)
+    if not notes_only:
+        ship_requests(root, space, now, offline_roots, report)
     append_run_line(root, "release", now, space, 0, {
         "shipped": report.shipped, "signals": report.signals, "held": report.held,
         "requests": report.requests,

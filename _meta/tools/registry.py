@@ -318,8 +318,8 @@ class Registry:
         for row in _jsonl(self.root / SENT_NOTES):
             if row.get("note") == "classification" and isinstance(row.get("classification"), dict):
                 sent[str(row.get("subject"))] = row   # the latest per subject
-            elif row.get("note") == "state" and row.get("state") in ("active", "dormant"):
-                states[str(row.get("subject"))] = row   # a dormancy the home judged, the latest
+            elif row.get("note") == "state" and row.get("state") in ("active", "dormant", "archived"):
+                states[str(row.get("subject"))] = row   # a state the home judged, the latest
         logs: dict = {}
 
         def arrived(subject, row) -> bool:

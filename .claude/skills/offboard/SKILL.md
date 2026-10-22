@@ -22,7 +22,8 @@ conclusions that already left stay where they landed, with their signature.
 Listed what still waits in `_outbound/queue/` and `_inbound/candidates/`; removed the sync
 task from the OS scheduler; removed the personal instruction block from the user-level
 instructions; archived the repository on the host (`--online`); set the owner's subject to
-`state: archived` in the registry; recorded each step; deleted nothing.
+`state: archived` in the registry (a subject the brain holds by a registry note, shipped
+alone at once); recorded each step; deleted nothing.
 
 ## Forgetting
 
