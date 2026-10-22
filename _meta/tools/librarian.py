@@ -289,11 +289,12 @@ def kind_moves(root: Path, space, reg) -> list:
 
 def stray_pages(root: Path, space, reg) -> list:
     out = []
-    for kind in space.kinds:
-        base = root / "knowledge" / kind
-        if not base.is_dir():
+    loose = sorted((root / "knowledge").glob("*.md")) if (root / "knowledge").is_dir() else []
+    for kind in [None] + list(space.kinds):   # None: loose pages right under knowledge/
+        base = root / "knowledge" / kind if kind else None
+        if base is not None and not base.is_dir():
             continue
-        for path in sorted(base.rglob("*.md")):
+        for path in (sorted(base.rglob("*.md")) if base is not None else loose):
             if not pages.is_page_path(path):
                 continue
             rel = path.relative_to(root).as_posix()
