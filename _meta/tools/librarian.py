@@ -339,8 +339,11 @@ def stray_desk(root: Path, space, reg) -> tuple:
 
 
 def splits(root: Path, space, reg) -> list:
+    """Every subject with efforts or pages here, whichever registry holds it: a desk's efforts
+    mostly belong to subjects the brain holds. The parts join this space's own registry."""
     out = []
-    for subject in reg.all():
+    held = set(reg.subjects)
+    for subject in reg.all() + [s for s in reg.ancestors.values() if s.id not in held]:
         efforts = _efforts(root, subject.kind, subject.id)
         count = max(len(efforts), len(_subject_pages(root, subject.kind, subject.id)))
         if count <= SPLIT_AT:
