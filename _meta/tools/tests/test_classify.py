@@ -1,4 +1,4 @@
-"""The classification gate (docs/superpowers/specs/2026-10-16-classification-gate-design.md):
+"""The classification gate (docs/design/2026-10-16-classification-gate-design.md):
 registry fields, the gate, the registry notes, the verbs and the one-off list."""
 import registry
 from conftest import make_space

@@ -69,3 +69,17 @@ def test_check_detects_stale_and_write_is_lf(tmp_path):
     assert raw.decode("utf-8") == agents_md.render(root)
     assert agents_md.main([str(root), "--check"]) == 0
     assert agents_md.check(root) is True
+
+
+def test_help_prints_usage_and_writes_nothing(tmp_path, monkeypatch, capsys):
+    root = make_space(tmp_path / "ada")
+    monkeypatch.chdir(root)
+    (root / "AGENTS.md").unlink(missing_ok=True)
+    try:
+        agents_md.main(["--help"])
+    except SystemExit as stop:
+        assert stop.code == 0
+    else:
+        raise AssertionError("--help must exit")
+    assert "--check" in capsys.readouterr().out
+    assert not (root / "AGENTS.md").exists()

@@ -44,7 +44,7 @@ MATCH_KEYS = ("tracker", "repo", "channel", "label", "thread", "calendar", "gith
               "domain", "keywords")
 INFERRED_KEYS = ("domain", "keywords")   # attach by inference: never released at once
 TITLED_KINDS = ("call", "event")
-# The classification gate (docs/superpowers/specs/2026-10-16-classification-gate-design.md):
+# The classification gate (docs/design/2026-10-16-classification-gate-design.md):
 # a subject of these kinds, or a part of one, leaves nowhere before its owner's agent classifies it.
 GATED_KINDS = ("clients", "projects", "deals")
 CLASSES = ("company", "walled", "owner")             # widest to narrowest

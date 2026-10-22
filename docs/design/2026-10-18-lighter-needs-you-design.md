@@ -6,8 +6,8 @@ Date: 2026-10-18. Status: draft for the owner's review. No code and no plan unti
 
 Needs you is the one list of what needs a person (`_meta/tools/needs_you.py`). Every routine
 adds to it, and every item waits for a verdict in a session with read-back and `submit`. After
-a history backfill the pilot owner's list held 365 items: 195 high-stakes, 127 leaving, 29 notes
-to sign, 9 questions, 3 samples, a pull request and a held-in-doubt line. Every one carried a
+a history backfill a pilot list held hundreds of items, most of them high-stakes or leaving,
+the rest notes to sign, questions, samples and a pull request. Every one carried a
 recommendation, and all but a handful recommended yes. A list that only moves when someone
 signs every day asks for a new daily habit. Most people never form it, and then the software
 stops being used.
@@ -513,9 +513,10 @@ Nothing new is scheduled. Each new step is a step in a chain that already exists
 | Sweep chain, 3 times a day | `transcripts.scan`, `sweep.run`, `reply.run`, `distill.run`, `check.run`, `tracker.observe` | after distill: `rank` (new items only), `resolve` (incremental by subject, with its check), `settle` (stale dates, track-record settling); `reply.run` binds under 4.3; the away record from the adapters |
 | Daily chain, once a day | `template_sync` (guarded), `status.run` with landing, `access.run`, `request.collect`, `request.answer`, `release.ship`, `outbox_reconcile.run`, `morning_view.run`, the answer and leak tests | `status.run` writes the health numbers; `morning_view.run` selects the asks within the budget and renders the new order; once a scaled week: the summary and the budget adjustment |
 
-The sweep chain and the daily chain are paused in the pilot owner's install. Pausing happens
-in the scheduler; there is no pause flag. Unpausing them stays the owner's decision. Nothing here assumes it, but until they run, nothing settles, resolves or leaves
-by its window, and the health page says so.
+An install may have its sweep chain and daily chain paused. Pausing happens in the
+scheduler; there is no pause flag. Unpausing them stays the owner's decision. Nothing here
+assumes it, but until they run, nothing settles, resolves or leaves by its window, and the
+health page says so.
 
 **Token cost bound per run.** Only `rank` and `resolve` (with its check) need a model. Every
 other step is a tool and costs no tokens; the email and the weekly page are rendered from
@@ -575,38 +576,37 @@ owner_emails: []         # other addresses of the same person that may reply
 
 The health page gains the three health numbers and the agreement rate per kind (3.12).
 
-## 7. Migration: the pilot owner's 365 items
+## 7. Migration: an existing list
 
-Measured with `needs_you.py --json` on 18 October:
+Measured on a pilot list with `needs_you.py --json`, the conversion turned a few hundred lines
+into about 8 to 12 grouped decisions for one catch-up session, and three or fewer pushed asks a
+day after it. What becomes of each kind of item:
 
-| Today | Items | After | Asks |
-|---|---|---|---|
-| leaving | 127 lines: 116 items for three destinations, and 11 first-release lines (one per newly classified subject) | about 14 "leaves tonight" lines, grouped by subject; all gone once their windows close on 18 and 19 October | 0 |
-| high stakes, already approved by the owner | 97 | leave Needs you. They wait only for a morning view to list them, and the daily chain is paused. Today they are asked again, because `_queue` lists a high-stakes item whether or not it carries `approved_by` | 0 |
-| high stakes, not approved | 98 | 12 subject groups. 84 are first releases of newly classified subjects. By record date, 65 are older than 60 days, 25 are 15 to 60 days old, and 8 are 14 days old or less (in 3 subjects). History stays home with a fact line | 3 groups at most (the recent ones), in the catch-up |
-| candidates: entity pages | 20 | grounded drafts, usable at once; one count in pulled use | 0 |
-| candidates: landings pending for the person, all flagged high stakes | 9 | one group per subject, in the catch-up; stay pending on silence | 2 to 3 groups |
-| questions | 9 | 2 test questions become counts; 2 deletion questions keep their deadline and safe default; 3 setup questions for one new project become one group; 1 visibility question (safe default: stays private); 1 mount fault resolves from evidence when the mount check passes | 2 to 3 |
-| samples | 3 | counts; counted as fine after 7 days | 0 |
-| protected pull request | 1 | one ask (medium) | 1 |
-| held in doubt (11 pages) | 1 line | stay home; a count | 0 |
+| Today | After | Asks |
+|---|---|---|
+| leaving | a "leaves tonight" line per subject; gone once their windows close | 0 |
+| high stakes, already approved by the person | leave Needs you; they wait only for a morning view to list them | 0 |
+| high stakes, not approved | one group per subject; history stays home with a fact line | the recent groups only, in the catch-up |
+| candidates: entity pages | grounded drafts, usable at once; one count in pulled use | 0 |
+| candidates: landings pending for the person, flagged high stakes | one group per subject, in the catch-up; stay pending on silence | a few groups |
+| questions | test questions become counts; deletion questions keep their deadline and safe default; setup questions for one project become one group; a mount fault resolves from evidence | a few |
+| samples | counts; counted as fine after 7 days | 0 |
+| protected pull request | one ask (medium) | 1 |
+| held in doubt | stay home; a count | 0 |
 
-The result: from 365 lines to **about 8 to 12 grouped decisions** for the one catch-up
-session, and **three or fewer pushed asks a day** after it. Everything else settles at its
-date, and the first weekly summary reports it with a way back.
+Everything else settles at its date, and the first weekly summary reports it with a way back.
 
-The conversion runs once, in the pilot workspace, after the template sync lands the code.
-It ranks every open item (a one-time cost of about 365 × 500 tokens, under 200k), writes
-`ranks.yaml`, and prints the table above from the live data, so the owner sees the real
-numbers before anything settles. It changes no item's outcome on its own. Stale dates for
-existing items start on the day of the conversion, not the day the item was written, so
-nothing closes the moment the code lands.
+The conversion runs once per workspace, after the template sync lands the code. It ranks every
+open item (a one-time cost of about 500 tokens an item), writes `ranks.yaml`, and prints the
+table above from the live data, so the owner sees the real numbers before anything settles. It
+changes no item's outcome on its own. Stale dates for existing items start on the day of the
+conversion, not the day the item was written, so nothing closes the moment the code lands.
 
-One ordering matters. If the daily chain is unpaused before this lands, the 98 unapproved
-high-stakes items ship under today's rule once listed, and land pending for their domain
-owner at the destination. That is today's behaviour, and the content stays pending there, not
-filed. Unpausing first or landing this first is the owner's choice, and the conversion table
-shows which items it affects.
+One ordering matters. If a paused daily chain is unpaused before this lands, the unapproved
+high-stakes items ship under today's rule once listed, and land pending for their domain owner
+at the destination. That is today's behaviour, and the content stays pending there, not filed.
+Unpausing first or landing this first is the owner's choice, and the conversion table shows
+which items it affects.
 
 ## 8. Acceptance
 
@@ -681,7 +681,7 @@ next phase starts.
    (the new steps), the sweep, sign, morning-view, query and status skills, the CLAUDE.md
    session-start line, `docs/decisions.md`, and the tests above.
 2. Synced to every space by the template sync (one release under the releases design).
-3. The pilot workspace runs the conversion of section 7, and the owner reads its table before
+3. Each workspace runs the conversion of section 7, and its owner reads its table before
    unpausing anything.
 
 ## 10. Decisions this changes

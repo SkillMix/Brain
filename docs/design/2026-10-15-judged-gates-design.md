@@ -12,7 +12,7 @@ person's name, and since this morning a money-amount pattern. A one-client pilot
 failures every word list has. It holds what only looks like a topic ("transfer pricing team"
 holds on "pricing", "managed identity" lands pending on "identity", "validation rules" on
 "rules"), and each false hold asks for one more exception. It passes what is said in other
-words ("EUR 950 an hour" passed "day rate"; a talk about the ownership split that never says
+words (an hourly rate in euros passed "day rate"; a talk about the ownership split that never says
 "equity" passes "equity"). The owner's direction: an agent should judge these itself; word
 triggers and exception lists do not scale.
 

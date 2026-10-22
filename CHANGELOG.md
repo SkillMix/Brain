@@ -5,17 +5,90 @@ versioning](https://semver.org); while the version starts with 0, a minor releas
 the shape and ships its migration. Each choice behind a change has a line in
 `docs/decisions.md`.
 
-## [Unreleased]
+## [0.1.0] - 2026-10-23
+
+The first public release.
 
 ### Added
 
+- **Spaces, shape 1.** A company is a tree of git repositories: one brain everyone reads, one
+  workspace per person, walled project spaces, corridors between two spaces. One settings
+  file per space (`space.yaml`), pages with permanent ids and links by id, a registry of
+  subjects, and `validate.py` to check all of it (`docs/shape-1.md`).
+- **Setup in one sentence.** `start.py` with a doctor that checks the machine and installs
+  `gh`, Git and Python where they are missing (pinned, checksummed, no admin rights), creates
+  and clones the person's repositories, mounts the brain and their projects, registers the
+  sync task and renders their routines. Invitations for colleagues; `onboard --check`
+  re-runs every read-back.
+- **Lossless capture with a privacy door.** The sweep keeps full mail bodies, call
+  transcripts, chat threads and document text as dated witness pages in the person's own
+  workspace. Personal and academic records are counted and never stored; unsure ones wait on
+  the person's machine for a yes or no.
+- **Judged routing.** An agent reads each record whole, builds a private brief of the subject
+  first, and decides whether it stays private or which space and subject it informs, as the
+  whole record or verbatim parts, at once or after the 24-hour window. A second agent checks
+  every decision that sends anything out; the tools check the facts (secrets, verbatim parts,
+  destination, audience).
+- **The classification gate.** Nothing about a client, project or deal leaves the space it
+  came into until its owner's agent classifies it `company`, `walled` or `owner`, after asking
+  the other workspaces for obligations, recorded as kind and date only. A new obligation
+  re-opens the classification.
+- **Release windows and the morning view.** What would widen an audience waits one window and
+  one morning view; a counts-only briefing mailed from the person to themselves; pull-back by
+  one word, also by replying to the briefing.
+- **Signing by people only.** Candidates with a source on every line, checked by a second
+  agent before they reach Needs you; `sign` writes `stable` only for a named person's
+  verdict, with the fingerprint of the approved text; landing at the home checks it.
+- **Status that answers.** Status pages per subject with open items by direction, timeline
+  and coming up; the brain's projects page as the company's register; answers that end with
+  the tier and age of every page they rest on.
+- **Upkeep.** The weekly review batch, conflict notes, the weekly sample of silent landings,
+  the path pause after a pull-back, the librarian's moves and proposals, guarded weekly
+  template sync.
+- **Requests between spaces** through corridors, answered by standing choices or by the
+  holder's person.
+- **The fixture company Lantern Works**, built offline in one command, with answer and leak
+  tests.
+- **Updates by release.** Spaces follow tagged releases, not `main`; one question per release
+  on the owner's Needs you, and their yes moves every space they own. A protected update lands
+  without a click only where its protected files are the approved release's, byte for byte;
+  the gate that decides is the base branch's own (`template_updates: main` opts out).
+- **CI that costs little.** One `checks` job per pull request (about one billed minute); the
+  tool tests run only when the machinery changed; `platforms` runs the setup on Linux, macOS
+  and Windows in the template only.
+- **One security email a day.** Passwords or keys found in records are told to the person in
+  one digest, counted by where they showed up; at most one security email goes out in any
+  24 hours.
 - **Onboarding page.** `start.py` keeps `~/.spaces/onboarding.html` up to date after every step:
   the stages as a row of steps, what only the person can do (each with its command), when the
   first briefing comes, and how the system works as a diagram. `onboard --check` rewrites it.
   One self-contained file in the house style, dark by default with a switch to light, no
   server, no script and nothing fetched.
+- **Public docs.** `SECURITY.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, this changelog and
+  `docs/data-protection.md`; a status line at the top of the README and the template's real
+  address in it; issue and pull request templates; `requirements.txt` and
+  `requirements-dev.txt`; the design pages in one folder, `docs/design/`.
+  `agents_md.py --help` prints its usage instead of writing `AGENTS.md`.
+
+### Security
+
+- **Pull request code runs read-only.** CI is split so that a pull request's own code runs
+  with read-only permissions; the part that may write does not run it.
+- **Fork pull requests are not recommended for merge.** Needs you no longer recommends yes
+  for a pull request from a fork.
+- **Routines cannot edit the tools or the settings.** A routine started by `routine.py` runs
+  with its own permission profile: it may not change the tools, tests or harness settings, and
+  runs only the tools its prompts name. The space's own profile names each tool it allows, so a
+  newly written script asks before it runs.
+- **The forbidden-names list is a CI secret.** The hashes the name gate compares with are no
+  longer in the repository; CI reads them from a secret, and a local run without the list
+  skips the name check.
+- **Run state is not tracked in the template.** What a run writes under `_meta/state/` no
+  longer lives in the template repository.
 
 ### Fixed
+
+Found during the private preview, before the first release.
 
 - **A red sync pull request heals itself.** When the checks of a machine's sync pull request
   fail, the next `sync` run reads the failed log. Answer tests it names are set aside for CI
@@ -81,59 +154,3 @@ the shape and ships its migration. Each choice behind a change has a line in
   again after its repositories were deleted) was reused: releases and classification notes
   went nowhere while the run line said nothing failed. Such a clone is now moved to
   `.stale/` and the destination cloned fresh.
-
-## [0.1.0] - 2026-10-18
-
-The first public release.
-
-### Added
-
-- **Spaces, shape 1.** A company is a tree of git repositories: one brain everyone reads, one
-  workspace per person, walled project spaces, corridors between two spaces. One settings
-  file per space (`space.yaml`), pages with permanent ids and links by id, a registry of
-  subjects, and `validate.py` to check all of it (`docs/shape-1.md`).
-- **Setup in one sentence.** `start.py` with a doctor that checks the machine and installs
-  `gh`, Git and Python where they are missing (pinned, checksummed, no admin rights), creates
-  and clones the person's repositories, mounts the brain and their projects, registers the
-  sync task and renders their routines. Invitations for colleagues; `onboard --check`
-  re-runs every read-back.
-- **Lossless capture with a privacy door.** The sweep keeps full mail bodies, call
-  transcripts, chat threads and document text as dated witness pages in the person's own
-  workspace. Personal and academic records are counted and never stored; unsure ones wait on
-  the person's machine for a yes or no.
-- **Judged routing.** An agent reads each record whole, builds a private brief of the subject
-  first, and decides whether it stays private or which space and subject it informs, as the
-  whole record or verbatim parts, at once or after the 24-hour window. A second agent checks
-  every decision that sends anything out; the tools check the facts (secrets, verbatim parts,
-  destination, audience).
-- **The classification gate.** Nothing about a client, project or deal leaves the space it
-  came into until its owner's agent classifies it `company`, `walled` or `owner`, after asking
-  the other workspaces for obligations, recorded as kind and date only. A new obligation
-  re-opens the classification.
-- **Release windows and the morning view.** What would widen an audience waits one window and
-  one morning view; a counts-only briefing mailed from the person to themselves; pull-back by
-  one word, also by replying to the briefing.
-- **Signing by people only.** Candidates with a source on every line, checked by a second
-  agent before they reach Needs you; `sign` writes `stable` only for a named person's
-  verdict, with the fingerprint of the approved text; landing at the home checks it.
-- **Status that answers.** Status pages per subject with open items by direction, timeline
-  and coming up; the brain's projects page as the company's register; answers that end with
-  the tier and age of every page they rest on.
-- **Upkeep.** The weekly review batch, conflict notes, the weekly sample of silent landings,
-  the path pause after a pull-back, the librarian's moves and proposals, guarded weekly
-  template sync.
-- **Requests between spaces** through corridors, answered by standing choices or by the
-  holder's person.
-- **The fixture company Lantern Works**, built offline in one command, with answer and leak
-  tests.
-- **Updates by release.** Spaces follow tagged releases, not `main`; one question per release
-  on the owner's Needs you, and their yes moves every space they own. A protected update lands
-  without a click only where its protected files are the approved release's, byte for byte;
-  the gate that decides is the base branch's own (`template_updates: main` opts out).
-- **CI that costs little.** One `checks` job per pull request (about one billed minute); the
-  tool tests run only when the machinery changed; `platforms` runs the setup on Linux, macOS
-  and Windows in the template only.
-- **One security email a day.** Passwords or keys found in records are told to the person in
-  one digest, counted by where they showed up; at most one security email goes out in any
-  24 hours.
-- `SECURITY.md`, `CONTRIBUTING.md`, this changelog and `docs/data-protection.md`.

@@ -47,7 +47,7 @@ _meta/questions.log               the question log, one JSON object per line; ne
 _meta/lessons.md                  corrections the person made once, one line each; read by the router, distill and the brief
 _meta/state/                      watermarks, ids.yaml, runs.jsonl, payloads; feed/ is local and never committed
 _meta/state/private/briefs/       one private brief per subject the space understands (and its pack); local, disposable, never travels
-_meta/tests/                      answers.yaml, leaks.yaml, behaviour/<skill>.yaml, fixture/, forbidden-names.sha256
+_meta/tests/                      answers.yaml, leaks.yaml, behaviour/<skill>-<n>.yaml, fixture/, forbidden-names.sha256
 _meta/tools/  _meta/templates/    the tools (stdlib plus PyYAML) and the page templates
 .github/                          the checks workflow (it also arms auto-merge); template-marker only in the template
 .claude/skills/<name>/SKILL.md    the toolbox: one skill per routine, each wrapping one tool

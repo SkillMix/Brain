@@ -6,9 +6,9 @@ Date: 2026-10-16. Supersedes the decisions row of 2026-10-12 "Project spaces at 
 ## 1. Why
 
 Onboarding points every client, project and deal that has no space of its own at the brain,
-and nothing checks whether one is an exception. A client under a confidentiality agreement had
-its records routed and distilled into the brain, readable by the whole company, and had to be
-moved out by hand with a history rewrite. The evidence that a client is an exception is spread
+and nothing checks whether one is an exception. A client under a confidentiality agreement
+would have its records routed and distilled into the brain, readable by the whole company, and
+moving them out again takes a history rewrite by hand. The evidence that a client is an exception is spread
 over several people's workspaces, which are set up at different times: a colleague may never
 have seen the agreement, or may onboard weeks later. So the decision is one per subject, made by
 the agent of the person who holds the relationship, never waiting for workspaces that do not

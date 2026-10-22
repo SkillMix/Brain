@@ -1,4 +1,4 @@
-"""classify: the classification gate (docs/superpowers/specs/2026-10-16-classification-gate-design.md).
+"""classify: the classification gate (docs/design/2026-10-16-classification-gate-design.md).
 
 A client, project or deal (or anything part of one) sends nothing out of the space where its
 material came in until its owner's agent has classified it: `company` (home the brain), `walled`
