@@ -552,3 +552,61 @@ def test_the_ship_scrub_holds_a_file_too_large_to_scan(tmp_path, monkeypatch):
     import spaceyaml
     reason = release.scrub_reason(spaceyaml.load(space_root), None, fm, "word " * 200, path)
     assert reason and reason[0] == "scan"
+
+
+# ----- a retraction takes effect where the release landed ---------------------------------
+def _evidence_ids(root):
+    import distill
+    return {ev.fm.get("id") for ev in distill.gather_evidence(root, distill.Reader(), "harbor")}
+
+
+def _shipped_and_landed(tmp_path):
+    import landing
+    _, harbor, ada = build(tmp_path, sources=CREW_MAIL)
+    write_feed(ada, [record()])
+    sweep.run(ada, now=NOW)
+    release.ship(ada, now=NOW, offline_roots={"harbor": harbor})
+    (shipped_fm, _), = landed(harbor)
+    landing.land(harbor, now=NOW)
+    return harbor, ada, shipped_fm["id"]
+
+
+def test_a_retraction_withdraws_a_record_that_already_landed(tmp_path):
+    import landing
+    harbor, ada, item_id = _shipped_and_landed(tmp_path)
+    filed, = (harbor / "knowledge" / "sources").rglob(f"{item_id}.md")
+    assert item_id in _evidence_ids(harbor)
+    later = NOW + dt.timedelta(hours=2)
+    release.retract(ada, item_id, now=later)
+    release.ship(ada, now=later, offline_roots={"harbor": harbor})
+    landing.land(harbor, now=later)
+    fm, _ = pages.read(filed)
+    assert fm["retracted"] is True and fm["status"] == "deprecated", "the landed record is withdrawn, kept"
+    assert item_id not in _evidence_ids(harbor), "a withdrawn record is no longer evidence"
+    kinds = [pages.read(p)[0].get("release_class") for p in (harbor / "knowledge" / "sources").rglob("*.md")]
+    assert "retraction" not in kinds, "the retraction itself is never filed as a record"
+    assert landed(harbor) == []
+    assert f"withdrew {item_id}" in (harbor / "log.md").read_text(encoding="utf-8")
+
+
+def test_a_retraction_before_landing_keeps_the_record_out(tmp_path):
+    import landing
+    _, harbor, ada = build(tmp_path, sources=CREW_MAIL)
+    write_feed(ada, [record()])
+    sweep.run(ada, now=NOW)
+    release.ship(ada, now=NOW, offline_roots={"harbor": harbor})
+    (shipped_fm, _), = landed(harbor)
+    release.retract(ada, shipped_fm["id"], now=NOW, offline_roots={"harbor": harbor})
+    release.ship(ada, now=NOW, offline_roots={"harbor": harbor})
+    assert shipped_fm["id"] not in _evidence_ids(harbor), "marked retracted: not evidence while it waits"
+    landing.land(harbor, now=NOW)
+    assert landed(harbor) == []
+    assert not list((harbor / "knowledge" / "sources").rglob("*.md")), "neither the record nor its retraction lands"
+    assert f"dropped {shipped_fm['id']}" in (harbor / "log.md").read_text(encoding="utf-8")
+
+
+def test_a_record_withdrawn_at_home_is_no_longer_evidence(tmp_path):
+    import landing
+    harbor, _, item_id = _shipped_and_landed(tmp_path)
+    landing.retract(harbor, item_id, by="Ben Liu", now=NOW + dt.timedelta(hours=1))
+    assert item_id not in _evidence_ids(harbor)

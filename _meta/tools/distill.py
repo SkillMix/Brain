@@ -169,6 +169,8 @@ def gather_evidence(root, reader: Reader, space_name: str = "") -> list:
                 fm, body = reader.read(path)
             except Exception:
                 continue
+            if pages.withdrawn(fm or {}):
+                continue
             item = _evidence(root, path, fm, body, landed=False, space_name=space_name) if fm else None
             if item:
                 found.append(item)
@@ -179,7 +181,7 @@ def gather_evidence(root, reader: Reader, space_name: str = "") -> list:
                 fm, body = reader.read(path)
             except Exception:
                 continue
-            if not fm or not fm.get("released_from"):
+            if not fm or not fm.get("released_from") or pages.withdrawn(fm):
                 continue
             item = _evidence(root, path, fm, body, landed=True, space_name=space_name)
             if item:

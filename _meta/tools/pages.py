@@ -119,3 +119,8 @@ def age_days(fm: dict, now: dt.datetime) -> float | None:
 
 def is_page_path(path: Path) -> bool:
     return path.suffix == ".md" and path.name not in ("index.md", "log.md", "README.md")
+
+
+def withdrawn(fm: dict) -> bool:
+    """A release its sender retracted, or one withdrawn at its home: kept, no longer evidence."""
+    return bool(fm.get("retracted") or fm.get("retracted_at"))
