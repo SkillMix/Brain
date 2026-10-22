@@ -5,8 +5,8 @@
 Lists every file in this space that is about the subject: its registry entry, its hub and
 signed pages (`knowledge/<kind>/<id>/`), its status page, its desk folders, the witness pages
 and candidates that carry it as their subject or mention it, the queued, held and landed
-items, the question-log lines, and the raw feed lines that carry one of its identifiers.
-It changes nothing. What happens to the listing is a person's decision: raw personal records
+items (a doubt item that names it as a candidate, a signal about it), the question-log
+lines, and the raw feed lines that carry one of its identifiers. It changes nothing. What happens to the listing is a person's decision: raw personal records
 live only in personal spaces and go at offboard (`offboard.py --forget-records`, the person's
 own command); shared spaces keep scrubbed, signed conclusions under a tombstone; git keeps
 history, so a true erasure is a history rewrite only the law demands.
@@ -18,12 +18,22 @@ import json
 import sys
 from pathlib import Path
 
+import yaml
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pages  # noqa: E402
 import registry as registry_mod  # noqa: E402
 import spaceyaml  # noqa: E402
 
 PAGE_ZONES = ("knowledge", "live", "_inbound", "_outbound")
+ITEM_ZONES = ("_inbound", "_outbound")   # signals and other queued items are YAML, not pages
+
+
+def _about(fm: dict, stem: str, sid: str) -> bool:
+    """A page or item is about the subject when it carries it as its subject, mentions it,
+    names it as one of the candidates a doubt item could belong to, or is named after it."""
+    named = [str(m) for key in ("mentions", "candidates") if isinstance(fm.get(key), list) for m in fm[key]]
+    return str(fm.get("subject") or "") == sid or sid in named or stem == sid
 
 
 def listing(root, sid: str) -> dict:
@@ -45,8 +55,16 @@ def listing(root, sid: str) -> dict:
                 fm, _ = pages.read(path)
             except Exception:
                 continue
-            mentions = fm.get("mentions") if isinstance(fm.get("mentions"), list) else []
-            if str(fm.get("subject") or "") == sid or sid in [str(m) for m in mentions] or path.stem == sid:
+            if _about(fm, path.stem, sid):
+                out["pages"].append(path.relative_to(root).as_posix())
+    for zone in ITEM_ZONES:
+        base = root / zone
+        for path in sorted(base.rglob("*.yaml")) if base.is_dir() else []:
+            try:
+                item = yaml.safe_load(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if isinstance(item, dict) and _about(item, path.stem, sid):
                 out["pages"].append(path.relative_to(root).as_posix())
     log = root / "_meta" / "questions.log"
     if log.exists():
