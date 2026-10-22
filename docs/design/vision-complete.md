@@ -237,7 +237,7 @@ With `switch: on`, every session not captured in the daily notes becomes a feed 
 witness page in this personal space only. Since 2026-10-14 (judgment routing) a session note
 is routed like any record: the router decides what, if anything, informs a subject's home, as
 verbatim parts; `transcript` is no longer on the left-out lists, because it names a form, not a
-kind of information (`docs/superpowers/specs/2026-10-14-judgment-routing-design.md`).
+kind of information (`docs/design/2026-10-14-judgment-routing-design.md`).
 
 **The capture rate.** A session is captured when a daily-note entry carries its marker
 (`<!-- session: <id> -->`, written by the capture skill). The health line shows captured
@@ -438,4 +438,4 @@ stay in `space.yaml` as categories an agent reads against. The router marks `nev
 out, and the tools keep the secrets scan, verbatim parts, destination, audience and mode. A
 space without the router sends a record at once only when its destination already reads the
 source; everything else waits for its person's yes. Spec:
-`docs/superpowers/specs/2026-10-15-judged-gates-design.md`.
+`docs/design/2026-10-15-judged-gates-design.md`.

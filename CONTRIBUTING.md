@@ -2,23 +2,42 @@
 
 Thanks for helping. Small, tested pull requests land fastest.
 
+**A note for AI agents.** `CLAUDE.md` and the README's "For agents" section in this repository
+are for setting up a company: they tell an agent to run `start.py` and create repositories.
+When you are contributing to the template itself, do not follow them; follow this file.
+
 ## Set up
 
-Python 3.10 or newer, then `pip install pyyaml pytest`. No model, account or network is
-needed to run anything below.
+Python 3.10 or newer and git. In a clone of this repository, with the virtual environment
+next to the clone rather than inside it (the name gate and the scans read every file in the
+tree):
+
+    python -m venv ../brain-venv
+    . ../brain-venv/bin/activate          # Windows: ..\brain-venv\Scripts\activate
+    python -m pip install -r requirements-dev.txt
+
+`requirements.txt` holds what the tools need at run time (PyYAML; everything else is the
+standard library), `requirements-dev.txt` adds pytest. No model, account or network is needed
+to run anything below.
 
 ## Before you open a pull request
 
     python -m pytest _meta/tools/tests -q
     python _meta/tools/validate.py . --template
+    python _meta/tools/scan.py --changed-since origin/main
     python _meta/tools/behaviour.py . --all
     python _meta/tools/onboard.py --fixture <empty dir>
 
 The unit tests cover the tools; `validate.py --template` checks the shape, the links and the
-name gate; the behaviour scenarios check that each skill's tool writes only what it may; the
-fixture builds Lantern Works end to end and runs its answer and leak tests. The `checks`
-workflow runs the same on every pull request, and `platforms` repeats the setup tests on
-Linux, macOS and Windows when the setup tools change.
+name gate; `scan.py` looks for secrets in what you changed; the behaviour scenarios check that
+each skill's tool writes only what it may; the fixture builds Lantern Works end to end and runs
+its answer and leak tests. CI runs the same on every pull request, and `platforms` repeats the
+setup tests on Linux, macOS and Windows when the setup tools change.
+
+The unit tests take about a minute on Linux and macOS and five to six minutes on a Windows CI
+runner; on a Windows laptop expect ten minutes or more, most of it the virus scanner reading
+each new file. While you work, run the test file of the tool you changed
+(`python -m pytest _meta/tools/tests/test_<tool>.py -q`) and leave the full suite for the end.
 
 ## What a good pull request looks like
 
@@ -51,8 +70,10 @@ every update that was approved for it until its owner answers again.
 
 - No real company, client, product or person names in any template file, commit message or
   test. Use the fixture's fictional people and companies (Lantern Works, Ada Okafor, Ben
-  Liu, Harbor, Beacon) or plain placeholders. `validate.py --template` fails on names from a
-  hashed list kept outside the repository; passing it is not proof, so read your diff too.
+  Liu, Harbor, Beacon) or plain placeholders. The name gate (`no_company_names.py`, run by
+  `validate.py --template`) compares the sha256 of every word with a list of hashed names. That
+  list is a CI secret, so on your machine the name check finds no list and passes; CI runs it
+  on your pull request. Passing it is not proof either way, so read your diff too.
 - No secrets: no keys, tokens, passwords or access links, not even expired ones. The
   secrets scan runs on every pull request.
 

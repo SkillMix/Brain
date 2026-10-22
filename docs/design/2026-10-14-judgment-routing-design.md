@@ -1,6 +1,6 @@
 # Lossless capture and judgment routing: design
 
-Status: approved by the owner, 2026-10-14 (section 7 records his answers). Date: 2026-10-14.
+Status: approved by the owner, 2026-10-14 (section 7 records the answers). Date: 2026-10-14.
 Replaces: the decision "evidence attaches by `match:` identifiers only; mentions are hints"
 (docs/decisions.md, 2026-10-11 and 2026-10-13), the release-rule limit that only standing choices
 and already-covered audiences go at once (rules.md section 6), and the export caps of 2026-10-14
@@ -8,12 +8,10 @@ and already-covered audiences go at once (rules.md section 6), and the export ca
 
 ## 1. Why
 
-A colleague who joined a client project today found its status page nearly empty. The owner's
-workspace holds 55 witness pages about that project. Before the 2026-10-14 patch 5 were tied to the
-project's subject; after it re-checked the older pages, 13 are: calendar 3 of 3, calls 4 of 7,
-chat 3 of 13, mail 2 of 5, requests 1 of 1, session notes 0 of 26 (the largest untouched group).
-Tied is not delivered: a tied page still has to pass the release rule. Two causes, both
-structural:
+A colleague who joins a client project can find its status page nearly empty while the
+owner's workspace holds dozens of witness pages about that project, most of them never tied to
+the project's subject: session notes, calls and chat least of all. Tied is not delivered
+either: a tied page still has to pass the release rule. Two causes, both structural:
 
 - **Capture is lossy.** Mail arrives as a 200-character preview, documents as an excerpt, calls as
   a summary, calendar entries without their description, attachments not at all. What is not
@@ -23,9 +21,9 @@ structural:
   carry none, so they stay in the workspace whatever they are about. The 2026-10-14 patch
   (mail domain and meeting-title keywords) widens the net but is still a lookup, not judgment.
 
-The owner's direction, in his words: an agent should "read everything, from FULL mails, to the
-transcripts", "decide on its own whether it should go to a specific space or whether it stays in
-the workspace", "go in depth", because "we can't afford losing information".
+The owner's direction: an agent should read everything, from full mails to the transcripts,
+decide on its own whether a record goes to a specific space or stays in the workspace, and go
+in depth, because losing information is the one thing the system cannot afford.
 
 ## 2. The owner's decisions (2026-10-14, given in the alignment round)
 
@@ -49,7 +47,7 @@ the workspace", "go in depth", because "we can't afford losing information".
    reader where the session has one, else the attachment's preview in the mail web app through
    the browser; where both fail, a once-a-day batch the owner approves.
 7. **The veto window is 24 hours** (the default `window_hours`).
-8. The 2026-10-14 patch (template PR 37) stays as a step forward; this design replaces its
+8. The 2026-10-14 patch stays as a step forward; this design replaces its
    transcript ban and caps.
 
 ## 3. Approaches considered
@@ -227,7 +225,7 @@ A projection is a record handed sideways: `landing.py` files it under the destin
 - **First proof:** the owner's records about the first client project are re-exported in full
   and routed. Expected outcome: the kickoff call (its relevant transcript segments), the client
   mail threads and their open items reach the project, at once where the router chose so and
-  after the window where a gate forces it. The six items the 2026-10-14 patch staged may ship as they are;
+  after the window where a gate forces it. The items the 2026-10-14 patch staged may ship as they are;
   the router's projections of the same records follow with the verbatim parts, and the
   destination shows each record once (same title and time).
 
@@ -269,12 +267,12 @@ their exact-identifier feeds); changing who may read a space.
 ## 7. The owner's answers on the open points (2026-10-14)
 
 1. **Never-leaves elsewhere in a record**: the clean parts travel after the window (as in 4.3).
-2. **Review mode**: none. "I don't want a review mode for now. Just put it live." The router's
+2. **Review mode**: none; the router goes live at once. The router's
    tiers apply from day one, the first proof included; medium confidence, high-stakes terms and
    never-leaves material elsewhere still force the window, low confidence still asks. The
    `routing.review_until` setting stays in the tool, off unless set.
 3. **Quoted history in mail**: kept whole; the router sends only the new passage when the quoted
    part already travelled.
-4. **A record the reader cannot classify**: kept out of the repository and listed in his morning
-   email, where one word brings it in (4.1), so nothing is lost silently.
-5. The six items the 2026-10-14 patch staged ship after his morning view.
+4. **A record the reader cannot classify**: kept out of the repository and listed in the owner's
+   morning email, where one word brings it in (4.1), so nothing is lost silently.
+5. The items the 2026-10-14 patch staged ship after the owner's morning view.

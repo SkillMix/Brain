@@ -1,0 +1,3 @@
+# What a contributor needs to run the tests (CONTRIBUTING.md).
+-r requirements.txt
+pytest>=7.0
