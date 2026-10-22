@@ -499,3 +499,99 @@ def test_the_template_keeps_no_run_lines(repo):
     write(repo / "work" / "notes.md", "# Notes\n\nedited\n")
     assert run(repo) == 0
     assert run_lines(repo) == []
+
+
+def test_a_failing_answer_test_is_set_aside_so_the_desk_still_lands(repo, monkeypatch):
+    """A question no page answers would turn the sync pull request red and hold every desk and
+    journal line behind it. The sync sets it aside with a record, lands the rest, and brings
+    it back once a page carries its facts."""
+    import tests_run
+    import yaml
+    monkeypatch.setattr(sync.Run, "gh", lambda self, *args: None)
+    answers = repo / "_meta" / "tests" / "answers.yaml"
+    write(answers, yaml.safe_dump({"questions": [
+        {"question": "Who runs Harbor?", "subject": "harbor", "expect": ["Ben Liu"], "asker": "owner"},
+        {"question": "What are the notes?", "subject": "", "expect": ["line one"], "asker": "owner"}]},
+        sort_keys=False), minutes_old=20)
+    write(repo / "work" / "notes.md", "# Notes\n\nline one\nline two\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    host = sync.hostname()
+    git(repo, "fetch", "-q", "origin")
+    pushed = yaml.safe_load(git(repo, "show", f"origin/sync/{host}:_meta/tests/answers.yaml").stdout)
+    held = {q["question"]: q.get("held") for q in pushed["questions"]}
+    assert held["Who runs Harbor?"]["missing"] == ["Ben Liu"] and held["Who runs Harbor?"]["by"] == "sync"
+    assert held["What are the notes?"] is None
+    assert "line two" in git(repo, "show", f"origin/sync/{host}:work/notes.md").stdout
+    report = tests_run.answers(repo, record=False)
+    assert report.failed == 0 and report.passed == 1
+    assert any("Who runs Harbor?" in note and "Ben Liu" in note for note in report.skipped)
+    assert run_lines(repo)[-1]["notes"]["held_tests"] == ["Who runs Harbor?"]
+    write(repo / "work" / "harbor.md", "# Harbor\n\nBen Liu runs it.\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    git(repo, "fetch", "-q", "origin")
+    pushed = yaml.safe_load(git(repo, "show", f"origin/sync/{host}:_meta/tests/answers.yaml").stdout)
+    assert all(not q.get("held") for q in pushed["questions"])
+    assert tests_run.answers(repo, record=False).passed == 2
+
+
+class FakeGh:
+    """The platform as the sync sees it: one open sync pull request whose checks failed."""
+
+    def __init__(self, log: str):
+        self.log, self.state, self.calls = log, "OPEN", []
+
+    def __call__(self, *args):   # set on the class, an instance is not bound: no self of the run
+        self.calls.append(args)
+        out = ""
+        if args[:2] == ("pr", "list"):
+            out = json.dumps([{"number": 7, "headRefOid": "abc123"}] if self.state == "OPEN" else [])
+        elif args[:2] == ("pr", "checks"):
+            out = json.dumps([{"name": "checks", "bucket": "fail",
+                               "link": "https://github.com/o/r/actions/runs/123/job/456"}])
+        elif args[:2] == ("run", "view"):
+            out = self.log
+        elif args[:2] == ("pr", "view"):
+            out = json.dumps({"state": self.state})
+        return subprocess.CompletedProcess(["gh", *args], 0, out, "")
+
+
+def test_a_red_sync_pull_request_from_an_answer_test_heals_with_no_human_step(repo, monkeypatch):
+    """The checks fail an answer test the local run passed (a page CI does not see): the sync
+    reads the failed log, sets that question aside for CI, lands again, and once the pull
+    request merges says it fixed it, for the briefing."""
+    import yaml
+    answers = repo / "_meta" / "tests" / "answers.yaml"
+    write(answers, yaml.safe_dump({"questions": [
+        {"question": "What are the notes?", "subject": "", "expect": ["line one"], "asker": "owner"}]},
+        sort_keys=False), minutes_old=20)
+    write(repo / "work" / "notes.md", "# Notes\n\nline one\nline two\n", minutes_old=20)
+    gh = FakeGh("checks\tTests as data\t2026-10-21T18:24:14Z answers: 0 passed, 1 failed, 0 skipped\n"
+                "checks\tTests as data\t2026-10-21T18:24:14Z   FAIL What are the notes? (both, in ): "
+                "missing ['line one']\n")
+    monkeypatch.setattr(sync.Run, "gh", gh)
+    assert sync.main(["--root", str(repo)]) == 0
+    host = sync.hostname()
+    git(repo, "fetch", "-q", "origin")
+    pushed = yaml.safe_load(git(repo, "show", f"origin/sync/{host}:_meta/tests/answers.yaml").stdout)
+    held = pushed["questions"][0]["held"]
+    assert held["by"] == "ci" and held["missing"] == ["line one"]
+    assert run_lines(repo)[-1]["notes"]["healing"]["held_tests"] == ["What are the notes?"]
+    gh.state = "MERGED"
+    assert sync.main(["--root", str(repo)]) == 0
+    healed = run_lines(repo)[-1]["notes"]["healed"]
+    assert healed["pr"] == 7 and "What are the notes?" in healed["what"]
+    assert sync.main(["--root", str(repo)]) == 0
+    assert "healed" not in run_lines(repo)[-1].get("notes", {})
+
+
+def test_a_red_sync_pull_request_with_no_known_cause_is_rerun_once(repo, monkeypatch):
+    gh = FakeGh("checks\tSet up job\t2026-10-21T18:24:14Z ##[error]The runner lost its connection\n")
+    monkeypatch.setattr(sync.Run, "gh", gh)
+    write(repo / "work" / "notes.md", "# Notes\n\nline one\nline two\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    assert [c for c in gh.calls if c[:2] == ("run", "rerun")] == [("run", "rerun", "123", "--failed")]
+    assert run_lines(repo)[-1]["notes"]["healing"]["rerun"] == ["123"]
+    write(repo / "work" / "notes.md", "# Notes\n\nline one\nline two\nline three\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0   # the same head is still red: not rerun again
+    assert len([c for c in gh.calls if c[:2] == ("run", "rerun")]) == 1
+    assert run_lines(repo)[-1]["notes"]["pr_red"] == {"pr": 7, "checks": ["checks"]}

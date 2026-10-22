@@ -2,13 +2,17 @@
 
 **A company memory your AI agents keep and your people sign.**
 
+Status: alpha, version 0.x. It runs on Windows, macOS and Linux with Python 3.10 or newer, and
+needs Claude Code and a GitHub account. A minor release may still change the shape; each one
+ships its migration.
+
 Company knowledge is scattered across mail, chat, calls and documents, AI agents forget it
 between sessions, and handing all of it to one feels risky. Say one sentence to Claude Code
 and it sets this up: your agent keeps everything in git with a source on every line, and
 private work stays private.
 
 [How it works](#how-it-works) · [What you get](#what-you-get) ·
-[Try it](#try-it-in-one-minute-no-account) · [Start](#start-in-one-sentence) ·
+[Try it](#try-it-in-two-minutes-no-account) · [Start](#start-in-one-sentence) ·
 Agents: read [For agents](#for-agents) first
 
 ## How it works
@@ -138,11 +142,11 @@ signed_at: '2026-10-17T23:32:35Z'
 fingerprint: 1d496e3904fec7e7ba6640971e6a81c435c4813faf24fbc018e97f8c23f75f64
 ```
 
-## Try it in one minute, no account
+## Try it in two minutes, no account
 
 You need git and Python 3.10 or newer (`python3` on macOS and Linux).
 
-    git clone https://github.com/OWNER/REPOSITORY company-brain
+    git clone https://github.com/SkillMix/Brain company-brain
     cd company-brain
     python -m pip install pyyaml
     python _meta/tools/onboard.py --fixture ../lantern-works
@@ -174,7 +178,7 @@ line says `fixture: passed`, or `fixture: failed` with what failed. Then open wh
 list, `ada/live/subjects/harbor.md` her status page for Harbor, and `brain/live/projects.md` the
 company's register.
 
-**Proof.** More than 700 unit tests, 61 behaviour scenarios and an offline setup run on Linux,
+**Proof.** More than 800 unit tests, 61 behaviour scenarios and an offline setup run on Linux,
 macOS and Windows, and every pull request to the template rebuilds the fixture. In an internal pilot, one
 client's history was backfilled and 12 questions were put to the new answers and to a
 hand-kept vault, judged against the original records. The new answers scored 4.8 of 5 for
@@ -217,9 +221,9 @@ You need git, GitHub's `gh` and Python 3.10 or newer. One command installs all t
 Then open Claude Code (the desktop app's Code tab, or the CLI) in any folder and say one sentence:
 
 - **A company with no brain yet:** "Set up our company brain from
-  https://github.com/OWNER/REPOSITORY" (this repository's address).
+  https://github.com/SkillMix/Brain" (this repository's address).
 - **Joining a company:** the sentence from your invitation, for example "Onboard me to Lantern
-  Works: https://github.com/OWNER/REPOSITORY with my invitation lantern-works/lantern-works-brain:ada".
+  Works: https://github.com/SkillMix/Brain with my invitation lantern-works/lantern-works-brain:ada".
 
 That is all. The agent copies this template and runs `_meta/tools/start.py`, which does every
 step itself. It reads who you are from git and your host account, finds your invitation,
@@ -245,7 +249,7 @@ how far setup is, what only you can do, and how the system works, as a diagram.
 
 When a person asks to be set up, onboarded or to start, and names this repository:
 
-1. Clone it to a short folder: `gh repo clone OWNER/REPOSITORY ~/.spaces/template` (on Windows
+1. Clone it to a short folder: `gh repo clone SkillMix/Brain ~/.spaces/template` (on Windows
    run `git config --global core.longpaths true` first; without `gh`, install it from
    https://cli.github.com, on Windows `winget install --id GitHub.cli -e`; not signed in, ask
    the person to run `gh auth login --web` once). The person's sentence is the go-ahead for
@@ -340,15 +344,19 @@ The seed's pages become the project's first drafts, the subject's home moves to 
 
 ## Read more
 
-- `rules.md` is the constitution: the hard rules, the high-stakes list, the badge floors.
-- `docs/shape-1.md` states what any agent may assume about a space and must never do.
-- `docs/decisions.md` records why things are the way they are; `docs/superpowers/specs/` holds
-  the designs behind the newest parts.
-- `docs/data-protection.md` says what is copied where, who reads it, and what to check with
-  counsel.
-- `docs/troubleshooting.md` lists what can go wrong during setup and what the agent does.
-- [SECURITY.md](SECURITY.md), [CONTRIBUTING.md](CONTRIBUTING.md), [CHANGELOG.md](CHANGELOG.md).
+- [rules.md](rules.md) is the constitution: the hard rules, the high-stakes list, the badge
+  floors.
+- [docs/shape-1.md](docs/shape-1.md) states what any agent may assume about a space and must
+  never do.
+- [docs/decisions.md](docs/decisions.md) records why things are the way they are;
+  [docs/design/](docs/design/) holds the designs behind the newest parts.
+- [docs/data-protection.md](docs/data-protection.md) says what is copied where, who reads it,
+  and what to check with counsel.
+- [docs/troubleshooting.md](docs/troubleshooting.md) lists what can go wrong during setup and
+  what the agent does.
+- [SECURITY.md](SECURITY.md), [CONTRIBUTING.md](CONTRIBUTING.md),
+  [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
-MIT, see `LICENSE`.
+MIT, see [LICENSE](LICENSE).

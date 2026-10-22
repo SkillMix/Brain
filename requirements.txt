@@ -1,0 +1,2 @@
+# What the tools need to run: the standard library plus PyYAML (CONTRIBUTING.md).
+PyYAML>=6.0

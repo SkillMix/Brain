@@ -1,9 +1,11 @@
-# The required check, one job per pull request so a sync costs one billed minute. The platform
-# merges a pull request when this is green; protected paths wait for the owner's click instead
-# (rules.md section 8). Validate, the gate, the secrets scan and the answer and leak tests run on
-# every change; the tool tests run when the machinery changed. The last step arms auto-merge, so
-# the job may write: the same trust the separate arming job had, which ran the pull request's
-# own gate.py with that token. A pull request from a fork gets a read-only token and is not armed.
+# The required check and the arming job. `checks` runs the pull request's own code (validate,
+# the tool tests, the secrets scan, the answer and leak tests) with a read-only token and no
+# stored credentials. `arm` runs afterwards with the write token, checks out only the base
+# branch, reads the commit `checks` tested as data and runs the base branch's gate.py on it:
+# the platform merges a pull request the gate calls auto-mergeable, and protected paths wait for
+# the owner's click instead (rules.md section 8). A pull request from a fork is never armed.
+# Two jobs where there was one: a sync costs one more short job, the price of keeping the write
+# token away from the pull request's code.
 name: checks
 
 on:
@@ -13,8 +15,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
   checks:
@@ -24,18 +25,22 @@ jobs:
       !(startsWith(github.event.head_commit.message, 'Merge pull request #') ||
       contains(github.event.head_commit.message, ' (#'))
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
       GIT_TERMINAL_PROMPT: "0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       # Mounts are submodules read with a read-only token, one at a time: a mount the token cannot
       # read is skipped (validate warns and skips its cross-space checks) and the rest still load.
       # The brain is the mount every space's checks need, so a token that cannot read it fails
       # here, the day it expires or loses access. Without a token (a fork's pull request) the
-      # checks run without mounts.
+      # checks run without mounts. The token goes to each git command (`-c`), never into a config
+      # file, so the pull request's code in the steps below cannot read it.
       - name: Check out mounts
         if: hashFiles('.gitmodules') != ''
         env:
@@ -47,9 +52,9 @@ jobs:
             echo "no mount token (BRAIN_READ_TOKEN or MOUNT_READ_TOKEN); continuing without mounts"
             exit 0
           fi
-          git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
+          header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
           git config -f .gitmodules --get-regexp '^submodule\..*\.path$' | while read -r _ path; do
-            git submodule update --init --recursive -- "$path" ||
+            git -c "http.https://github.com/.extraheader=$header" submodule update --init --recursive -- "$path" ||
               echo "::warning::mount $path is unavailable to the mount token; its cross-space checks are skipped"
           done
           brain=$(git config -f .gitmodules --get submodule.brain.path || true)
@@ -58,9 +63,16 @@ jobs:
             exit 1
           fi
 
+      # The checkout stored no credentials, so the job's read-only token goes to this one fetch.
       - name: Fetch the base branch
         if: github.event_name == 'pull_request'
-        run: git fetch --no-recurse-submodules origin "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c "http.https://github.com/.extraheader=$header" fetch --no-recurse-submodules origin \
+            "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
 
       # The tool tests read only the machinery. They run when it changed, always in the template,
       # and whenever the diff cannot be read (a new branch, a force-push that dropped `before`).
@@ -78,11 +90,39 @@ jobs:
           echo "tools=$tools" >> "$GITHUB_OUTPUT"
           echo "tool tests: $tools"
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
       - run: pip install pyyaml ${{ steps.scope.outputs.tools == 'true' && 'pytest' || '' }}
+
+      # The base branch's gate, before any of the pull request's code runs: a signature error
+      # (gate.py exits 1) fails this required check. Its class is printed for the log; `arm`
+      # decides, with the template token this job never holds. pipefail: tee must not hide the exit.
+      - name: Gate (signatures)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/base"
+          git archive "origin/${BASE_REF}" _meta/tools | tar -x -C "$RUNNER_TEMP/base"
+          python "$RUNNER_TEMP/base/_meta/tools/gate.py" "origin/${BASE_REF}" . | tee "$RUNNER_TEMP/gate.txt"
+
+      # The template's name gate compares against hashes kept in a CI secret, never in the
+      # repository (docs/decisions.md, 2026-10-21). Without the secret the check has no list to
+      # compare against. In a space the step is skipped.
+      - name: The forbidden names list
+        if: hashFiles('.github/template-marker') != ''
+        env:
+          FORBIDDEN_NAMES_SHA256: ${{ secrets.FORBIDDEN_NAMES_SHA256 }}
+        run: |
+          if [ -n "$FORBIDDEN_NAMES_SHA256" ]; then
+            printf '%s\n' "$FORBIDDEN_NAMES_SHA256" > _meta/tests/forbidden-names.sha256
+            echo "forbidden names list written from the secret"
+          else
+            echo "::notice::no FORBIDDEN_NAMES_SHA256 secret: the name check has no list to compare against"
+          fi
 
       - name: Unit tests
         if: steps.scope.outputs.tools == 'true'
@@ -98,25 +138,11 @@ jobs:
         if: hashFiles('.github/template-marker') != ''
         run: python _meta/tools/validate.py . --template
 
-      # The gate as it stands on the base branch decides, never the pull request's own copy, so a
-      # pull request cannot loosen the rule that judges it. A protected sync of a template release
-      # the owner approved lands on green when its protected files are that release's, byte for
-      # byte; the release is fetched from the template, with a token when the template is private.
-      # pipefail: the tee keeps the gate's output for the arming step, and a signature error
-      # (gate.py exits 1) still fails the job.
-      - name: Gate (protected paths and signatures)
-        if: github.event_name == 'pull_request'
-        env:
-          TEMPLATE_TOKEN: ${{ secrets.TEMPLATE_READ_TOKEN || secrets.BRAIN_READ_TOKEN || secrets.MOUNT_READ_TOKEN }}
-        run: |
-          set -o pipefail
-          mkdir -p "$RUNNER_TEMP/base"
-          git archive "origin/${{ github.base_ref }}" _meta/tools | tar -x -C "$RUNNER_TEMP/base"
-          python "$RUNNER_TEMP/base/_meta/tools/gate.py" "origin/${{ github.base_ref }}" . | tee "$RUNNER_TEMP/gate.txt"
-
       - name: Secrets scan on what changed
         if: github.event_name == 'pull_request'
-        run: python _meta/tools/scan.py --changed-since origin/${{ github.base_ref || 'main' }}
+        env:
+          BASE_REF: ${{ github.base_ref || 'main' }}
+        run: python _meta/tools/scan.py --changed-since "origin/${BASE_REF}"
 
       - name: Tests as data
         if: hashFiles('_meta/tests/answers.yaml') != '' && hashFiles('_meta/tools/tests_run.py') != ''
@@ -133,12 +159,67 @@ jobs:
           GIT_CONFIG_GLOBAL: /dev/null
         run: python _meta/tools/onboard.py --fixture "$RUNNER_TEMP/fixture"
 
-      # Last, so only a pull request that passed everything above is armed; auto-merge lands it
-      # when this job reports green. A protected one waits for the owner's click on a Needs you
-      # item, and arming from an earlier push is switched off. The merge method follows the
-      # repository: a merge commit where allowed, else squash, else rebase.
+  # Only a pull request that passed `checks` is armed, and only one from this repository. This job
+  # holds the write token, so it never runs the pull request's code: it checks out the base branch,
+  # fetches the commit `checks` tested as data, and runs the base branch's gate.py on that tree.
+  # The gate as it stands on the base branch decides, never the pull request's own copy, so a pull
+  # request cannot loosen the rule that judges it. A protected sync of a template release the
+  # owner approved lands on green when its protected files are that release's, byte for byte; the
+  # release is fetched from the template, with a token when the template is private.
+  arm:
+    needs: checks
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GIT_TERMINAL_PROMPT: "0"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.base_ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The commit `checks` tested (the pull request merged into its base), as data: its files go
+      # to a worktree in the runner's temp folder, where the gate reads them; nothing there runs.
+      - name: Fetch the pull request as data
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          MERGE_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c "http.https://github.com/.extraheader=$header" fetch --no-recurse-submodules --no-tags origin \
+            "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}" "${MERGE_SHA}"
+          git worktree add --detach "$RUNNER_TEMP/pr" "${MERGE_SHA}"
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - run: pip install pyyaml
+
+      # pipefail: the tee keeps the gate's output for the arming step, and a signature error
+      # (gate.py exits 1) fails this job too, so nothing is armed.
+      - name: Gate (protected paths and signatures)
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          TEMPLATE_TOKEN: ${{ secrets.TEMPLATE_READ_TOKEN || secrets.BRAIN_READ_TOKEN || secrets.MOUNT_READ_TOKEN }}
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/base"
+          git archive "origin/${BASE_REF}" _meta/tools | tar -x -C "$RUNNER_TEMP/base"
+          python "$RUNNER_TEMP/base/_meta/tools/gate.py" "origin/${BASE_REF}" "$RUNNER_TEMP/pr" | tee "$RUNNER_TEMP/gate.txt"
+
+      # `checks` is green by now, so gh merges an auto-mergeable pull request at once rather than
+      # arming it. A protected one waits for the owner's click on a Needs you item, and arming
+      # from an earlier push is switched off. The merge method follows the repository: a merge
+      # commit where allowed, else squash, else rebase.
       - name: Arm auto-merge, or leave it for the owner
-        if: github.event_name == 'pull_request'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}

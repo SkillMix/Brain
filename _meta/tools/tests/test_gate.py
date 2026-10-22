@@ -350,18 +350,66 @@ def test_the_fetch_drops_the_checkout_token_and_adds_the_template_token():
     assert gate.template_url("file:///x/y") == "file:///x/y"
 
 
+CHECKS = Path(__file__).resolve().parents[3] / ".github" / "workflows" / "checks.yml"
+
+
+def _jobs() -> dict:
+    return yaml.safe_load(CHECKS.read_text(encoding="utf-8"))["jobs"]
+
+
+def _step(job: str, name: str) -> dict:
+    return next(s for s in _jobs()[job]["steps"] if s.get("name") == name)
+
+
 def test_checks_runs_the_gate_from_the_base_branch():
-    text = (Path(__file__).resolve().parents[3] / ".github" / "workflows" / "checks.yml").read_text(encoding="utf-8")
-    assert 'git archive "origin/${{ github.base_ref }}" _meta/tools | tar -x -C "$RUNNER_TEMP/base"' in text
-    assert 'python "$RUNNER_TEMP/base/_meta/tools/gate.py" "origin/${{ github.base_ref }}" .' in text
-    assert "secrets.TEMPLATE_READ_TOKEN || secrets.BRAIN_READ_TOKEN || secrets.MOUNT_READ_TOKEN" in text
+    for job, name, tree in (("arm", "Gate (protected paths and signatures)", '"$RUNNER_TEMP/pr"'),
+                            ("checks", "Gate (signatures)", ".")):
+        step = _step(job, name)
+        assert step["env"]["BASE_REF"] == "${{ github.base_ref }}"
+        assert 'git archive "origin/${BASE_REF}" _meta/tools | tar -x -C "$RUNNER_TEMP/base"' in step["run"]
+        assert f'python "$RUNNER_TEMP/base/_meta/tools/gate.py" "origin/${{BASE_REF}}" {tree}' in step["run"]
+    # only the arming job, which runs no code of the pull request, holds the template token
+    token = _step("arm", "Gate (protected paths and signatures)")["env"]["TEMPLATE_TOKEN"]
+    assert "secrets.TEMPLATE_READ_TOKEN || secrets.BRAIN_READ_TOKEN || secrets.MOUNT_READ_TOKEN" in token
+    assert "TEMPLATE_TOKEN" not in _step("checks", "Gate (signatures)").get("env", {})
 
 
 def test_the_gate_step_fails_on_the_gates_exit_code():
     # gate.py exits 1 on a signature error; piped into tee, only pipefail lets that fail the job.
-    text = (Path(__file__).resolve().parents[3] / ".github" / "workflows" / "checks.yml").read_text(encoding="utf-8")
-    step = next(s for s in yaml.safe_load(text)["jobs"]["checks"]["steps"]
-                if s.get("name") == "Gate (protected paths and signatures)")
-    lines = [line.strip() for line in step["run"].splitlines()]
-    tee = next(i for i, line in enumerate(lines) if "gate.py" in line and '| tee "$RUNNER_TEMP/gate.txt"' in line)
-    assert "set -o pipefail" in lines[:tee]
+    for job, name in (("arm", "Gate (protected paths and signatures)"), ("checks", "Gate (signatures)")):
+        lines = [line.strip() for line in _step(job, name)["run"].splitlines()]
+        tee = next(i for i, line in enumerate(lines) if "gate.py" in line and '| tee "$RUNNER_TEMP/gate.txt"' in line)
+        assert "set -o pipefail" in lines[:tee]
+
+
+def test_the_pull_requests_code_never_runs_with_the_write_token():
+    jobs = _jobs()
+    assert jobs["checks"]["permissions"] == {"contents": "read"}
+    assert all(not str(v).endswith("write") for v in (jobs["checks"].get("permissions") or {}).values())
+    checkout = next(s for s in jobs["checks"]["steps"] if str(s.get("uses", "")).startswith("actions/checkout@"))
+    assert checkout["with"]["persist-credentials"] is False
+    arm = jobs["arm"]
+    assert arm["needs"] == "checks"
+    assert "github.event.pull_request.head.repo.full_name == github.repository" in arm["if"]
+    first = arm["steps"][0]
+    assert first["uses"].startswith("actions/checkout@")
+    assert first["with"]["ref"] == "${{ github.base_ref }}" and first["with"]["persist-credentials"] is False
+    # the arming job runs the base branch's tools only: no step runs a file from the checkout
+    runs = "\n".join(s.get("run", "") for s in arm["steps"])
+    assert "python _meta/" not in runs and "python -m pytest" not in runs
+    gate_index = next(i for i, s in enumerate(arm["steps"]) if s.get("name") == "Gate (protected paths and signatures)")
+    arming = next(i for i, s in enumerate(arm["steps"]) if s.get("name") == "Arm auto-merge, or leave it for the owner")
+    assert gate_index < arming
+
+
+def test_no_token_is_written_to_a_config_file_and_no_expression_runs_in_a_shell():
+    text = CHECKS.read_text(encoding="utf-8")
+    assert "git config --global" not in text
+    for job in _jobs().values():
+        for step in job["steps"]:
+            run = step.get("run", "")
+            assert "${{ github.base_ref" not in run and "${{ github.event." not in run, step.get("name")
+            uses = step.get("uses", "")
+            if uses:
+                ref = uses.split("@", 1)[1]
+                assert len(ref) == 40 and all(c in "0123456789abcdef" for c in ref), uses

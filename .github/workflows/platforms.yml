@@ -2,7 +2,8 @@
 # fixture invitation on Windows, macOS and Linux; on macOS and Linux the unit tests also run the
 # generated cron command under `env -i` with a stub `gh` on the registration PATH. `bare` runs
 # the whole first step on a machine with nothing on it (no git, gh or Python): the bootstrap
-# installs a Python, the doctor installs git and gh. Not required checks (`checks` is). Runs
+# installs a Python, the doctor installs git and gh. The unit tests also run on Python 3.10, the
+# oldest the README promises, on Linux. Not required checks (`checks` is). Runs
 # when the setup tools change, only in the template repository (it carries GitHub's template
 # flag): in a space every job is skipped before a runner starts, so it costs nothing.
 name: platforms
@@ -53,15 +54,22 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.12"]
+        # the oldest Python the README promises, on one system to keep the run short
+        include:
+          - os: ubuntu-latest
+            python: "3.10"
     runs-on: ${{ matrix.os }}
     env:
       GIT_TERMINAL_PROMPT: "0"
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          python-version: "3.12"
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ matrix.python }}
 
       - run: pip install pyyaml pytest
 
@@ -83,7 +91,7 @@ jobs:
         run: apt-get update -qq && apt-get install -y -qq curl ca-certificates
 
       # without git on PATH, checkout downloads the tree through the API
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Nothing installed yet
         run: |

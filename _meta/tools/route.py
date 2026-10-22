@@ -1,4 +1,4 @@
-"""route: the judgment router's tool (docs/superpowers/specs/2026-10-14-judgment-routing-design.md).
+"""route: the judgment router's tool (docs/design/2026-10-14-judgment-routing-design.md).
 
 An agent reads each new witness page in full and decides where it belongs: it stays private, or
 it informs a subject in a space, at once or after the window, whole or as verbatim parts. This
@@ -14,11 +14,11 @@ term of the destination in it -> held; a never-leaves term elsewhere in the reco
 confidence, a high-stakes term, or the review period (`routing.review_until`) -> the window;
 low confidence -> a question for the owner, nothing leaves. An owner's answer counts as approval.
 
-History (docs/superpowers/specs/2026-10-14-history-backfill-design.md, 4.3): with
+History (docs/design/2026-10-14-history-backfill-design.md, 4.3): with
 `routing.history_since` set, a record older than `routing.since` is background. It opens no
 items, and a low-confidence call on it is recorded as private (counted, `history_low`), never a
 question. `pending` groups the records into episodes, one event read as one
-(docs/superpowers/specs/2026-10-15-understand-first-design.md, 4.4).
+(docs/design/2026-10-15-understand-first-design.md, 4.4).
 
     python route.py <root> pending [--subject ID] [--out FILE]
     python route.py <root> record FILE [FILE ...]

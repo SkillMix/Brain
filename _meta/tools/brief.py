@@ -1,6 +1,6 @@
 """brief: what an agent reads before it writes a subject's brief (shape 1).
 
-Understand first (docs/superpowers/specs/2026-10-15-understand-first-design.md, 4.2 and 4.6):
+Understand first (docs/design/2026-10-15-understand-first-design.md, 4.2 and 4.6):
 before the router places a record or distill writes a page about a subject, the agent builds or
 extends the subject's private brief, `_meta/state/private/briefs/<subject>.md` (never staged,
 never signed, disposable). `pack` gathers what to read for it, as JSON:

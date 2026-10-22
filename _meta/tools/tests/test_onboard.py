@@ -535,7 +535,8 @@ def test_copy_template_never_copies_mounted_spaces(tmp_path):
 
 
 PROJECT_FILES = ("CONTRIBUTING.md", "SECURITY.md", "CHANGELOG.md", "CODE_OF_CONDUCT.md",
-                 ".github/ISSUE_TEMPLATE/bug.md", ".github/PULL_REQUEST_TEMPLATE.md", "requirements-dev.txt")
+                 ".github/ISSUE_TEMPLATE/bug.md", ".github/PULL_REQUEST_TEMPLATE.md", "requirements.txt",
+                 "requirements-dev.txt")
 
 
 def test_a_new_space_never_presents_the_open_source_projects_files(tmp_path):

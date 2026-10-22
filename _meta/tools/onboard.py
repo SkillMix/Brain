@@ -54,7 +54,8 @@ MOUNT_DIRS = ("brain", "mounts")
 # The template's files as an open-source project: a company's private space never presents them
 # (template sync never carries them either; it reads CHANGELOG.md from the release itself).
 PROJECT_FILES = ("CONTRIBUTING.md", "SECURITY.md", "CHANGELOG.md", "CODE_OF_CONDUCT.md",
-                 ".github/ISSUE_TEMPLATE", ".github/PULL_REQUEST_TEMPLATE.md", "requirements-dev.txt")
+                 ".github/ISSUE_TEMPLATE", ".github/PULL_REQUEST_TEMPLATE.md", "requirements.txt",
+                 "requirements-dev.txt")
 SKIP_PATHS = ("_meta/tests/fixture", ".github/template-marker", "_meta/state/feed", "AGENTS.md",
               "space.yaml", "_meta/tests/answers.yaml", "_meta/tests/leaks.yaml",
               "_meta/search.yaml") + PROJECT_FILES
