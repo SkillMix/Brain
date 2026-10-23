@@ -47,7 +47,8 @@ def _quiet(line: str) -> str:
     return URL_RE.sub(lambda m: " " if QUIET_HOSTS.match(m.group(0)) else m.group(0), line)
 
 
-PASSWORD_RE = re.compile(r"(?i)(?:password|passwd|pwd)\s*[:=]\s*(\S+)")
+PASSWORD_WORDS = r"(?:password|passwd|pwd|wachtwoord|paswoord|passwort|mot de passe)"
+PASSWORD_RE = re.compile(r"(?i)" + PASSWORD_WORDS + r"\s*[:=]\s*(\S+)")
 IBAN_RE = re.compile(r"(?<![A-Z0-9])[A-Z]{2}\d{2}(?:[ ]?[A-Z0-9]){11,30}(?![A-Z0-9])")
 CODE_RE = re.compile(r"(?i)(?:os\.|env|process\.|config|settings|self\.|get|read|input|[A-Za-z_]\w*\()")
 PLACEHOLDER_WORDS = {"", "none", "null", "nil", "redacted", "changeme", "placeholder", "example",
@@ -118,6 +119,99 @@ def scan_text(text: str, label: str) -> list[Finding]:
             kinds.append("iban")
         found.extend(Finding(kind, label, line_no) for kind in kinds)
     return found
+
+
+# ----- tokens in links: cut from the text, never an alarm ------------------------------------
+# A verification, unsubscribe, invitation, signing or tracking link carries a token that opens one
+# page or proves one address. The token is cut (the host, path and ticket number stay, they are
+# what the link tells) and nobody is warned about it. Share, meeting and artifact links stay whole.
+LINK_TOKEN = "[link-token]"
+LINK_RE = re.compile(r"https?://(?:[^\s<>\"')\[\]]|\[(?:redacted|link-token)\])+")
+TOKEN_PARAMS = {"token", "jwt", "tk", "access_token", "id_token", "refresh_token", "auth", "authtoken",
+                "code", "otp", "key", "sig", "signature", "hash", "secret", "session", "sid",
+                "invitation_token", "invite", "mtsec", "pwd", "passcode", "pin"}
+PARAM_RE = re.compile(r"(?i)((?:[?&;#]|%3F|%26)([A-Za-z_][\w.-]*)=)"
+                      r"(\[redacted\]|\[link-token\]|[^&#\s<>\"')/%\[\]]+)")
+JWT_ANY = re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}")
+TOKEN_PATH = re.compile(r"(?i)verif|confirm|activat|reset|invit|magic|unsubscribe|login|signin|auth|/sign/")
+SEGMENT_RE = re.compile(r"/(\[redacted\]|[A-Za-z0-9_-]{16,})(?=[/?#]|$)")
+
+
+def _opaque(value: str) -> bool:
+    """A value that is a token rather than a word or an id: long, letters and digits mixed."""
+    return len(value) >= 32 and bool(re.search(r"[A-Za-z]", value)) and bool(re.search(r"\d", value))
+
+
+def _cut_link(link: str) -> str:
+    if QUIET_HOSTS.match(link):
+        return link
+    link = JWT_ANY.sub(LINK_TOKEN, link)
+
+    def param(m: re.Match) -> str:
+        name, value = m.group(2).lower(), m.group(3)
+        if value == LINK_TOKEN or not (name in TOKEN_PARAMS or value == "[redacted]" or _opaque(value)):
+            return m.group(0)
+        return m.group(1) + LINK_TOKEN
+    link = PARAM_RE.sub(param, link)
+    path_end = min((i for i in (link.find("?"), link.find("#")) if i >= 0), default=len(link))
+    head, tail = link[:path_end], link[path_end:]
+    if TOKEN_PATH.search(head) or "[redacted]" in head:
+        head = SEGMENT_RE.sub(lambda m: m.group(0) if m.group(1) != "[redacted]" and not (
+            re.search(r"[A-Za-z]", m.group(1)) and re.search(r"\d", m.group(1))) else "/" + LINK_TOKEN, head)
+    return head + tail
+
+
+def scrub_link_tokens(text: str) -> str:
+    """The text with each link's token cut to `[link-token]`; the rest of every link stays."""
+    return LINK_RE.sub(lambda m: _cut_link(m.group(0)), text)
+
+
+# ----- what warrants a warning to the person ---------------------------------------------------
+# Only an obvious password or key: a platform key or private key block, a labelled password, or a
+# value the export cut out as `[redacted]`. A token in a link, a meeting passcode or PIN, a one-time
+# code, a bare token and a bank number are kept out of the repository but warn nobody.
+ALARM_KINDS = ("private_key", "aws_key", "github_token", "slack_token", "api_key_sk")
+PASSWORD_BEFORE = re.compile(r"(?i)" + PASSWORD_WORDS + r"\s*[:=]?\s*$")
+QUIET_BEFORE = re.compile(r"(?i)(?:passcode|wachtwoordcode|pincode|pin|code|verificatiecode|iban|"
+                          r"rekeningnummer|account number)\s*[:=]?\s*$")
+CODE_WORD = re.compile(r"(?i)\bcode\b|passcode|pincode|verificatiecode")
+
+
+def _near(lines: list[str], at: int, step: int) -> str:
+    """The nearest non-empty line from `at` in direction `step`, or ''."""
+    i = at + step
+    while 0 <= i < len(lines) and not lines[i].strip():
+        i += step
+    return lines[i] if 0 <= i < len(lines) else ""
+
+
+def _quiet_marker(lines: list[str], at: int, before: str) -> bool:
+    """A cut value that is a meeting code, PIN, one-time code or bank number, or a cut inside a
+    word: no password. A value alone on its line takes its meaning from the lines around it."""
+    if before[-1:].isalnum() or QUIET_BEFORE.search(before):
+        return True
+    if before.strip() or lines[at].strip() != "[redacted]":
+        return False
+    around = _near(lines, at, -1) + " " + _near(lines, at, 1)
+    return bool(CODE_WORD.search(around)) and not re.search(r"(?i)" + PASSWORD_WORDS, around)
+
+
+def alarms(text: str) -> list[str]:
+    """The kinds of obvious password or key in `text`, sorted; never the value."""
+    kinds: set[str] = set()
+    lines = text.splitlines()
+    for at, line in enumerate(lines):
+        kinds.update(kind for kind in ALARM_KINDS if PATTERNS[kind].search(line))
+        bare = LINK_RE.sub(" ", line)   # what rides in a link is a token, not a password
+        if any(not _is_placeholder(m.group(1)) for m in PASSWORD_RE.finditer(bare)):
+            kinds.add("password")
+        for m in re.finditer(r"\[redacted\]", bare):
+            before = bare[:m.start()]
+            if PASSWORD_BEFORE.search(before):
+                kinds.add("password")
+            elif not _quiet_marker(lines, at, before):
+                kinds.add("redacted")
+    return sorted(kinds)
 
 
 def scan_paths(paths) -> list[Finding]:

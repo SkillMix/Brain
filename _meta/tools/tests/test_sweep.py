@@ -281,6 +281,24 @@ def test_a_redacted_credential_raises_one_security_notice_for_the_person(tmp_pat
     assert len(owner_email.pending(ada)) == 1
 
 
+def test_a_token_link_is_cut_on_the_page_and_raises_no_security_notice(tmp_path):
+    """A verification, unsubscribe or ticket link carries a token and no password. The page keeps
+    the link without its token, and the person gets no security email for it."""
+    import owner_email
+    _, _, ada = build(tmp_path, owner_email="ada@lantern.example")
+    jwt = "eyJ" + "a" * 20 + "." + "b" * 20 + "." + "c" * 20
+    text = (f"View request: https://help.example.net/portal/7/AB-42?token={jwt}&sda_source=email\n"
+            "Turn off notifications: https://help.example.net/portal/7/AB-42/unsubscribe?jwt=[redacted]\n"
+            "Meeting ID: 123 456 789 012 345 Passcode: [redacted]")
+    write_feed(ada, [record("m-0010", text=text, redacted=True)])
+    sweep.run(ada, now=NOW)
+    assert owner_email.pending(ada) == []
+    (page,) = (ada / "knowledge" / "sources").rglob("*m-0010*.md")
+    body = page.read_text(encoding="utf-8")
+    assert jwt not in body and "AB-42?token=[link-token]&sda_source=email" in body
+    assert "unsubscribe?jwt=[link-token]" in body
+
+
 def test_a_source_added_later_is_read_in_full_once(tmp_path):
     """Each feed keeps its own watermark: a tracker connected after the mail has run brings its
     older records in, instead of falling behind the mail's watermark."""

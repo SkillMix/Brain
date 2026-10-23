@@ -105,13 +105,19 @@ it, say so in your run line, continue with the others) or a record that is not v
 - Never reclassify, move or edit a queue, held or signal item; never write into another
   space (release does that, through the sync script's release leg).
 - Never write `status: stable`; never send, post, spend or delete; never run git.
-- Never a secret in a feed file (hard rule 1): a key or password is exported as `[redacted]`,
-  and the record carries `"redacted": true`; the sweep then queues one security notice to the
-  person (where and when, never the value).
+- Never a secret in a feed file (hard rule 1): an obvious password or key (a labelled password,
+  an API key, a private key, a login someone typed out) is exported as `[redacted]` with its label
+  kept in front (`Password: [redacted]`), and the record carries `"redacted": true`; the sweep then
+  queues one security notice to the person (where and when, never the value).
+- A token in a link is no password. In a verification, unsubscribe, invitation, signing,
+  ticket or tracking link, cut only the token to `[link-token]` and keep the rest of the link; never
+  mark the record `redacted` for it. A meeting passcode or PIN, and a one-time verification code,
+  are no password either: export a one-time code as `[code]`, leave the rest as it is. The sweep
+  cuts any link token you missed and warns only about obvious passwords and keys.
 - A link is not a secret: links to Google files, calendars and meetings (share keys, `usp`,
   `resourcekey` and `token` parameters included), Zoom and Teams meeting links with their
   passcode, and Claude artifact links stay in the record as they are; never redact one and never
-  mark its record `redacted`. Redact only the key, token or password itself.
+  mark its record `redacted`.
 
 ## Scheduled invocation
 

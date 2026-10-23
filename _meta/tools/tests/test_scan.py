@@ -182,6 +182,75 @@ def test_share_meeting_and_artifact_links_are_not_secrets(link):
     assert scan.scan_text(f"See {link} for the plan.", "x") == []
 
 
+LINK_JWT = j("eyJ", "a" * 20, ".", "b" * 20, ".", "c" * 20)
+TOKEN_LINKS = [
+    ("https://help.example.net/portal/7/AB-42?token=" + LINK_JWT + "&sda_source=notification-email",
+     "https://help.example.net/portal/7/AB-42?token=[link-token]&sda_source=notification-email"),
+    ("https://help.example.net/portal/7/AB-42/unsubscribe?jwt=" + LINK_JWT,
+     "https://help.example.net/portal/7/AB-42/unsubscribe?jwt=[link-token]"),
+    ("https://code.example.org/users/me/emails/123456789/confirm_verification/" + "Ab12" * 6,
+     "https://code.example.org/users/me/emails/123456789/confirm_verification/[link-token]"),
+    ("https://mail.example.com/CL0/https:%2F%2Fus01web.zoom.us%2Fj%2F1234567%3F" + "p" + "wd=Abcd1234Efgh/1/0100",
+     "https://mail.example.com/CL0/https:%2F%2Fus01web.zoom.us%2Fj%2F1234567%3F" + "p" + "wd=[link-token]/1/0100"),
+    ("https://app.example.com/users/invitations/accept?invitation_token=[redacted]&invitation_method=user",
+     "https://app.example.com/users/invitations/accept?invitation_token=[link-token]&invitation_method=user"),
+]
+
+
+@pytest.mark.parametrize("raw,scrubbed", TOKEN_LINKS)
+def test_tokens_in_links_are_cut_and_the_rest_of_the_link_stays(raw, scrubbed):
+    assert scan.scrub_link_tokens(f"View request: {raw} now") == f"View request: {scrubbed} now"
+    assert scan.scan_text(scan.scrub_link_tokens(raw), "x") == []
+
+
+def test_share_meeting_and_artifact_links_and_plain_text_are_left_as_they_are():
+    teams = "https://teams.microsoft.com/l/meetup-join/19%3ameeting_" + "Ab1" * 12 + "%40thread.v2/0"
+    for link in ORDINARY_LINKS + [teams]:
+        assert scan.scrub_link_tokens(f"See {link} for the plan.") == f"See {link} for the plan."
+    text = "Meeting ID: 123 456 789 012 345\nthe desk-cleanup20260101abcdefghijk job\n"
+    assert scan.scrub_link_tokens(text) == text
+
+
+NOT_ALARMS = [
+    "View request: https://help.example.net/portal/7/AB-42?token=" + LINK_JWT,
+    "https://help.example.net/portal/7/AB-42?token=[redacted]&sda_source=notification-email",
+    "https://app.example.com/accept?invitation_token=[link-token]",
+    "Meeting ID: 123 456 789 012 345 Passcode: [redacted]",
+    "Vergadering-id: 123 456 789 012 34 Wachtwoordcode: [redacted]",
+    "Telefoon +00 0 000 00 00 Pincode: [redacted]",
+    "Your verification code: [redacted]",
+    "BIC ABCDXXYYZZZ IBAN " + IBAN,
+    "BIC ABCDXXYYZZZ IBAN [redacted]",
+    "Active management with a 3D ri[redacted] model guides product design",
+    "a token in the text " + JWT,
+    "Enter this code on the interview page to verify your email address.\n\n[redacted]\n\n"
+    "This code expires in 10 minutes.",
+]
+
+
+@pytest.mark.parametrize("text", NOT_ALARMS)
+def test_link_tokens_meeting_codes_and_bank_numbers_raise_no_alarm(text):
+    assert scan.alarms(text) == []
+
+
+ALARMS = [
+    ("Login : someone@example.org pass" + "word: [redacted]", "password"),
+    ("Gebruiker: someone@example.org Wacht" + "woord: [redacted]", "password"),
+    ("Pas" + "woord: NotReal-0000", "password"),
+    ("Pass" + "wort: [redacted]", "password"),
+    ("Mot de " + "passe : [redacted]", "password"),
+    ("je wacht" + "woord is gewoon [redacted]", "redacted"),
+    ("here are the details [redacted]", "redacted"),
+    ("deploy with " + GITHUB, "github_token"),
+    (PRIVATE_KEY, "private_key"),
+]
+
+
+@pytest.mark.parametrize("text,kind", ALARMS, ids=[a[1] + str(i) for i, a in enumerate(ALARMS)])
+def test_an_obvious_password_or_key_raises_an_alarm(text, kind):
+    assert kind in scan.alarms(text)
+
+
 def test_real_secrets_are_still_found_inside_and_outside_links():
     token = "gh" + "p_" + "A" * 36
     assert [f.kind for f in scan.scan_text(f"https://docs.google.com/d/1/edit?x={token}", "x")] == ["github_token"]

@@ -146,6 +146,8 @@ def read_feed(root: Path) -> list:
                 continue  # an unreadable timestamp never stalls the sweep
             record.setdefault("source", path.stem)
             record["_feed"] = path.stem   # the declared source this file is (space.yaml sources)
+            if isinstance(record.get("text"), str):   # a link's token never reaches a page
+                record["text"] = _scrub_links(record["text"])
             records.append(record)
     return records
 
@@ -692,16 +694,25 @@ def _refresh(root: Path, target: Path, record: dict, now: dt.datetime, dry_run: 
 
 
 # ----- a credential seen: one plain warning to the person ---------------------------------
-def _credential_seen(record: dict) -> bool:
-    """The export redacted a key or password, or the scan still finds one in the text."""
-    text = str(record.get("text") or "")
-    if record.get("redacted") or "[redacted]" in text:
-        return True
+def _scrub_links(text: str) -> str:
     try:
         import scan
-        return bool(scan.scan_text(text, str(record.get("id"))))
+        return scan.scrub_link_tokens(text)
     except Exception:
-        return False
+        return text
+
+
+def _credential_seen(record: dict) -> bool:
+    """An obvious password or key: one the export cut out as `[redacted]` or one the scan still
+    finds. A token in a link, a meeting passcode or a one-time code is no reason to warn."""
+    text = str(record.get("text") or "")
+    try:
+        import scan
+    except ImportError:
+        return bool(record.get("redacted") or "[redacted]" in text)
+    if record.get("redacted") and "[redacted]" not in text and "[link-token]" not in text:
+        return True   # the export cut a value without leaving its marker
+    return bool(scan.alarms(text))
 
 
 def _security_notice(root: Path, space: spaceyaml.Space, record: dict) -> bool:
