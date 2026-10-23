@@ -217,8 +217,10 @@ jobs:
 
       # `checks` is green by now, so gh merges an auto-mergeable pull request at once rather than
       # arming it. A protected one waits for the owner's click on a Needs you item, and arming
-      # from an earlier push is switched off. The merge method follows the repository: a merge
-      # commit where allowed, else squash, else rebase.
+      # from an earlier push is switched off. The merge method is the first the repository allows:
+      # a merge commit, else squash, else rebase; when the settings cannot be read, each in turn.
+      # GitHub refuses a merge while the base branch moves (pull requests that went green together
+      # land one after another), so a refusal is tried again after a short wait.
       - name: Arm auto-merge, or leave it for the owner
         continue-on-error: true
         env:
@@ -226,7 +228,22 @@ jobs:
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
           if grep -q "GATE: auto-mergeable" "$RUNNER_TEMP/gate.txt"; then
-            gh pr merge --auto --merge "$PR_URL" || gh pr merge --auto --squash "$PR_URL" || gh pr merge --auto --rebase "$PR_URL"
+            allows=$(gh api "repos/$GITHUB_REPOSITORY" \
+              --jq '"\(.allow_merge_commit) \(.allow_squash_merge) \(.allow_rebase_merge)"' || true)
+            case "$allows" in
+              "true "*) methods=merge ;;
+              "false true "*) methods=squash ;;
+              "false false true") methods=rebase ;;
+              *) methods="merge squash rebase" ;;
+            esac
+            for wait in 0 15 30 60; do
+              sleep "$wait"
+              for method in $methods; do
+                gh pr merge --auto "--$method" "$PR_URL" && exit 0
+              done
+            done
+            echo "::error::$PR_URL is auto-mergeable but GitHub refused to merge or arm it"
+            exit 1
           else
             echo "protected paths: waits for the owner"
             gh pr merge --disable-auto "$PR_URL" || true
