@@ -21,7 +21,7 @@ turns from talking to doing. Take the first case that matches:
 3. Any other concrete company deliverable the person asked for or agreed to: queue it,
    `python _meta/tools/tracker.py <space> queue --title "<title>" --subject <subject id>
    --body "<what and why, two lines>" --by "<the person>"`. Tell them it appears on the next
-   run.
+   run. Add `--spec <page path>` when a spec or plan page covers the work; it gets the issue key.
 
 When work on an issue this tracker made moves, queue the change with its evidence:
 `python _meta/tools/tracker.py <space> update --issue <KEY> --state "In Progress" | "Done"
