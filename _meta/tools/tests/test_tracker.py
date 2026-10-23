@@ -162,3 +162,36 @@ def test_a_workspace_onboarding_made_gets_the_template_without_a_provenance_file
     (root / "_meta" / "state").mkdir(parents=True, exist_ok=True)
     (root / "_meta" / "state" / "onboard.yaml").write_text("case: person\n", encoding="utf-8")
     assert chain._template_sync_due(spaceyaml.load(root), NOW) is True
+
+
+def test_a_spec_page_queued_with_a_request_gets_the_issue_key_and_moves_with_it(tmp_path):
+    """The spec page named at queue time gets `tracker: <key>` once the issue is made, so the
+    librarian moves its state; a page that already names an issue, or is gone, is left alone."""
+    root = make_space(tmp_path / "ada")
+    spec = root / "knowledge" / "plans" / "export.md"
+    pages.write(spec, {"id": pages.new_id(), "type": "plan", "title": "Export plan", "status": "draft"},
+                "What the export does.\n")
+    kept = root / "knowledge" / "plans" / "import.md"
+    pages.write(kept, {"id": pages.new_id(), "type": "plan", "title": "Import plan", "status": "draft",
+                       "tracker": "HAR-1"}, "What the import does.\n")
+    rid = Path(tracker.queue(root, "Ship the export", "Ada Okafor", subject="harbor",
+                             spec="knowledge/plans/export.md", now=NOW)).stem
+    tracker.record(root, rid, "HAR-7", now=NOW)
+    assert pages.read(spec)[0]["tracker"] == "HAR-7"
+    rid = Path(tracker.queue(root, "Ship the import", "Ada Okafor", spec="knowledge/plans/import.md", now=NOW)).stem
+    tracker.record(root, rid, "HAR-9", now=NOW)
+    assert pages.read(kept)[0]["tracker"] == "HAR-1"
+    rid = Path(tracker.queue(root, "Ship the report", "Ada Okafor", spec="knowledge/plans/gone.md", now=NOW)).stem
+    tracker.record(root, rid, "HAR-10", now=NOW)
+    assert not (root / "knowledge" / "plans" / "gone.md").exists()
+    try:
+        tracker.queue(root, "Escape", "Ada Okafor", spec="../outside.md", now=NOW)
+        raise AssertionError("a spec page outside the space must be refused")
+    except ValueError:
+        pass
+    pages.write(root / "knowledge" / "sources" / "2026" / "10" / "lin-har-7.md",
+                {"id": pages.new_id(), "type": "source", "title": "HAR-7 moved", "status": "draft",
+                 "generated": pages.generated("sweep", NOW), "issue": "HAR-7", "state": "In Progress",
+                 "at": pages.iso(NOW)}, "In progress.\n")
+    assert status.spec_states(root, NOW) == ["knowledge/plans/export.md"]
+    assert pages.read(spec)[0]["state"] == "building"

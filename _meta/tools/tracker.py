@@ -4,7 +4,7 @@ Sessions never write the tracker. They queue a request as a file; the tracker ro
 agent holding the tracker connector) creates each issue and records its key, so a requested
 issue appears within the hour and nothing else needs a lock.
 
-    python tracker.py [root] queue --title T [--subject S] [--body B] --by NAME
+    python tracker.py [root] queue --title T [--subject S] [--body B] [--spec PAGE] --by NAME
     python tracker.py [root] update --issue KEY [--state S] [--comment C] --by NAME
     python tracker.py [root] observe              queue updates from new evidence
     python tracker.py [root] pending              what the routine creates or updates now, as JSON
@@ -18,7 +18,8 @@ change; each piece of evidence is used once.
 The badge decides (`authority.write_outside_system`): at `at_once`, the template default, the
 routine creates every queued request; at `propose` a request waits for a person's yes on
 Needs you (`sign` approves it). Every created issue is logged in `_meta/state/tracker.jsonl`
-with whom it was created for and by which path.
+with whom it was created for and by which path. A request queued with `--spec <page>` writes
+`tracker: <key>` into that page once the issue is made, so the librarian moves its state.
 """
 from __future__ import annotations
 
@@ -38,17 +39,27 @@ QUEUE = Path("_outbound") / "tracker"
 LOG = Path("_meta") / "state" / "tracker.jsonl"
 
 
+def _spec_page(root: Path, spec) -> Path | None:
+    """The spec page a request names, when it is a page path inside the space."""
+    path = (root / str(spec)).resolve()
+    return path if path.is_relative_to(root.resolve()) and pages.is_page_path(path) else None
+
+
 def queue(root, title: str, by: str, subject: str | None = None, body: str = "",
-          now: dt.datetime | None = None) -> Path:
+          spec: str | None = None, now: dt.datetime | None = None) -> Path:
     root = Path(root)
     space = spaceyaml.load(root)
     now = now or space.now()
     if not str(title).strip() or not str(by).strip():
         raise ValueError("a tracker request needs a title and who asked for it (--by)")
+    if spec and _spec_page(root, spec) is None:
+        raise ValueError(f"{spec} is not a page inside this space")
     rid = pages.new_id().replace("p-", "tr-")
     fm = {"id": rid, "type": "tracker_request", "title": str(title).strip(), "status": "queued",
           "generated": pages.generated("tracker", now), "subject": subject, "requested_by": by,
           "requested_at": pages.iso(now)}
+    if spec:
+        fm["spec"] = _spec_page(root, spec).relative_to(root.resolve()).as_posix()
     return pages.write(root / QUEUE / f"{rid}.md", fm, (body or title).rstrip("\n") + "\n")
 
 
@@ -210,8 +221,24 @@ def record(root, rid: str, issue: str, url: str | None = None, now: dt.datetime 
             log.parent.mkdir(parents=True, exist_ok=True)
             with log.open("a", encoding="utf-8", newline="\n") as handle:
                 handle.write(json.dumps(line) + "\n")
+            if not is_update and fm.get("spec"):
+                _link_spec(root, fm["spec"], str(issue))
             return path
     raise KeyError(f"no tracker request {rid}")
+
+
+def _link_spec(root: Path, spec: str, issue: str) -> None:
+    """Write `tracker: <issue>` into the spec page, unless it is gone or already names one."""
+    path = _spec_page(root, spec)
+    if path is None or not path.is_file():
+        return
+    try:
+        fm, body = pages.read(path)
+    except Exception:
+        return
+    if not fm.get("tracker"):
+        fm["tracker"] = issue
+        pages.write(path, fm, body)
 
 
 def main(argv=None) -> int:
@@ -222,6 +249,7 @@ def main(argv=None) -> int:
     q.add_argument("--title", required=True)
     q.add_argument("--subject")
     q.add_argument("--body", default="")
+    q.add_argument("--spec")
     q.add_argument("--by", required=True)
     u = sub.add_parser("update")
     u.add_argument("--issue", required=True)
@@ -236,7 +264,7 @@ def main(argv=None) -> int:
     r.add_argument("--url")
     args = ap.parse_args(argv)
     if args.cmd == "queue":
-        print(queue(args.root, args.title, args.by, subject=args.subject, body=args.body))
+        print(queue(args.root, args.title, args.by, subject=args.subject, body=args.body, spec=args.spec))
     elif args.cmd == "update":
         print(update(args.root, args.issue, args.by, state=args.state, comment=args.comment) or "already queued")
     elif args.cmd == "observe":
