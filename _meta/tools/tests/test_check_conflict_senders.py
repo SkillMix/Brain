@@ -32,3 +32,20 @@ def test_two_spaces_contesting_one_page_send_two_notes_that_both_land(tmp_path):
     assert sorted(page["contested"]) == sorted(fm["id"] for fm, _ in notes)
     bodies = [pages.read(brain / "_inbound" / "conflicts" / f"{fm['id']}.md")[1] for fm, _ in notes]
     assert "2026-11-10" in bodies[0] and "2026-11-17" in bodies[1]
+
+
+def test_a_later_different_value_from_the_same_space_sends_a_note_of_its_own(tmp_path):
+    brain = make_space(tmp_path / "brain", profile="brain", name="brain", subjects=[
+        {"id": "harbor", "kind": "projects", "title": "Harbor"}])
+    signed(brain, "knowledge/projects/harbor/harbor.md", "# Harbor\n\ngo-live: 2026-11-03\n",
+           id="p-0000f001", at=NOW - 3 * D)
+    space = make_space(tmp_path / "ada", name="ada", subjects=[])
+    mount_brain(space, brain)
+    witness(space, "rec-1", "harbor", "Moved again: go-live: 2026-11-10\n", NOW - D)
+    assert check.run(space, now=NOW).conflict_notes == 1
+    witness(space, "rec-2", "harbor", "Moved once more: go-live: 2026-11-17\n", NOW + D)
+    assert check.run(space, now=NOW + 2 * D).conflict_notes == 1
+    notes = [pages.read(p) for p in sorted((space / "_outbound" / "queue").glob("*.md"))]
+    assert len({fm["id"] for fm, _ in notes}) == 2, "the later value does not overwrite the earlier note"
+    assert sorted("2026-11-10" in body for _, body in notes) == [False, True]
+    assert sorted("2026-11-17" in body for _, body in notes) == [False, True]
