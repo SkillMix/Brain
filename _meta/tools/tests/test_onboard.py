@@ -1,5 +1,7 @@
 """onboard: the offline company case on the fixture company, detect, interview, check."""
 import hashlib
+import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -15,6 +17,10 @@ from conftest import make_space
 
 TEMPLATE = Path(__file__).resolve().parents[3]
 FIXTURE_COMPANY = TEMPLATE / "_meta" / "tests" / "fixture" / "company.yaml"
+# Template sync installs these tests in every space; a test that copies the whole repository
+# as the template runs in the template only.
+template_only = pytest.mark.skipif(not (TEMPLATE / ".github" / "template-marker").exists(),
+                                   reason="copies the repository as the template")
 
 MINIMAL = {
     "company": "Lantern Works",
@@ -198,6 +204,7 @@ def test_skipped_questions_become_needs_you_items(tmp_path, monkeypatch):
 
 
 
+@template_only
 def test_a_repository_made_from_the_template_gets_every_folder(tmp_path, monkeypatch):
     """Online a new space starts as a full copy of the template, which ships no zone folders and
     no index, log, identity or live pages: onboard makes each one, and git keeps every folder."""
@@ -218,6 +225,22 @@ def test_a_repository_made_from_the_template_gets_every_folder(tmp_path, monkeyp
         assert errors(space) == []
     assert (root / "identity" / "charter.md").exists() and (root / "identity" / "spine.md").exists()
     assert not [rel for rel in onboard.PROJECT_FILES if (root / rel).exists()]
+
+
+def test_the_full_copy_is_skipped_in_a_space(tmp_path):
+    """Template sync installs these tests in every space, which has no template marker and holds
+    its mounts: copied whole there, the test above failed on the marker and copied the brain too."""
+    import shutil
+    space = tmp_path / "space"
+    shutil.copytree(TEMPLATE / "_meta" / "tools", space / "_meta" / "tools",
+                    ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
+    test = space / "_meta" / "tools" / "tests" / "test_onboard.py"
+    done = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+                           f"{test}::test_a_repository_made_from_the_template_gets_every_folder"],
+                          cwd=str(space), capture_output=True, text=True,
+                          env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
+    assert done.returncode == 0 and "1 skipped" in done.stdout, done.stdout[-2000:]
+
 
 def test_instruction_block_is_idempotent(tmp_path):
     path = tmp_path / "home" / ".claude" / "CLAUDE.md"
