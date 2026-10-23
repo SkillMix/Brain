@@ -4,6 +4,7 @@ The one tool that runs git. The OS scheduler runs it every 15 minutes; sessions 
 routines only edit files. Each run:
 
   1. take `.git/sync.lock`; skip if another run holds it or git is mid-operation
+  1a. name in stale.yaml each chain whose scheduler stopped starting it (`not_started`)
   2. stage tracked changes and settled untracked text files, never under personal/,
      academic/, _scratch/, _meta/state/private/ or inside a mount
   3. scan the staged paths; unstage every file with a finding (count recorded, never
@@ -74,6 +75,7 @@ RUN_LOGS = {"_meta/state/tests.jsonl", "_meta/state/probe.jsonl"}
 NOTABLE = ("committed", "pins", "conflict", "scan_hits", "errors", "held_tests", "restored_tests",
            "healing", "healed", "pr_red")
 HEAL_STATE = "sync-heal.json"   # in the git dir: the repair waiting to be seen merged
+CHAINS = {"sweep_chain": "sweep-chain", "daily": "daily-chain"}   # run line routine: its routine prompt
 
 
 def git(root, *args, check: bool = False, input: str | None = None, env: dict | None = None) -> subprocess.CompletedProcess:
@@ -98,6 +100,52 @@ def git_dir(root: Path) -> Path | None:
 
 def in_progress(gdir: Path) -> str | None:
     return next((name for name in IN_PROGRESS if (gdir / name).exists()), None)
+
+
+def not_started(root: Path, now: dt.datetime | None = None) -> bool:
+    """A chain its agent scheduler never starts writes nothing, so only this script, which the OS
+    runs whatever that scheduler does, can notice. A chain whose last run line (for one that never
+    ran, the onboarding) is older than twice the longest gap in its routine's schedule is named
+    in stale.yaml as `<routine> not started` since then, for the health line; the entry goes when
+    the chain runs. Written only when it changes. True when it wrote."""
+    import chain
+    import onboard
+    import onboarding_page
+    import yaml
+    space = spaceyaml.load(root)
+    now = now or space.now()
+    last: dict = {}
+    path = root / RUNS_PATH
+    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines() if path.exists() else []:
+        try:
+            row = json.loads(raw)
+            if row.get("routine") in CHAINS:
+                at = pages.parse_iso(row["at"])
+                last[row["routine"]] = max(at, last.get(row["routine"], at))
+        except (ValueError, KeyError, TypeError, AttributeError):
+            continue
+    try:   # a space no onboarding made was promised no schedule
+        onboarded = pages.parse_iso(onboard.read_yaml(root / "_meta" / "state" / "onboard.yaml", {})["at"])
+    except (KeyError, TypeError, ValueError, OSError, yaml.YAMLError):
+        onboarded = None
+    schedules = dict(onboarding_page._routines(root))
+    stale_path = root / chain.STALE
+    data = (yaml.safe_load(stale_path.read_text(encoding="utf-8")) or {}) if stale_path.exists() else {}
+    want = dict(data)
+    for routine, prompt in CHAINS.items():
+        key, since = chain.NOT_STARTED.format(routine), last.get(routine) or onboarded
+        times = [h * 60 + m for h, m in onboard.daily_times(schedules.get(prompt, "")) or []]
+        # the longest wait between two starts, the night included: once a day waits 24 hours
+        gap = max(b - a for a, b in zip(times, times[1:] + [times[0] + 24 * 60])) if times else 0
+        if since is not None and gap and now - since > space.scale(2 * gap / 60):
+            want[key] = pages.iso(since)
+        else:
+            want.pop(key, None)
+    if want == data:
+        return False
+    stale_path.parent.mkdir(parents=True, exist_ok=True)
+    stale_path.write_text(yaml.safe_dump(want, sort_keys=True), encoding="utf-8", newline="\n")
+    return True
 
 
 class Run:
@@ -134,6 +182,13 @@ class Run:
     def error(self, text: str) -> None:
         self.notes.setdefault("errors", []).append(text)
         print(f"sync: {text}")
+
+    # ----- chains --------------------------------------------------------------
+    def watch_chains(self) -> None:
+        try:
+            not_started(self.root, self.now)
+        except Exception as exc:  # never in the way of landing
+            self.error(f"not started check: {type(exc).__name__}: {str(exc)[:200]}")
 
     # ----- release leg -------------------------------------------------------
     def release_leg(self) -> None:
@@ -719,6 +774,8 @@ def main(argv=None) -> int:
         print("sync: skipped, another run holds the lock")
         return SKIPPED
     try:
+        if not args.only and not run.dry:
+            run.watch_chains()
         if args.release_leg and not args.only:
             run.release_leg()
         run.land_structure()

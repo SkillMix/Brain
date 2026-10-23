@@ -168,6 +168,20 @@ def _run_line(space: spaceyaml.Space, ctx: dict, now: dt.datetime) -> None:
         handle.write(json.dumps(line, ensure_ascii=False) + "\n")
 
 
+NOT_STARTED = "{} not started"   # the sync script's entry for a chain its scheduler never started
+
+
+def _started(space: spaceyaml.Space, routine: str) -> None:
+    """The chain runs, so the sync script's `<routine> not started` entry in stale.yaml goes."""
+    path = space.root / STALE
+    try:
+        data = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}) if path.exists() else {}
+    except (OSError, yaml.YAMLError):
+        return   # the chain runs on; the run's own bookkeeping at the end still has its say
+    if isinstance(data, dict) and data.pop(NOT_STARTED.format(routine), None) is not None:
+        path.write_text(yaml.safe_dump(data, sort_keys=True), encoding="utf-8", newline="\n")
+
+
 # ----- the two chains ----------------------------------------------------------------
 
 def sweep_chain(root, now: dt.datetime | None = None) -> dict:
@@ -176,6 +190,7 @@ def sweep_chain(root, now: dt.datetime | None = None) -> dict:
     space = spaceyaml.load(root)
     now = now or space.now()
     ctx = _context("sweep_chain", root, now)
+    _started(space, "sweep_chain")
     if space.profile == "personal" and (space.data.get("transcripts") or {}).get("path"):
         _step(ctx, "transcripts", "transcripts", "scan", root, now=now)
     _step(ctx, "sweep", "sweep", "run", root, now=now)
@@ -198,6 +213,7 @@ def daily(root, person: str | None = None, now: dt.datetime | None = None, shado
     now = now or space.now()
     person = person or space.owner
     ctx = _context("daily", root, now)
+    _started(space, "daily")
     if _template_sync_due(space, now):
         _step(ctx, "template_sync", "template_sync", "guarded", root)
     _step(ctx, "status", "status", "run", root, now=now)
