@@ -14,7 +14,8 @@ structure in its space.
 | a pending shape migration (`_meta/migrations/shape_<n>.py`)     | mechanical | run it                    |
 
 Every change is act-then-verify: the answer and leak tests run before and after, a lower
-score restores the snapshot, and each change is one line in `log.md` with how to undo it.
+score restores the snapshot, and each change is one line in `log.md` with how to undo it. A
+shape migration that lowers it is undone whole and tried again after the next template update.
 Links are by id, so a move never breaks one. A change that would move who owns a subject is
 never made: it becomes one question to the owners, asked once (`_meta/state/librarian/asked.yaml`).
 Judgment proposals wait in `_meta/state/librarian/<id>.yaml` until an independent second agent
@@ -38,6 +39,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -53,6 +55,8 @@ ASKED = STATE / "asked.yaml"
 CHANGES = STATE / "changes.jsonl"     # each applied change and its paths: the sync script lands
 LANDED = STATE / "landed.jsonl"       # each as one commit and records it here
 MIGRATIONS = Path("_meta") / "migrations"
+HELD = STATE / "migrations.yaml"      # shape migrations undone, each with the template it came from
+TEMPLATE = Path("_meta") / "state" / "template-version.yaml"   # template_sync.py's provenance
 SPLIT_AT = 12
 UMBRELLA_AT = 3
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]*$")
@@ -437,7 +441,8 @@ def migrations_pending(root: Path, space, folder: Path | None = None) -> list:
 
 def _files(root: Path, space) -> dict:
     """path -> (size, mtime) of every file a migration may change: never git's own, never a mount."""
-    skip = {".git"} | {str(m.get("path") or "").replace("\\", "/").strip("/") for m in space.mounts}
+    skip = {".git"} | {str(m.get("path") or ("brain" if m.get("name") == "brain" else f"mounts/{m.get('name')}"))
+                       .replace("\\", "/").strip("/") for m in space.mounts}
     out = {}
     for base, dirs, files in os.walk(root):
         rel = Path(base).relative_to(root).as_posix()
@@ -448,33 +453,83 @@ def _files(root: Path, space) -> dict:
     return out
 
 
+def _template(root: Path) -> str:
+    """The template commit this space last synced (template_sync.py's provenance), '' if never."""
+    path = root / TEMPLATE
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else None
+    return str(data.get("commit") or "") if isinstance(data, dict) else ""
+
+
+def _held(root: Path) -> dict:
+    data = yaml.safe_load((root / HELD).read_text(encoding="utf-8")) if (root / HELD).exists() else None
+    return data if isinstance(data, dict) else {}
+
+
+def _restore(root: Path, backup: Path, files: dict, changed: set) -> None:
+    """Each path the migration changed or deleted gets its old content back; each it added goes."""
+    for rel in sorted(changed):
+        target = root / rel
+        if rel in files:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(backup / rel, target)
+        elif target.exists():
+            target.unlink()
+            parent = target.parent
+            while parent != root and parent.is_dir() and not any(parent.iterdir()):
+                parent.rmdir()
+                parent = parent.parent
+
+
 def migrate(root, folder: Path | None = None, now=None, land_it: bool = False, scorer=None, runner=None) -> list:
-    """Run every pending shape migration in order, each verified and landed as one commit."""
+    """Run every pending shape migration in order, each verified and landed as one commit. One that
+    lowers the tests is undone whole and held until the next template update brings a fix."""
     root = Path(root)
     done = []
     scorer = scorer or score
+    held, template = _held(root), _template(root)
     for number, path in migrations_pending(root, spaceyaml.load(root), folder):
+        if number in held and str(held[number].get("template") or "") == template:
+            break   # the later ones wait for it
         space = spaceyaml.load(root)
         now = now or space.now()
         spec = importlib.util.spec_from_file_location(f"shape_{number}", path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         before = scorer(root)
-        backup = (root / "space.yaml").read_text(encoding="utf-8")
         files = _files(root, space)
-        module.migrate(root)
-        after = _files(root, space)
-        # its one commit carries what it changed, never another session's work in progress
-        paths = sorted({p for p in set(files) | set(after) if files.get(p) != after.get(p)}
-                       | {"space.yaml", "log.md"})
-        data = yaml.safe_load((root / "space.yaml").read_text(encoding="utf-8")) or {}
-        data["shape"] = number
-        (root / "space.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8", newline="\n")
-        if _lower(before, scorer(root)):
-            (root / "space.yaml").write_text(backup, encoding="utf-8", newline="\n")
-            _append(root / "log.md", f"- {pages.iso(now)} librarian shape migration {number} lowered the tests; "
-                                     f"space.yaml restored, the rest of the migration needs a person")
+        with tempfile.TemporaryDirectory(prefix="migration-", ignore_cleanup_errors=True) as tmp:
+            for rel in files:   # the tree as it was, so the migration can be undone whole
+                (Path(tmp) / rel).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(root / rel, Path(tmp) / rel)
+            try:
+                module.migrate(root)
+                broke = None
+            except Exception as exc:   # one that breaks halfway is undone like one that lowers the tests
+                broke = f"{type(exc).__name__}: {exc}"
+            after = _files(root, space)
+            changed = {p for p in set(files) | set(after) if files.get(p) != after.get(p)}
+            # its one commit carries what it changed, never another session's work in progress
+            paths = sorted(changed | {"space.yaml", "log.md"})
+            if broke is None:
+                data = yaml.safe_load((root / "space.yaml").read_text(encoding="utf-8")) or {}
+                data["shape"] = number
+                (root / "space.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8",
+                                                 newline="\n")
+            result = broke or scorer(root)
+            lowered = broke is not None or _lower(before, result)
+            if lowered:
+                _restore(root, Path(tmp), files, changed | {"space.yaml"})
+        if lowered:
+            held[number] = {"at": pages.iso(now), "template": template}
+            (root / HELD).parent.mkdir(parents=True, exist_ok=True)
+            (root / HELD).write_text(yaml.safe_dump(held, sort_keys=False), encoding="utf-8", newline="\n")
+            why = f"it broke: {broke}" if broke else f"tests {before} -> {result}"
+            _append(root / "log.md", f"- {pages.iso(now)} librarian restored shape migration {number} "
+                                     f"({why}); tried again after the next template update")
             break
+        if held.pop(number, None) is not None:
+            (root / HELD).write_text(yaml.safe_dump(held, sort_keys=False), encoding="utf-8", newline="\n")
+            paths = sorted(set(paths) | {HELD.as_posix()})
         _append(root / "log.md", f"- {pages.iso(now)} librarian ran shape migration {number}")
         done.append(number)
         if land_it:
