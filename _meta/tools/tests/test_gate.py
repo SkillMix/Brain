@@ -1,7 +1,10 @@
 """gate.py: protected paths and signatures at the landing gate."""
 import os
+import shutil
 import subprocess
 from pathlib import Path
+
+import pytest
 
 import gate
 import pages
@@ -413,3 +416,84 @@ def test_no_token_is_written_to_a_config_file_and_no_expression_runs_in_a_shell(
             if uses:
                 ref = uses.split("@", 1)[1]
                 assert len(ref) == 40 and all(c in "0123456789abcdef" for c in ref), uses
+
+
+# A stand-in for gh: the repository allows FAKE_ALLOWS (what the api call prints), the first
+# FAKE_REFUSALS merge calls are refused the way GitHub refuses while the base branch moves, and a
+# method outside FAKE_METHODS is refused for good. sleep only records how long it was asked to wait.
+FAKE_GH = """#!/bin/sh
+echo "$*" >> "$FAKE_LOG"
+if [ "$1" = api ]; then
+  [ "$FAKE_ALLOWS" = fail ] && exit 1
+  echo "$FAKE_ALLOWS"
+  exit 0
+fi
+case " $* " in *" --disable-auto "*) exit 0 ;; esac
+n=$(cat "$FAKE_COUNT" 2>/dev/null || echo 0)
+echo $((n + 1)) > "$FAKE_COUNT"
+if [ "$n" -lt "$FAKE_REFUSALS" ]; then
+  echo "GraphQL: Base branch was modified. Review and try the merge again. (mergePullRequest)" >&2
+  exit 1
+fi
+for m in $FAKE_METHODS; do case " $* " in *" --$m "*) exit 0 ;; esac; done
+echo "Merge method not allowed on this repository" >&2
+exit 1
+"""
+
+
+def _arm(tmp_path, gate_line, allows, methods, refusals=0):
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("no bash")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "gh").write_bytes(FAKE_GH.encode())
+    (bin_dir / "sleep").write_bytes(b'#!/bin/sh\necho "sleep $1" >> "$FAKE_LOG"\n')
+    for f in bin_dir.iterdir():
+        f.chmod(0o755)
+    (tmp_path / "gate.txt").write_text(gate_line + "\n", encoding="utf-8")
+    log = tmp_path / "log.txt"
+    env = dict(os.environ, PATH=str(bin_dir) + os.pathsep + os.environ["PATH"], RUNNER_TEMP=str(tmp_path),
+               GITHUB_REPOSITORY="owner/space", PR_URL="https://github.com/owner/space/pull/7",
+               FAKE_LOG=str(log), FAKE_COUNT=str(tmp_path / "count"), FAKE_ALLOWS=allows,
+               FAKE_METHODS=methods, FAKE_REFUSALS=str(refusals))
+    script = _step("arm", "Arm auto-merge, or leave it for the owner")["run"]
+    # Actions runs a step's script as bash -eo pipefail
+    done = subprocess.run([bash, "--noprofile", "--norc", "-eo", "pipefail", "-c", script],
+                          env=env, capture_output=True, text=True)
+    calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    return done, [c for c in calls if c.startswith("pr merge")], [c for c in calls if c.startswith("sleep")]
+
+
+def test_arming_retries_a_moving_base_with_a_method_the_repository_allows(tmp_path):
+    # Seen live: five pull requests went green at once, the direct merge of one was refused because
+    # the base had just moved, and the fallbacks used methods the repository does not allow.
+    done, merges, sleeps = _arm(tmp_path, "GATE: auto-mergeable", "true false false", "merge", refusals=2)
+    assert done.returncode == 0, done.stderr
+    assert merges == ["pr merge --auto --merge https://github.com/owner/space/pull/7"] * 3
+    assert len(sleeps) >= 2 and any(s != "sleep 0" for s in sleeps)
+
+
+@pytest.mark.parametrize("allows, methods, used", [
+    ("false true false", "squash", ["--squash"]),
+    ("false false true", "rebase", ["--rebase"]),
+    # the allowed methods cannot be read: each is tried in turn, a merge commit first
+    ("fail", "rebase", ["--merge", "--squash", "--rebase"]),
+])
+def test_arming_asks_the_repository_which_method_to_use(tmp_path, allows, methods, used):
+    done, merges, _ = _arm(tmp_path, "GATE: auto-mergeable", allows, methods)
+    assert done.returncode == 0, done.stderr
+    assert [m.split()[3] for m in merges] == used
+
+
+def test_arming_gives_up_after_a_few_tries_and_says_so(tmp_path):
+    done, merges, sleeps = _arm(tmp_path, "GATE: auto-mergeable", "true false false", "merge", refusals=99)
+    assert done.returncode != 0
+    assert 2 <= len(merges) <= 6 and all("--merge" in m for m in merges)
+    assert "::error::" in done.stdout
+
+
+def test_a_protected_pull_request_is_never_merged(tmp_path):
+    done, merges, _ = _arm(tmp_path, "GATE: needs the owner", "true true true", "merge squash rebase")
+    assert done.returncode == 0, done.stderr
+    assert merges == ["pr merge --disable-auto https://github.com/owner/space/pull/7"]
