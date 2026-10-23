@@ -194,3 +194,43 @@ def test_add_puts_one_client_in_the_registry_with_its_domain_and_owner(tmp_path,
     assert registry.main([str(root), "add", "dune-bakery", "--kind", "clients"]) == 1   # an id is never re-minted
     assert registry.main([str(root), "add", "Pier", "--kind", "planets"]) == 1           # not one of the kinds
     assert "refused" in capsys.readouterr().out and registry.Registry(root).get("pier") is None
+
+
+# ----- codebase links (docs/design/2026-10-22-codebase-link-design.md) -----------------------------
+def test_registry_check_rejects_bad_repo_entries(tmp_path):
+    root = make_space(tmp_path / "ada", subjects=[{"id": "harbor-voice-agent", "kind": "projects",
+        "repos": [{"repo": "northwind/harbor-voice", "readers": "maybe", "linked_by": "guess"}]}])
+    errs = registry.Registry(root).check()
+    assert any("readers" in e for e in errs) and any("linked_by" in e for e in errs)
+    root = make_space(tmp_path / "ben", subjects=[{"id": "harbor-voice-agent", "kind": "projects",
+        "repos": [{"readers": "inside"}, {"repo": "northwind/harbor-voice", "checked": "last week"}]}])
+    errs = registry.Registry(root).check()
+    assert any("no repo" in e for e in errs) and any("checked" in e for e in errs)
+
+
+def test_registry_check_accepts_a_good_link(tmp_path):
+    root = make_space(tmp_path / "ada", subjects=[{"id": "harbor-voice-agent", "kind": "projects",
+        "repos": [{"repo": "northwind/harbor-voice", "repo_id": "R_1", "linked_by": "detect",
+                   "readers": "wider", "checked": "2026-10-12", "linked": "2026-10-12"}]}])
+    assert registry.Registry(root).check() == []
+
+
+def test_identifiers_subject_matches_only_its_subject(tmp_path):
+    root = make_space(tmp_path / "ada", subjects=[{"id": "harbor-voice-agent", "kind": "projects"},
+                                                   {"id": "voice", "kind": "topics", "match": {"keywords": ["voice"]}}])
+    reg = registry.Registry(root)
+    record = {"kind": "event", "subject": "voice notes", "identifiers": {"subject": "harbor-voice-agent"}}
+    hits = reg.match(record)
+    assert [s.id for s in hits] == ["harbor-voice-agent"]
+    assert reg.matched_by(hits[0], record) == {"subject"}
+
+
+def test_identifiers_repo_matches_the_linked_subject(tmp_path):
+    root = make_space(tmp_path / "harbor", profile="project", subjects=[{"id": "harbor-voice-agent",
+        "kind": "projects", "repos": [{"repo": "northwind/harbor-voice"}]},
+        {"id": "harbor-old", "kind": "projects", "repos": [{"repo": "northwind/harbor-voice", "gone": "2026-10-01"}]}])
+    reg = registry.Registry(root)
+    record = {"kind": "document", "identifiers": {"repo": "Northwind/harbor-voice"}}
+    hits = reg.match(record)
+    assert [s.id for s in hits] == ["harbor-voice-agent"]
+    assert reg.matched_by(hits[0], record) == {"repos"}

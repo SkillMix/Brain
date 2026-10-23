@@ -571,3 +571,77 @@ def test_a_project_with_its_own_space_is_walled_without_more_evidence(tmp_path):
     classify.backlog(ws["ada"], [row], now=AT)                       # the space is the fact
     assert classify.decide(ws["ada"], "harbor", "walled", "it has its own space", crew=["ada", "ben"],
                            home="harbor", now=AT)["note"] is not None
+
+
+# ----- codebase links: the link note (docs/design/2026-10-22-codebase-link-design.md) -------------
+import pages  # noqa: E402
+
+
+def test_link_note_applies_in_own_registry(tmp_path, now):
+    root = make_space(tmp_path / "ada", subjects=[{"id": "harbor-voice-agent", "kind": "projects", "owner": "Ada Okafor"}])
+    classify.note(root, "harbor-voice-agent", "link",
+                  {"repo": "northwind/harbor-voice", "linked_by": "detect", "linked": now.date().isoformat()}, now=now)
+    repos = registry.Registry(root).get("harbor-voice-agent").extra["repos"]
+    assert repos[0]["repo"] == "northwind/harbor-voice" and repos[0]["linked_by"] == "detect"
+    assert registry.Registry(root).check() == []
+
+
+def test_link_note_updates_by_repo_id_and_removes(tmp_path, now):
+    root = make_space(tmp_path / "ada", subjects=[{"id": "harbor-voice-agent", "kind": "projects", "owner": "Ada Okafor"}])
+    today, later = now.date().isoformat(), (now + dt.timedelta(days=1)).date().isoformat()
+    classify.note(root, "harbor-voice-agent", "link", {"repo": "northwind/harbor-voice", "repo_id": "R_1",
+                                                       "linked_by": "detect", "linked": today}, now=now)
+    classify.note(root, "harbor-voice-agent", "link", {"repo": "northwind/harbor-voice-2", "repo_id": "R_1",
+                                                       "linked": later}, now=now)
+    repos = registry.Registry(root).get("harbor-voice-agent").extra["repos"]
+    assert len(repos) == 1 and repos[0]["repo"] == "northwind/harbor-voice-2" and repos[0]["linked"] == today
+    classify.note(root, "harbor-voice-agent", "link", {"repo": "northwind/harbor-voice-2", "remove": True}, now=now)
+    assert registry.Registry(root).get("harbor-voice-agent").extra.get("repos", []) == []
+
+
+def _link_signal(by, sender, data):
+    return {"id": pages.new_id(), "kind": "registry", "note": "link", "subject": "harbor-voice-agent",
+            "by": by, "from": sender, "data": data}
+
+
+def test_link_note_refused_from_a_stranger(tmp_path, now):
+    brain, _ = brain_and(tmp_path, [{"id": "harbor-voice-agent", "kind": "projects", "home": "harbor", "crew": ["ada"]}])
+    space, reg = ctx(brain)
+    signal = _link_signal("Carl Ng", "carl", {"repo": "northwind/harbor-voice"})
+    outcome, why = classify.apply_note(brain, space, reg, signal, now)
+    assert outcome == "refused" and "may link a repository" in why
+    assert "repos" not in reg.get("harbor-voice-agent").extra
+
+
+def test_link_note_from_the_home_merges_fields(tmp_path, now):
+    today = now.date().isoformat()
+    brain, _ = brain_and(tmp_path, [{"id": "harbor-voice-agent", "kind": "projects", "home": "harbor", "crew": ["ada"],
+                                     "repos": [{"repo": "northwind/harbor-voice", "linked_by": "detect",
+                                                "linked": today}]}])
+    space, reg = ctx(brain)
+    signal = _link_signal("Ben Liu", "harbor", {"repo": "northwind/harbor-voice", "readers": "wider", "checked": today})
+    outcome, _ = classify.apply_note(brain, space, reg, signal, now)
+    entry = reg.get("harbor-voice-agent").extra["repos"][0]
+    assert outcome == "applied" and entry["readers"] == "wider" and entry["linked_by"] == "detect"
+    assert entry["linked"] == today and len(reg.get("harbor-voice-agent").extra["repos"]) == 1
+
+
+def test_may_link_home_owners_crew_and_the_brain(tmp_path):
+    brain, ws = brain_and(tmp_path, [
+        {"id": "harbor-voice-agent", "kind": "projects", "home": "harbor", "crew": ["ben"]},
+        {"id": "dock", "kind": "projects", "owner": "Chloe Martin",
+         "classification": dict(SETTLED_WALLED, home="dock", crew=["ben"])},
+        {"id": "tide-app", "kind": "projects", "home": "tide", "crew": ["chloe"]},
+        {"id": "product", "kind": "topics", "home": "lantern"}], "ben")
+    _, reg = ctx(brain)
+    hva, dock, product = (reg.get(sid) for sid in ("harbor-voice-agent", "dock", "product"))
+    assert classify.may_link(reg, hva, "Ben Liu", "ben")              # its crew
+    assert classify.may_link(reg, hva, "Carl Ng", "harbor")           # its home
+    assert classify.may_link(reg, hva, "Ada Okafor", "ada")           # the holder's owner
+    assert not classify.may_link(reg, hva, "Chloe Martin", "chloe")
+    assert classify.may_link(reg, dock, "Chloe Martin", "chloe")      # its owner
+    assert classify.may_link(reg, dock, "Ben Liu", "ben")             # its walled classification's crew
+    assert classify.may_link(reg, product, "Chloe Martin", "chloe")   # homed in the brain: anyone registered
+    assert not classify.may_link(reg, product, "Carl Ng", "carl")
+    _, ben = ctx(ws["ben"])   # Ben owns his workspace, not the brain that holds tide-app
+    assert not classify.may_link(ben, ben.get("tide-app"), "Ben Liu", "ben")

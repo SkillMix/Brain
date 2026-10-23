@@ -310,7 +310,7 @@ def requeue(root, space=None, reg=None, now=None) -> dict:
 
 
 # ----- registry notes: how a space changes the registry that holds a subject -----------------------
-NOTE_KINDS = ("owner", "workspace", "ask", "classification", "obligation", "checked", "state")
+NOTE_KINDS = ("owner", "workspace", "ask", "classification", "obligation", "checked", "state", "link")
 NOTES_LOG = registry_mod.NOTES_LOG
 SIGNALS_OUT = Path("_outbound") / "signals"
 SIGNALS_IN = Path("_inbound") / "signals"
@@ -415,6 +415,31 @@ def may_decide(space, reg, sid, by) -> bool:
     return may_decide_for(space, reg, subject_owner(reg, sid), by)
 
 
+def may_link(reg, subject, by: str, sender: str) -> bool:
+    """Whether a note by `by` from the space `sender` may link a codebase to `subject`: the note
+    comes from its home, or `by` owns the space whose registry holds it, owns the subject, is on
+    its crew (or its walled classification's), or is anyone registered when its home is the brain."""
+    space = reg.space
+    home = reg.home_of(subject.id)
+    if home and sender == home:
+        return True
+    holder = space
+    if space is not None and subject.space:
+        try:
+            holder = spaceyaml.load(space.mount_root(subject.space))
+        except Exception:
+            holder = None
+    if _same(by, holder.owner if holder is not None else None) or _same(by, subject_owner(reg, subject.id)):
+        return True
+    c = classification_of(subject) or {}
+    crew = set(_ids(subject.crew)) | (set(_ids(c.get("crew"))) if c.get("class") == "walled" else set())
+    named = [s for s in reg.everywhere() if s.kind == "people" and _same(s.title, by)]
+    if any(p.id in crew for p in named):
+        return True
+    brain = brain_space(space)
+    return brain is not None and home == brain.name and any(p.state != "archived" for p in named)
+
+
 def _seen(value) -> int:
     try:
         return max(int(value), 0)
@@ -486,6 +511,34 @@ def apply_note(root, space, reg, signal: dict, now) -> tuple:
         if not home or sender != home:
             return "refused", f"only {sid}'s home ({home or 'none'}) says it is {state}"
         subject.state = state
+        return "applied", ""
+    if kind == "link":   # a codebase linked to the subject (docs/design/2026-10-22-codebase-link-design.md)
+        if not may_link(reg, subject, by, sender):
+            return "refused", f"only the subject's crew may link a repository to {sid}"
+        repo = str(data.get("repo") or "").strip()
+        if not repo:
+            return "refused", "a link note names its repository"
+        repos = list(subject.extra.get("repos") or [])
+
+        def same(entry) -> bool:
+            if entry.get("repo_id") and data.get("repo_id"):
+                return entry["repo_id"] == data["repo_id"]
+            return registry_mod.same_repo(entry.get("repo"), repo)
+        found = next((r for r in repos if isinstance(r, dict) and same(r)), None)
+        if data.get("remove"):
+            repos = [r for r in repos if r is not found]
+        else:
+            entry = dict(found or {"repo": repo})
+            entry.update({k: data[k] for k in ("repo_id", "linked_by", "linked", "readers", "checked", "gone")
+                          if k in data and not (k == "linked" and entry.get("linked"))}, repo=repo)
+            bad = registry_mod._repo_errors(sid, [entry])
+            if bad:
+                return "refused", bad[0]
+            repos = [entry if r is found else r for r in repos] if found is not None else repos + [entry]
+        if repos:
+            subject.extra["repos"] = repos
+        else:
+            subject.extra.pop("repos", None)
         return "applied", ""
     c = classification_of(subject)
     if kind == "owner":
