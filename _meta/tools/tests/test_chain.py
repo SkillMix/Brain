@@ -1,3 +1,4 @@
+import datetime as dt
 import json
 import os
 import types
@@ -112,6 +113,29 @@ def test_daily_order_and_tests_only_when_the_files_exist(tmp_path, fakes):
     (root / "_meta" / "tests" / "leaks.yaml").write_text("leaks: []\n", encoding="utf-8")
     chain.daily(root, "Ada Okafor", now=NOW)
     assert fakes.names() == ["status", "release", "morning_view", "answers", "leaks"]
+
+
+def test_a_step_that_fails_in_the_daily_run_shows_in_the_same_mornings_view(tmp_path, monkeypatch):
+    root = make_space(tmp_path / "ada")
+    real = chain._module
+
+    def broken(name):
+        if name == "release":
+            def ship(*a, **k):
+                raise RuntimeError("no connector")
+            return types.SimpleNamespace(ship=ship)
+        return real(name)
+    monkeypatch.setattr(chain, "_module", broken)
+    result = chain.daily(root, "Ada Okafor", now=NOW)
+    assert result["errors"] == [{"step": "release", "error": "no connector"}]
+    assert result["steps"]["morning_view"] is not None
+    page = (root / "live" / "needs-you.md").read_text(encoding="utf-8")
+    assert "stale: release since 2026-10-12" in page
+    # the next run clears it as the step ends, before the morning view reads it
+    monkeypatch.setattr(chain, "_module", real)
+    chain.daily(root, "Ada Okafor", now=NOW + dt.timedelta(hours=1))
+    assert "release" not in (yaml.safe_load((root / "_meta/state/stale.yaml").read_text(encoding="utf-8")) or {})
+    assert "stale: release" not in (root / "live" / "needs-you.md").read_text(encoding="utf-8")
 
 
 def test_virtual_counts_steps_and_restores_space_now(tmp_path, fakes, monkeypatch):

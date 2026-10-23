@@ -20,6 +20,8 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
+import yaml
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import needs_you  # noqa: E402
 import owner_email  # noqa: E402
@@ -38,6 +40,7 @@ UNSURE_TITLE = "Is this work?"
 UNSURE_TAIL = "Reply with the code and yes or no."
 LEGACY = (Path("_meta") / "state" / "morning-notice.json", Path("_meta") / "state" / "morning-payload.json")
 RUNS = Path("_meta") / "state" / "runs.jsonl"
+STALE = Path("_meta") / "state" / "stale.yaml"
 
 # One plain label per item kind for the email's counts (they pass the plain-language check).
 LABELS = {
@@ -167,6 +170,25 @@ def _health_lines(root: Path) -> list:
     except Exception:
         return []
     return [line.strip() for line in body.splitlines() if line.strip() and not line.startswith("#")]
+
+
+def _with_stale(root: Path, name: str, lines: list) -> list:
+    """This space's stale cell read from `stale.yaml` now, not from the health page status
+    wrote at the start of the daily run, so a step that failed after it shows the same day."""
+    path = root / STALE
+    try:
+        stale = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}) if path.exists() else {}
+    except (OSError, yaml.YAMLError):
+        return lines
+    cell = ("stale: " + ", ".join(f"{k} since {str(v)[:10]}" for k, v in sorted(stale.items()))) if stale else ""
+    own, out, seen = f"- {name}:", [], False
+    for line in lines:
+        if line.startswith(own):
+            line, seen = line.split(", stale: ")[0] + (f", {cell}" if cell else ""), True
+        out.append(line)
+    if cell and not seen:
+        out.append(f"{own} {cell}")
+    return out
 
 
 def _today_lines(root: Path) -> list:
@@ -402,7 +424,7 @@ def run(root, person: str, now: dt.datetime | None = None, shadow: bool = False,
     if approved:
         counts["approved_leaving"] = len(approved)
     listed = _mark_listed(root, space, items + approved, now)
-    health = _health_lines(root)
+    health = _with_stale(root, space.name, _health_lines(root))
     page_fm = {"id": _page_id(root), "type": "snapshot", "title": "Needs you", "status": "draft",
                "generated": pages.generated(ROUTINE, now), "person": person}
     if PAGE.parts[0] not in spaceyaml.PROFILE_TABLE.get(space.profile, {}).get("forbidden", []):
