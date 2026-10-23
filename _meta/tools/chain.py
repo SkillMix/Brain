@@ -77,9 +77,29 @@ def _step(ctx: dict, step: str, module_name: str, fn_name: str, *args, **kwargs)
     except Exception as exc:  # the chain continues on yesterday's output
         ctx["errors"].append({"step": step, "error": str(exc)})
         ctx["steps"][step] = None
+        _stale_step(ctx, step, failed=True)
         return None
     ctx["steps"][step] = _plain(result)
+    _stale_step(ctx, step, failed=False)
     return result
+
+
+def _stale_step(ctx: dict, step: str, failed: bool) -> None:
+    """`stale.yaml` moves as each step ends, not when the run ends, so a later step in the
+    same run (the morning view) already sees a failure or a recovery."""
+    path = Path(ctx["root"]) / STALE
+    try:
+        data = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}) if path.exists() else {}
+    except (OSError, yaml.YAMLError):
+        return   # the run's own bookkeeping at the end still has its say; the steps go on
+    if not isinstance(data, dict):
+        return
+    if failed:
+        data.setdefault(step, ctx["at"])
+    elif data.pop(step, None) is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(data, sort_keys=True), encoding="utf-8", newline="\n")
 
 
 def _context(routine: str, root: Path, now: dt.datetime) -> dict:

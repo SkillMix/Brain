@@ -93,6 +93,17 @@ def test_a_health_line_that_fails_the_plain_language_check_is_left_out(tmp_path)
     assert Path(report.payload_path).exists()
 
 
+def test_the_stale_line_is_read_from_stale_yaml_not_from_the_earlier_health_page(tmp_path):
+    root = setup(tmp_path)
+    write_page(root, "live/health.md", id="p-00000002", type="snapshot", title="Health",
+               body="# Health\n\n- ada: runs 3 in 24h, index none, stale: status since 2026-10-11\n")
+    (root / "_meta" / "state" / "stale.yaml").write_text("release: '2026-10-12T09:00:00Z'\n", encoding="utf-8")
+    morning_view.run(root, "Ada Okafor", now=NOW)
+    page = (root / "live" / "needs-you.md").read_text(encoding="utf-8")
+    assert "- ada: runs 3 in 24h, index none, stale: release since 2026-10-12" in page
+    assert "status since" not in page
+
+
 def test_cli(tmp_path, monkeypatch, capsys):
     root = setup(tmp_path)
     monkeypatch.setenv("SPACE_NOW", "2026-10-12T09:00:00Z")
