@@ -535,8 +535,10 @@ def conflict_notes(root: Path, space, reg, moved: dict, now) -> int:
                 hid = hit_id("conflict", f"{mount_name}:{hit.page}", hit.label, hit.value)
                 if hid in sent or hid in done:
                     continue
-                # the sender is part of the note's id: two spaces contesting one page send two notes
-                note_id = "p-" + hit_id("conflict", f"{space.name}:{mount_name}:{hit.page}", hit.label)[4:]
+                # the sender and the value are part of the note's id: two spaces contesting one page
+                # send two notes, and a later value from the same space does not overwrite the first
+                note_id = "p-" + hit_id("conflict", f"{space.name}:{mount_name}:{hit.page}", hit.label,
+                                        hit.value)[4:]
                 labels = page.labels()
                 said = labels.get(hit.label, ("", ""))
                 body = (f"Conflict note for [{page.fm.get('title')}](id:{page.fm.get('id')}): the page says "
