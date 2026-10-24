@@ -9,6 +9,12 @@ a `## New evidence` list, one line per evidence page. While that candidate is an
 unsigned draft the next run rewrites it in place with the merged evidence list, so
 the queue grows with subjects that moved, never with runs. A witness page whose
 text starts with `Decision:` becomes its own candidate under knowledge/decisions/.
+An evidence line names the record's `ref:` pointers into code after its title. A
+`lesson: <point>` line in a daily-note entry becomes a candidate for the brain,
+`lesson-<slug>.md` (target knowledge/topics/lessons/), merged by slug and carrying the
+lesson text alone: the entry's `from: <subject>` line never goes into it. A lesson the
+signer discarded is not proposed again from the same `from:` value
+(`_meta/state/lessons-proposed.jsonl`).
 
 Evidence for a subject = witness pages under knowledge/sources/ carrying
 `subject: <id>` or `<id>` in `mentions`, landed records in _inbound/candidates/
@@ -46,6 +52,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import classify as gating  # noqa: E402
+import link  # noqa: E402
 import pages  # noqa: E402
 import provenance  # noqa: E402
 import registry as registry_mod  # noqa: E402
@@ -61,6 +68,10 @@ EVIDENCE_HEADING = "## New evidence"
 MENTION_BLIND_KINDS = ("people", "domains")
 DECISION_RE = re.compile(r"^\s*decision\s*:\s*(.*)$", re.I)
 COMMANDS = ("verify", "checked")
+LESSON_LINE = re.compile(r"^\s*(?:[-*]\s*)?lesson:\s*(.+?)\s*$", re.I | re.M)
+FROM_LINE = re.compile(r"^\s*(?:[-*]\s*)?from:\s*`?([a-z0-9][a-z0-9-]*)`?\s*$", re.I | re.M)
+LESSONS_PROPOSED = STATE / "lessons-proposed.jsonl"   # {slug, from, candidate, at}
+DISCARDED = re.compile(r"^- \S+ discarded (\S+) by ", re.M)   # sign's tombstone line in log.md
 
 
 # ----- shared helpers (check.py imports these) ---------------------------------
@@ -302,6 +313,10 @@ def evidence_line(ev: Evidence) -> str:
     # text can hold what that space's left-out list forbids. A record without a title is
     # named by its id; the signer opens it where it lives.
     text = " ".join(ev.title.split()) or f"record {ev.record}"
+    # a pointer is a location, not content, so it may travel; the release scrub still reads it.
+    # Only the pointer forms count: a mail's `Ref: <number>` line is body text.
+    refs = [r for r in dict.fromkeys(link.refs_in(ev.body)) if link.ref_repo(r)]
+    text += f" (refs: {', '.join(refs)})" if refs else ""
     kind = "landed" if ev.landed else ("journal" if ev.fm.get("source") == "journal" else "witness")
     return f"- {ev.at:%Y-%m-%d}: {text} ({kind}, {ev.record})"
 
@@ -410,6 +425,36 @@ def write_decision(root: Path, space, reg, ev: Evidence, now: dt.datetime, reade
     return "refreshed" if old_fm else "new"
 
 
+def write_lesson(root: Path, space, ev: Evidence, lesson: str, source: str | None, now: dt.datetime) -> str:
+    """A `lesson:` line as a company-grain candidate for the brain, one per slug: the lesson text
+    alone, never the `from:` subject it came from (ring 3). New evidence merges into the draft of
+    the same slug; a lesson the signer discarded is not proposed again from the same `source`."""
+    slug = slugify(lesson)
+    log = root / "log.md"
+    discarded = set(DISCARDED.findall(log.read_text(encoding="utf-8", errors="replace"))) if log.exists() else set()
+    if any(row.get("slug") == slug and row.get("from") == source and str(row.get("candidate")) in discarded
+           for row in registry_mod._jsonl(root / LESSONS_PROPOSED)):
+        return "skipped"
+    path = root / CANDIDATES / f"lesson-{slug}.md"
+    existing = _draft_or_none(path, Reader())
+    if existing is None or ev.record in [str(r) for r in existing[0].get("evidence") or []]:
+        return "skipped"
+    old_fm, old_body = existing
+    fm = {"id": old_fm.get("id") or pages.new_id(), "type": "concept", "title": old_fm.get("title") or lesson[:80],
+          "status": "draft", "generated": pages.generated(ROUTINE, now), "kind": "topics",
+          "target": f"knowledge/topics/lessons/{slug}.md"}
+    brain = gating.brain_space(space)
+    if brain is not None and brain.name != space.name:
+        fm["destination"] = brain.name
+    fm["evidence"] = [str(r) for r in old_fm.get("evidence") or []] + [ev.record]
+    pages.write(path, fm, old_body or f"{lesson}\n")
+    proposed = root / LESSONS_PROPOSED
+    proposed.parent.mkdir(parents=True, exist_ok=True)
+    with proposed.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps({"slug": slug, "from": source, "candidate": fm["id"], "at": pages.iso(now)}) + "\n")
+    return "refreshed" if old_fm else "new"
+
+
 def run(root, now: dt.datetime | None = None, rebuild: bool = False,
         subject_id: str | None = None) -> DistillReport:
     """One distill pass. `rebuild` writes each subject candidate from scratch; with a
@@ -497,6 +542,11 @@ def run(root, now: dt.datetime | None = None, rebuild: bool = False,
                     and not held(ev.subject):
                 said = dataclasses.replace(ev, body=f"Decision: {str(item['text']).strip()}\n\n{ev.body}")
                 count(write_decision(root, space, reg, said, now, reader), None)
+    # lessons are read from the daily note itself: a swept copy of an entry has lost its `from:` line
+    for ev in new_since(journal_evidence(root), since):
+        source = next(iter(FROM_LINE.findall(ev.body)), None)
+        for lesson in LESSON_LINE.findall(ev.body):
+            count(write_lesson(root, space, ev, lesson, source, now), None)
     write_watermark(root, ROUTINE, {"at": pages.iso(now)})
     report.cost_tokens = reader.cost_tokens
     append_run(root, ROUTINE, space, now, report.cost_tokens, notes())

@@ -5,9 +5,11 @@ import re
 import distill
 import link
 import pages
+import sign
 import sweep
-from conftest import NOW, make_space, write_page
-from test_link import journal_ws
+import yaml
+from conftest import NOW, make_space, mount_brain, write_page
+from test_link import ENTRY_A, journal_ws
 from test_sweep import walled
 
 H = dt.timedelta(hours=1)
@@ -480,3 +482,88 @@ def test_distill_counts_a_journal_entry_once(tmp_path):
     distill.run(ws, now=NOW)
     record = f"journal-{NOW:%Y%m%d}T1015"
     assert evidence_ids(candidate_text(ws, "harbor-voice-agent")).count(record) == 1
+
+
+# ----- pointers and lessons (codebase links, Task 7) --------------------------------------------
+LESSON = "- lesson: retry webhooks with backoff\n- from: beacon-app\n"
+
+
+def add_entry(ws, day, hhmm, body):
+    """Append an entry at `hhmm` to ada's daily note for `day`."""
+    note = ws / "journal" / f"{day:%Y}" / f"{day:%m}" / f"{day:%Y-%m-%d}.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    text = note.read_text(encoding="utf-8") if note.exists() else f"# {day:%Y-%m-%d}\n"
+    note.write_text(f"{text}\n## {hhmm}Z: entry at {hhmm}\n\n{body}", encoding="utf-8")
+
+
+def lesson_ws(tmp_path, entry_a=ENTRY_A + LESSON):
+    """journal_ws with the brain (named `brain`) mounted."""
+    ws = journal_ws(tmp_path, entry_a=entry_a)
+    mount_brain(ws, make_space(tmp_path / "brain", profile="brain"))
+    return ws
+
+
+def lesson_candidates(root):
+    return sorted((root / "_inbound" / "candidates").glob("lesson-*.md"))
+
+
+def lesson_rows(root):
+    path = root / distill.LESSONS_PROPOSED
+    return [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
+
+
+def test_evidence_line_lists_refs(tmp_path):
+    ws = journal_ws(tmp_path)
+    distill.run(ws, now=NOW)
+    text = candidate_text(ws, "harbor-voice-agent")
+    assert f"call-flow spec written (refs: northwind/harbor-voice:docs/spec.md@abc) (journal, journal-{NOW:%Y%m%d}T1015)" in text
+    assert f"pilot scope (journal, journal-{NOW:%Y%m%d}T1100)" in text   # no ref: the title only
+    mail = distill.Evidence(record="m-1", rel="x.md", at=NOW, arrived=NOW, title="Invoice",
+                            body="Ref: INV-2026\n", subjects=["harbor"], landed=False)
+    assert distill.evidence_line(mail) == f"- {NOW:%Y-%m-%d}: Invoice (witness, m-1)"   # no pointer form
+
+
+def test_lesson_line_becomes_a_brain_candidate_without_the_client(tmp_path):
+    ws = lesson_ws(tmp_path)
+    distill.run(ws, now=NOW)
+    fm, body = pages.read(ws / "_inbound/candidates/lesson-retry-webhooks-with-backoff.md")
+    assert fm["destination"] == "brain" and fm["target"] == "knowledge/topics/lessons/retry-webhooks-with-backoff.md"
+    assert (fm["type"], fm["status"], fm["kind"], fm["title"]) == ("concept", "draft", "topics", "retry webhooks with backoff")
+    assert fm["evidence"] == [f"journal-{NOW:%Y%m%d}T1015"] and body.strip() == "retry webhooks with backoff"
+    assert "beacon" not in (yaml.safe_dump(fm) + body).lower() and "subject" not in fm
+    row, = lesson_rows(ws)
+    assert row == {"slug": "retry-webhooks-with-backoff", "from": "beacon-app", "candidate": fm["id"], "at": pages.iso(NOW)}
+    distill.run(ws, now=NOW + H)                                   # nothing new: no second row
+    assert len(lesson_rows(ws)) == 1 and len(lesson_candidates(ws)) == 1
+
+
+def test_same_lesson_from_two_subjects_merges(tmp_path):
+    ws = lesson_ws(tmp_path)
+    add_entry(ws, NOW, "13:00", "- lesson: Retry webhooks with backoff.\n- from: lighthouse-voice\n- subject: ada-notes\n")
+    distill.run(ws, now=NOW)
+    fm, _ = pages.read(lesson_candidates(ws)[0])
+    assert len(fm["evidence"]) == 2 and len(lesson_candidates(ws)) == 1
+
+
+def test_rejected_lesson_not_proposed_again_from_same_source(tmp_path):
+    ws = lesson_ws(tmp_path)
+    distill.run(ws, now=NOW)
+    fm, _ = pages.read(lesson_candidates(ws)[0])
+    sign.apply(ws, {fm["id"]: ("no", "")}, by="Ada Okafor", now=NOW + H)
+    later = NOW + D
+    add_entry(ws, later, "09:00", LESSON + "- subject: harbor-voice-agent\n")
+    distill.run(ws, now=later + H)
+    assert lesson_candidates(ws) == []
+    add_entry(ws, later, "10:00", "- lesson: retry webhooks with backoff\n- from: lighthouse-voice\n"
+                                  "- subject: harbor-voice-agent\n")
+    distill.run(ws, now=later + 2 * H)
+    path, = lesson_candidates(ws)
+    assert pages.read(path)[0]["evidence"] == [f"journal-{later:%Y%m%d}T1000"]
+
+
+def test_lesson_without_from(tmp_path):
+    ws = lesson_ws(tmp_path, entry_a=ENTRY_A + "- lesson: pin the model version\n")
+    add_entry(ws, NOW, "13:00", "- lesson: log every webhook\n- from: nobody-registered\n- subject: ada-notes\n")
+    distill.run(ws, now=NOW)
+    assert len(lesson_candidates(ws)) == 2
+    assert sorted(str(r["from"]) for r in lesson_rows(ws)) == ["None", "nobody-registered"]

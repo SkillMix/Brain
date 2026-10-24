@@ -456,12 +456,28 @@ def _render_status(space, subject, evs: list, now, template: str) -> str:
     for e in ahead:
         day = f"{e.at:%Y-%m-%d}"
         coming.setdefault((day, e.title), f"- {day}: {e.title} ({e.tier}, {e.scope}, {day})")
-    return template.format(
+    text = template.format(
         title=f"{subject.title}: status", subject=subject.id,
         open=_open_text(evs),
         closed=_lines(_newest(e for e in evs if e.section == "closed" and e.at >= cut)),
         timeline=_lines(_newest(e for e in evs if e.section == "timeline" and e not in ahead)[:TIMELINE_LINES]),
         coming="\n".join(coming[k] for k in sorted(coming)) or "- none")
+    found = pointers(evs)
+    if not found:
+        return text
+    import link
+    lines = "".join(f"- [{ref}]({link.ref_url(ref)})\n" for ref in found)
+    return text.rstrip("\n") + "\n\n## Pointers\n\n" + lines
+
+
+def pointers(evs: list, limit: int = 10) -> list:
+    """The `ref:` pointers into code that the subject's witness and landed pages under
+    knowledge/sources/ carry (landing files records there), newest first, each once. Only the
+    pointer forms count, so a mail's `Ref: <number>` line is no pointer."""
+    import link
+    found = [ref for e in _newest(e for e in evs if e.path.startswith("knowledge/sources/"))
+             for ref in link.refs_in(e.text) if link.ref_url(ref)]
+    return list(dict.fromkeys(found))[:limit]
 
 
 def _see_link(page: str, fresh: dict) -> str:
