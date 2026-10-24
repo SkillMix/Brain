@@ -395,6 +395,7 @@ def run(root, seed, name, crew, online, org=None, home=None, dry_run=False,
         result = f"{subject} added with home: {name}"
     report.add("registry home", True, f"python _meta/tools/registry.py . find {subject}", result)
     phases["registry"] = result
+    onboard.scan_codebases(report, root, now, offline)   # the new subject claims its codebases
     items.append({"id": f"mint-{name}-team", "kind": "question",
                   "text": f"create team {name}-crew with {', '.join(crew) or 'nobody yet'}",
                   "recommendation": "yes", "default": "the crew is added by hand later", "deadline": None,

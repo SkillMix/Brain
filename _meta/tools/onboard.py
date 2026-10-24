@@ -1179,6 +1179,19 @@ def resolve_brain(root, brain, offline):
     return mount.get("repo"), mount.get("path") or "brain"
 
 
+def scan_codebases(report, root, now, offline) -> None:
+    """The codebases the person can reach are linked to their subjects (link.py scan). Offline
+    asks no host. Never an owner step: a session's first `resolve` places what a scan missed."""
+    try:
+        import link
+        out = link.scan(root, now=now, list_fn=(lambda owner: None) if offline else None)
+        result = (f"{out['linked']} linked, {out['asked']} asked" if not out.get("skipped")
+                  else "skipped: offline" if offline else f"skipped: {out['skipped']}")
+    except Exception as exc:
+        result = f"skipped: {str(exc)[:200]}"
+    report.add("codebases linked", True, "python _meta/tools/link.py . resolve --cwd <a codebase>", result)
+
+
 def run(root, answers, offline=False, org=None, dry_run=False, home=None, user_instructions=None,
         brain=None, everyone=False, with_projects=False, progress=None) -> Report:
     root = Path(root).resolve()
@@ -1303,6 +1316,7 @@ def run(root, answers, offline=False, org=None, dry_run=False, home=None, user_i
                 run_cmd(["git", "submodule", "add", "-b", "main", mount["repo"], mount["path"]], dry_run, cwd=root)
             report.add(f"mount {mount['name']}", offline or (root / mount["path"] / "space.yaml").exists() or dry_run,
                        f"test -f {root / mount['path'] / 'space.yaml'}", "crew project mounted read-only")
+        scan_codebases(report, root, now, offline)
         report.spaces[name] = root
     ui = Path(user_instructions) if user_instructions else default_user_instructions(root, offline, home)
     report.user_instructions = ui
