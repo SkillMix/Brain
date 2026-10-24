@@ -448,7 +448,6 @@ def _arm(tmp_path, gate_line, allows, methods, refusals=0):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     (bin_dir / "gh").write_bytes(FAKE_GH.encode())
-    (bin_dir / "sleep").write_bytes(b'#!/bin/sh\necho "sleep $1" >> "$FAKE_LOG"\n')
     for f in bin_dir.iterdir():
         f.chmod(0o755)
     (tmp_path / "gate.txt").write_text(gate_line + "\n", encoding="utf-8")
@@ -459,7 +458,9 @@ def _arm(tmp_path, gate_line, allows, methods, refusals=0):
                FAKE_METHODS=methods, FAKE_REFUSALS=str(refusals))
     script = _step("arm", "Arm auto-merge, or leave it for the owner")["run"]
     # Actions runs a step's script as bash -eo pipefail
-    done = subprocess.run([bash, "--noprofile", "--norc", "-eo", "pipefail", "-c", script],
+    # sleep is a function: it shadows a sleep program or builtin on every platform (Windows runners)
+    fake_sleep = 'sleep() { echo "sleep $1" >> "$FAKE_LOG"; }\n'
+    done = subprocess.run([bash, "--noprofile", "--norc", "-eo", "pipefail", "-c", fake_sleep + script],
                           env=env, capture_output=True, text=True)
     calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
     return done, [c for c in calls if c.startswith("pr merge")], [c for c in calls if c.startswith("sleep")]
