@@ -1,3 +1,5 @@
+import yaml
+
 import pages
 import validate
 from conftest import make_space, mount_brain, write_page
@@ -46,6 +48,40 @@ def test_link_to_ancestor_id_resolves_through_mount(tmp_path):
     write_page(ada, "knowledge/topics/pricing/note.md", title="Note",
                body="Per [the rule](id:p-0000aaaa).\n")
     assert errors(ada) == []
+
+
+def _candidate_for_harbor(tmp_path, harbor_present):
+    """A personal space with the brain and a project, harbor, mounted; distill's candidate for
+    harbor links to one of its pages and to one that exists nowhere."""
+    brain = make_space(tmp_path / "brain", profile="brain")
+    harbor = tmp_path / "harbor"
+    if harbor_present:
+        make_space(harbor, profile="project")
+        write_page(harbor, "knowledge/projects/harbor/brief.md", id="p-0000bbbb", title="Harbor")
+    ada = make_space(tmp_path / "ada")
+    mount_brain(ada, brain)
+    data = yaml.safe_load((ada / "space.yaml").read_text(encoding="utf-8"))
+    data["mounts"].append({"name": "harbor", "path": str(harbor)})
+    (ada / "space.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    write_page(ada, "_inbound/candidates/harbor.md", title="Harbor", destination="harbor",
+               body="Per [the brief](id:p-0000bbbb) and [a gone page](id:p-0000cccc).\n")
+    return ada
+
+
+def test_a_link_into_a_mount_not_on_disk_is_a_warning_that_names_it(tmp_path):
+    # Seen live: CI's mount token could not read a project, validate skipped the cross-space
+    # checks with a warning, and still failed on a candidate's links into that project.
+    ada = _candidate_for_harbor(tmp_path, harbor_present=False)
+    problems = validate.validate(ada)
+    assert errors(ada) == []
+    for pid in ("p-0000bbbb", "p-0000cccc"):
+        assert any(p.startswith("warning:") and pid in p and "harbor" in p for p in problems), problems
+
+
+def test_a_link_resolves_in_any_mount_on_disk_and_else_stays_an_error(tmp_path):
+    ada = _candidate_for_harbor(tmp_path, harbor_present=True)
+    assert not any("p-0000bbbb" in p for p in validate.validate(ada))
+    assert any("p-0000cccc" in e for e in errors(ada))
 
 
 def test_unknown_kind_folder_fails(tmp_path):

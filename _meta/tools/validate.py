@@ -193,11 +193,13 @@ def validate(root, template: bool = False) -> list:
             if not pages.is_page_path(path):
                 continue
             bodies[path] = _check_page(root, path, space, seen_ids, errs)
-    # id links
+    # id links: this space and every mount on disk. While a mount is absent, a link found
+    # nowhere may point into it, so it is a warning that names the absent mounts, not an error.
     known = dict(_ids_of(root))
     for mount_root in space.ancestor_roots():
         for pid, rel in _ids_of(mount_root).items():
             known.setdefault(pid, rel)
+    absent = [m.get("name", "") for m in space.mounts if space.mount_root(m.get("name", "")) is None]
     link_files = list(bodies.items())
     for sub in ("index.md", "work", "journal", "docs"):
         base = root / sub
@@ -209,7 +211,9 @@ def validate(root, template: bool = False) -> list:
     for path, text in link_files:
         for pid in pages.id_links(text or ""):
             if pid not in known:
-                errs.append(f"{path.relative_to(root).as_posix()}: link to unknown id `{pid}`")
+                message = f"{path.relative_to(root).as_posix()}: link to unknown id `{pid}`"
+                errs.append(f"warning: {message}; it may be in a mount not on disk "
+                            f"({', '.join(f'`{n}`' for n in absent)})" if absent else message)
     # the engine file (an extra stays off until the probe measured a gain)
     if search is not None:
         errs.extend(search.errors(root))
