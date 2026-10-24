@@ -679,3 +679,12 @@ def test_inviting_someone_not_yet_registered_registers_them_or_says_how(tmp_path
     answers = yaml.safe_load((brain / "_meta" / "state" / "invitations" / "ravi.yaml").read_text(encoding="utf-8"))
     assert answers["name"] == "Ravi Mendes" and answers["say"].startswith("Onboard me to Lantern Works:")
     assert registry.Registry(brain, spaceyaml.load(brain)).check() == []
+
+
+def test_instruction_carries_the_four_rules(tmp_path):
+    """Working in a codebase (docs/design/2026-10-22-codebase-link-design.md 4.3): triggers, three
+    rings, writing by readers, capture with a pointer; Needs you once a day."""
+    ws = make_space(tmp_path / "ada")
+    text = onboard.instruction_block(ws)
+    for needle in ("link.py", "resolve", "Three rings", "readers: wider", "ref: <owner/repo>", "--once-a-day"):
+        assert needle in text

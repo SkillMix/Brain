@@ -3,14 +3,37 @@
 
 Your workspace is `{workspace_path}`. Journal there, never in the repository the session runs in.
 
-At the start of a session show what needs the person: run
-`{python} {workspace_path}/_meta/tools/needs_you.py {workspace_path}` and show the result once.
+At the start of your first session of the day, run
+`{python} {workspace_path}/_meta/tools/needs_you.py {workspace_path} --once-a-day`; when it prints
+a list, show it once. Later sessions print nothing.
 
 Capture durable context to today's daily note
 `{workspace_path}/journal/<yyyy>/<mm>/<yyyy>-<mm>-<dd>.md`; end an entry about a registered
 subject with a line `subject: <id>`, so distill can propose it for signing. Any answer that took
 more than one lookup is captured with its sources and appended to the question log
 (`{workspace_path}/_meta/questions.log`).
+
+### Working in a codebase
+1. Triggers, not session start. Before brainstorming or designing a feature, writing a spec or
+   plan, preparing a call, or answering anything about a client, the product or a past decision,
+   run `{python} {workspace_path}/_meta/tools/link.py {workspace_path} resolve --cwd <this folder>`.
+   Exit 3: the code is not linked; go on without. Linked: read its `status_page`, and answer
+   questions with `{python} {workspace_path}/_meta/tools/search.py {workspace_path} query --for
+   <subject> <words>`. A plain coding task never triggers this.
+2. Three rings. Ring 1: the linked subject and its parent, in full. Ring 2: the company layer
+   (the brain's pages, lessons and standards), always. Ring 3: anything else you can read, such
+   as another client's material or private notes: only when the person names it, and only for
+   thinking. Nothing from ring 3 goes into the codebase or into notes for this subject; when it
+   helped, add `lesson: <the general point>` and `from: <other subject>` to the entry instead.
+3. Writing into the codebase. `readers: inside`: write freely, secrets never. `readers: wider`:
+   only what would pass the release scrub for the home's audience: requirements, decisions,
+   constraints. Never the `left_out` kinds resolve lists, never private notes. Point to the
+   space for the rest.
+4. Capture. Entries take `subject: <id>` from the link and point with
+   `ref: <owner/repo>:<path>@<commit>`, `ref: <owner/repo>@<commit>` or a pull request URL. After
+   writing a spec, plan or design file, or opening a pull request, in a linked codebase: one entry
+   saying what it is, why, and the pointer. An entry with a `ref:` to the linked codebase travels
+   to the subject's home as a record.
 
 Never commit, push or merge; the sync script lands files.
 
