@@ -5,7 +5,7 @@ versioning](https://semver.org); while the version starts with 0, a minor releas
 the shape and ships its migration. Each choice behind a change has a line in
 `docs/decisions.md`.
 
-## [0.1.0] - 2026-10-23
+## [0.1.0] - 2026-10-24
 
 The first public release.
 
@@ -154,3 +154,51 @@ Found during the private preview, before the first release.
   again after its repositories were deleted) was reused: releases and classification notes
   went nowhere while the run line said nothing failed. Such a clone is now moved to
   `.stale/` and the destination cloned fresh.
+
+Found in a drill that sets off each never-used part of the template in a throwaway fixture
+company, before the first release.
+
+- **A retraction withdraws the release where it landed.** A landed record is marked
+  `retracted` and no longer read as evidence; a release retracted before landing is not filed.
+- **Pulling a router item pauses the router for that destination.** The router's at-once items
+  carry the path `router:<destination>`, so a pull or a failed sample pauses them for 4 weeks.
+- **Dormancy reaches every subject at its home and wakes on new evidence.** The home judges
+  every subject homed there, also those the brain holds, and tells the holder with a state note.
+- **Offboard archives a subject homed here in the registry that holds it.** A leaving space
+  sends an archive note for each such subject, and no note moves a subject out of `archived`.
+- **The librarian splits a desk subject that another registry holds.** The split check walks
+  the subjects a space sees from the brain, not only its own registry.
+- **The librarian files a loose page that sits right under `knowledge/`.**
+- **A shape migration's commit carries only what the migration changed.** The person's
+  unrelated uncommitted work stays out of the structure commit.
+- **An answered checker hit no longer silences a later different value.** A hit's id includes
+  the value it is about.
+- **The checker reads a newly signed page without waiting for new evidence.**
+- **The weekly review batch keeps its weekly stamp.** The checker's run no longer drops
+  `review_at` from its watermark.
+- **Each sending space's conflict note has an id of its own.** Two spaces contesting one page
+  both reach its owner.
+- **The forget listing finds doubt items and signals about the subject.**
+
+Found while landing the drill fixes and preparing the first release.
+
+- **A later different value from the same space sends a conflict note of its own.** The note's
+  id includes the value, so a second value no longer overwrites the first.
+- **A spec page queued with a tracker request gets the issue key.** `tracker.py queue --spec`
+  names the page; once the issue is made, `tracker: <key>` is written into it and its state moves.
+- **A step that fails in the daily run shows on the same morning's briefing.** `stale.yaml`
+  moves as each step ends, and the morning view reads it directly.
+- **The sync script names a chain its scheduler never starts.** A chain whose last run is older
+  than twice its schedule's longest gap is labelled stale until it runs again.
+- **A failed shape migration is undone whole and tried again after a template update.** Every
+  path it changed is restored, and nothing asks a person.
+- **A green pull request is merged when the base moves under it.** The merge step retries after
+  a short wait and arms auto-merge with a method the repository allows.
+- **A token in a link is cut from the page and sends no security email.** Verification,
+  unsubscribe, invitation, signing and tracking links keep their host and path; only a key, a
+  private key or a labelled password still warns.
+- **The full template copy test runs in the template only, not in every space.**
+- **A link into a mount that is not on disk is a warning, not an error.** A space whose checks
+  cannot read one of its mounts still validates.
+- **The permission tests read the skills a space has.** A project space without the personal
+  skills no longer fails them; in the template every skill is still required.
