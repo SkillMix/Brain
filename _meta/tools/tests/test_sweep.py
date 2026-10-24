@@ -4,11 +4,13 @@ import json
 
 import yaml
 
+import link
 import pages
 import release
 import spaceyaml
 import sweep
 from conftest import NOW, make_space, mount_brain
+from test_link import journal_ws
 
 def walled(home, crew):
     """A settled classification: the gate lets the project reach its own space."""
@@ -70,6 +72,16 @@ def queue_items(root):
 
 def held_items(root):
     return [pages.read(p) for p in sorted((root / "_outbound" / "held").glob("*.md"))]
+
+
+def only_queue_item(root):
+    """The frontmatter of the one queue item; fails when there are none or several."""
+    (fm, _), = queue_items(root)
+    return fm
+
+
+def held_in_doubt(root):
+    return sum(fm.get("reason") == "doubt" for fm, _ in held_items(root))
 
 
 def test_a_record_its_destination_already_reads_queues_at_once_and_writes_signal(tmp_path):
@@ -762,3 +774,50 @@ def test_a_backfill_re_export_deepens_old_pages_behind_the_mark(tmp_path):
     sweep.run(ada, now=NOW + dt.timedelta(hours=1))
     page, = list((ada / "knowledge" / "sources").rglob("m-0500.md"))
     assert "The whole message." in pages.read(page)[1]
+
+
+# ----- notes from a codebase session (D8) ---------------------------------------------------------
+def test_walled_crew_home_gets_journal_at_once(tmp_path):
+    # harbor-voice-agent classified walled, home harbor, crew ["ada"]; routing off; only mail declared
+    ws = journal_ws(tmp_path, crew=["ada"])
+    link.journal_records(ws, now=NOW)
+    sweep.run(ws, now=NOW)
+    item = only_queue_item(ws)
+    assert item["class"] == "at_once" and item["destination"] == "harbor"
+    assert item["path"] == "journal:harbor" and pages.parse_iso(item["stage_after"]) == NOW
+
+
+def test_other_home_gets_it_after_the_window(tmp_path):
+    # the same entry, crew ["ben"]
+    ws = journal_ws(tmp_path, crew=["ben"])
+    link.journal_records(ws, now=NOW)
+    sweep.run(ws, now=NOW)
+    item = only_queue_item(ws)
+    assert item["class"] == "window" and held_in_doubt(ws) == 0
+    assert pages.parse_iso(item["stage_after"]) == NOW + spaceyaml.load(ws).window()
+
+
+def test_a_paused_journal_path_waits_the_window(tmp_path):
+    ws = journal_ws(tmp_path, crew=["ada"])
+    release.pause(ws, "journal:harbor", NOW, "pulled back", "x", spaceyaml.load(ws))
+    link.journal_records(ws, now=NOW)
+    sweep.run(ws, now=NOW)
+    assert only_queue_item(ws)["class"] == "window"
+
+
+def test_a_journal_entry_headed_before_a_swept_one_still_travels(tmp_path):
+    # A (10:15) is swept at noon; then an entry headed 10:05 joins the same note (a late write,
+    # an evening entry in a UTC heading, or a link made after the entries)
+    ws = journal_ws(tmp_path, crew=["ada"])
+    noon, later = NOW.replace(hour=12), NOW.replace(hour=13)
+    link.journal_records(ws, now=noon)
+    sweep.run(ws, now=noon)
+    note, = (ws / "journal").rglob("*.md")
+    with note.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write("\n## 10:05Z: flows reviewed\n\n- ref: northwind/harbor-voice:docs/flows.md@abd\n"
+                     "- subject: harbor-voice-agent\n")
+    link.journal_records(ws, now=later)
+    sweep.run(ws, now=later)
+    assert len(queue_items(ws)) == 2
+    sweep.run(ws, now=later)
+    assert len(queue_items(ws)) == 2   # a re-read finds the witness page and stops

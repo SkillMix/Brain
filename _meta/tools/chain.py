@@ -185,7 +185,7 @@ def _started(space: spaceyaml.Space, routine: str) -> None:
 # ----- the two chains ----------------------------------------------------------------
 
 def sweep_chain(root, now: dt.datetime | None = None) -> dict:
-    """sweep → distill → check, each on the files the previous step wrote."""
+    """(journal records →) sweep → distill → check, each on the files the previous step wrote."""
     root = Path(root)
     space = spaceyaml.load(root)
     now = now or space.now()
@@ -193,6 +193,8 @@ def sweep_chain(root, now: dt.datetime | None = None) -> dict:
     _started(space, "sweep_chain")
     if space.profile == "personal" and (space.data.get("transcripts") or {}).get("path"):
         _step(ctx, "transcripts", "transcripts", "scan", root, now=now)
+    if space.profile == "personal":   # notes with a pointer to linked code become records to sweep
+        _step(ctx, "journal_records", "link", "journal_records", root, now=now)
     _step(ctx, "sweep", "sweep", "run", root, now=now)
     if space.profile == "personal":
         _step(ctx, "reply", "reply", "run", root, now=now)

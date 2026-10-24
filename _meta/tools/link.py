@@ -25,7 +25,10 @@ repaired K`. Without the host (no `gh`, signed out, a fixture space) both skip t
 and try again next run.
 
 Entries point into a codebase with a `ref:` line: `owner/repo:path@commit`, `owner/repo@commit`
-or a pull request URL.
+or a pull request URL. In a personal space, an entry about a subject homed elsewhere that points
+into a codebase linked to that subject (or its parent) becomes a `journal` feed record, pointers
+first; the sweep sends it to the home at once when the home is walled and its crew includes the
+writer, else after the window (D8). Every other entry stays home.
 
     python link.py <root> resolve [--cwd DIR]   the link as JSON; exit 3 when there is none
     python link.py <root> link <repo> <subject>  link a codebase detection cannot place
@@ -52,7 +55,9 @@ import spaceyaml  # noqa: E402
 SEEN = Path("_meta") / "state" / "links-seen.jsonl"
 NEEDS_YOU = Path("_inbound") / "needs-you" / "links.yaml"
 STATE = Path("_meta") / "state" / "links.json"   # the last check: {at, links, wider, repaired}
+JOURNAL_FEED = Path("_meta") / "state" / "feed" / "journal.jsonl"   # journal entries that travel (D8)
 REF_LINE = re.compile(r"^\s*(?:[-*]\s*)?ref:\s*`?(\S+?)`?\s*$", re.I | re.M)
+FROM_LINE = re.compile(r"^\s*(?:[-*]\s*)?from:", re.I)   # a lesson's other subject: ring 3, never travels
 REF_PR = re.compile(r"^https?://github\.com/([\w.-]+/[\w.-]+)/pull/\d+/?$", re.I)
 REF_AT = re.compile(r"^([A-Za-z0-9][\w-]*/[\w.-]+?)(?::([^@\s]+))?@([\w.-]+)$")
 
@@ -647,6 +652,56 @@ def ref_url(ref: str) -> str | None:
         return None
     repo, path, commit = found.groups()
     return f"https://github.com/{repo}/blob/{commit}/{path}" if path else f"https://github.com/{repo}/commit/{commit}"
+
+
+# ----- notes from a codebase session travel as records (D8) --------------------------------------
+def journal_records(root, now=None) -> int:
+    """Append a `journal` feed row for each journal entry about a subject homed elsewhere that
+    carries a `ref:` into a codebase linked to that subject or its parent; the rows appended.
+    Personal spaces only; an entry already in the feed is not written again. The pointers come
+    first, since the sweep sends a body cut short; the repository goes in `codebase`, so no other
+    subject's `match.repo` claims the record. A `from:` line (the other subject a lesson came
+    from, ring 3) stays home (D5, D6). A row is `admitted`: the sweep takes it however old its
+    heading time, since an entry can be written or become eligible after a newer one was swept.
+    `now` is the chain's clock: a row keeps its entry's time."""
+    import distill
+    root = Path(root)
+    space = spaceyaml.load(root)
+    if space.profile != "personal":
+        return 0
+    reg = registry.Registry(root, space)
+    have = {str(row.get("id")) for row in registry._jsonl(root / JOURNAL_FEED)}
+    written = 0
+    for entry in distill.journal_evidence(root):
+        sid = entry.subjects[0]
+        subject = reg.get(sid)
+        home = reg.home_of(sid)
+        refs = refs_in(entry.body)
+        if entry.record in have or subject is None or not home or home == space.name or not refs:
+            continue
+        found = next((l for l in (link_for(root, ref_repo(r)) for r in refs)
+                      if l is not None and l.subject in (sid, subject.part_of)), None)
+        if found is None:
+            continue
+        rest = "\n".join(line for line in entry.body.splitlines()
+                         if not REF_LINE.match(line) and not FROM_LINE.match(line)).strip()
+        text = "\n".join(f"ref: {r}" for r in refs) + ("\n\n" + rest if rest else "") + "\n"
+        _append(root / JOURNAL_FEED, json.dumps({
+            "id": entry.record, "source": "journal", "kind": "document", "at": pages.iso(entry.at),
+            "subject": entry.title, "text": text, "audience": "owner", "from": space.owner,
+            "identifiers": {"subject": sid}, "codebase": found.repo, "admitted": True}, ensure_ascii=False))
+        have.add(entry.record)
+        written += 1
+    return written
+
+
+def journal_at_once(space, reg, sid: str) -> bool:
+    """A journal record about `sid` leaves at once: the classification that governs it is walled
+    and its crew includes the space's owner (D8: the same people, nothing to pull back)."""
+    import classify
+    found = classify.effective(reg, sid) or {}
+    crew = found.get("crew") if isinstance(found.get("crew"), list) else [found.get("crew")]
+    return found.get("class") == "walled" and classify.person_id(reg, space.owner) in [str(c) for c in crew]
 
 
 def main(argv=None) -> int:

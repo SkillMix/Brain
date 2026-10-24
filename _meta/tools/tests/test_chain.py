@@ -71,11 +71,21 @@ def test_sweep_chain_runs_sweep_distill_check_in_order(tmp_path, fakes):
     assert all(call[2] == NOW for call in fakes.calls)
     assert result["errors"] == []
     # a personal space also reads email replies to its briefing (no fake here: skipped)
-    assert set(result["steps"]) == {"sweep", "reply", "distill", "check", "tracker_observe"}
+    assert set(result["steps"]) == {"journal_records", "sweep", "reply", "distill", "check", "tracker_observe"}
     lines = (root / "_meta" / "state" / "runs.jsonl").read_text(encoding="utf-8").splitlines()
     line = json.loads(lines[-1])
     assert line["routine"] == "sweep_chain" and line["at"] == "2026-10-12T09:00:00Z"
     assert {"space", "cost_tokens", "notes"} <= set(line)
+
+
+def test_a_personal_sweep_chain_writes_journal_records_before_the_sweep(tmp_path, fakes):
+    fakes.modules["link"] = types.SimpleNamespace(journal_records=fakes._fn("journal_records"))
+    chain.sweep_chain(make_space(tmp_path / "ada"), now=NOW)
+    assert fakes.names() == ["journal_records", "sweep", "distill", "check"]
+    assert fakes.calls[0][2] == NOW
+    fakes.calls.clear()
+    chain.sweep_chain(make_space(tmp_path / "harbor", profile="project", name="harbor"), now=NOW)
+    assert fakes.names() == ["sweep", "distill", "check"]
 
 
 def test_a_failing_step_is_recorded_and_the_chain_continues(tmp_path, monkeypatch):

@@ -186,7 +186,8 @@ def gather_evidence(root, reader: Reader, space_name: str = "") -> list:
             item = _evidence(root, path, fm, body, landed=True, space_name=space_name)
             if item:
                 found.append(item)
-    found.extend(journal_evidence(root))
+    paged = {ev.record for ev in found if not ev.landed}   # a swept journal record: its page carries it
+    found.extend(ev for ev in journal_evidence(root) if ev.record not in paged)
     return found
 
 

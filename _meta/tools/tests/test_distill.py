@@ -1,9 +1,13 @@
 import datetime as dt
 import json
+import re
 
-import pages
 import distill
+import link
+import pages
+import sweep
 from conftest import NOW, make_space, write_page
+from test_link import journal_ws
 from test_sweep import walled
 
 H = dt.timedelta(hours=1)
@@ -457,3 +461,22 @@ def test_checked_refuses_when_verify_finds_problems(tmp_path, capsys):
     assert distill.main([str(root), "checked", str(path), "--by", "Ben Liu"]) == 1
     assert path.read_text(encoding="utf-8") == before
     assert "source" in capsys.readouterr().out
+
+
+def candidate_text(root, name):
+    return (root / "_inbound" / "candidates" / f"{name}.md").read_text(encoding="utf-8")
+
+
+def evidence_ids(text):
+    """The record ids a candidate's evidence lines name."""
+    return re.findall(r"^- .*\((?:landed|journal|witness), ([^)]+)\)$", text, re.M)
+
+
+def test_distill_counts_a_journal_entry_once(tmp_path):
+    # entry A at 10:15 on the `now` day is journal evidence and, after the sweep, a witness page with the same record id
+    ws = journal_ws(tmp_path)
+    link.journal_records(ws, now=NOW)
+    sweep.run(ws, now=NOW)
+    distill.run(ws, now=NOW)
+    record = f"journal-{NOW:%Y%m%d}T1015"
+    assert evidence_ids(candidate_text(ws, "harbor-voice-agent")).count(record) == 1

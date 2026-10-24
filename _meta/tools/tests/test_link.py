@@ -16,7 +16,7 @@ import classify
 import link
 import registry
 import spaceyaml
-from conftest import make_space, mount_brain
+from conftest import NOW, make_space, mount_brain
 
 
 def make_codebase(root: Path, url: str = "https://github.com/northwind/harbor-voice.git") -> Path:
@@ -639,3 +639,63 @@ def test_health_cell(tmp_path, now):
     assert link.health_cell(ws) == "links 0"
     link.check(ws, now=now, lookup_fn=same, readers_fn=lambda r: ["x-gh"])
     assert link.health_cell(ws) == "links 1, wider 1, repaired 0"
+
+
+# ----- notes from a codebase session travel as records (D8) ---------------------------------------
+REF_A = "ref: northwind/harbor-voice:docs/spec.md@abc"
+ENTRY_A = f"- The call-flow spec, so the pilot can start.\n- {REF_A}\n- subject: harbor-voice-agent\n"
+
+
+def journal_ws(tmp_path, crew=("ada",), entry_a=ENTRY_A, **space):
+    """ada's workspace (a mail source declared) holding harbor-voice-agent (home harbor, walled with
+    `crew`, linked to northwind/harbor-voice), beacon (linked to beacon/app) and her own ada-notes.
+    Her journal for the test day: A (10:15) about harbor-voice-agent with `entry_a` as its body, B
+    the same subject without a ref, C ada-notes with A's ref, D harbor-voice-agent with a ref into
+    beacon/app."""
+    wall = {"class": "walled", "state": "settled", "home": "harbor", "crew": list(crew), "reason": "its own space",
+            "decided_by": "Ada Okafor", "at": "2026-10-01T09:00:00Z"}
+    ws = make_space(tmp_path / "ada", name="ada", sources=[{"name": "mail", "adapter": "gmail", "audience": "owner"}],
+                    subjects=PEOPLE + [
+                        {"id": "harbor-voice-agent", "kind": "projects", "home": "harbor", "important": True,
+                         "classification": wall,
+                         "repos": [{"repo": "northwind/harbor-voice", "linked_by": "detect", "linked": "2026-10-01"}]},
+                        {"id": "beacon", "kind": "projects", "home": "beacon",
+                         "repos": [{"repo": "beacon/app", "linked_by": "detect", "linked": "2026-10-01"}]},
+                        {"id": "ada-notes", "kind": "topics", "home": "ada"}], **space)
+    note = ws / "journal" / f"{NOW:%Y}" / f"{NOW:%m}" / f"{NOW:%Y-%m-%d}.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    note.write_text(f"# {NOW:%Y-%m-%d}\n\n"
+                    f"## 10:15Z: call-flow spec written\n\n{entry_a}\n"
+                    "## 11:00Z: pilot scope\n\n- Two flows only.\n- subject: harbor-voice-agent\n\n"
+                    f"## 11:30Z: my own notes\n\n- {REF_A}\n- subject: ada-notes\n\n"
+                    "## 12:00Z: other code\n\n- ref: beacon/app@def\n- subject: harbor-voice-agent\n",
+                    encoding="utf-8")
+    return ws
+
+
+def journal_rows(ws) -> list:
+    return [json.loads(l) for l in (ws / link.JOURNAL_FEED).read_text(encoding="utf-8").splitlines()]
+
+
+def test_journal_records_only_for_linked_refs(tmp_path, now):              # Review Focus 4
+    ws = journal_ws(tmp_path)
+    assert link.journal_records(ws, now=now) == 1
+    row, = journal_rows(ws)
+    assert row["identifiers"] == {"subject": "harbor-voice-agent"} and row["codebase"] == "northwind/harbor-voice"
+    assert row["id"] == f"journal-{now:%Y%m%d}T1015" and row["at"] == f"{now:%Y-%m-%d}T10:15:00Z"
+    assert (row["source"], row["kind"], row["audience"], row["from"]) == ("journal", "document", "owner", "Ada Okafor")
+    assert row["subject"] == "call-flow spec written"
+    assert link.journal_records(ws, now=now) == 0                          # idempotent
+    project = journal_ws(tmp_path / "p", profile="project")
+    assert link.journal_records(project, now=now) == 0                     # personal spaces only
+
+
+def test_journal_record_puts_pointers_first(tmp_path, now):
+    body = ("- " + "the pilot needs words " * 140 + "\n- subject: harbor-voice-agent\n- " + REF_A
+            + "\n- lesson: retry webhooks with backoff\n- from: beacon\n")
+    ws = journal_ws(tmp_path, entry_a=body)
+    link.journal_records(ws, now=now)
+    row, = journal_rows(ws)
+    assert row["text"].startswith(REF_A + "\n\n- the pilot needs words")
+    assert row["text"].count(REF_A) == 1
+    assert "lesson: retry webhooks" in row["text"] and "from:" not in row["text"]   # ring 3 stays home

@@ -11,7 +11,8 @@ home (a client, project or deal not yet classified has none: refused as unclassi
 everyone on the record is inside the destination's audience (the client's own mail domain
 counts as inside). Then per projection: a never-leaves term in it -> held at home; a left-out
 term of the destination in it -> held; a never-leaves term elsewhere in the record, medium
-confidence, a high-stakes term, or the review period (`routing.review_until`) -> the window;
+confidence, a high-stakes term, the review period (`routing.review_until`), or a journal record
+(link.journal_records) to a home that is not walled with the writer on its crew -> the window;
 low confidence -> a question for the owner, nothing leaves. An owner's answer counts as approval.
 
 History (docs/design/2026-10-14-history-backfill-design.md, 4.3): with
@@ -40,6 +41,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import classify  # noqa: E402
+import link  # noqa: E402
 import pages  # noqa: E402
 from provenance import is_archive_derived  # noqa: E402
 import registry  # noqa: E402
@@ -576,6 +578,9 @@ def record(root, decision: dict, now: dt.datetime | None = None, by: str | None 
             tier = "window"
             extra["first_release"] = sid
             reasons.append(f"the first release since {sid} was classified company")
+        if tier == "at_once" and fm.get("source") == "journal" and not link.journal_at_once(space, reg, sid):
+            tier = "window"   # D8: at once only to a walled home whose crew includes the writer
+            reasons.append("a note from your session to a home beyond your crew")
         if tier == "at_once" and not by:   # the router's own judgment is a path a pull or failed sample pauses
             via = release.router_path(dest_name)
             if release.is_paused(root, via, now):

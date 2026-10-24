@@ -18,7 +18,9 @@ Deterministic from files: an adapter exports records to `_meta/state/feed/<sourc
    counterpart, not an outsider), a record attached by inference (domain or keywords only) or
    re-attached from an older page, and anything else -> held in doubt, where one yes from its
    person releases it (a standing choice {destination, kind} makes yes the recommendation, never
-   the answer). A content-free
+   the answer). The person's own journal note pointing into code linked to its subject
+   (link.journal_records) leaves at once to a walled home whose crew includes them, else after
+   the window (D8). A content-free
    signal goes to the subject's home for every attached record. A record matching several
    subjects with a home elsewhere is held in doubt and shown as a count;
 4. advances the watermark and appends one run line (cost = characters of records // 4).
@@ -41,6 +43,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import classify as gating  # noqa: E402
+import link  # noqa: E402
 import pages  # noqa: E402
 import registry  # noqa: E402
 import release  # noqa: E402
@@ -153,8 +156,11 @@ def read_feed(root: Path) -> list:
 
 
 def declared_feed(root: Path, space: spaceyaml.Space) -> list:
-    """The feed records of the sources this space declared; the brain sweeps nothing of its own."""
+    """The feed records of the sources this space declared; the brain sweeps nothing of its own.
+    A personal space always reads its `journal` feed (link.journal_records), declared or not."""
     declared = {str(s.get("name")) for s in space.sources if isinstance(s, dict) and s.get("name")}
+    if declared and space.profile == "personal":
+        declared.add("journal")
     feed = [] if space.profile == "brain" else read_feed(root)
     return [r for r in feed if str(r.get("_feed")) in declared] if declared else feed
 
@@ -335,6 +341,13 @@ def classify(space: spaceyaml.Space, record: dict, subject: registry.Subject, de
     if inferred or record.get("_reattach"):
         how = "re-attached from an older page" if record.get("_reattach") else "attached by its domain or title"
         return Verdict(hold="doubt", why=f"widens who can read it; {how}, which nobody chose")
+    if record.get("source") == "journal":   # D8: the person's own note with a pointer to linked code
+        path = f"journal:{destination}"
+        if link.journal_at_once(space, reg, subject.id) and not release.is_paused(space.root, path, now):
+            return Verdict(cls="at_once", stage_after=now, extra={"path": path},
+                           why="your own note to a walled home whose crew includes you")
+        return Verdict(cls="window", stage_after=now + space.window(), extra={"path": path},
+                       why="your own note with a pointer to linked code; it leaves after the window")
     paused_why = ""
     if covers(audience, subject, dest_space):
         path = f"audience:{record.get('source') or 'unknown'}"

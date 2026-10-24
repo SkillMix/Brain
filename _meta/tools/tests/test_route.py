@@ -5,6 +5,7 @@ import json
 import pytest
 import yaml
 
+import link
 import pages
 import release
 import route
@@ -12,7 +13,8 @@ import spaceyaml
 import sweep
 from conftest import NOW, make_space, mount_brain
 
-from test_sweep import walled  # noqa: E402
+from test_link import journal_ws  # noqa: E402
+from test_sweep import only_queue_item, walled  # noqa: E402
 
 SUBJECTS = [
     {"id": "harbor", "kind": "projects", "title": "Harbor", "home": "harbor",
@@ -848,3 +850,16 @@ def test_an_at_once_release_without_a_path_pauses_the_router_when_pulled_or_fail
     (root / "_inbound" / "signals").mkdir(parents=True, exist_ok=True)
     (root / "_inbound" / "signals" / "p-5160aa02.yaml").write_text(yaml.safe_dump(signal), encoding="utf-8")
     assert status.read_signals(root, spaceyaml.load(root), NOW) == ["router:harbor"]
+
+
+def test_router_tier_capped_for_journal_beyond_crew(tmp_path):
+    # routing on; the route decision says at_once for a journal record to a home whose crew lacks ada
+    ws = journal_ws(tmp_path, crew=["ben"], routing={})
+    link.journal_records(ws, now=NOW)
+    sweep.run(ws, now=NOW)
+    rid = f"journal-{NOW:%Y%m%d}T1015"
+    route.record(ws, decision(record=rid, routes=[{
+        "space": "harbor", "subject": "harbor-voice-agent", "tier": "at_once", "why": "the spec", "content": "parts",
+        "parts": [{"text": "The call-flow spec, so the pilot can start."}]}]), now=NOW)
+    item = only_queue_item(ws)
+    assert item["class"] == "window" and "a note from your session to a home beyond your crew" in item["why"]
