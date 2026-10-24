@@ -289,8 +289,8 @@ def _needs_you(root: Path, item: dict | None, drop: str | None = None) -> None:
 def detect(root, repo: str, now=None, id_fn=None) -> dict:
     """Place a repository nothing links yet: one clear match is linked, a tie is asked once, no
     match leaves it unlinked; a link or a question is a SEEN row. A clear match scores 3, or 2
-    for a repository in this space's own organisation (the owner of its remote), where a name
-    word alone is the company's own naming. A repository already linked (under this name or one
+    for a repository in this space's own organisation (the owner of its remote, when that is not
+    the person's own account), where a name word alone is the company's own naming. A repository already linked (under this name or one
     it had) or unlinked is `known`, and nothing is written; so is one asked about, until the
     person answers: `yes` links the recommended subject, `edit <subject>` the one named. One
     that matched nothing leaves no trace, so a subject registered later still claims it."""
@@ -320,8 +320,9 @@ def detect(root, repo: str, now=None, id_fn=None) -> dict:
     reg = registry.Registry(root, space)
     scored = [(s, score(repo, s, reg)) for s in reg.everywhere()]
     top = max((n for _, n in scored), default=0)
-    remote = onboard.git_remote(root)
-    need = 2 if remote and _parts(repo)[0] == remote.split("/")[0].lower() else 3
+    org = (onboard.git_remote(root) or "").split("/")[0].lower()
+    own = str(access.logins(root, space).get(space.owner) or "").lower()
+    need = 2 if org and org != own and _parts(repo)[0] == org else 3
     contenders = [s.id for s, n in sorted(scored, key=lambda p: -p[1]) if n >= need and n >= top - 1]
     if len(contenders) == 1:
         sid = contenders[0]
@@ -593,6 +594,7 @@ def check(root, now=None, lookup_fn=None, readers_fn=None) -> dict:
     claims stays, a link question answered since is applied, and STATE lists what is linked for
     the repository feed. Never an owner alert."""
     import classify
+    import status
     root = Path(root)
     space = spaceyaml.load(root)
     now = now or space.now()
@@ -646,6 +648,17 @@ def check(root, now=None, lookup_fn=None, readers_fn=None) -> dict:
     for by_subject in claims.values():   # two subjects claim one repository: the older stays, the same in every home
         first, *rest = sorted(by_subject.values(), key=lambda l: (l.linked or "9999-99-99", l.subject))
         rest = [other for other in rest if homed_here(other)]
+        verdict = status.verdicts(root).get("link-claim-" + _slug(first.repo)) or {}
+        wanted_by = str(verdict.get("note") or "").strip() if verdict.get("verb") == "edit" else ""
+        if wanted_by and wanted_by != first.subject and homed_here(first):   # the person gave it to another
+            try:
+                unlink(root, first.repo, now=now)
+                link(root, first.repo, wanted_by, now=now)
+            except (ValueError, classify.ClassifyError):
+                pass
+            else:
+                repaired += 1
+                continue
         if homed_here(first):
             kept.append(first)
         repaired += sum(send(other, other.repo, remove=True) for other in rest)
@@ -655,9 +668,7 @@ def check(root, now=None, lookup_fn=None, readers_fn=None) -> dict:
             _needs_you(root, {"id": "link-claim-" + _slug(first.repo), "kind": "question", "for": space.owner,
                               "text": f"{first.repo} was linked to {', '.join(names[:-1])} and {names[-1]}; "
                                       f"I kept {first.subject}, linked first.",
-                              "recommendation": f"keep {first.subject}; to give it to {other} instead: "
-                                                f"python _meta/tools/link.py . unlink {first.repo}, then "
-                                                f"python _meta/tools/link.py . link {first.repo} {other}",
+                              "recommendation": f"keep {first.subject} (edit {other} to give it to {other})",
                               "default": f"{first.subject} keeps it", "depends": 0})
     known = access.logins(root, space)
     allowed = {known[name].lower() for name in access.audience_names(root, space) if name in known}

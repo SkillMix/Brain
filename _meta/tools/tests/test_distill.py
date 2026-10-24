@@ -621,3 +621,5 @@ def test_a_journal_entry_sits_on_the_notes_own_day(tmp_path):
     add_entry(ws, NOW, hhmm, "- a late note\n- subject: harbor-voice-agent\n")
     (ev,) = distill.journal_evidence(ws)
     assert ev.at.astimezone().date() == NOW.date() and ev.at.strftime("%H:%M") == hhmm
+    # the record id comes from the note's date and heading, so another time zone never makes it a new record
+    assert ev.record == f"journal-{NOW:%Y%m%d}T{hhmm.replace(':', '')}"

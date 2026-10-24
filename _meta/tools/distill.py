@@ -237,10 +237,10 @@ def journal_evidence(root) -> list:
                 at = pages.parse_iso(f"{day.group(1)}T{int(hour or 12):02d}:{int(minute or 0):02d}:00Z")
             except (TypeError, ValueError):
                 continue
+            record = f"journal-{at:%Y%m%dT%H%M}"   # the note's date and heading: the same on every machine
             if hour is not None:   # a UTC heading in a note named for the person's own date: the day either side
                 at = next((c for c in (at, at - dt.timedelta(days=1), at + dt.timedelta(days=1))
                            if c.astimezone().date().isoformat() == day.group(1)), at)
-            record = f"journal-{at:%Y%m%dT%H%M}"
             seen[record] = seen.get(record, 0) + 1
             record += f"-{seen[record]}" if seen[record] > 1 else ""
             subjects = list(dict.fromkeys(SUBJECT_LINE.findall(body) + DESK_PATH.findall(body)))

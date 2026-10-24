@@ -128,6 +128,17 @@ def test_detect_links_an_org_repository_named_after_a_one_word_project(tmp_path,
     assert link.detect(ws, "ada-gh/personal-site", now=now)["outcome"] == "none"   # the person's own stays theirs
 
 
+def test_detect_keeps_the_full_bar_in_the_persons_own_account(tmp_path, now):
+    # the workspace lives in Ada's own account (ada-gh), so its remote's owner is no company organisation
+    ws = make_space(tmp_path / "ada", subjects=[{"id": "ada", "kind": "people", "title": "Ada Okafor",
+                                                 "match": {"github": "ada-gh"}},
+                                                {"id": "harbor", "kind": "projects"},
+                                                {"id": "site-redesign", "kind": "projects"}])
+    make_codebase(ws, "https://github.com/ada-gh/ada-workspace.git")
+    assert link.detect(ws, "ada-gh/harbor-notes", now=now)["outcome"] == "none"
+    assert link.detect(ws, "ada-gh/personal-site", now=now)["outcome"] == "none"
+
+
 def test_detect_never_links_a_subject_homed_nowhere(tmp_path, now):
     # the brain holds harbor (home harbor, crew ada) and harbor-site (no home); ada opens lantern/harbor-site
     brain = make_space(tmp_path / "lantern", profile="brain", name="lantern", subjects=PEOPLE + [
@@ -590,10 +601,14 @@ def test_check_keeps_the_older_of_two_claims(tmp_path, now):
     assert item["id"] == "link-claim-northwind-harbor-voice"
     assert item["text"] == ("northwind/harbor-voice was linked to harbor-voice-agent and beacon-app; "
                             "I kept harbor-voice-agent, linked first.")
-    assert item["recommendation"] == ("keep harbor-voice-agent; to give it to beacon-app instead: "
-                                      "python _meta/tools/link.py . unlink northwind/harbor-voice, then "
-                                      "python _meta/tools/link.py . link northwind/harbor-voice beacon-app")
+    assert item["recommendation"] == "keep harbor-voice-agent (edit beacon-app to give it to beacon-app)"
     assert item["default"] == "harbor-voice-agent keeps it"
+    # answered `edit beacon-app`: the next check gives the repository to beacon-app, and it stays there
+    import sign
+    sign.apply(ws, {item["id"]: ("edit", "beacon-app")}, by="Ada Okafor", now=now)
+    link.check(ws, now=now, lookup_fn=same, readers_fn=lambda r: None)
+    link.check(ws, now=now, lookup_fn=same, readers_fn=lambda r: None)
+    assert [l.subject for l in link.links(ws) if not l.gone] == ["beacon-app"]
 
 
 def test_check_at_the_home_sends_a_note_to_the_holder(tmp_path, now):

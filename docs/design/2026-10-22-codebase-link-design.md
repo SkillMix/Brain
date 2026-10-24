@@ -45,7 +45,7 @@ Settled with the owner on 2026-10-22:
 | D5 | Context comes in three rings: (1) this subject and its parent, in full; (2) the company layer (brain pages, lessons, standards), always; (3) anything else the person can read, only when they name it, and then for thinking only. |
 | D6 | Reaching across is a lesson signal. When ring 3 helped, the journal entry records the lesson, and distill proposes it as a company lesson with the client removed, so next time it arrives through ring 2. |
 | D7 | Writing into a codebase is a release to its readers. Readers all inside the subject's audience: write freely. Wider readers: only what passes the release scrub. |
-| D8 | Records from a codebase session reach a walled home whose crew includes the writer at once: same people, nothing to pull back. Every other home gets them after the window. |
+| D8 | Records from a codebase session reach their home after the window, listed in the morning view first; at once only when the router judged them and the home is walled with the writer in its crew. (Owner's choice of 2026-10-24: without the router nothing reads a note for a left-out kind before it leaves.) |
 | D9 | A session never writes into a project space or the brain directly: one door in, one scrub, one place to pull back. |
 | D10 | Needs you shows once a day, in the person's first session of the day, not in every session. |
 | D11 | Capture on events: writing a spec, plan or design file, or opening a pull request, in a linked codebase always makes one journal entry. |

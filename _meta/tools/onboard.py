@@ -595,7 +595,8 @@ def instruction_present(path, workspace) -> bool:
     if not path.exists():
         return False
     text = path.read_text(encoding="utf-8")
-    return MARK_OPEN in text and Path(workspace).resolve().as_posix() in text
+    ws = re.escape(Path(workspace).resolve().as_posix())   # the path itself, not a longer one it starts
+    return MARK_OPEN in text and re.search(ws + r"(?![\w.-])", text) is not None
 
 
 def connect(root, feed: str, audience: str = "owner", scope: dict | None = None) -> bool:

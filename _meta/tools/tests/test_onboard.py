@@ -256,6 +256,7 @@ def test_instruction_block_is_idempotent(tmp_path):
     text = path.read_text(encoding="utf-8")
     assert text.count(onboard.MARK_OPEN) == 1 and onboard.instruction_present(path, other)
     assert not onboard.instruction_present(path, workspace)
+    assert not onboard.instruction_present(path, tmp_path / "be")   # a path that only starts the same is not it
     assert onboard.remove_block(text).strip() == ""
 
 
