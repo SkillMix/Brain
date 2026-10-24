@@ -8,7 +8,11 @@ held in doubt as one count. Each item says what it is, what the agent recommends
 what happens if nothing is done, and by when. Ordered by deadline, then by how much
 depends on the answer, then by kind. `sign` is the one verb over any item.
 
-    python needs_you.py [root] [--json] [--limit N]
+    python needs_you.py [root] [--json] [--limit N] [--once-a-day]
+
+`--once-a-day` shows the list in the first session of the person's day only: it keeps the
+local date it last printed in `_meta/state/private/needs-you-shown` and prints nothing
+again that day.
 """
 from __future__ import annotations
 
@@ -43,6 +47,7 @@ QUEUE = Path("_outbound") / "queue"
 HELD = Path("_outbound") / "held"
 OUTBOX = Path("outbox")
 ROUTING_LOG = Path("_meta") / "state" / "routing.jsonl"
+SHOWN = spaceyaml.PRIVATE_STATE / "needs-you-shown"   # the day the list last printed, YYYY-MM-DD
 
 
 @dataclass
@@ -636,6 +641,8 @@ def main(argv=None) -> int:
     ap.add_argument("--json", action="store_true", help="print the items as JSON instead of markdown")
     ap.add_argument("--limit", type=int, default=7, help="lines to show before `and N more`")
     ap.add_argument("--doubt", action="store_true", help="open the held-in-doubt line: one item each")
+    ap.add_argument("--once-a-day", action="store_true",
+                    help="print only in the day's first session; later calls that day print nothing")
     args = ap.parse_args(argv)
     if args.doubt:
         items = doubt_items(args.root)
@@ -648,11 +655,20 @@ def main(argv=None) -> int:
             if not items:
                 print("Nothing is held in doubt.")
         return 0
+    once = args.once_a_day and not args.json
+    if once:
+        shown = Path(args.root) / SHOWN
+        today = spaceyaml.load(args.root).now().astimezone().date().isoformat()   # the person's day
+        if shown.is_file() and shown.read_text(encoding="utf-8").strip() == today:
+            return 0
     items = collect(args.root)
     if args.json:
         print(json.dumps([i.to_dict() for i in items], indent=2, ensure_ascii=False))
     else:
         print(render(args.root, limit=args.limit, items=items), end="")
+    if once:
+        shown.parent.mkdir(parents=True, exist_ok=True)
+        shown.write_text(today + "\n", encoding="utf-8", newline="\n")
     return 0
 
 

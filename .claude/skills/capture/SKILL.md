@@ -1,6 +1,6 @@
 ---
 name: capture
-description: The personal instruction's behaviour - from any repository a session runs in, journal durable context into the person's own space's daily note, show Needs you once at session start, log answered questions, and never commit. Always on for a person with a personal space; never in a project space of its own.
+description: The personal instruction's behaviour - from any repository a session runs in, journal durable context into the person's own space's daily note, show Needs you in the first session of the day, log answered questions, and never commit. Always on for a person with a personal space; never in a project space of its own.
 ---
 
 # capture: follows the person, not the repository
@@ -18,8 +18,9 @@ journal.
 ## Run
 
 No tool. The instruction gives `<space root>`; then:
-1. Session start, once: `python _meta/tools/needs_you.py <space root>` and show the list in
-   your first reply ("three things need you: ..."). Answers go through the sign skill.
+1. Session start: `python _meta/tools/needs_you.py <space root> --once-a-day`; when it prints a
+   list, show it in your first reply ("three things need you: ..."). Later sessions that day
+   print nothing. Answers go through the sign skill.
 2. During the session, append to the daily note
    `<space root>/journal/<yyyy>/<mm>/<yyyy>-<mm>-<dd>.md` (today on the person's clock;
    when new, start it with a `# <yyyy>-<mm>-<dd>` heading): one dated line per durable

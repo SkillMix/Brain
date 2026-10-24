@@ -5,7 +5,7 @@ Your workspace is `{workspace_path}`. Journal there, never in the repository the
 
 At the start of your first session of the day, run
 `{python} {workspace_path}/_meta/tools/needs_you.py {workspace_path} --once-a-day`; when it prints
-a list, show it once. Later sessions print nothing.
+a list, show it once. Later sessions print nothing. A scheduled routine skips this.
 
 Capture durable context to today's daily note
 `{workspace_path}/journal/<yyyy>/<mm>/<yyyy>-<mm>-<dd>.md`; end an entry about a registered

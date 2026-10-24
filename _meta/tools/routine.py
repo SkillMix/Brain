@@ -33,11 +33,12 @@ CLAUDE = ["-p", "--permission-mode", "acceptEdits", "--permission-prompts", "non
 
 # The tools the routine prompts and the skills they follow run (`_meta/templates/routines/`,
 # sweep, route, classify, distill, check, status, release, request, tracker, owner-email,
-# morning-view, outbox-reconcile, sync), with the two read-only ones every session may start
-# with (needs_you.py, as AGENTS.md says) or search with (search.py). Never sign, reply, set-up or
-# template sync: those are the person's, or run inside chain.py.
+# morning-view, outbox-reconcile, sync), with the read-only one every session may search with
+# (search.py). Never sign, reply, set-up or template sync: those are the person's, or run inside
+# chain.py. Never needs_you.py either: it is the person's list, and `--once-a-day` stamps the day,
+# so a routine that ran it would hide the list from the person's first session.
 ROUTINE_TOOLS = ("brief.py", "chain.py", "check.py", "classify.py", "distill.py", "landing.py",
-                 "librarian.py", "morning_view.py", "needs_you.py", "outbox_reconcile.py",
+                 "librarian.py", "morning_view.py", "outbox_reconcile.py",
                  "owner_email.py", "registry.py", "release.py", "request.py", "route.py", "search.py",
                  "status.py", "sweep.py", "sync.py", "tests_run.py", "tracker.py")
 # What no routine edits, in any space on this machine: the code that runs (tools, migrations,
