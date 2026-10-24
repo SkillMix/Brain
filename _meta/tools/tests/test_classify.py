@@ -592,10 +592,14 @@ def test_link_note_updates_by_repo_id_and_removes(tmp_path, now):
     classify.note(root, "harbor-voice-agent", "link", {"repo": "northwind/harbor-voice", "repo_id": "R_1",
                                                        "linked_by": "detect", "linked": today}, now=now)
     classify.note(root, "harbor-voice-agent", "link", {"repo": "northwind/harbor-voice-2", "repo_id": "R_1",
-                                                       "linked": later}, now=now)
+                                                       "linked": later}, now=now)   # no `was`: not a rename
     repos = registry.Registry(root).get("harbor-voice-agent").extra["repos"]
-    assert len(repos) == 1 and repos[0]["repo"] == "northwind/harbor-voice-2" and repos[0]["linked"] == today
-    classify.note(root, "harbor-voice-agent", "link", {"repo": "northwind/harbor-voice-2", "remove": True}, now=now)
+    assert len(repos) == 1 and repos[0]["repo"] == "northwind/harbor-voice" and repos[0]["linked"] == today
+    classify.note(root, "harbor-voice-agent", "link", {"repo": "northwind/harbor-voice-2", "repo_id": "R_1",
+                                                       "was": ["northwind/harbor-voice"]}, now=now)   # a rename
+    (entry,) = registry.Registry(root).get("harbor-voice-agent").extra["repos"]
+    assert (entry["repo"], entry["was"], entry["linked"]) == ("northwind/harbor-voice-2", ["northwind/harbor-voice"], today)
+    classify.note(root, "harbor-voice-agent", "link", {"repo": "northwind/harbor-voice", "remove": True}, now=now)
     assert registry.Registry(root).get("harbor-voice-agent").extra.get("repos", []) == []
 
 
@@ -624,6 +628,45 @@ def test_link_note_from_the_home_merges_fields(tmp_path, now):
     entry = reg.get("harbor-voice-agent").extra["repos"][0]
     assert outcome == "applied" and entry["readers"] == "wider" and entry["linked_by"] == "detect"
     assert entry["linked"] == today and len(reg.get("harbor-voice-agent").extra["repos"]) == 1
+
+
+@pytest.mark.parametrize("first", ["rename", "new clone"])
+def test_link_notes_keep_one_entry_per_repository(tmp_path, now, first):
+    # the brain holds harbor-voice-agent (home harbor) linked to northwind/harbor-voice (R_1); harbor's check
+    # follows its rename to northwind/harbor-voice-2 while ada's workspace links a clone under the new name
+    brain, _ = brain_and(tmp_path, [{"id": "harbor-voice-agent", "kind": "projects", "home": "harbor", "crew": ["ada"],
+                                     "repos": [{"repo": "northwind/harbor-voice", "repo_id": "R_1",
+                                                "linked_by": "detect", "linked": "2026-10-01"}]}])
+    space, reg = ctx(brain)
+    notes = {"rename": _link_signal("Ben Liu", "harbor", {"repo": "northwind/harbor-voice-2", "repo_id": "R_1",
+                                                         "was": ["northwind/harbor-voice"]}),
+             "new clone": _link_signal("Ada Okafor", "ada", {"repo": "northwind/harbor-voice-2", "linked_by": "detect",
+                                                            "linked": now.date().isoformat()})}
+    for name in sorted(notes, key=lambda n: n != first):
+        assert classify.apply_note(brain, space, reg, notes[name], now)[0] == "applied"
+    (entry,) = reg.get("harbor-voice-agent").extra["repos"]
+    assert (entry["repo"], entry["repo_id"], entry["was"], entry["linked"]) == (
+        "northwind/harbor-voice-2", "R_1", ["northwind/harbor-voice"], "2026-10-01")
+    # a note under the old name, from a view that missed the rename, never renames the link back
+    old = _link_signal("Ben Liu", "harbor", {"repo": "northwind/harbor-voice", "repo_id": "R_1", "readers": "inside"})
+    assert classify.apply_note(brain, space, reg, old, now)[0] == "applied"
+    (entry,) = reg.get("harbor-voice-agent").extra["repos"]
+    assert (entry["repo"], entry["was"], entry["readers"]) == ("northwind/harbor-voice-2", ["northwind/harbor-voice"],
+                                                               "inside")
+
+
+def test_a_merge_keeps_every_old_name(tmp_path, now):
+    # hv-y was renamed hv-z, then hv-z was renamed hv-x: A is the link (now hv-x, was hv-z), B an entry from a
+    # clone made before the first rename; B's rename note lands on A by id and B merges in
+    brain, _ = brain_and(tmp_path, [{"id": "harbor-voice-agent", "kind": "projects", "home": "harbor", "crew": ["ada"],
+                                     "repos": [{"repo": "northwind/hv-x", "repo_id": "R_1", "was": ["northwind/hv-z"],
+                                                "linked": "2026-10-01"},
+                                               {"repo": "northwind/hv-y", "linked": "2026-10-05"}]}])
+    space, reg = ctx(brain)
+    note = _link_signal("Ben Liu", "harbor", {"repo": "northwind/hv-x", "repo_id": "R_1", "was": ["northwind/hv-y"]})
+    assert classify.apply_note(brain, space, reg, note, now)[0] == "applied"
+    (entry,) = reg.get("harbor-voice-agent").extra["repos"]
+    assert entry["repo"] == "northwind/hv-x" and sorted(entry["was"]) == ["northwind/hv-y", "northwind/hv-z"]
 
 
 def test_may_link_home_owners_crew_and_the_brain(tmp_path):

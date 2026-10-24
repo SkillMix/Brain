@@ -339,15 +339,17 @@ def test_check_follows_a_rename(tmp_path, now):
     out = link.check(ws, now=now, lookup_fn=lambda r, i: {"repo": "northwind/harbor-voice-2", "repo_id": "R_1"},
                      readers_fn=lambda r: ["ada-gh"])
     assert out["repaired"] == 1 and link.links(ws)[0].repo == "northwind/harbor-voice-2"
-    # a link with no repo_id yet first gets the id under its name, then follows the rename by that id
+    # a link with no repo_id yet follows the rename in the same run (the lookup by name follows the
+    # host's redirect) and gets the id
     ws = linked_ws(tmp_path / "second")
 
     def renamed(r, i):
         return {"repo": "northwind/harbor-voice-2", "repo_id": "R_1"}
-    assert link.check(ws, now=now, lookup_fn=renamed, readers_fn=lambda r: None)["repaired"] == 0
-    assert (link.links(ws)[0].repo, link.links(ws)[0].repo_id) == ("northwind/harbor-voice", "R_1")
     assert link.check(ws, now=now, lookup_fn=renamed, readers_fn=lambda r: None)["repaired"] == 1
-    assert [l.repo for l in link.links(ws)] == ["northwind/harbor-voice-2"]
+    (entry,) = registry.Registry(ws).get("harbor-voice-agent").extra["repos"]
+    assert (entry["repo"], entry["repo_id"], entry["was"]) == ("northwind/harbor-voice-2", "R_1",
+                                                               ["northwind/harbor-voice"])
+    assert link.check(ws, now=now, lookup_fn=renamed, readers_fn=lambda r: None)["repaired"] == 0
 
 
 def test_check_rename_keeps_old_clones_resolving(tmp_path, now):
@@ -405,18 +407,77 @@ def test_check_drops_an_old_name_a_new_repo_took(tmp_path, now):
         ("northwind/harbor-voice-legacy", "R_1", "inside"), ("northwind/harbor-voice", "R_2", "wider")]
 
 
-def test_check_drops_a_second_entry_for_a_renamed_repo(tmp_path, now):
-    # harbor-voice-agent links northwind/harbor-voice-2 (R_1) and, linked again from an old clone, northwind/harbor-voice
-    ws = make_space(tmp_path / "ada", subjects=PEOPLE + [{"id": "harbor-voice-agent", "kind": "projects", "repos": [
-        {"repo": "northwind/harbor-voice-2", "repo_id": "R_1", "linked": "2026-10-01"},
-        {"repo": "northwind/harbor-voice", "linked_by": "detect", "linked": "2026-10-05"}]}])
+@pytest.mark.parametrize("rename_lands_first", [True, False])
+@pytest.mark.parametrize("older_first", [True, False])
+@pytest.mark.parametrize("start", ["old clone", "old clone gone", "new clone"])
+def test_an_old_clone_entry_next_to_the_renamed_one_becomes_one(tmp_path, now, start, older_first, rename_lands_first):
+    # the brain holds harbor-voice-agent (home harbor) twice for one repository (R_1), renamed from
+    # northwind/harbor-voice to northwind/harbor-voice-2: "old clone" is the renamed link plus one linked again
+    # from an old clone, "old clone gone" the same after the host lost the old name for a day, "new clone" the
+    # link before check followed the rename plus one from a new clone; harbor checks it daily and the brain
+    # lands harbor's notes one at a time each day, the rename first or last
+    older = {"repo": "northwind/harbor-voice-2", "repo_id": "R_1", "linked": "2026-10-01"}
+    newer = {"repo": "northwind/harbor-voice", "linked_by": "detect", "linked": "2026-10-05"}
+    if start == "old clone gone":
+        newer["gone"] = "2026-10-06"
+    if start == "new clone":
+        older["repo"], newer["repo"] = newer["repo"], older["repo"]
+    brain = make_space(tmp_path / "lantern", profile="brain", name="lantern", subjects=PEOPLE + [
+        {"id": "harbor-voice-agent", "kind": "projects", "home": "harbor",
+         "repos": [older, newer] if older_first else [newer, older]}])
+    harbor = make_space(tmp_path / "harbor", profile="project", name="harbor", audience=["Ada Okafor"])
+    mount_brain(harbor, brain)
 
     def host(r, i):   # both names reach the same repository
-        return {"repo": "northwind/harbor-voice-2", "repo_id": "R_1"}
-    assert link.check(ws, now=now, lookup_fn=host, readers_fn=lambda r: None)["repaired"] == 1
-    assert link.check(ws, now=now, lookup_fn=host, readers_fn=lambda r: None)["repaired"] == 0
-    repos = registry.Registry(ws).get("harbor-voice-agent").extra["repos"]
-    assert [(e["repo"], e.get("repo_id")) for e in repos] == [("northwind/harbor-voice-2", "R_1")]
+        return {"repo": "northwind/harbor-voice-2", "repo_id": "R_1", "private": True}
+    for day in range(4):
+        out = link.check(harbor, now=now + dt.timedelta(days=day), lookup_fn=host, readers_fn=lambda r: ["ada-gh"])
+        assert (out["links"], out["repaired"]) == (1, 1 if day == 0 else 0)
+        (brain / "_inbound" / "signals").mkdir(parents=True, exist_ok=True)
+        sent = sorted((harbor / "_outbound" / "signals").glob("*.yaml"), key=lambda p: (
+            "was" in yaml.safe_load(p.read_text(encoding="utf-8"))["data"]) != rename_lands_first)
+        for signal in sent:
+            signal.replace(brain / "_inbound" / "signals" / signal.name)
+            classify.land_notes(brain, now=now + dt.timedelta(days=day))
+        (entry,) = registry.Registry(brain).get("harbor-voice-agent").extra["repos"]
+        assert (entry["repo"], entry["repo_id"], entry["was"], entry["linked"]) == (
+            "northwind/harbor-voice-2", "R_1", ["northwind/harbor-voice"], "2026-10-01")
+    assert link.resolve(harbor, make_codebase(tmp_path / "old-clone"), now=now)["repo"] == "northwind/harbor-voice-2"
+
+
+def test_check_counts_a_repository_once_however_the_host_spells_it(tmp_path, now):
+    # ws holds harbor-voice-agent linked to R_1 under its old name and again from a new clone of the new name
+    ws = make_space(tmp_path / "ada", subjects=PEOPLE + [{"id": "harbor-voice-agent", "kind": "projects", "repos": [
+        {"repo": "northwind/harbor-voice", "repo_id": "R_1", "linked": "2026-10-01"},
+        {"repo": "northwind/harbor-voice-2", "linked_by": "detect", "linked": "2026-10-05"}]}])
+    out = link.check(ws, now=now, lookup_fn=lambda r, i: {"repo": "Northwind/harbor-voice-2", "repo_id": "R_1"},
+                     readers_fn=lambda r: None)
+    (src,) = [s for s in spaceyaml.load(ws).sources if s["name"] == "repository"]
+    assert out["links"] == 1 and len(src["repos"]) == 1
+
+
+def test_unlink_removes_the_link_it_names(tmp_path, now):
+    # ws holds harbor-voice-agent linked to R_1 (renamed from northwind/harbor-voice) and to R_2, which took the old name
+    ws = make_space(tmp_path / "ada", subjects=PEOPLE + [{"id": "harbor-voice-agent", "kind": "projects", "repos": [
+        {"repo": "northwind/harbor-voice-2", "repo_id": "R_1", "was": ["northwind/harbor-voice"], "linked": "2026-10-01"},
+        {"repo": "northwind/harbor-voice", "repo_id": "R_2", "linked": "2026-10-05"}]}])
+    link.unlink(ws, "northwind/harbor-voice", now=now)
+    assert [e["repo_id"] for e in registry.Registry(ws).get("harbor-voice-agent").extra["repos"]] == ["R_1"]
+
+
+def test_unlink_after_a_rename_keeps_old_clones_unlinked(tmp_path, now):
+    # ws holds harbor-voice-agent, renamed from northwind/harbor-voice to northwind/harbor-voice-2
+    ws = linked_ws(tmp_path, repo="northwind/harbor-voice-2", repo_id="R_1", was=["northwind/harbor-voice"])
+    old = make_codebase(tmp_path / "old-clone")
+    assert link.resolve(ws, old, now=now)["repo"] == "northwind/harbor-voice-2"
+    assert link.main([str(ws), "unlink", "northwind/harbor-voice-2"]) == 0
+    new = make_codebase(tmp_path / "new-clone", "https://github.com/northwind/harbor-voice-2.git")
+    for _ in range(2):
+        assert link.resolve(ws, old, now=now) is None and link.resolve(ws, new, now=now) is None
+    assert link.check(ws, now=now, lookup_fn=same, readers_fn=lambda r: None)["links"] == 0
+    assert "repos" not in registry.Registry(ws).get("harbor-voice-agent").extra
+    assert sorted(json.loads(l)["repo"] for l in (ws / link.SEEN).read_text(encoding="utf-8").splitlines()) == \
+        ["northwind/harbor-voice", "northwind/harbor-voice-2"]
 
 
 def test_check_public_repo_is_wider(tmp_path, now):
@@ -464,6 +525,15 @@ def test_check_host_unavailable_changes_nothing(tmp_path, now):     # Review Foc
     out = link.check(ws, now=now, lookup_fn=down, readers_fn=lambda r: None)
     assert (ws / "_meta" / "subjects.yaml").read_text(encoding="utf-8") == before
     assert out == {"links": 1, "wider": 1, "repaired": 0}
+
+
+def test_check_keeps_a_repo_on_another_host(tmp_path, now, monkeypatch):     # Review Focus 2
+    # the subject links an ssh clone on another host (scp form); check runs with the default host calls
+    ws = linked_ws(tmp_path, repo="git@gitlab.example:northwind/harbor-voice")
+    code = make_codebase(tmp_path / "code", "git@gitlab.example:northwind/harbor-voice.git")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("host called"))
+    assert link.check(ws, now=now) == {"links": 1, "wider": 1, "repaired": 0}
+    assert link.links(ws)[0].gone is None and link.resolve(ws, code, now=now)["subject"] == "harbor-voice-agent"
 
 
 def test_check_flips_readers_on_a_new_collaborator(tmp_path, now):

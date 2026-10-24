@@ -16,7 +16,7 @@ that registry has applied it.
 `scan` (onboarding, project creation) runs that placement over every repository the person's
 account and this space's organisation list on the host, leaving out the spaces' own repositories.
 `check` (the daily chain) keeps the links homed in this space: it follows a renamed repository by
-its id (the old name still resolves, so old clones keep working, until another repository takes
+its name, else its id (the old name still resolves, so old clones keep working, until another repository takes
 that name), marks a lost one `gone` and
 brings it back when the host finds it again, sets the readers against the home's audience (a
 public repository is always wider), keeps the older of two claims, and lists the linked
@@ -315,7 +315,8 @@ def _home_name(space, reg, subject) -> str:
 
 def resolve(root, cwd, now=None) -> dict | None:
     """The subject the codebase at `cwd` belongs to, with its home's audience, its readers and its
-    status page; None when it is not linked. No network: a first meeting runs `detect` once."""
+    status page; None when it is not linked. No network: a repository nothing links runs `detect`;
+    one that matched nothing is scored again on each resolve, and written once."""
     root = Path(root)
     repo = remote_of(cwd)
     if not repo:
@@ -365,10 +366,12 @@ def unlink(root, repo: str, now=None) -> None:
     if current is None:
         raise ValueError(f"{repo} is not linked")
     repo = current.repo   # a name it had before a rename: the same link
-    signal = _send(root, repo, current.subject, {"remove": True}, now)
+    signal = _send(root, repo, current.subject,
+                   {"remove": True, **({"repo_id": current.repo_id} if current.repo_id else {})}, now)
     _log(root, now, f"unlinked {repo} from {current.subject}; "
                     f"undo: python _meta/tools/link.py . link {repo} {current.subject}")
-    _remember(root, repo, now, "unlinked", current.subject, signal=signal)
+    for name in (repo, *current.was):   # an old clone does not link it again
+        _remember(root, name, now, "unlinked", current.subject, signal=signal)
 
 
 # ----- the host: what `scan` and `check` ask of it (`gh`); tests inject their own -----------------
@@ -406,7 +409,7 @@ def _host_repos(owner: str) -> list | None:
 
 def _host_id(repo: str) -> str | None:
     try:
-        code, out, _ = _gh("api", f"repos/{repo}", "--jq", ".node_id")
+        code, out, _ = _gh("api", f"repos/{repo_key(repo)}", "--jq", ".node_id")
     except OSError:
         return None
     return (out.strip() or None) if code == 0 else None
@@ -414,8 +417,11 @@ def _host_id(repo: str) -> str | None:
 
 def _host_lookup(repo: str, repo_id=None) -> dict | None:
     """The repository by name (the host follows a rename), else by its id; None only when both
-    say it is not there. OSError when the host cannot be asked (no `gh`, signed out)."""
-    found = _answer(*_gh("api", f"repos/{repo}", "--jq",
+    say it is not there. OSError when the host cannot be asked (no `gh`, signed out, a repository
+    not on GitHub), so the link is kept as it is."""
+    if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo_key(repo) or ""):
+        raise OSError("not a GitHub repository")
+    found = _answer(*_gh("api", f"repos/{repo_key(repo)}", "--jq",
                          "{repo: .full_name, repo_id: .node_id, private: .private}"))
     if found and (not repo_id or found.get("repo_id") == repo_id):
         return found
@@ -485,12 +491,11 @@ def scan(root, now=None, list_fn=None, id_fn=None) -> dict:
 
 def check(root, now=None, lookup_fn=None, readers_fn=None) -> dict:
     """Keep the links homed in this space, wherever the registry entry sits: every change is a
-    link note (applied at once here, else sent to the holder). A renamed repository is followed by
-    its id and keeps its old name in `was` until another repository takes that name, a second
-    entry for it is dropped, a lost one is marked
-    gone and comes back when found again, readers are set against this space's audience (a public
-    repository is wider), the older of two claims stays, and the `repository` source lists what is
-    linked. Never an owner alert."""
+    link note (applied at once here, else sent to the holder, which keeps one entry per
+    repository). A renamed repository is followed in one note and keeps its old names in `was`
+    until another repository takes one, a lost one is marked gone and comes back when found again,
+    readers are set against this space's audience (a public repository is wider), the older of two
+    claims stays, and the `repository` source lists what is linked. Never an owner alert."""
     import classify
     import onboard
     root = Path(root)
@@ -529,8 +534,12 @@ def check(root, now=None, lookup_fn=None, readers_fn=None) -> dict:
             except OSError:
                 continue
             if there:
+                repo = found.repo
                 fill = {"repo_id": there["repo_id"]} if not found.repo_id and there.get("repo_id") else {}
-                repaired += send(found, found.repo, gone=None, **fill)
+                if there.get("repo") and not registry.same_repo(there["repo"], repo):   # renamed meanwhile: followed
+                    repo = str(there["repo"])
+                    fill["was"] = [w for w in dict.fromkeys([*found.was, found.repo]) if not registry.same_repo(w, repo)]
+                repaired += send(found, repo, gone=None, **fill)
     claims: dict = {}   # repo_key -> subject -> (linked, order, Link); a missing `linked` counts as newest
     for n, found in enumerate(links(root)):
         if not found.gone and homed_here(found):
@@ -550,30 +559,22 @@ def check(root, now=None, lookup_fn=None, readers_fn=None) -> dict:
                               "depends": 0})
     known = access.logins(root, space)
     allowed = {known[name].lower() for name in access.audience_names(root, space) if name in known}
-    final = []   # (repo, readers) of the links that stay
+    final = []   # (subject, repo, readers) of the links that stay
     for found in kept:
         repo, data, public, dropped = found.repo, {}, False, False
         if lookup is not None:
             try:
                 there = lookup(found.repo, found.repo_id)
             except OSError:
-                final.append((repo, found.readers))   # the host cannot be asked: as it is, retried next run
+                final.append((found.subject, repo, found.readers))   # the host cannot be asked: retried next run
                 continue
             if there is None:
                 repaired += send(found, repo, gone=today)
                 continue
             public = there.get("private") is False   # anyone can read it: wider, whoever the collaborators are
             if not found.repo_id and there.get("repo_id"):
-                if any(other is not found and other.subject == found.subject and (
-                        other.repo_id == there["repo_id"] or registry.same_repo(other.repo, there.get("repo")))
-                       for other in kept):
-                    # the same repository under a name it had before, linked again from an old clone: one stays
-                    repaired += send(found, repo, remove=True)
-                    continue
-                # plan rule 1 sends the new name at once; a note without the matching id would add a
-                # second entry, so the id is filled under the old name first and the rename follows next run
                 data["repo_id"] = there["repo_id"]
-            elif found.repo_id and there.get("repo") and not registry.same_repo(there["repo"], repo):
+            if there.get("repo") and not registry.same_repo(there["repo"], repo):   # renamed: one note follows it
                 repo = str(there["repo"])
                 data["was"] = [w for w in dict.fromkeys([*found.was, found.repo]) if not registry.same_repo(w, repo)]
             was = data.get("was", list(found.was))
@@ -590,8 +591,13 @@ def check(root, now=None, lookup_fn=None, readers_fn=None) -> dict:
             repo, readers = found.repo, found.readers   # refused: as it is
         elif repo != found.repo or dropped:
             repaired += 1
-        final.append((repo, readers))
-    wanted = sorted({repo for repo, _ in final})
+        final.append((found.subject, repo, readers))
+    pairs, spelling = {}, {}   # a repository counts once per subject; wider when either entry says so
+    for sid, repo, readers in final:
+        key = (sid, repo_key(repo))
+        spelling.setdefault(key[1], repo)
+        pairs[key] = "wider" if "wider" in (readers, pairs.get(key)) else readers
+    wanted = sorted(spelling.values())
     source = next((s for s in space.sources if isinstance(s, dict) and s.get("name") == "repository"), None)
     if source is None and wanted:
         audience = {"brain": "everyone", "project": "crew"}.get(space.profile, "owner")
@@ -599,7 +605,7 @@ def check(root, now=None, lookup_fn=None, readers_fn=None) -> dict:
     elif source is not None and list(source.get("repos") or []) != wanted:
         source["repos"] = wanted   # only this key: a manual `repo` stays
         spaceyaml.save(space)
-    counts = {"links": len(final), "wider": sum(r == "wider" for _, r in final), "repaired": repaired}
+    counts = {"links": len(pairs), "wider": sum(r == "wider" for r in pairs.values()), "repaired": repaired}
     path = root / STATE
     try:
         before = json.loads(path.read_text(encoding="utf-8"))

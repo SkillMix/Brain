@@ -520,22 +520,38 @@ def apply_note(root, space, reg, signal: dict, now) -> tuple:
             return "refused", "a link note names its repository"
         repos = list(subject.extra.get("repos") or [])
 
-        def same(entry) -> bool:
-            if entry.get("repo_id") and data.get("repo_id"):
-                return entry["repo_id"] == data["repo_id"]
-            return registry_mod.same_repo(entry.get("repo"), repo)
-        found = next((r for r in repos if isinstance(r, dict) and same(r)), None)
+        def names(entry) -> list:   # the repository's name and the names it had before
+            return [entry.get("repo"), *(entry.get("was") or [])]
+
+        def same(a, b) -> bool:   # one repository: the same id when both have one, else a shared name
+            if a.get("repo_id") and b.get("repo_id"):
+                return a["repo_id"] == b["repo_id"]
+            return any(registry_mod.same_repo(x, y) for x in names(a) for y in names(b))
+        found = next((r for r in repos if isinstance(r, dict) and same(r, dict(data, repo=repo))), None)
         if data.get("remove"):
             repos = [r for r in repos if r is not found]
         else:
-            entry = dict(found or {"repo": repo})
+            entry = dict(found or {})
             entry.update({k: data[k] for k in ("repo_id", "linked_by", "linked", "readers", "checked", "gone", "was")
-                          if k in data and not (k == "linked" and entry.get("linked"))}, repo=repo)
+                          if k in data and not (k == "linked" and entry.get("linked"))})
+            if found is None or "was" in data:   # only a rename moves a link's name, so none moves it back
+                entry["repo"] = repo
             entry = {k: v for k, v in entry.items() if v is not None}   # `gone: null` brings a link back
+            merged = [r for r in repos if isinstance(r, dict) and r is not found and same(r, entry)]
+            if merged:   # the same repository under a second entry: one entry stays, with every name
+                every, was = [entry, *([found] if found is not None else []), *merged], []   # found's names before the note too
+                for name in (n for e in every for n in names(e)):
+                    if name and not any(registry_mod.same_repo(name, w) for w in [entry["repo"], *was]):
+                        was.append(name)
+                linked = min((e["linked"] for e in every if e.get("linked")), key=str, default=None)
+                repo_id = next((e["repo_id"] for e in every if e.get("repo_id")), None)
+                entry = {k: v for k, v in dict(entry, was=was or None, linked=linked, repo_id=repo_id).items()
+                         if v is not None}
             bad = registry_mod._repo_errors(sid, [entry])
             if bad:
                 return "refused", bad[0]
-            repos = [entry if r is found else r for r in repos] if found is not None else repos + [entry]
+            kept = [r for r in repos if not any(r is m for m in merged)]
+            repos = [entry if r is found else r for r in kept] if found is not None else kept + [entry]
         if repos:
             subject.extra["repos"] = repos
         else:
