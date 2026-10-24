@@ -110,9 +110,9 @@ The instruction `onboard` installs at user level gains four short rules:
    constraints. Never the left-out kinds (prices, pay, credentials, other clients' data,
    personal details) and never private notes. Point to the space for the rest.
 4. **Capture.** Entries take `subject: <id>` from the link. Pointers use one form:
-   `ref: <owner/repo>:<path>@<commit>` or a pull request URL. After writing a spec, plan or
-   design file, or opening a pull request, in a linked codebase: one entry with what it is, why,
-   and the pointer.
+   `ref: <owner/repo>:<path>@<commit>` (`@HEAD` for a file not committed yet) or a pull request
+   URL. After writing a spec, plan or design file, or opening a pull request, in a linked
+   codebase: one entry with what it is, why, and the pointer.
 
 ### 4.4 Capture and distill
 
@@ -241,7 +241,7 @@ the planned extension in 4.9.
 |---|---|
 | Session in an unlinked repo | `detect` links a clear match at once, or asks once with a recommendation |
 | Repo renamed or moved | `check` follows `repo_id` and updates the name |
-| Repo deleted or access lost | `check` marks the link `gone`; `resolve` treats it as unlinked; no owner alert |
+| Repo deleted or access lost | `check` marks a link it found before `gone` (one it never found, such as a client's private repository, stays); `resolve` treats it as unlinked; no owner alert |
 | New collaborator widens the readers | `check` flips `readers` to `wider`; the stricter rule applies from the next session. Already-written files are not rewritten |
 | Two subjects claim one repo | `check` keeps the older link and turns the other into one question |
 | `gh` unavailable | `resolve` still works from the registry; `scan`, `detect` and `check` retry next run |

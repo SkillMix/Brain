@@ -111,11 +111,11 @@ def test_shadow_source_refuses_a_live_destination(tmp_path):
     write_feed(ada, [record()])
     sweep.run(ada, now=NOW)
     report = release.ship(ada, now=NOW, offline_roots={"harbor": harbor})
-    assert report.shipped == 0 and report.held == 2 and report.signals == 0
+    assert report.shipped == 0 and report.held == 1 and report.signals == 0
     assert landed(harbor) == [] and queue_paths(ada) == []
     assert not list((ada / "_outbound" / "signals").glob("*.yaml"))
     held = held_items(ada)
-    assert sorted(fm["class"] for fm, _ in held) == ["at_once", "signal"]
+    assert sorted(fm["class"] for fm, _ in held) == ["at_once"]
     for fm, _ in held:
         assert fm["reason"] == "mode" and "shadow" in fm["why"] and "live" in fm["why"]
     assert not (harbor / "_inbound" / "signals").exists() or \
@@ -242,10 +242,10 @@ def test_online_destination_goes_through_publish(tmp_path, monkeypatch):
     write_feed(ada, [record()])
     sweep.run(ada, now=NOW)
     report = release.ship(ada, now=NOW)
-    assert report.shipped == 1 and report.signals == 1
+    assert report.shipped == 1 and report.signals == 0   # at once: the item, no signal
     assert calls == [(checkout, "ada", "ada")]
     assert len(list((checkout / "_inbound" / "candidates").glob("*.md"))) == 1
-    assert len(list((checkout / "_inbound" / "signals").glob("*.yaml"))) == 1
+    assert not list((checkout / "_inbound" / "signals").glob("*.yaml"))
     assert queue_paths(ada) == []
 
 
@@ -431,8 +431,8 @@ def test_item_follows_its_subject_to_a_new_home(tmp_path):
     released.write_text(json.dumps({"id": "p-1", "at": pages.iso(NOW), "subject": "harbor"}) + "\n",
                         encoding="utf-8")
     report = release.ship(ada, now=NOW, offline_roots={"brain": brain})
-    # the item and the signal its record raised both follow the subject
-    assert report.rerouted == 2 and report.shipped == 1 and report.unreachable == 0
+    # the item follows the subject (queued at once, it raised no signal)
+    assert report.rerouted == 1 and report.shipped == 1 and report.unreachable == 0
     landed_pages = list((brain / "_inbound" / "candidates").glob("*.md"))
     assert len(landed_pages) == 1
     landed_fm, _ = pages.read(landed_pages[0])

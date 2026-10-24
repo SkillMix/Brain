@@ -12,9 +12,9 @@ text starts with `Decision:` becomes its own candidate under knowledge/decisions
 An evidence line names the record's `ref:` pointers into code after its title. A
 `lesson: <point>` line in a daily-note entry becomes a candidate for the brain,
 `lesson-<slug>.md` (target knowledge/topics/lessons/), merged by slug and carrying the
-lesson text alone: the entry's `from: <subject>` line never goes into it. A lesson the
-signer discarded is not proposed again from the same `from:` value
-(`_meta/state/lessons-proposed.jsonl`).
+lesson text alone: the entry's `from: <subject>` (its own line, or after the lesson) never goes
+into it. A lesson is proposed once per `from:` value (`_meta/state/lessons-proposed.jsonl`):
+answered or still open, the same entry never proposes it again.
 
 Evidence for a subject = witness pages under knowledge/sources/ carrying
 `subject: <id>` or `<id>` in `mentions`, landed records in _inbound/candidates/
@@ -68,10 +68,8 @@ EVIDENCE_HEADING = "## New evidence"
 MENTION_BLIND_KINDS = ("people", "domains")
 DECISION_RE = re.compile(r"^\s*decision\s*:\s*(.*)$", re.I)
 COMMANDS = ("verify", "checked")
-LESSON_LINE = re.compile(r"^\s*(?:[-*]\s*)?lesson:\s*(.+?)\s*$", re.I | re.M)
-FROM_LINE = re.compile(r"^\s*(?:[-*]\s*)?from:\s*`?([a-z0-9][a-z0-9-]*)`?\s*$", re.I | re.M)
+LESSON_LINE = re.compile(r"^\s*(?:[-*]\s*)?lesson:\s*(.+?)(?:[\s;,(]+from:.*)?\s*$", re.I | re.M)
 LESSONS_PROPOSED = STATE / "lessons-proposed.jsonl"   # {slug, from, candidate, at}
-DISCARDED = re.compile(r"^- \S+ discarded (\S+) by ", re.M)   # sign's tombstone line in log.md
 
 
 # ----- shared helpers (check.py imports these) ---------------------------------
@@ -204,7 +202,7 @@ def gather_evidence(root, reader: Reader, space_name: str = "") -> list:
 
 JOURNAL = Path("journal")
 JOURNAL_FILE = re.compile(r"(\d{4}-\d{2}-\d{2})\.md$")
-ENTRY_HEAD = re.compile(r"^##\s+(?:(\d{1,2}):(\d{2})Z?)?\s*[:\-–—]*\s*(.*)$")
+ENTRY_HEAD = re.compile(r"^##\s+~?(?:(\d{1,2}):(\d{2})Z?)?\s*[:\-–—]*\s*(.*)$")
 SUBJECT_LINE = re.compile(r"^\s*(?:[-*]\s*)?subject:\s*`?([a-z0-9][a-z0-9-]*)`?\s*$", re.I | re.M)
 DESK_PATH = re.compile(r"work/[a-z0-9-]+/([a-z0-9][a-z0-9-]*)/")
 
@@ -228,6 +226,7 @@ def journal_evidence(root) -> list:
         except OSError:
             continue
         rel = path.relative_to(root).as_posix()
+        seen: dict = {}   # a second entry of the same minute is its own record: `-2`, `-3`
         for chunk in re.split(r"(?m)^(?=## )", text):
             if not chunk.startswith("## "):
                 continue
@@ -238,10 +237,16 @@ def journal_evidence(root) -> list:
                 at = pages.parse_iso(f"{day.group(1)}T{int(hour or 12):02d}:{int(minute or 0):02d}:00Z")
             except (TypeError, ValueError):
                 continue
+            if hour is not None:   # a UTC heading in a note named for the person's own date: the day either side
+                at = next((c for c in (at, at - dt.timedelta(days=1), at + dt.timedelta(days=1))
+                           if c.astimezone().date().isoformat() == day.group(1)), at)
+            record = f"journal-{at:%Y%m%dT%H%M}"
+            seen[record] = seen.get(record, 0) + 1
+            record += f"-{seen[record]}" if seen[record] > 1 else ""
             subjects = list(dict.fromkeys(SUBJECT_LINE.findall(body) + DESK_PATH.findall(body)))
             if not subjects:
                 continue
-            found.append(Evidence(record=f"journal-{at:%Y%m%dT%H%M}", rel=rel, at=at,
+            found.append(Evidence(record=record, rel=rel, at=at,
                                   arrived=max(at, changed), title=title.strip() or f"journal {day.group(1)}",
                                   body=body, subjects=subjects, landed=False,
                                   fm={"source": "journal", "audience": "owner", "subject": subjects[0]}))
@@ -427,12 +432,11 @@ def write_decision(root: Path, space, reg, ev: Evidence, now: dt.datetime, reade
 
 def write_lesson(root: Path, space, ev: Evidence, lesson: str, source: str | None, now: dt.datetime) -> str:
     """A `lesson:` line as a company-grain candidate for the brain, one per slug: the lesson text
-    alone, never the `from:` subject it came from (ring 3). New evidence merges into the draft of
-    the same slug; a lesson the signer discarded is not proposed again from the same `source`."""
+    alone, never the `from:` subject it came from (ring 3). A slug is proposed once per `source`,
+    signed, discarded or still open; one from another source merges into the open draft of the
+    same slug, or is proposed again."""
     slug = slugify(lesson)
-    log = root / "log.md"
-    discarded = set(DISCARDED.findall(log.read_text(encoding="utf-8", errors="replace"))) if log.exists() else set()
-    if any(row.get("slug") == slug and row.get("from") == source and str(row.get("candidate")) in discarded
+    if any(row.get("slug") == slug and row.get("from") == source
            for row in registry_mod._jsonl(root / LESSONS_PROPOSED)):
         return "skipped"
     path = root / CANDIDATES / f"lesson-{slug}.md"
@@ -544,7 +548,7 @@ def run(root, now: dt.datetime | None = None, rebuild: bool = False,
                 count(write_decision(root, space, reg, said, now, reader), None)
     # lessons are read from the daily note itself: a swept copy of an entry has lost its `from:` line
     for ev in new_since(journal_evidence(root), since):
-        source = next(iter(FROM_LINE.findall(ev.body)), None)
+        source = next((s for s in link.FROM_LINE.findall(ev.body) if s), None)
         for lesson in LESSON_LINE.findall(ev.body):
             count(write_lesson(root, space, ev, lesson, source, now), None)
     write_watermark(root, ROUTINE, {"at": pages.iso(now)})

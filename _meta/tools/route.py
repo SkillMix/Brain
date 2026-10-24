@@ -604,11 +604,13 @@ def record(root, decision: dict, now: dt.datetime | None = None, by: str | None 
         out["queued"].append(item["id"])
         row["routes"].append({"space": dest_name, "subject": sid, "tier": tier, "outcome": "queued",
                               "item": item["id"]})
+        items.append(item["id"])
+        if tier == "at_once":   # the item itself arrives now: no notice that details follow
+            continue
         signal = sweep.signal_for(sid, dest_name, now)
         target = root / release.SIGNALS / f"{signal['id']}.yaml"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(yaml.safe_dump(signal, sort_keys=False), encoding="utf-8", newline="\n")
-        items.append(item["id"])
     routes = list(prior.get("routes") or []) + [f"{r['space']}/{r['subject']}" for r in decision.get("routes") or []]
     stamping = {"decided_at": pages.iso(now), "decision": "route" if routes else decision["decision"],
                 "confidence": decision["confidence"], "routes": routes,

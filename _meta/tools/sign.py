@@ -246,6 +246,9 @@ def _candidate(root, space, entry: Found, item_id, verb, note, by, now, report: 
     if verb == "edit" and note.strip():
         body = note
         report.edited.append(item_id)
+        if path.name.startswith("lesson-"):   # a lesson's title and page name are its text: the edit covers them
+            first = note.strip().splitlines()[0]
+            fm.update(title=first[:80], target=f"knowledge/topics/lessons/{distill.slugify(first)}.md")
     body = landing_text(body)
     fingerprint = pages.fingerprint(body)
     target = root / target_of(fm, path, now)
@@ -272,6 +275,8 @@ def _candidate(root, space, entry: Found, item_id, verb, note, by, now, report: 
                     "high_stakes": fm.get("high_stakes") or None, "path": f"approved:{by}", "approved_by": by,
                     "evidence": list(fm.get("evidence") or []), "from_space": space.name,
                     "kind": fm.get("kind"), "page": target.relative_to(root).as_posix()}
+        if str(fm.get("target") or "").startswith("knowledge/topics/lessons/"):   # one page per lesson there too
+            queue_fm["target"] = fm["target"]
         queue_fm.update(signature)
         pages.write(root / needs_you.QUEUE / f"{qid}.md", queue_fm, body)
         report.released_queued.append(qid)

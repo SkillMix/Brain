@@ -82,7 +82,6 @@ def test_a_personal_sweep_chain_writes_journal_records_before_the_sweep(tmp_path
     fakes.modules["link"] = types.SimpleNamespace(journal_records=fakes._fn("journal_records"))
     chain.sweep_chain(make_space(tmp_path / "ada"), now=NOW)
     assert fakes.names() == ["journal_records", "sweep", "distill", "check"]
-    assert fakes.calls[0][2] == NOW
     fakes.calls.clear()
     chain.sweep_chain(make_space(tmp_path / "harbor", profile="project", name="harbor"), now=NOW)
     assert fakes.names() == ["sweep", "distill", "check"]

@@ -8,8 +8,9 @@ At the start of your first session of the day, run
 a list, show it once. Later sessions print nothing. A scheduled routine skips this.
 
 Capture durable context to today's daily note
-`{workspace_path}/journal/<yyyy>/<mm>/<yyyy>-<mm>-<dd>.md`; end an entry about a registered
-subject with a line `subject: <id>`, so distill can propose it for signing. Any answer that took
+`{workspace_path}/journal/<yyyy>/<mm>/<yyyy>-<mm>-<dd>.md`, each entry starting with
+`## HH:MMZ — <topic>` (UTC); end an entry about a registered subject with a line `subject: <id>`,
+so distill can propose it for signing. Any answer that took
 more than one lookup is captured with its sources and appended to the question log
 (`{workspace_path}/_meta/questions.log`).
 
@@ -17,7 +18,9 @@ more than one lookup is captured with its sources and appended to the question l
 1. Triggers, not session start. Before brainstorming or designing a feature, writing a spec or
    plan, preparing a call, or answering anything about a client, the product or a past decision,
    run `{python} {workspace_path}/_meta/tools/link.py {workspace_path} resolve --cwd <this folder>`.
-   Exit 3: the code is not linked; go on without. Linked: read its `status_page`, and answer
+   Exit 3: the code is not linked; when the person says which subject it is, run
+   `{python} {workspace_path}/_meta/tools/link.py {workspace_path} link <owner/repo> <subject>`,
+   otherwise go on without. Linked: read its `status_page`, and answer
    questions with `{python} {workspace_path}/_meta/tools/search.py {workspace_path} query --for
    <subject> <words>`. A plain coding task never triggers this.
 2. Three rings. Ring 1: the linked subject and its parent, in full. Ring 2: the company layer
@@ -26,11 +29,12 @@ more than one lookup is captured with its sources and appended to the question l
    thinking. Nothing from ring 3 goes into the codebase or into notes for this subject; when it
    helped, add `lesson: <the general point>` and `from: <other subject>` to the entry instead.
 3. Writing into the codebase. `readers: inside`: write freely, secrets never. `readers: wider`:
-   only what would pass the release scrub for the home's audience: requirements, decisions,
+   only what may reach people outside the company: requirements, decisions,
    constraints. Never the `left_out` kinds resolve lists, never private notes. Point to the
    space for the rest.
 4. Capture. Entries take `subject: <id>` from the link and point with
-   `ref: <owner/repo>:<path>@<commit>`, `ref: <owner/repo>@<commit>` or a pull request URL. After
+   `ref: <owner/repo>:<path>@<commit>` (`@HEAD` for a file not committed yet),
+   `ref: <owner/repo>@<commit>` or a pull request URL. After
    writing a spec, plan or design file, or opening a pull request, in a linked codebase: one entry
    saying what it is, why, and the pointer. An entry with a `ref:` to the linked codebase travels
    to the subject's home as a record.

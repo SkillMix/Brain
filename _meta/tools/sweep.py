@@ -21,7 +21,8 @@ Deterministic from files: an adapter exports records to `_meta/state/feed/<sourc
    the answer). The person's own journal note pointing into code linked to its subject
    (link.journal_records) leaves at once to a walled home whose crew includes them, else after
    the window (D8). A content-free
-   signal goes to the subject's home for every attached record. A record matching several
+   signal goes to the subject's home for every attached record queued for the window (one that
+   leaves at once arrives itself). A record matching several
    subjects with a home elsewhere is held in doubt and shown as a count;
 4. advances the watermark and appends one run line (cost = characters of records // 4).
 
@@ -545,7 +546,7 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
             if not dry_run:   # without the router: never in full
                 pages.write(root / release.QUEUE / f"{item['id']}.md", item, shallow(body))
             report.queued += 1
-        if blocked:   # nothing about it moves while the gate holds it, not even a signal
+        if blocked or verdict.cls == "at_once":   # gated: nothing moves; at once: the item itself arrives
             continue
         signal = signal_for(subject.id, home, now)   # content-free: that something moved
         report.plan.append(f"signal {record['id']} -> {home}")

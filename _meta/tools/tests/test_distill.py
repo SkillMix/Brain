@@ -2,6 +2,8 @@ import datetime as dt
 import json
 import re
 
+import pytest
+
 import distill
 import link
 import pages
@@ -477,7 +479,7 @@ def evidence_ids(text):
 def test_distill_counts_a_journal_entry_once(tmp_path):
     # entry A at 10:15 on the `now` day is journal evidence and, after the sweep, a witness page with the same record id
     ws = journal_ws(tmp_path)
-    link.journal_records(ws, now=NOW)
+    link.journal_records(ws)
     sweep.run(ws, now=NOW)
     distill.run(ws, now=NOW)
     record = f"journal-{NOW:%Y%m%d}T1015"
@@ -567,3 +569,55 @@ def test_lesson_without_from(tmp_path):
     distill.run(ws, now=NOW)
     assert len(lesson_candidates(ws)) == 2
     assert sorted(str(r["from"]) for r in lesson_rows(ws)) == ["None", "nobody-registered"]
+
+
+def test_a_lesson_is_proposed_once_per_source_whatever_the_answer(tmp_path):
+    # signed, or discarded by its file name: a later write to the day's note proposes nothing again
+    for verdict in ("yes", "no"):
+        ws = lesson_ws(tmp_path / verdict)
+        distill.run(ws, now=NOW)
+        path, = lesson_candidates(ws)
+        item = path.stem if verdict == "no" else pages.read(path)[0]["id"]
+        sign.apply(ws, {item: (verdict, "")}, by="Ada Okafor", now=NOW + H)
+        add_entry(ws, NOW, "15:00", "- a later note\n- subject: harbor-voice-agent\n")
+        distill.run(ws, now=NOW + 2 * H)
+        assert lesson_candidates(ws) == [], verdict
+
+
+def test_a_from_after_the_lesson_is_its_source_and_never_its_text(tmp_path):
+    ws = lesson_ws(tmp_path, entry_a=ENTRY_A + "- lesson: cap the transfer at thirty seconds; from: beacon-app\n")
+    distill.run(ws, now=NOW)
+    path, = lesson_candidates(ws)
+    fm, body = pages.read(path)
+    assert path.name == "lesson-cap-the-transfer-at-thirty-seconds.md"
+    assert "beacon" not in (yaml.safe_dump(fm) + body).lower() and lesson_rows(ws)[0]["from"] == "beacon-app"
+    assert link.FROM_LINE.findall("- from: beacon-app, lighthouse") == ["beacon-app"]
+
+
+def test_two_entries_of_one_minute_are_two_records(tmp_path):
+    # the spec entry at 10:15 and, in the same minute, the pull request opened for it
+    ws = journal_ws(tmp_path)
+    add_entry(ws, NOW, "10:15", "- The pull request for the spec.\n"
+                                "- ref: https://github.com/northwind/harbor-voice/pull/7\n- subject: harbor-voice-agent\n")
+    ids = [ev.record for ev in distill.journal_evidence(ws)]
+    assert f"journal-{NOW:%Y%m%d}T1015" in ids and f"journal-{NOW:%Y%m%d}T1015-2" in ids
+    assert link.journal_records(ws) == 2
+
+
+def test_a_heading_with_a_rough_time_keeps_its_time(tmp_path):
+    ws = make_space(tmp_path / "ada")
+    add_entry(ws, NOW, "~09:30", "- a note\n- subject: harbor-voice-agent\n")
+    (ev,) = distill.journal_evidence(ws)
+    assert ev.at.strftime("%H:%M") == "09:30" and ev.title == "entry at ~09:30"
+
+
+def test_a_journal_entry_sits_on_the_notes_own_day(tmp_path):
+    # the note is named for the person's own date; its heading is UTC and can fall on the next or last UTC day
+    offset = NOW.astimezone().utcoffset()
+    if abs(offset) < dt.timedelta(hours=2):
+        pytest.skip("this machine's clock is within two hours of UTC")
+    hhmm = "01:30" if offset < dt.timedelta(0) else "22:30"
+    ws = make_space(tmp_path / "ada")
+    add_entry(ws, NOW, hhmm, "- a late note\n- subject: harbor-voice-agent\n")
+    (ev,) = distill.journal_evidence(ws)
+    assert ev.at.astimezone().date() == NOW.date() and ev.at.strftime("%H:%M") == hhmm

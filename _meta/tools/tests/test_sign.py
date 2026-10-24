@@ -256,3 +256,19 @@ def test_a_question_a_routine_wrote_takes_a_verdict_without_a_page(tmp_path):
     assert report.verdicts_recorded == 1 and report.deferred == ["later-one"]
     log = (root / "log.md").read_text(encoding="utf-8")
     assert "yes name-it by Ada Okafor" in log
+
+
+def test_an_edited_lesson_lands_and_travels_under_its_new_text(tmp_path):
+    # a lesson candidate whose line named a client; the signer edits the name out
+    root = make_space(tmp_path / "ada")
+    old = "knowledge/topics/lessons/beacon-s-outage-taught-us-to-retry.md"
+    candidate(root, stem="lesson-beacon-s-outage-taught-us-to-retry", dest="brain",
+              body="Beacon's outage taught us to retry.\n", type="concept", kind="topics", subject=None,
+              title="Beacon's outage taught us to retry", target=old)
+    sign.apply(root, {"p-00000101": ("edit", "Retry webhooks with backoff.")}, by="Ada Okafor", now=NOW)
+    page = root / "knowledge/topics/lessons/retry-webhooks-with-backoff.md"
+    assert page.exists() and not (root / old).exists()
+    (queued,) = (root / "_outbound/queue").glob("*.md")
+    qfm, qbody = pages.read(queued)
+    assert qfm["title"] == "Retry webhooks with backoff." and "beacon" not in (yaml.safe_dump(qfm) + qbody).lower()
+    assert qfm["target"] == "knowledge/topics/lessons/retry-webhooks-with-backoff.md"   # one page per lesson in the brain

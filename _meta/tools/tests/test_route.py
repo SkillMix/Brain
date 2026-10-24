@@ -121,6 +121,7 @@ def test_record_queues_one_projection_per_route_with_verbatim_parts(tmp_path):
     out = route.record(root, decision(), now=NOW)
     (fm, body), = queued(root)
     assert out["queued"] == [fm["id"]] and fm["class"] == "at_once" and fm["destination"] == "harbor"
+    assert not list((root / "_outbound" / "signals").glob("*.yaml"))   # at once: the item itself, no signal
     assert "forty leads" in body and "Beacon" not in body and "board dinner" not in body
     assert fm["informs"][0]["due"] == "2026-10-23" and fm["why"] == "pilot work"
     page = route.find_page(root, "c-1")
@@ -855,7 +856,7 @@ def test_an_at_once_release_without_a_path_pauses_the_router_when_pulled_or_fail
 def test_router_tier_capped_for_journal_beyond_crew(tmp_path):
     # routing on; the route decision says at_once for a journal record to a home whose crew lacks ada
     ws = journal_ws(tmp_path, crew=["ben"], routing={})
-    link.journal_records(ws, now=NOW)
+    link.journal_records(ws)
     sweep.run(ws, now=NOW)
     rid = f"journal-{NOW:%Y%m%d}T1015"
     route.record(ws, decision(record=rid, routes=[{

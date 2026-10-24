@@ -84,12 +84,13 @@ def held_in_doubt(root):
     return sum(fm.get("reason") == "doubt" for fm, _ in held_items(root))
 
 
-def test_a_record_its_destination_already_reads_queues_at_once_and_writes_signal(tmp_path):
+def test_a_record_its_destination_already_reads_queues_at_once_and_writes_no_signal(tmp_path):
+    # the item itself arrives at once: no notice that its details follow after a window
     _, _, ada = build(tmp_path, sources=CREW_MAIL)
     write_feed(ada, [record()])
     report = sweep.run(ada, now=NOW)
     assert report.records_seen == 1 and report.witness_written == 1
-    assert report.attached == 1 and report.queued == 1 and report.signals == 1
+    assert report.attached == 1 and report.queued == 1 and report.signals == 0
     assert report.held_in_doubt == 0 and report.held_other == 0
     witness = ada / "knowledge" / "sources" / "2026" / "10" / "m-0001.md"
     fm, body = pages.read(witness)
@@ -105,11 +106,7 @@ def test_a_record_its_destination_already_reads_queues_at_once_and_writes_signal
     assert item_fm["kind"] == "mail" and item_fm["status"] == "draft"
     assert pages.parse_iso(item_fm["stage_after"]) == NOW
     assert "3 November" in item_body
-    signal_path, = sorted((ada / "_outbound" / "signals").glob("*.yaml"))
-    signal = yaml.safe_load(signal_path.read_text(encoding="utf-8"))
-    assert set(signal) == {"id", "subject", "destination", "at", "note"}
-    assert signal["subject"] == "harbor" and signal["destination"] == "harbor"
-    assert signal["note"] == "open item moved" and "November" not in signal_path.read_text()
+    assert not list((ada / "_outbound" / "signals").glob("*.yaml"))
     assert yaml.safe_load((ada / "_meta" / "state" / "sweep-watermark.yaml").read_text())["at"] \
         == "2026-10-12T08:14:00Z"
     runs = [json.loads(l) for l in (ada / "_meta" / "state" / "runs.jsonl").read_text().splitlines()]
@@ -124,6 +121,11 @@ def test_without_router_or_standing_choice_a_widening_record_waits_for_a_yes(tmp
     write_feed(ada, [record(text="Go-live moves to 3 November.\n" + "More words. " * 900)])
     report = sweep.run(ada, now=NOW)
     assert report.queued == 0 and report.held_in_doubt == 1 and report.signals == 1
+    signal_path, = sorted((ada / "_outbound" / "signals").glob("*.yaml"))   # content-free: that something moved
+    signal = yaml.safe_load(signal_path.read_text(encoding="utf-8"))
+    assert set(signal) == {"id", "subject", "destination", "at", "note"}
+    assert signal["subject"] == "harbor" and signal["destination"] == "harbor"
+    assert signal["note"] == "open item moved" and "November" not in signal_path.read_text()
     (fm, body), = held_items(ada)
     assert fm["reason"] == "doubt" and "no router" in fm["why"] and "high_stakes" not in fm
     assert len(body) <= sweep.CAP_WITHOUT_ROUTING + 10, "a yes releases it shallow, never in full"
@@ -171,7 +173,7 @@ def test_second_run_processes_nothing_new(tmp_path):
     assert second.records_seen == 0 and second.witness_written == 0 and second.queued == 0
     assert second.watermark == "2026-10-12T08:20:00Z"
     assert len(queue_items(ada)) == 2
-    assert len(list((ada / "_outbound" / "signals").glob("*.yaml"))) == 2
+    assert not list((ada / "_outbound" / "signals").glob("*.yaml"))   # at once: no signal
     runs = (ada / "_meta" / "state" / "runs.jsonl").read_text().splitlines()
     assert len(runs) == 2
 
@@ -780,7 +782,7 @@ def test_a_backfill_re_export_deepens_old_pages_behind_the_mark(tmp_path):
 def test_walled_crew_home_gets_journal_at_once(tmp_path):
     # harbor-voice-agent classified walled, home harbor, crew ["ada"]; routing off; only mail declared
     ws = journal_ws(tmp_path, crew=["ada"])
-    link.journal_records(ws, now=NOW)
+    link.journal_records(ws)
     sweep.run(ws, now=NOW)
     item = only_queue_item(ws)
     assert item["class"] == "at_once" and item["destination"] == "harbor"
@@ -790,7 +792,7 @@ def test_walled_crew_home_gets_journal_at_once(tmp_path):
 def test_other_home_gets_it_after_the_window(tmp_path):
     # the same entry, crew ["ben"]
     ws = journal_ws(tmp_path, crew=["ben"])
-    link.journal_records(ws, now=NOW)
+    link.journal_records(ws)
     sweep.run(ws, now=NOW)
     item = only_queue_item(ws)
     assert item["class"] == "window" and held_in_doubt(ws) == 0
@@ -800,7 +802,7 @@ def test_other_home_gets_it_after_the_window(tmp_path):
 def test_a_paused_journal_path_waits_the_window(tmp_path):
     ws = journal_ws(tmp_path, crew=["ada"])
     release.pause(ws, "journal:harbor", NOW, "pulled back", "x", spaceyaml.load(ws))
-    link.journal_records(ws, now=NOW)
+    link.journal_records(ws)
     sweep.run(ws, now=NOW)
     assert only_queue_item(ws)["class"] == "window"
 
@@ -810,13 +812,13 @@ def test_a_journal_entry_headed_before_a_swept_one_still_travels(tmp_path):
     # an evening entry in a UTC heading, or a link made after the entries)
     ws = journal_ws(tmp_path, crew=["ada"])
     noon, later = NOW.replace(hour=12), NOW.replace(hour=13)
-    link.journal_records(ws, now=noon)
+    link.journal_records(ws)
     sweep.run(ws, now=noon)
     note, = (ws / "journal").rglob("*.md")
     with note.open("a", encoding="utf-8", newline="\n") as handle:
         handle.write("\n## 10:05Z: flows reviewed\n\n- ref: northwind/harbor-voice:docs/flows.md@abd\n"
                      "- subject: harbor-voice-agent\n")
-    link.journal_records(ws, now=later)
+    link.journal_records(ws)
     sweep.run(ws, now=later)
     assert len(queue_items(ws)) == 2
     sweep.run(ws, now=later)

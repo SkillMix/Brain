@@ -622,3 +622,20 @@ def test_status_page_without_pointers_has_no_section(tmp_path):
     witness(root, "m-0001", "harbor", "2026-10-10T09:00:00Z")
     status.run(root, now=NOW)
     assert "## Pointers" not in (root / "live/subjects/harbor.md").read_text(encoding="utf-8")
+
+
+def test_the_daily_pass_keeps_the_installed_instruction_current(tmp_path):
+    # a block onboarding installed for this space with an older template; the person's own lines stay
+    import onboard
+    from pathlib import Path
+    root = make_space(tmp_path / "ada")
+    ui = Path.home() / ".claude" / "CLAUDE.md"
+    ui.parent.mkdir(parents=True, exist_ok=True)
+    ui.write_text(f"# mine\n\n{onboard.MARK_OPEN}\nold text for {root.resolve().as_posix()}\n{onboard.MARK_CLOSE}\n",
+                  encoding="utf-8")
+    status.run(root, now=NOW)
+    text = ui.read_text(encoding="utf-8")
+    assert text.startswith("# mine\n") and "link.py" in text and "old text" not in text
+    ui.write_text("# mine only\n", encoding="utf-8")   # never installed here: left alone
+    status.run(root, now=NOW)
+    assert ui.read_text(encoding="utf-8") == "# mine only\n"

@@ -81,9 +81,8 @@ def test_resolve_unlinked_exits_3_and_never_asks_twice(tmp_path, capsys, now):
     ws = make_space(tmp_path / "ada", subjects=PEOPLE + HARBOR)
     other = make_codebase(tmp_path / "other", "https://github.com/someone/dotfiles")
     assert link.main([str(ws), "resolve", "--cwd", str(other)]) == 3 and capsys.readouterr().out == ""
-    before = (ws / link.SEEN).read_text(encoding="utf-8")
     assert link.main([str(ws), "resolve", "--cwd", str(other)]) == 3
-    assert (ws / link.SEEN).read_text(encoding="utf-8") == before
+    assert not (ws / link.SEEN).exists()   # a repository that matched nothing leaves no trace
     assert link.resolve(ws, tmp_path / "nowhere") is None   # no repository at all
 
 
@@ -109,12 +108,15 @@ def test_detect_asks_once_on_a_tie(tmp_path, now):
     assert len(yaml.safe_load((ws / link.NEEDS_YOU).read_text(encoding="utf-8"))["items"]) == 1
 
 
-def test_detect_links_two_against_one(tmp_path, now):
-    # lumen/app vs subject app (kind topics, title App) scoring 2, and client lumen scoring 1
+def test_detect_never_links_on_one_shared_word(tmp_path, now):
+    # lumen/app vs subject app (kind topics, title App) scoring 2, and client lumen scoring 1: one
+    # ordinary word is no match; the person's own repositories stay theirs
     ws = make_space(tmp_path / "ada", subjects=PEOPLE + [{"id": "app", "kind": "topics", "title": "App"},
-                                                          {"id": "lumen", "kind": "clients", "title": "Lumen"}])
-    out = link.detect(ws, "lumen/app", now=now)
-    assert out["outcome"] == "linked" and out["subject"] == "app"
+                                                          {"id": "lumen", "kind": "clients", "title": "Lumen"},
+                                                          {"id": "harbor-site", "kind": "projects", "client": "northwind"}])
+    assert link.detect(ws, "lumen/app", now=now)["outcome"] == "none"
+    assert link.detect(ws, "ada-okafor/personal-site", now=now)["outcome"] == "none"
+    assert link.detect(ws, "northwind/site", now=now)["outcome"] == "linked"   # a name word and the client
 
 
 def test_detect_skips_subjects_the_person_may_not_link(tmp_path, now):
@@ -208,8 +210,9 @@ def test_resolve_pending_until_the_holder_applies(tmp_path, now):
     code = make_codebase(tmp_path / "code")
     out = link.resolve(ws, code, now=now)
     assert out["subject"] == "harbor-voice-agent" and out["home"] == "harbor"
-    assert out["audience"] is None and out["left_out"] is None and out["status_page"] is None   # harbor not mounted
-    assert link.links(ws)[-1].pending and link.links(ws)[-1].holder == "brain"
+    assert out["audience"] is None and out["status_page"] is None   # harbor not mounted
+    assert out["left_out"] == list(spaceyaml.DEFAULTS["left_out"])   # the defaults, never nothing
+    assert link.links(ws)[-1].pending
     (signal,) = (ws / "_outbound" / "signals").glob("*.yaml")
     (brain / "_inbound" / "signals").mkdir(parents=True, exist_ok=True)
     signal.replace(brain / "_inbound" / "signals" / signal.name)
@@ -254,7 +257,8 @@ def test_resolve_is_offline_and_fast(tmp_path, monkeypatch, now):
 
 def test_person_links_and_unlinks(tmp_path, now):
     ws = make_space(tmp_path / "ada", subjects=PEOPLE + [{"id": "product", "kind": "topics", "title": "Product"}])
-    assert link.main([str(ws), "link", "lumen/app", "product"]) == 0 and link.link_for(ws, "lumen/app").linked_by == "person"
+    assert link.main([str(ws), "link", "lumen/app", "product"]) == 0 and link.link_for(ws, "lumen/app") is not None
+    assert registry.Registry(ws).get("product").extra["repos"][0]["linked_by"] == "person"
     assert link.main([str(ws), "unlink", "lumen/app"]) == 0 and link.link_for(ws, "lumen/app") is None
     log = (ws / "log.md").read_text(encoding="utf-8")
     assert "linked lumen/app to product (person); undo: python _meta/tools/link.py . unlink lumen/app" in log
@@ -326,8 +330,7 @@ def test_a_repo_that_matched_nothing_is_placed_once_its_subject_is_registered(tm
     assert link.scan(ws, now=now, list_fn=lambda owner: listed, id_fn=lambda r: None)["linked"] == 0
     code = make_codebase(tmp_path / "code")
     assert link.resolve(ws, code, now=now) is None
-    assert [json.loads(l)["outcome"] for l in (ws / link.SEEN).read_text(encoding="utf-8").splitlines()] == \
-        ["none", "none"]   # a repository that matches nothing is written down once
+    assert not (ws / link.SEEN).exists()   # a repository that matches nothing leaves no trace
     (ws / "_meta" / "subjects.yaml").write_text(yaml.safe_dump({"subjects": PEOPLE + HARBOR}), encoding="utf-8")
     assert link.resolve(ws, code, now=now)["subject"] == "harbor-voice-agent"   # a session places it
     out = link.scan(ws, now=now, list_fn=lambda owner: listed, id_fn=lambda r: None)   # project creation places it
@@ -508,7 +511,7 @@ def test_a_gone_link_comes_back(tmp_path, now):
 
 
 def test_check_marks_a_lost_repo_gone(tmp_path, now):
-    ws = linked_ws(tmp_path)
+    ws = linked_ws(tmp_path, checked="2026-10-05")   # found by an earlier check
     code = make_codebase(tmp_path / "code")
     out = link.check(ws, now=now, lookup_fn=lambda r, i: None, readers_fn=lambda r: None)
     assert out["repaired"] == 1 and out["links"] == 0
@@ -679,23 +682,238 @@ def journal_rows(ws) -> list:
 
 def test_journal_records_only_for_linked_refs(tmp_path, now):              # Review Focus 4
     ws = journal_ws(tmp_path)
-    assert link.journal_records(ws, now=now) == 1
+    assert link.journal_records(ws) == 1
     row, = journal_rows(ws)
-    assert row["identifiers"] == {"subject": "harbor-voice-agent"} and row["codebase"] == "northwind/harbor-voice"
+    assert row["identifiers"] == {"subject": "harbor-voice-agent"} and "codebase" not in row
     assert row["id"] == f"journal-{now:%Y%m%d}T1015" and row["at"] == f"{now:%Y-%m-%d}T10:15:00Z"
     assert (row["source"], row["kind"], row["audience"], row["from"]) == ("journal", "document", "owner", "Ada Okafor")
     assert row["subject"] == "call-flow spec written"
-    assert link.journal_records(ws, now=now) == 0                          # idempotent
+    assert link.journal_records(ws) == 0                          # idempotent
     project = journal_ws(tmp_path / "p", profile="project")
-    assert link.journal_records(project, now=now) == 0                     # personal spaces only
+    assert link.journal_records(project) == 0                     # personal spaces only
 
 
 def test_journal_record_puts_pointers_first(tmp_path, now):
     body = ("- " + "the pilot needs words " * 140 + "\n- subject: harbor-voice-agent\n- " + REF_A
             + "\n- lesson: retry webhooks with backoff\n- from: beacon\n")
     ws = journal_ws(tmp_path, entry_a=body)
-    link.journal_records(ws, now=now)
+    link.journal_records(ws)
     row, = journal_rows(ws)
     assert row["text"].startswith(REF_A + "\n\n- the pilot needs words")
     assert row["text"].count(REF_A) == 1
     assert "lesson: retry webhooks" in row["text"] and "from:" not in row["text"]   # ring 3 stays home
+
+
+def test_a_journal_record_carries_only_the_entrys_own_pointers_and_lines(tmp_path):
+    # entry A points into harbor-voice-agent's code and into beacon/app (another client's code) and a
+    # private path, puts `from:` after its lesson, and has a hand-typed line and a `### Private`
+    # section below its last structured line
+    body = (f"- The call-flow spec.\n- {REF_A}\n- ref: beacon/app:src/billing/retry.py@def456\n"
+            "- ref: personal/health/notes.md@abc\n- lesson: retry webhooks with backoff; from: beacon\n"
+            "- subject: harbor-voice-agent\n\nnote to self: GP appointment on Friday\n\n### Private\n\n- pay band\n")
+    ws = journal_ws(tmp_path, entry_a=body)
+    link.journal_records(ws)
+    row, = journal_rows(ws)
+    assert row["text"].startswith(REF_A + "\n\n")
+    for kept_home in ("beacon/app", "personal/health", "from:", "GP appointment", "Private", "pay band"):
+        assert kept_home not in row["text"], kept_home
+    assert "lesson: retry webhooks with backoff" not in row["text"]   # the line carrying `from:` stays home
+
+
+def test_a_journal_record_travels_for_a_codebase_on_another_host(tmp_path):
+    # harbor-voice-agent's codebase is on GitLab; the entry points into it the documented way
+    ws = journal_ws(tmp_path)
+    data = yaml.safe_load((ws / "_meta" / "subjects.yaml").read_text(encoding="utf-8"))
+    for s in data["subjects"]:
+        if s["id"] == "harbor-voice-agent":
+            s["repos"] = [{"repo": "https://gitlab.example/northwind/harbor-voice", "linked_by": "person",
+                           "linked": "2026-10-01"}]
+    (ws / "_meta" / "subjects.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    assert link.journal_records(ws) == 1
+    assert journal_rows(ws)[0]["text"].startswith(REF_A + "\n")
+
+
+def test_every_remote_form_of_one_repository_is_one_key(tmp_path):
+    for url in ("https://gitlab.example/lumen/app", "git@gitlab.example:lumen/app.git",
+                "ssh://git@gitlab.example/lumen/app.git", "ssh://git@gitlab.example:2222/lumen/app"):
+        assert link.repo_key(url) == "https://gitlab.example/lumen/app", url
+    for url in ("lumen/app", "git@github.com:lumen/app.git", "ssh://git@ssh.github.com:443/lumen/app.git",
+                "https://token@github.com/Lumen/App"):
+        assert link.repo_key(url) == "lumen/app", url
+    ws = make_space(tmp_path / "ada", subjects=PEOPLE + [{"id": "product", "kind": "topics", "title": "Product"}])
+    assert link.main([str(ws), "link", "https://gitlab.example/lumen/app", "product"]) == 0
+    assert link.resolve(ws, make_codebase(tmp_path / "ssh", "git@gitlab.example:lumen/app.git"))["subject"] == "product"
+    # a GitHub host alias (the usual two-account setup) is read through ~/.ssh/config
+    assert link.main([str(ws), "link", "lumen/web", "product"]) == 0
+    alias = make_codebase(tmp_path / "alias", "git@github-work:lumen/web.git")
+    assert link.resolve(ws, alias) is None
+    (Path.home() / ".ssh").mkdir(parents=True, exist_ok=True)
+    (Path.home() / ".ssh" / "config").write_text("Host github-work\n  HostName github.com\n  User git\n",
+                                                encoding="utf-8")
+    assert link.remote_of(alias) == "lumen/web" and link.resolve(ws, alias)["subject"] == "product"
+
+
+def test_a_clone_of_a_folder_is_no_codebase(tmp_path, now):
+    # a clone of a local clone: origin is a folder on this machine
+    ws = make_space(tmp_path / "ada", subjects=PEOPLE + HARBOR)
+    code = make_codebase(tmp_path / "code", "C:\\\\Users\\\\ada\\\\work\\\\northwind\\\\harbor-voice")
+    assert link.remote_of(code) is None and link.resolve(ws, code, now=now) is None
+    assert link.remote_of(make_codebase(tmp_path / "c2", "../harbor-voice")) is None
+    assert link.main([str(ws), "link", ".", "harbor-voice-agent"]) == 1
+    assert not list((ws / "_outbound" / "signals").glob("*.yaml")) and not (ws / link.SEEN).exists()
+
+
+def test_a_fork_finds_the_link_of_its_upstream(tmp_path):
+    ws = make_space(tmp_path / "ada", subjects=PEOPLE + [{"id": "product", "kind": "topics", "title": "Product"}])
+    assert link.main([str(ws), "link", "lumen/app", "product"]) == 0
+    fork = make_codebase(tmp_path / "fork", "https://github.com/ada-gh/app.git")
+    with open(fork / ".git" / "config", "a", encoding="utf-8") as handle:
+        handle.write('[remote "upstream"]\n\turl = https://github.com/lumen/app.git\n')
+    assert link.resolve(ws, fork)["subject"] == "product"
+
+
+def test_link_refuses_a_subject_the_person_may_not_link(tmp_path, now):
+    # the brain holds harbor-voice-agent (home harbor, crew ben) and its part harbor-voice-ops
+    # (no crew of its own); ada is on neither crew, ben is on the umbrella's
+    brain = make_space(tmp_path / "lantern", profile="brain", name="lantern", owner="Cy Moss", subjects=PEOPLE + [
+        {"id": "harbor-voice-agent", "kind": "projects", "home": "harbor", "crew": ["ben"], "client": "northwind"},
+        {"id": "harbor-voice-ops", "kind": "projects", "part_of": "harbor-voice-agent", "client": "northwind"}])
+    ada = make_space(tmp_path / "ada")
+    mount_brain(ada, brain)
+    assert link.main([str(ada), "link", "northwind/harbor-voice", "harbor-voice-agent"]) == 1
+    assert link.link_for(ada, "northwind/harbor-voice") is None
+    assert not list((ada / "_outbound" / "signals").glob("*.yaml")) and not (ada / link.SEEN).exists()
+    ben = make_space(tmp_path / "ben", owner="Ben Liu")
+    mount_brain(ben, brain)
+    reg = registry.Registry(ben)
+    assert link.score("northwind/harbor-voice-ops", reg.get("harbor-voice-ops"), reg) > 0   # the crew places a part
+    assert link.main([str(ben), "link", "northwind/harbor-voice-ops", "harbor-voice-ops"]) == 0
+
+
+def test_a_yes_to_the_tie_links_it_and_a_link_by_hand_closes_the_question(tmp_path, now):
+    import sign
+    subjects = PEOPLE + HARBOR + [{"id": "lighthouse-voice", "kind": "projects", "client": "northwind"}]
+    ws = make_space(tmp_path / "ada", subjects=subjects)
+    assert link.detect(ws, "northwind/voice", now=now)["outcome"] == "asked"
+    (item,) = yaml.safe_load((ws / link.NEEDS_YOU).read_text(encoding="utf-8"))["items"]
+    assert item["recommendation"] == "yes: link it to harbor-voice-agent"
+    sign.apply(ws, {item["id"]: "yes"}, by="Ada Okafor", now=now)
+    code = make_codebase(tmp_path / "code", "https://github.com/northwind/voice.git")
+    assert link.resolve(ws, code, now=now)["subject"] == "harbor-voice-agent"
+    assert yaml.safe_load((ws / link.NEEDS_YOU).read_text(encoding="utf-8"))["items"] == []
+    other = make_space(tmp_path / "other", subjects=subjects)
+    link.detect(other, "northwind/voice", now=now)
+    assert link.main([str(other), "link", "northwind/voice", "lighthouse-voice"]) == 0
+    assert yaml.safe_load((other / link.NEEDS_YOU).read_text(encoding="utf-8"))["items"] == []
+    no = make_space(tmp_path / "no", subjects=subjects)   # a no leaves it unlinked, and it is not asked again
+    link.detect(no, "northwind/voice", now=now)
+    sign.apply(no, {"link-northwind-voice": "no"}, by="Ada Okafor", now=now)
+    assert link.detect(no, "northwind/voice", now=now)["outcome"] == "known"
+    assert link.link_for(no, "northwind/voice") is None
+
+
+def test_moving_a_link_resolves_the_new_subject_while_the_notes_travel(tmp_path, now):
+    # the brain holds beacon-app (linked to northwind/harbor-voice) and harbor-voice-agent, both crew ada
+    brain = make_space(tmp_path / "lantern", profile="brain", name="lantern", owner="Cy Moss", subjects=PEOPLE + [
+        {"id": "beacon-app", "kind": "projects", "home": "beacon", "crew": ["ada"],
+         "repos": [{"repo": "northwind/harbor-voice", "linked": "2026-10-01", "repo_id": "R_1"}]},
+        {"id": "harbor-voice-agent", "kind": "projects", "home": "harbor", "crew": ["ada"]}])
+    ws = make_space(tmp_path / "ada")
+    mount_brain(ws, brain)
+    code = make_codebase(tmp_path / "code")
+    assert link.resolve(ws, code, now=now)["subject"] == "beacon-app"
+    assert link.main([str(ws), "unlink", "northwind/harbor-voice"]) == 0
+    assert link.main([str(ws), "link", "northwind/harbor-voice", "harbor-voice-agent"]) == 0
+    assert link.resolve(ws, code, now=now)["subject"] == "harbor-voice-agent"
+
+
+def test_a_link_by_hand_after_gone_resolves_before_it_lands(tmp_path, now):
+    brain = make_space(tmp_path / "lantern", profile="brain", name="lantern", owner="Cy Moss", subjects=PEOPLE + [
+        {"id": "harbor-voice-agent", "kind": "projects", "home": "harbor", "crew": ["ada"],
+         "repos": [{"repo": "northwind/harbor-voice", "linked": "2026-10-01", "gone": "2026-10-05"}]}])
+    ws = make_space(tmp_path / "ada")
+    mount_brain(ws, brain)
+    assert link.main([str(ws), "link", "northwind/harbor-voice", "harbor-voice-agent"]) == 0
+    assert link.resolve(ws, make_codebase(tmp_path / "code"), now=now)["subject"] == "harbor-voice-agent"
+
+
+def test_check_keeps_a_link_it_never_found(tmp_path, now):
+    # a client's private repository the checker's login cannot see: the host says not found
+    ws = linked_ws(tmp_path)
+    for day in range(3):
+        out = link.check(ws, now=now + dt.timedelta(days=day), lookup_fn=lambda r, i: None, readers_fn=lambda r: None)
+        assert out == {"links": 1, "wider": 1, "repaired": 0}
+    assert link.links(ws)[0].gone is None
+    link.check(ws, now=now, lookup_fn=same, readers_fn=lambda r: None)   # found once: lost from then on means gone
+    assert link.links(ws)[0].checked == now.date().isoformat()
+    assert link.check(ws, now=now, lookup_fn=lambda r, i: None, readers_fn=lambda r: None)["links"] == 0
+    assert link.links(ws)[0].gone == now.date().isoformat()
+
+
+def test_a_relinked_name_starts_without_the_gone_repositorys_id_and_readers(tmp_path, now):
+    # northwind/harbor-voice (R_1, private, readers inside) was deleted; a new public one has its name
+    ws = linked_ws(tmp_path, repo_id="R_1", readers="inside", checked="2026-10-03", gone="2026-10-05")
+    assert link.main([str(ws), "link", "northwind/harbor-voice", "harbor-voice-agent"]) == 0
+    (entry,) = registry.Registry(ws).get("harbor-voice-agent").extra["repos"]
+    assert "repo_id" not in entry and "readers" not in entry and "checked" not in entry and "gone" not in entry
+    assert link.resolve(ws, make_codebase(tmp_path / "code"), now=now)["readers"] == "wider"
+    new = {"repo": "northwind/harbor-voice", "repo_id": "R_2", "private": False}
+    for day in range(2):
+        out = link.check(ws, now=now + dt.timedelta(days=day), lookup_fn=lambda r, i: new if i in (None, "R_2") else None,
+                         readers_fn=lambda r: None)
+        assert link.links(ws)[0].gone is None and link.links(ws)[0].repo_id == "R_2"
+
+
+def test_unlink_then_link_after_a_rename_keeps_the_old_names(tmp_path, now):
+    ws = make_space(tmp_path / "ada", subjects=PEOPLE + HARBOR + [
+        {"id": "harbor-voice-ops", "kind": "projects", "client": "northwind",
+         "repos": [{"repo": "northwind/voice-agent-2", "repo_id": "R_1", "was": ["northwind/voice-agent"],
+                    "linked": "2026-10-01"}]}])
+    assert link.main([str(ws), "unlink", "northwind/voice-agent-2"]) == 0
+    assert link.main([str(ws), "link", "northwind/voice-agent-2", "harbor-voice-agent"]) == 0
+    old = make_codebase(tmp_path / "old", "https://github.com/northwind/voice-agent.git")
+    assert link.resolve(ws, old, now=now)["subject"] == "harbor-voice-agent"
+    (entry,) = registry.Registry(ws).get("harbor-voice-agent").extra["repos"]
+    assert entry["was"] == ["northwind/voice-agent"]
+
+
+def test_two_homes_keep_one_claim_and_ask_in_the_losing_home(tmp_path, now):
+    # the brain holds harbor-voice (home harbor) and lighthouse-voice (home lighthouse), both linked
+    # to northwind/voice on the same day; each home checks only its own, and both pick one winner
+    day = "2026-10-10"
+    brain = make_space(tmp_path / "lantern", profile="brain", name="lantern", owner="Cy Moss", subjects=PEOPLE + [
+        {"id": "harbor-voice", "kind": "projects", "home": "harbor", "repos": [{"repo": "northwind/voice", "linked": day}]},
+        {"id": "lighthouse-voice", "kind": "projects", "home": "lighthouse",
+         "repos": [{"repo": "northwind/voice", "linked": day}]}])
+    homes = {}
+    for name in ("harbor", "lighthouse"):
+        homes[name] = make_space(tmp_path / name, profile="project", name=name, audience=["Ada Okafor"])
+        mount_brain(homes[name], brain)
+    counts = {n: link.check(h, now=now, lookup_fn=same, readers_fn=lambda r: None) for n, h in homes.items()}
+    assert counts["harbor"]["links"] == 1 and counts["lighthouse"]["links"] == 0
+    assert not (homes["harbor"] / link.NEEDS_YOU).exists()
+    (item,) = yaml.safe_load((homes["lighthouse"] / link.NEEDS_YOU).read_text(encoding="utf-8"))["items"]
+    assert item["id"] == "link-claim-northwind-voice"
+    removes = [yaml.safe_load(p.read_text(encoding="utf-8")) for p in (homes["lighthouse"] / "_outbound" / "signals").glob("*.yaml")]
+    assert [(s["subject"], s["data"].get("remove")) for s in removes] == [("lighthouse-voice", True)]
+
+
+def test_a_client_the_brain_holds_without_a_home_is_homed_nowhere(tmp_path, now):
+    # the brain holds the client tidewater-ferries, unclassified, no home; its codebase is linked to it
+    brain = make_space(tmp_path / "lantern", profile="brain", name="lantern", subjects=PEOPLE + [
+        {"id": "tidewater-ferries", "kind": "clients", "repos": [{"repo": "tidewater-ferries/booking", "linked": "2026-10-01"}]},
+        {"id": "product", "kind": "topics", "repos": [{"repo": "lantern/app", "linked": "2026-10-01"}]}])
+    assert link.check(brain, now=now, lookup_fn=same, readers_fn=lambda r: None)["links"] == 1   # product only
+    (src,) = [s for s in spaceyaml.load(brain).sources if s["name"] == "repository"]
+    assert src["repos"] == ["lantern/app"] and src["audience"] == "everyone"
+    ws = make_space(tmp_path / "ada")
+    mount_brain(ws, brain)
+    out = link.resolve(ws, make_codebase(tmp_path / "code", "https://github.com/tidewater-ferries/booking"), now=now)
+    assert out["home"] is None and out["audience"] is None
+
+
+def test_the_instruction_names_the_heading_the_link_command_and_head_pointers(tmp_path):
+    import onboard
+    text = onboard.instruction_block(make_space(tmp_path / "ada"))
+    assert "## HH:MMZ" in text and "link.py" in text and " link <owner/repo> <subject>" in text
+    assert "@HEAD" in text and "home's audience" not in text

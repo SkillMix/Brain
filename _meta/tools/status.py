@@ -1319,12 +1319,17 @@ def run(root, now=None, check: bool = False) -> StatusReport:
 
 def _refresh_agents_md(root: Path, report) -> None:
     """The generated contract follows space.yaml and the template: rewrite it when stale (the
-    status routine is the one writer of structure)."""
+    status routine is the one writer of structure). So does the person's user-level instruction
+    block, the only text a codebase session reads, where onboarding installed it for this space."""
     try:
         import agents_md
         if (root / "space.yaml").exists() and not agents_md.check(root):
             agents_md.write(root)
             report.changed.append("AGENTS.md")
+        import onboard
+        ui = Path.home() / ".claude" / "CLAUDE.md"
+        if onboard.instruction_present(ui, root):
+            onboard.install_instruction(ui, root)
     except Exception:  # a broken template must not stop the status pass
         pass
 

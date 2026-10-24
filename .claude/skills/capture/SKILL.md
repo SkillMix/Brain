@@ -34,7 +34,8 @@ No tool. The instruction gives `<space root>`; then:
    `work/<kind>/<id>/` attaches the same way; one without either stays a note.
    In a linked codebase (the instruction's "Working in a codebase"), `subject:` comes from
    `link.py resolve`, and a line `ref: <owner/repo>:<path>@<commit>`, `ref: <owner/repo>@<commit>`
-   (the commit worked on) or `ref: <pull request URL>` points into the code: a location, never
+   (the commit worked on; `@HEAD` for a file not committed yet, so the link opens once it merges)
+   or `ref: <pull request URL>` points into the code: a location, never
    its content. Writing a spec, plan or design file, or opening a pull request, in a linked
    codebase always makes one entry: what it is, why, and the pointer. When another subject's
    material helped (ring 3, read only because the person named it), the entry gains

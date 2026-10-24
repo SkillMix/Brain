@@ -1,5 +1,6 @@
-# A codebase nothing matches stays unlinked: resolve exits 3 and only remembers it has seen it.
-name: resolve in an unlinked codebase remembers it and links nothing
+# A codebase nothing matches stays unlinked: resolve exits 3 and leaves no trace, so a subject
+# registered later still claims it.
+name: resolve in an unlinked codebase links nothing and writes nothing
 command:
 - python
 - _meta/tools/link.py
@@ -48,7 +49,7 @@ env:
   SPACE_NOW: '2026-10-05T09:00:00Z'
 expect:
   exit: 3
-  writes_only_under:
+  writes_only_under: []
+  must_not_exist:
   - _meta/state/links-seen.jsonl
-  must_exist:
-  - _meta/state/links-seen.jsonl
+  - _inbound/needs-you/links.yaml

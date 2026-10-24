@@ -418,7 +418,8 @@ def may_decide(space, reg, sid, by) -> bool:
 def may_link(reg, subject, by: str, sender: str) -> bool:
     """Whether a note by `by` from the space `sender` may link a codebase to `subject`: the note
     comes from its home, or `by` owns the space whose registry holds it, owns the subject, is on
-    its crew (or its walled classification's), or is anyone registered when its home is the brain."""
+    its crew or an umbrella's (or the walled classification's that governs it, so a project's crew
+    links its parts), or is anyone registered when its home is the brain."""
     space = reg.space
     home = reg.home_of(subject.id)
     if home and sender == home:
@@ -431,8 +432,9 @@ def may_link(reg, subject, by: str, sender: str) -> bool:
             holder = None
     if _same(by, holder.owner if holder is not None else None) or _same(by, subject_owner(reg, subject.id)):
         return True
-    c = classification_of(subject) or {}
-    crew = set(_ids(subject.crew)) | (set(_ids(c.get("crew"))) if c.get("class") == "walled" else set())
+    c = reg.classification(subject.id) or {}
+    crew = {p for s in [subject, *reg.ancestors_of(subject.id)] for p in _ids(s.crew)} \
+        | (set(_ids(c.get("crew"))) if c.get("class") == "walled" else set())
     named = [s for s in reg.everywhere() if s.kind == "people" and _same(s.title, by)]
     if any(p.id in crew for p in named):
         return True

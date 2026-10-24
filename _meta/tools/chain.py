@@ -194,7 +194,7 @@ def sweep_chain(root, now: dt.datetime | None = None) -> dict:
     if space.profile == "personal" and (space.data.get("transcripts") or {}).get("path"):
         _step(ctx, "transcripts", "transcripts", "scan", root, now=now)
     if space.profile == "personal":   # notes with a pointer to linked code become records to sweep
-        _step(ctx, "journal_records", "link", "journal_records", root, now=now)
+        _step(ctx, "journal_records", "link", "journal_records", root)
     _step(ctx, "sweep", "sweep", "run", root, now=now)
     if space.profile == "personal":
         _step(ctx, "reply", "reply", "run", root, now=now)
