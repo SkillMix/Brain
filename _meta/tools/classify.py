@@ -529,8 +529,9 @@ def apply_note(root, space, reg, signal: dict, now) -> tuple:
             repos = [r for r in repos if r is not found]
         else:
             entry = dict(found or {"repo": repo})
-            entry.update({k: data[k] for k in ("repo_id", "linked_by", "linked", "readers", "checked", "gone")
+            entry.update({k: data[k] for k in ("repo_id", "linked_by", "linked", "readers", "checked", "gone", "was")
                           if k in data and not (k == "linked" and entry.get("linked"))}, repo=repo)
+            entry = {k: v for k, v in entry.items() if v is not None}   # `gone: null` brings a link back
             bad = registry_mod._repo_errors(sid, [entry])
             if bad:
                 return "refused", bad[0]

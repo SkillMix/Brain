@@ -206,8 +206,8 @@ def sweep_chain(root, now: dt.datetime | None = None) -> dict:
 
 def daily(root, person: str | None = None, now: dt.datetime | None = None, shadow: bool = False,
           offline_roots: dict | None = None) -> dict:
-    """status → access → requests → release (listed items only) → outbox reconcile → morning
-    view → answer and leak tests."""
+    """status → access → link check → requests → release (listed items only) → outbox reconcile
+    → morning view → answer and leak tests."""
     root = Path(root)
     space = spaceyaml.load(root)
     now = now or space.now()
@@ -218,6 +218,7 @@ def daily(root, person: str | None = None, now: dt.datetime | None = None, shado
         _step(ctx, "template_sync", "template_sync", "guarded", root)
     _step(ctx, "status", "status", "run", root, now=now)
     _step(ctx, "access", "access", "run", root, now=now)   # readers on the host against the audience
+    _step(ctx, "link_check", "link", "check", root, now=now)   # the codebases linked to subjects homed here
     _step(ctx, "requests_collect", "request", "collect", root, now=now, offline_roots=offline_roots)
     _step(ctx, "requests_answer", "request", "answer", root, now=now, offline_roots=offline_roots)
     _step(ctx, "release", "release", "ship", root, now=now, offline_roots=offline_roots)

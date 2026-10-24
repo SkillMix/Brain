@@ -14,7 +14,7 @@ on top of the parent's entry. The register
 fields say what an engagement was (the brain's projects page shows them): `period` (`from`,
 `to`, months `YYYY-MM`), `client` (a subject id), `crew` (people subject ids) and `work` (one line).
 `repos` lists the codebases linked to the subject: `repo` (owner/name), `repo_id`, `linked_by`,
-`readers`, and the dates `checked`, `linked` and `gone`
+`readers`, the dates `checked`, `linked` and `gone`, and `was` (the names it had before a rename)
 (docs/design/2026-10-22-codebase-link-design.md).
 
     python registry.py <root> check     report loops, duplicates, unknown kinds
@@ -144,6 +144,9 @@ def _repo_errors(sid: str, repos) -> list:
         for key in ("checked", "linked", "gone"):
             if entry.get(key) is not None and not _is_date(entry[key]):
                 errs.append(f"registry: `{sid}` repo link {n} {key} `{entry[key]}` is not YYYY-MM-DD")
+        was = entry.get("was")
+        if was is not None and not (isinstance(was, list) and all(isinstance(w, str) and w.strip() for w in was)):
+            errs.append(f"registry: `{sid}` repo link {n} was is not a list of repositories")
     return errs
 
 

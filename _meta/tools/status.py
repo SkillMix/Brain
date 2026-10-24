@@ -624,7 +624,8 @@ def _health_line(space, name: str, root, now) -> str:
     if rspace.profile == "personal":
         rate = capture_rate(root, space, now)
         extras.append(f"capture rate {rate[0]:.2f} ({rate[1]} sessions)" if rate else "capture rate n/a")
-    extras += [_requests_cell(root, space, now), _index_cell(root)]
+    import link  # the codebases linked to subjects homed here, from the last daily check
+    extras += [_requests_cell(root, space, now), _index_cell(root), link.health_cell(root)]
     stale_path = root / "_meta" / "state" / "stale.yaml"
     if stale_path.exists():
         import yaml

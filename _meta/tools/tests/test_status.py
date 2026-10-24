@@ -335,7 +335,7 @@ def test_health_lines(tmp_path):
     text = (root / "live" / "health.md").read_text(encoding="utf-8")
     line = ("- ada: runs 2 in 24h, cost 1234 tokens, checker hit rate 0.50, held in doubt 1, "
             "open questions 1, candidates 1, probe none yet, capture rate n/a, "
-            "requests asked 0 answered 0 expired 0, index none")
+            "requests asked 0 answered 0 expired 0, index none, links 0")
     assert line in text
     assert ("- brain: runs 0 in 24h, cost 0 tokens, checker hit rate n/a, held in doubt 0, "
             "open questions 0, candidates 0, probe none yet, requests asked 0 answered 0 expired 0, "
@@ -347,6 +347,15 @@ def test_health_lines(tmp_path):
         encoding="utf-8").splitlines() if l.strip()]
     assert runs[-1]["routine"] == "status" and runs[-1]["space"] == "ada"
     assert runs[-1]["at"] == pages.iso(NOW) and runs[-1]["cost_tokens"] == 0
+
+
+def test_health_line_counts_codebase_links(tmp_path):
+    root = make_space(tmp_path / "ada", name="ada")
+    (root / "_meta" / "state" / "links.json").write_text(
+        json.dumps({"at": pages.iso(NOW), "links": 1, "wider": 1, "repaired": 0}) + "\n", encoding="utf-8")
+    (root / "_meta" / "state" / "stale.yaml").write_text("release: '2026-10-11T09:00:00Z'\n", encoding="utf-8")
+    line = status.run(root, now=NOW).health_lines[0]
+    assert "index none, links 1, wider 1, repaired 0, stale: release since 2026-10-11" in line   # stale stays last
 
 
 def test_now_pin(tmp_path):

@@ -115,6 +115,16 @@ def test_daily_order_and_tests_only_when_the_files_exist(tmp_path, fakes):
     assert fakes.names() == ["status", "release", "morning_view", "answers", "leaks"]
 
 
+def test_daily_checks_codebase_links_right_after_access(tmp_path, fakes):
+    fakes.modules["access"] = types.SimpleNamespace(run=fakes._fn("access"))
+    fakes.modules["link"] = types.SimpleNamespace(check=fakes._fn("link_check"))
+    root = make_space(tmp_path / "ada")
+    result = chain.daily(root, "Ada Okafor", now=NOW)
+    assert fakes.names() == ["status", "access", "link_check", "release", "morning_view"]
+    assert [c[2] for c in fakes.calls if c[0] == "link_check"] == [NOW]
+    assert result["steps"]["link_check"] == {"ran": "link_check"}
+
+
 def test_a_step_that_fails_in_the_daily_run_shows_in_the_same_mornings_view(tmp_path, monkeypatch):
     root = make_space(tmp_path / "ada")
     real = chain._module

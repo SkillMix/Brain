@@ -1,7 +1,9 @@
 """Codebase links (docs/design/2026-10-22-codebase-link-design.md): resolve, first-time detection,
-the person's own link and unlink, and the `ref:` pointer forms."""
+the person's own link and unlink, the `ref:` pointer forms, the scan, the daily check and its
+health cell."""
 from __future__ import annotations
 
+import datetime as dt
 import json
 import subprocess
 import time
@@ -13,6 +15,7 @@ import yaml
 import classify
 import link
 import registry
+import spaceyaml
 from conftest import make_space, mount_brain
 
 
@@ -31,17 +34,23 @@ def mount(space_root: Path, name: str, path: Path) -> None:
     (space_root / "space.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
 
 
+def same(repo, repo_id):
+    """A host lookup that finds the repository unchanged."""
+    return {"repo": repo, "repo_id": repo_id or "R_1"}
+
+
 PEOPLE = [{"id": "ada", "kind": "people", "title": "Ada Okafor", "match": {"github": "ada-gh"}},
           {"id": "ben", "kind": "people", "title": "Ben Liu", "match": {"github": "ben-gh"}}]
 HARBOR = [{"id": "harbor", "kind": "projects", "client": "northwind"},
           {"id": "harbor-voice-agent", "kind": "projects", "part_of": "harbor", "client": "northwind"}]
 
 
-def linked_ws(tmp_path, **entry):
-    """ada's workspace holding harbor-voice-agent, linked to northwind/harbor-voice."""
+def linked_ws(tmp_path, space=None, **entry):
+    """ada's workspace holding harbor-voice-agent, linked to northwind/harbor-voice; `space` adds
+    space.yaml keys."""
     repo = dict({"repo": "northwind/harbor-voice", "linked_by": "detect", "linked": "2026-10-01"}, **entry)
     return make_space(tmp_path / "ada", subjects=PEOPLE + [
-        {"id": "harbor-voice-agent", "kind": "projects", "client": "northwind", "repos": [repo]}])
+        {"id": "harbor-voice-agent", "kind": "projects", "client": "northwind", "repos": [repo]}], **(space or {}))
 
 
 def test_resolve_linked(tmp_path, capsys):
@@ -269,3 +278,294 @@ def test_ref_forms():
     assert link.ref_url("northwind/harbor-voice@abc123") == "https://github.com/northwind/harbor-voice/commit/abc123"
     assert link.ref_url("https://github.com/northwind/harbor-voice/pull/7") == "https://github.com/northwind/harbor-voice/pull/7"
     assert link.ref_repo("not a pointer") is None and link.ref_url("not a pointer") is None
+
+
+# ----- scan, check and the health cell ----------------------------------------------------------
+def test_scan_runs_detect_per_listed_repo(tmp_path, now):
+    # ws registry: harbor, harbor-voice-agent and lighthouse-voice (client northwind); ws's own remote is northwind's
+    ws = make_space(tmp_path / "ada", subjects=PEOPLE + HARBOR + [
+        {"id": "lighthouse-voice", "kind": "projects", "client": "northwind"}])
+    make_codebase(ws, "https://github.com/northwind/ada-space.git")
+    owners = []
+
+    def listed(owner):
+        owners.append(owner)
+        return ["northwind/harbor-voice", "northwind/voice"]
+    out = link.scan(ws, now=now, list_fn=listed, id_fn=lambda r: None)
+    assert out["linked"] == 1 and out["asked"] == 1 and out["seen"] == 2 and not out["skipped"]
+    assert owners == ["ada-gh", "northwind"]   # the person's login, then the owner of this space's remote
+    assert link.link_for(ws, "northwind/harbor-voice").subject == "harbor-voice-agent"
+
+
+def test_scan_without_host_is_skipped(tmp_path, now):       # Review Focus 2
+    ws = make_space(tmp_path / "ada", subjects=PEOPLE + HARBOR)
+    assert link.scan(ws, now=now, list_fn=lambda owner: None)["skipped"]
+    assert not (ws / link.SEEN).exists()
+    alone = make_space(tmp_path / "solo")   # no login for the owner, no remote: nothing to list
+    assert link.scan(alone, now=now, list_fn=lambda owner: pytest.fail("listed"))["skipped"] == "no account to list"
+
+
+def test_scan_leaves_out_space_repositories(tmp_path, now):
+    # ws's remote is northwind/ada-space; the project space harbor (home of harbor) has the repository northwind/harbor
+    ws = make_space(tmp_path / "ada", subjects=PEOPLE + [
+        {"id": "harbor", "kind": "projects", "client": "northwind", "home": "harbor"},
+        {"id": "harbor-voice-agent", "kind": "projects", "part_of": "harbor", "client": "northwind"}])
+    make_codebase(ws, "https://github.com/northwind/ada-space.git")
+    out = link.scan(ws, now=now, list_fn=lambda owner: ["northwind/harbor", "northwind/ada-space",
+                                                        "northwind/harbor-voice"], id_fn=lambda r: None)
+    assert out == {"seen": 3, "linked": 1, "asked": 0, "skipped": ""}
+    assert link.link_for(ws, "northwind/harbor") is None and not (ws / link.NEEDS_YOU).exists()
+    assert [json.loads(l)["repo"] for l in (ws / link.SEEN).read_text(encoding="utf-8").splitlines()] == \
+        ["northwind/harbor-voice"]
+
+
+def test_a_repo_that_matched_nothing_is_placed_once_its_subject_is_registered(tmp_path, now):
+    # onboarding's scan meets two northwind repositories before their subject is registered
+    ws = make_space(tmp_path / "ada", subjects=PEOPLE)
+    listed = ["northwind/harbor-voice", "northwind/harbor-voice-agent"]
+    assert link.scan(ws, now=now, list_fn=lambda owner: listed, id_fn=lambda r: None)["linked"] == 0
+    code = make_codebase(tmp_path / "code")
+    assert link.resolve(ws, code, now=now) is None
+    assert [json.loads(l)["outcome"] for l in (ws / link.SEEN).read_text(encoding="utf-8").splitlines()] == \
+        ["none", "none"]   # a repository that matches nothing is written down once
+    (ws / "_meta" / "subjects.yaml").write_text(yaml.safe_dump({"subjects": PEOPLE + HARBOR}), encoding="utf-8")
+    assert link.resolve(ws, code, now=now)["subject"] == "harbor-voice-agent"   # a session places it
+    out = link.scan(ws, now=now, list_fn=lambda owner: listed, id_fn=lambda r: None)   # project creation places it
+    assert out["linked"] == 1 and link.link_for(ws, "northwind/harbor-voice-agent").subject == "harbor-voice-agent"
+
+
+def test_check_follows_a_rename(tmp_path, now):
+    ws = linked_ws(tmp_path, repo_id="R_1")
+    out = link.check(ws, now=now, lookup_fn=lambda r, i: {"repo": "northwind/harbor-voice-2", "repo_id": "R_1"},
+                     readers_fn=lambda r: ["ada-gh"])
+    assert out["repaired"] == 1 and link.links(ws)[0].repo == "northwind/harbor-voice-2"
+    # a link with no repo_id yet first gets the id under its name, then follows the rename by that id
+    ws = linked_ws(tmp_path / "second")
+
+    def renamed(r, i):
+        return {"repo": "northwind/harbor-voice-2", "repo_id": "R_1"}
+    assert link.check(ws, now=now, lookup_fn=renamed, readers_fn=lambda r: None)["repaired"] == 0
+    assert (link.links(ws)[0].repo, link.links(ws)[0].repo_id) == ("northwind/harbor-voice", "R_1")
+    assert link.check(ws, now=now, lookup_fn=renamed, readers_fn=lambda r: None)["repaired"] == 1
+    assert [l.repo for l in link.links(ws)] == ["northwind/harbor-voice-2"]
+
+
+def test_check_rename_keeps_old_clones_resolving(tmp_path, now):
+    # ws holds and homes harbor-voice-agent, linked to northwind/harbor-voice (R_1) elsewhere: no SEEN row here
+    ws = linked_ws(tmp_path, repo_id="R_1")
+
+    def renamed(r, i):   # the host follows the old name to the new one
+        return {"repo": "northwind/harbor-voice-2", "repo_id": "R_1"}
+    assert link.check(ws, now=now, lookup_fn=renamed, readers_fn=lambda r: None)["repaired"] == 1
+    old = make_codebase(tmp_path / "old-clone")   # its origin still has the old URL
+    out = link.resolve(ws, old, now=now)
+    assert out["subject"] == "harbor-voice-agent" and out["repo"] == "northwind/harbor-voice-2"
+    assert not (ws / link.SEEN).exists()   # found, not detected again
+    for _ in range(2):
+        assert link.check(ws, now=now, lookup_fn=renamed, readers_fn=lambda r: None)["repaired"] == 0
+    (entry,) = registry.Registry(ws).get("harbor-voice-agent").extra["repos"]
+    assert entry["repo"] == "northwind/harbor-voice-2" and entry["was"] == ["northwind/harbor-voice"]
+    # another workspace reading the renamed link through its brain finds the old clone too
+    brain = make_space(tmp_path / "lantern", profile="brain", name="lantern", subjects=PEOPLE + [
+        {"id": "harbor-voice-agent", "kind": "projects", "home": "harbor", "crew": ["ben"], "repos": [entry]}])
+    ben = make_space(tmp_path / "ben", owner="Ben Liu")
+    mount_brain(ben, brain)
+    assert link.resolve(ben, old, now=now)["subject"] == "harbor-voice-agent"
+    assert not list((ben / "_outbound" / "signals").glob("*.yaml")) and not (ben / link.SEEN).exists()
+
+
+def test_check_drops_an_old_name_a_new_repo_took(tmp_path, now):
+    # northwind/harbor-voice (R_1, readers inside) becomes northwind/harbor-voice-legacy; later a new
+    # public repository (R_2) takes the old name
+    ws = linked_ws(tmp_path, repo_id="R_1")
+    new = make_codebase(tmp_path / "new")
+    state = {"old_name": "followed"}
+
+    def host(r, i):
+        if r == "northwind/harbor-voice" and state["old_name"] != "followed":
+            if state["old_name"] == "down":
+                raise OSError("rate limited")
+            return {"repo": r, "repo_id": "R_2", "private": False} if state["old_name"] == "taken" else None
+        return {"repo": "northwind/harbor-voice-legacy", "repo_id": "R_1", "private": True}
+    assert link.check(ws, now=now, lookup_fn=host, readers_fn=lambda r: ["ada-gh"])["repaired"] == 1
+    for unsure in ("down", "missing"):   # the host cannot say, or finds nothing there: the old name stays
+        state["old_name"] = unsure
+        assert link.check(ws, now=now, lookup_fn=host, readers_fn=lambda r: ["ada-gh"])["repaired"] == 0
+        assert link.links(ws)[0].was == ("northwind/harbor-voice",)
+    state["old_name"] = "taken"
+    assert link.check(ws, now=now, lookup_fn=host, readers_fn=lambda r: ["ada-gh"])["repaired"] == 1
+    (entry,) = registry.Registry(ws).get("harbor-voice-agent").extra["repos"]
+    assert entry["repo"] == "northwind/harbor-voice-legacy" and "was" not in entry and entry["readers"] == "inside"
+    out = link.resolve(ws, new, now=now)   # the new repository is placed as its own, never with the old readers
+    assert out["repo"] == "northwind/harbor-voice" and out["readers"] == "wider"
+    assert link.check(ws, now=now, lookup_fn=host, readers_fn=lambda r: ["ada-gh"]) == \
+        {"links": 2, "wider": 1, "repaired": 0}
+    repos = registry.Registry(ws).get("harbor-voice-agent").extra["repos"]
+    assert [(e["repo"], e["repo_id"], e["readers"]) for e in repos] == [
+        ("northwind/harbor-voice-legacy", "R_1", "inside"), ("northwind/harbor-voice", "R_2", "wider")]
+
+
+def test_check_drops_a_second_entry_for_a_renamed_repo(tmp_path, now):
+    # harbor-voice-agent links northwind/harbor-voice-2 (R_1) and, linked again from an old clone, northwind/harbor-voice
+    ws = make_space(tmp_path / "ada", subjects=PEOPLE + [{"id": "harbor-voice-agent", "kind": "projects", "repos": [
+        {"repo": "northwind/harbor-voice-2", "repo_id": "R_1", "linked": "2026-10-01"},
+        {"repo": "northwind/harbor-voice", "linked_by": "detect", "linked": "2026-10-05"}]}])
+
+    def host(r, i):   # both names reach the same repository
+        return {"repo": "northwind/harbor-voice-2", "repo_id": "R_1"}
+    assert link.check(ws, now=now, lookup_fn=host, readers_fn=lambda r: None)["repaired"] == 1
+    assert link.check(ws, now=now, lookup_fn=host, readers_fn=lambda r: None)["repaired"] == 0
+    repos = registry.Registry(ws).get("harbor-voice-agent").extra["repos"]
+    assert [(e["repo"], e.get("repo_id")) for e in repos] == [("northwind/harbor-voice-2", "R_1")]
+
+
+def test_check_public_repo_is_wider(tmp_path, now):
+    # every collaborator is in ws's audience, but the repository is public
+    ws = linked_ws(tmp_path)
+    out = link.check(ws, now=now, lookup_fn=lambda r, i: dict(same(r, i), private=False),
+                     readers_fn=lambda r: ["ada-gh"])
+    assert link.links(ws)[0].readers == "wider" and out["wider"] == 1
+    out = link.check(ws, now=now, lookup_fn=lambda r, i: dict(same(r, i), private=True),
+                     readers_fn=lambda r: ["ada-gh"])
+    assert link.links(ws)[0].readers == "inside" and out["wider"] == 0
+
+
+def test_a_gone_link_comes_back(tmp_path, now):
+    # marked gone on a day the host could not see the repository; the host finds it again
+    ws = linked_ws(tmp_path, repo_id="R_1", gone="2026-10-05")
+    code = make_codebase(tmp_path / "code")
+    assert link.resolve(ws, code, now=now) is None
+    assert link.check(ws, now=now, lookup_fn=same, readers_fn=lambda r: None) == {"links": 1, "wider": 1, "repaired": 1}
+    assert "gone" not in registry.Registry(ws).get("harbor-voice-agent").extra["repos"][0]
+    assert link.resolve(ws, code, now=now)["subject"] == "harbor-voice-agent"
+    # the person's own link brings one back too, keeping when it was first linked
+    ws = linked_ws(tmp_path / "second", gone="2026-10-05")
+    assert link.main([str(ws), "link", "northwind/harbor-voice", "harbor-voice-agent"]) == 0
+    (entry,) = registry.Registry(ws).get("harbor-voice-agent").extra["repos"]
+    assert "gone" not in entry and entry["linked"] == "2026-10-01" and entry["linked_by"] == "person"
+    assert link.resolve(ws, code, now=now)["subject"] == "harbor-voice-agent"
+
+
+def test_check_marks_a_lost_repo_gone(tmp_path, now):
+    ws = linked_ws(tmp_path)
+    code = make_codebase(tmp_path / "code")
+    out = link.check(ws, now=now, lookup_fn=lambda r, i: None, readers_fn=lambda r: None)
+    assert out["repaired"] == 1 and out["links"] == 0
+    assert link.links(ws)[0].gone == now.date().isoformat() and link.resolve(ws, code) is None
+    assert not (ws / link.NEEDS_YOU).exists()   # never an owner alert
+
+
+def test_check_host_unavailable_changes_nothing(tmp_path, now):     # Review Focus 2
+    ws = linked_ws(tmp_path)
+
+    def down(r, i):
+        raise OSError("no gh")
+    before = (ws / "_meta" / "subjects.yaml").read_text(encoding="utf-8")
+    out = link.check(ws, now=now, lookup_fn=down, readers_fn=lambda r: None)
+    assert (ws / "_meta" / "subjects.yaml").read_text(encoding="utf-8") == before
+    assert out == {"links": 1, "wider": 1, "repaired": 0}
+
+
+def test_check_flips_readers_on_a_new_collaborator(tmp_path, now):
+    # ws is the home, audience [Ada Okafor, Ben Liu]
+    ws = linked_ws(tmp_path, space={"audience": ["Ada Okafor", "Ben Liu"]})
+    link.check(ws, now=now, lookup_fn=same, readers_fn=lambda r: ["ada-gh", "Ben-GH"])
+    assert link.links(ws)[0].readers == "inside" and link.links(ws)[0].checked == now.date().isoformat()
+    before = (ws / "_meta" / "subjects.yaml").read_text(encoding="utf-8")
+    link.check(ws, now=now + dt.timedelta(days=1), lookup_fn=same, readers_fn=lambda r: ["ada-gh", "ben-gh"])
+    assert (ws / "_meta" / "subjects.yaml").read_text(encoding="utf-8") == before   # nothing changed: nothing sent
+    out = link.check(ws, now=now, lookup_fn=same, readers_fn=lambda r: ["ada-gh", "ben-gh", "contractor-gh"])
+    assert link.links(ws)[0].readers == "wider" and out["wider"] == 1
+
+
+def test_check_unknown_readers_default_wider(tmp_path, now):
+    ws = linked_ws(tmp_path)
+    out = link.check(ws, now=now, lookup_fn=same, readers_fn=lambda r: None)
+    assert link.links(ws)[0].readers == "wider" and out["wider"] == 1
+
+
+def test_check_keeps_the_older_of_two_claims(tmp_path, now):
+    # ws holds and homes beacon-app (linked 2026-10-05) and harbor-voice-agent (linked 2026-10-01), same repository
+    ws = make_space(tmp_path / "ada", subjects=PEOPLE + [
+        {"id": "beacon-app", "kind": "projects", "repos": [{"repo": "northwind/harbor-voice", "linked": "2026-10-05"}]},
+        {"id": "harbor-voice-agent", "kind": "projects",
+         "repos": [{"repo": "northwind/harbor-voice", "linked": "2026-10-01"}]}])
+    out = link.check(ws, now=now, lookup_fn=same, readers_fn=lambda r: None)
+    assert [l.subject for l in link.links(ws)] == ["harbor-voice-agent"] and out["repaired"] == 1
+    (item,) = yaml.safe_load((ws / link.NEEDS_YOU).read_text(encoding="utf-8"))["items"]
+    assert item["id"] == "link-claim-northwind-harbor-voice"
+    assert item["text"] == ("northwind/harbor-voice was linked to harbor-voice-agent and beacon-app; "
+                            "I kept harbor-voice-agent, linked first.")
+    assert item["recommendation"] == "keep harbor-voice-agent" and item["default"] == "harbor-voice-agent keeps it"
+
+
+def test_check_at_the_home_sends_a_note_to_the_holder(tmp_path, now):
+    # the brain holds harbor-voice-agent (home harbor); harbor mounts the brain; harbor's audience Ada, Ben
+    brain = make_space(tmp_path / "lantern", profile="brain", name="lantern", subjects=PEOPLE + [
+        {"id": "harbor-voice-agent", "kind": "projects", "home": "harbor",
+         "repos": [{"repo": "northwind/harbor-voice", "linked": "2026-10-01"}]}])
+    harbor = make_space(tmp_path / "harbor", profile="project", name="harbor", audience=["Ada Okafor", "Ben Liu"])
+    mount_brain(harbor, brain)
+    before = (brain / "_meta" / "subjects.yaml").read_text(encoding="utf-8")
+    link.check(harbor, now=now, lookup_fn=same, readers_fn=lambda r: ["ada-gh", "ben-gh"])
+    signals = [yaml.safe_load(p.read_text(encoding="utf-8")) for p in (harbor / "_outbound" / "signals").glob("*.yaml")]
+    assert [s["data"]["readers"] for s in signals if s.get("note") == "link"] == ["inside"]
+    assert signals[0]["data"]["repo_id"] == "R_1" and signals[0]["destination"] == "lantern"
+    assert (brain / "_meta" / "subjects.yaml").read_text(encoding="utf-8") == before   # a mount is never written
+    # the brain checks only the links homed in it: none here
+    assert link.check(brain, now=now, lookup_fn=same, readers_fn=lambda r: None)["links"] == 0
+
+
+def test_check_keeps_the_repository_source(tmp_path, now):
+    # project space harbor is home and holder of harbor-voice-agent, linked to northwind/harbor-voice
+    harbor = make_space(tmp_path / "harbor", profile="project", name="harbor", subjects=PEOPLE + [
+        {"id": "harbor-voice-agent", "kind": "projects", "repos": [{"repo": "northwind/harbor-voice"}]}])
+    link.check(harbor, now=now, lookup_fn=same, readers_fn=lambda r: None)
+    src = [s for s in spaceyaml.load(harbor).sources if s["name"] == "repository"][0]
+    assert src["repos"] == ["northwind/harbor-voice"] and src["audience"] == "crew"
+    # an existing source: only its repos key is replaced; a manual repo key stays
+    space = spaceyaml.load(harbor)
+    space.data["sources"][0].update(repo="northwind/harbor-space", repos=["northwind/old"])
+    spaceyaml.save(space)
+    link.check(harbor, now=now, lookup_fn=same, readers_fn=lambda r: None)
+    src = [s for s in spaceyaml.load(harbor).sources if s["name"] == "repository"][0]
+    assert src["repos"] == ["northwind/harbor-voice"] and src["repo"] == "northwind/harbor-space"
+
+
+def test_fixture_space_never_calls_the_host(tmp_path, now, monkeypatch):     # Review Focus 5
+    # ws has mode: fixture and one link homed in it
+    ws = linked_ws(tmp_path, space={"mode": "fixture"})
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("host called"))
+    assert link.check(ws, now=now)["repaired"] == 0 and link.links(ws)[0].gone is None
+    assert link.scan(ws, now=now)["skipped"] == "fixture"
+    code = make_codebase(tmp_path / "c2", "https://github.com/northwind/harbor-voice-2")
+    assert link.resolve(ws, code, now=now) is not None
+
+
+def test_default_host_calls_tell_signed_out_from_not_found(tmp_path, now, monkeypatch):     # Review Focus 2
+    ws = linked_ws(tmp_path, repo_id="R_1")
+    signed_out = (4, "", "To get started with GitHub CLI, please run:  gh auth login\n")
+    answers = {"api": signed_out, "repo": signed_out}
+
+    def run(args, **kwargs):
+        code, out, err = answers["graphql" if "graphql" in args else args[1]]
+        return subprocess.CompletedProcess(args, code, out, err)
+    monkeypatch.setattr(subprocess, "run", run)
+    before = (ws / "_meta" / "subjects.yaml").read_text(encoding="utf-8")
+    assert link.check(ws, now=now, readers_fn=lambda r: None)["repaired"] == 0   # signed out: retried next run
+    assert (ws / "_meta" / "subjects.yaml").read_text(encoding="utf-8") == before
+    assert link.scan(ws, now=now)["skipped"]
+    answers["api"] = (0, '{"repo":"northwind/harbor-voice-2","repo_id":"R_1"}\n', "")
+    assert link.check(ws, now=now, readers_fn=lambda r: None)["repaired"] == 1
+    assert link.links(ws)[0].repo == "northwind/harbor-voice-2"
+    answers["api"] = (1, "", "gh: Not Found (HTTP 404)\n")
+    answers["graphql"] = (1, "", "gh: Could not resolve to a node with the global id of 'R_1'\n")
+    link.check(ws, now=now, readers_fn=lambda r: None)
+    assert link.links(ws)[0].gone == now.date().isoformat()
+
+
+def test_health_cell(tmp_path, now):
+    ws = linked_ws(tmp_path)
+    assert link.health_cell(ws) == "links 0"
+    link.check(ws, now=now, lookup_fn=same, readers_fn=lambda r: ["x-gh"])
+    assert link.health_cell(ws) == "links 1, wider 1, repaired 0"
