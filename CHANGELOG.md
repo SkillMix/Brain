@@ -5,6 +5,38 @@ versioning](https://semver.org); while the version starts with 0, a minor releas
 the shape and ships its migration. Each choice behind a change has a line in
 `docs/decisions.md`.
 
+## [Unreleased]
+
+### Added
+
+- **Codebase links.** `link.py resolve` tells a session in a codebase which subject the code
+  belongs to, from its git remote and the registries the workspace mounts, with no network. A
+  repository nothing links yet is linked at once on a clear match, asked about once on a tie,
+  and never asked twice. Onboarding and project creation scan the repositories the person can
+  reach. The daily check follows a renamed repository (its old names still resolve), marks a
+  lost one gone and brings it back when it is found again, and sets who reads it (a public
+  repository is always wider); the health line shows `links N, wider M, repaired K`.
+- **Four rules for working in a codebase**, in the personal instruction: context is pulled on
+  a trigger (a brainstorm, a spec, a call, a question about a client or a past decision), never
+  at session start; three rings (the subject and its parent, the company layer, and anything
+  else only when the person names it); what goes into a codebase read by people outside the
+  subject's audience passes the release scrub; entries carry `subject:` and a `ref:` pointer
+  into the code.
+- **Notes from linked codebases travel as records.** A journal entry about a subject homed
+  elsewhere, with a `ref:` into a codebase linked to that subject, goes to its home: at once to
+  a walled home whose crew includes the writer, otherwise after the window. Every other entry
+  stays home.
+- **Pointers on status pages.** Distill names an entry's pointers on its evidence lines, and a
+  subject's status page lists them under `## Pointers`.
+- **Lessons to the brain.** A `lesson:` line becomes a candidate for the brain carrying the
+  lesson alone, never the subject it came from; one the signer discarded is not proposed again
+  from the same subject.
+- **Spec-like files in the repository feed.** The sweep files the spec, design and decision
+  files a merged pull request adds or changes as records, each with a permalink at the merge
+  commit.
+- **Needs you once a day.** The personal instruction runs `needs_you.py --once-a-day`, which
+  shows the list in the day's first session only.
+
 ## [0.1.0] - 2026-10-23
 
 The first public release.

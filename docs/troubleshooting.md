@@ -158,3 +158,8 @@ repositories it made and repairs what is missing.
 ### A step failed halfway
 
 Say the sentence again: every step that is done is kept, the rest runs. A failed row names its fix.
+
+### Cloud sessions
+
+Plain coding works; brainstorm and write specs in a local session for now, because a cloud
+session has no workspace instruction and its notes would be lost.

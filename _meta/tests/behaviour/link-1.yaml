@@ -1,0 +1,54 @@
+# A codebase nothing matches stays unlinked: resolve exits 3 and only remembers it has seen it.
+name: resolve in an unlinked codebase remembers it and links nothing
+command:
+- python
+- _meta/tools/link.py
+- '{root}'
+- resolve
+- --cwd
+- '{root}/code'
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1440
+      name: ada
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience:
+      - Ada Okafor
+      parent: brain
+      sources:
+      - name: mail
+        adapter: files
+        audience: owner
+    work/.gitkeep: ''
+    journal/.gitkeep: ''
+    outbox/.gitkeep: ''
+    code/.git/config: |
+      [remote "origin"]
+          url = https://github.com/ada-gh/dotfiles.git
+    _meta/subjects.yaml:
+      subjects:
+      - id: harbor-voice-agent
+        kind: projects
+        title: Harbor voice agent
+        state: active
+        owner: Ada Okafor
+        home: ada
+      - id: ada
+        kind: people
+        title: Ada Okafor
+        state: active
+        match:
+          github: ada-gh
+env:
+  SPACE_NOW: '2026-10-05T09:00:00Z'
+expect:
+  exit: 3
+  writes_only_under:
+  - _meta/state/links-seen.jsonl
+  must_exist:
+  - _meta/state/links-seen.jsonl
