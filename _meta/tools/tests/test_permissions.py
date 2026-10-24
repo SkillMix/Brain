@@ -122,6 +122,15 @@ def test_every_tool_the_routines_name_is_in_the_routine_profile():
     assert all((TOOLS / t).is_file() for t in routine.ROUTINE_TOOLS)
 
 
+def test_a_routine_never_runs_needs_you():
+    # `--once-a-day` stamps the day: a routine that ran it would hide the list from the person.
+    rules = routine.routine_settings(REPO, "", roots=[REPO])["permissions"]
+    merged = {"allow": profile()["allow"] + rules["allow"], "deny": profile()["deny"] + rules["deny"]}
+    for command in ("python _meta/tools/needs_you.py . --once-a-day",
+                    f"python {REPO.as_posix()}/_meta/tools/needs_you.py {REPO.as_posix()} --once-a-day"):
+        assert not allowed(merged, command), command
+
+
 def test_a_rendered_routine_prompt_runs_its_tools_and_nothing_else(tmp_path):
     ws = make_space(tmp_path / "ada")
     start.render_routines(ws, "Ada Okafor")

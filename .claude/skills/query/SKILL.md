@@ -41,6 +41,12 @@ Any knowledge question: "what did we decide about X", "what is going on with Har
    text over this space and every mount, or the space's index when `_meta/search.yaml`
    turned one on); each hit names its layer and subject: expand it to the hub, the status
    page and every layer above it.
+   For work in a linked codebase (`link.py resolve` named the subject), search with
+   `python _meta/tools/search.py <root> query --for <subject> "<term>"`: rings 1 and 2 only,
+   meaning the subject, its parents and its parts (here and in their home) and the brain.
+   Ring 3, anything else you can read such as another client's material or private notes, is
+   read only when the person names it, and then for thinking only: none of it goes into the
+   codebase or into notes for this subject; what helped becomes a `lesson:` line (capture).
 6. Answer, then ground it: `python _meta/tools/ground.py <root> <id or path> ...` prints one
    line per page you used (tier, scope, date, age, and "past window", "confidence low" or
    "contested") plus the company view's date and the index's age; end the answer with them.

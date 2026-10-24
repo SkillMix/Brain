@@ -18,7 +18,11 @@ audience only; `prune` drops entries whose files moved or vanished. Another engi
 adapter module `search_<engine>.py` beside this one with `query(root, text)`, `build(root)`
 and `prune(root)`; when it is absent the plain search answers.
 
-    python search.py [root] query <text>
+`query --for <subject>` is the search for work in a linked codebase: rings 1 and 2 of
+docs/design/2026-10-22-codebase-link-design.md only. Ring 1 is the subject, its parents and its
+parts, read here and in their home; ring 2 is the brain. Every other hit is dropped.
+
+    python search.py [root] query [--for <subject>] <text>
     python search.py [root] build | prune | config
 """
 from __future__ import annotations
@@ -34,6 +38,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pages  # noqa: E402
+import registry  # noqa: E402
 import spaceyaml  # noqa: E402
 
 CONFIG = Path("_meta") / "search.yaml"
@@ -234,9 +239,47 @@ def built_age_hours(root) -> float | None:
     return (space.now() - pages.parse_iso(data["built_at"])).total_seconds() / 3600
 
 
-def query(root, text: str, limit: int = 50) -> list:
+def _in_rings(root, sid: str):
+    """A test for hits in rings 1 and 2 of the subject: the brain's pages; a mount that is the
+    home of the subject, a parent or a part; this space's pages about one of them."""
+    root = Path(root)
+    space = spaceyaml.load(root)
+    reg = registry.Registry(root, space)
+    ring = {sid} | {s.id for s in reg.ancestors_of(sid)} | {s.id for s in reg.everywhere() if s.part_of == sid}
+    homes = {reg.home_of(r) for r in ring} - {None}
+    kept = set()
+    for mount in space.mounts:
+        name = str(mount.get("name", ""))
+        mroot = space.mount_root(name)
+        if mroot is None:
+            continue
+        try:
+            other = spaceyaml.load(mroot)
+        except Exception:
+            continue
+        if other.profile == "brain" or other.name in homes:
+            kept.add(name)
+
+    def keep(hit: Hit) -> bool:
+        if hit.layer:
+            return hit.layer in kept
+        if hit.subject in ring:
+            return True
+        try:
+            fm, _ = pages.read(root / hit.path)
+        except Exception:
+            return False
+        return bool(ring & set(registry.routed_subjects(fm, space.name)))
+    return keep
+
+
+def query(root, text: str, limit: int = 50, for_subject: str | None = None) -> list:
     """The space's search: its engine when one runs, the plain search otherwise and always for
-    the mounts (each mount keeps its own engine for its own audience)."""
+    the mounts (each mount keeps its own engine for its own audience). With `for_subject`, only
+    the hits in its rings 1 and 2 (`_in_rings`)."""
+    if for_subject:
+        keep = _in_rings(root, for_subject)
+        return [h for h in query(root, text, sys.maxsize) if keep(h)][:limit]
     root = Path(root)
     cfg = config(root)
     engine = cfg["engine"]
@@ -291,7 +334,10 @@ def main(argv=None) -> int:
     if verb == "prune":
         print(f"dropped {prune(root)}")
         return 0
-    hits = query(root, " ".join(rest))
+    for_subject = None
+    if rest[:1] == ["--for"] and len(rest) > 1:
+        for_subject, rest = rest[1], rest[2:]
+    hits = query(root, " ".join(rest), for_subject=for_subject)
     for hit in hits:
         where = f"{hit.layer}:{hit.path}" if hit.layer else hit.path
         print(f"{where} [{hit.subject or '-'}] {hit.line}")

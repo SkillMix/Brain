@@ -13,6 +13,9 @@ there (`aliases`, `match`) that its parent keeps out, and a space that mounts th
 on top of the parent's entry. The register
 fields say what an engagement was (the brain's projects page shows them): `period` (`from`,
 `to`, months `YYYY-MM`), `client` (a subject id), `crew` (people subject ids) and `work` (one line).
+`repos` lists the codebases linked to the subject: `repo` (owner/name), `repo_id`, `linked_by`,
+`readers`, the dates `checked`, `linked` and `gone`, and `was` (the names it had before a rename)
+(docs/design/2026-10-22-codebase-link-design.md).
 
     python registry.py <root> check     report loops, duplicates, unknown kinds
     python registry.py <root> find <x>  show a subject by id or alias
@@ -53,6 +56,8 @@ OBLIGATION_KINDS = {"confidentiality": "confidentiality agreement", "named_peopl
                     "data_processor": "data processing agreement", "other": "other obligation"}
 OBLIGATION_KEYS = ("kind", "date", "seen_in", "at", "evidence")   # kind and date only: never wording
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+LINKED_BY = ("onboard", "mint", "detect", "person")   # who linked a codebase to a subject
+READERS = ("inside", "wider")                        # a codebase's readers against the subject's audience
 # The notes a space sent to the registry that holds a subject (classify.py), and the log in which
 # that registry records each one it applied or refused.
 SENT_NOTES = Path("_meta") / "state" / "classify.jsonl"
@@ -116,6 +121,32 @@ def _gate_errors(sid: str, subject: "Subject") -> list:
     workspace = subject.extra.get("workspace")
     if workspace is not None and not SLUG.match(str(workspace)):
         errs.append(f"registry: `{sid}` workspace `{workspace}` is not a space name")
+    return errs
+
+
+def _repo_errors(sid: str, repos) -> list:
+    """A subject's codebase links (`repos`): each names its repository; who linked it, its readers
+    and its dates are one of the known values when set."""
+    if repos is None:
+        return []
+    if not isinstance(repos, list):
+        return [f"registry: `{sid}` repos is not a list"]
+    errs = []
+    for n, entry in enumerate(repos, start=1):
+        if not isinstance(entry, dict):
+            errs.append(f"registry: `{sid}` repo link {n} is not a mapping")
+            continue
+        if not isinstance(entry.get("repo"), str) or not entry["repo"].strip():
+            errs.append(f"registry: `{sid}` repo link {n} names no repo")
+        for key, known in (("readers", READERS), ("linked_by", LINKED_BY)):
+            if entry.get(key) is not None and entry[key] not in known:
+                errs.append(f"registry: `{sid}` repo link {n} {key} `{entry[key]}` is not one of {', '.join(known)}")
+        for key in ("checked", "linked", "gone"):
+            if entry.get(key) is not None and not _is_date(entry[key]):
+                errs.append(f"registry: `{sid}` repo link {n} {key} `{entry[key]}` is not YYYY-MM-DD")
+        was = entry.get("was")
+        if was is not None and not (isinstance(was, list) and all(isinstance(w, str) and w.strip() for w in was)):
+            errs.append(f"registry: `{sid}` repo link {n} was is not a list of repositories")
     return errs
 
 
@@ -374,14 +405,30 @@ class Registry:
         return None
 
     def match(self, record: dict) -> list:
-        """Subjects whose identifiers the record carries: its fixed identifiers, the mail
-        domain of one of its addresses, a keyword in the title of a call or event."""
-        return [s for s in self.everywhere() if self.matched_by(s, record)]
+        """Subjects whose identifiers the record carries: its fixed identifiers, a repository
+        linked to the subject, the mail domain of one of its addresses, a keyword in the title of
+        a call or event. A record that names its subject (`identifiers.subject`) belongs to it alone;
+        one from a linked repository to the subject it is linked to (another's `match.repo` aside)."""
+        named = self.get(str((record.get("identifiers") or {}).get("subject") or ""))
+        if named is not None and named.state != "archived":
+            return [named]
+        hits = [(s, self.matched_by(s, record)) for s in self.everywhere()]
+        linked = [s for s, keys in hits if "repos" in keys]   # a linked codebase is its subject's alone
+        return linked or [s for s, keys in hits if keys]
 
     def matched_by(self, subject: Subject, record: dict) -> set:
-        """The `match` keys by which the record belongs to the subject (empty: it does not)."""
+        """The `match` keys by which the record belongs to the subject (empty: it does not), plus
+        `subject` when the record names it and `repos` when its repository is linked to it."""
         identifiers = record.get("identifiers") or {}
         keys = set()
+        if str(identifiers.get("subject") or "") == subject.id and subject.state != "archived":
+            keys.add("subject")
+        repos = subject.extra.get("repos")
+        have = identifiers.get("repo")
+        if have is not None and isinstance(repos, list) and any(
+                isinstance(link, dict) and not link.get("gone") and same_repo(link.get("repo"), value)
+                for link in repos for value in (have if isinstance(have, list) else [have])):
+            keys.add("repos")
         for key, wanted in (subject.match or {}).items():
             wanted_values = [str(w).strip().lower() for w in (wanted if isinstance(wanted, list) else [wanted])]
             if key == "domain":
@@ -504,6 +551,7 @@ class Registry:
             if sid in self.ancestor_ids and not self.homed_here(sid):
                 errs.append(f"registry: `{sid}` re-mints an id an ancestor already has")
             errs += _gate_errors(sid, subject)
+            errs += _repo_errors(sid, subject.extra.get("repos"))
             # loops
             seen, current = {sid}, subject
             while current is not None and current.part_of:

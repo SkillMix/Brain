@@ -9,6 +9,7 @@ import subprocess
 
 import yaml
 
+import link
 import onboard
 import registry
 import spaceyaml
@@ -255,6 +256,7 @@ def test_instruction_block_is_idempotent(tmp_path):
     text = path.read_text(encoding="utf-8")
     assert text.count(onboard.MARK_OPEN) == 1 and onboard.instruction_present(path, other)
     assert not onboard.instruction_present(path, workspace)
+    assert not onboard.instruction_present(path, tmp_path / "be")   # a path that only starts the same is not it
     assert onboard.remove_block(text).strip() == ""
 
 
@@ -679,3 +681,52 @@ def test_inviting_someone_not_yet_registered_registers_them_or_says_how(tmp_path
     answers = yaml.safe_load((brain / "_meta" / "state" / "invitations" / "ravi.yaml").read_text(encoding="utf-8"))
     assert answers["name"] == "Ravi Mendes" and answers["say"].startswith("Onboard me to Lantern Works:")
     assert registry.Registry(brain, spaceyaml.load(brain)).check() == []
+
+
+def test_instruction_carries_the_four_rules(tmp_path):
+    """Working in a codebase (docs/design/2026-10-22-codebase-link-design.md 4.3): triggers, three
+    rings, writing by readers, capture with a pointer; Needs you once a day."""
+    ws = make_space(tmp_path / "ada")
+    text = onboard.instruction_block(ws)
+    for needle in ("link.py", "resolve", "Three rings", "readers: wider", "ref: <owner/repo>", "--once-a-day"):
+        assert needle in text
+
+
+def step(report, name):
+    return next(s for s in report.steps if s.name == name)
+
+
+def _joining(tmp_path, subjects=None):
+    """A person joining offline: a template copy, their answers, the brain beside it."""
+    brain = make_space(tmp_path / "brain", profile="brain", name="lantern", subjects=subjects)
+    ws = tmp_path / "ada"
+    onboard.copy_template(onboard.TEMPLATE_ROOT, ws)
+    answers = onboard.interview({"name": "Ada Okafor"}, interactive=False, case="person")
+    return ws, answers, {"brain": str(brain), "home": tmp_path, "user_instructions": str(tmp_path / "CLAUDE.md")}
+
+
+def test_onboard_reports_the_scan(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "run_cmd", never)
+    monkeypatch.setattr(link, "scan", lambda root, now=None, **k: {"seen": 2, "linked": 1, "asked": 1, "skipped": ""})
+    ws, answers, kw = _joining(tmp_path)
+    row = step(onboard.run(ws, answers, offline=True, **kw), "codebases linked")
+    assert row.done and row.result == "1 linked, 1 asked" and not row.needs_owner
+
+
+def test_onboard_scan_failure_is_not_an_owner_step(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "run_cmd", never)
+    monkeypatch.setattr(link, "scan", lambda *a, **k: (_ for _ in ()).throw(OSError("no gh")))
+    ws, answers, kw = _joining(tmp_path)
+    report = onboard.run(ws, answers, offline=True, **kw)
+    row = step(report, "codebases linked")
+    assert row.done and row.result.startswith("skipped") and not row.needs_owner
+    assert not report.failed(), [s.row() for s in report.failed()]
+
+
+def test_onboard_offline_scan_asks_no_host(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "run_cmd", never)
+    monkeypatch.setattr(link, "_gh", lambda *a: pytest.fail("the host was asked offline"))
+    ws, answers, kw = _joining(tmp_path, subjects=[
+        {"id": "ada", "kind": "people", "title": "Ada Okafor", "match": {"github": "ada-gh"}}])
+    row = step(onboard.run(ws, answers, offline=True, **kw), "codebases linked")
+    assert row.done and row.result == "skipped: offline"

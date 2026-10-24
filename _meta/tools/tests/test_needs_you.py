@@ -306,3 +306,15 @@ def test_untrusted_line_keeps_a_plain_title_as_it_is():
     assert needs_you.untrusted_line(None) == ""
     assert needs_you.untrusted_line("a\u2028b\u200bc\td") == "a b c d"
     assert needs_you.untrusted_line("x" * 200) == "x" * 77 + "..."
+
+
+def test_once_a_day(tmp_path, capsys, monkeypatch):
+    ws = make_space(tmp_path / "ada")
+    monkeypatch.setenv("SPACE_NOW", "2026-10-22T08:00:00Z")
+    assert needs_you.main([str(ws), "--once-a-day"]) == 0 and capsys.readouterr().out.startswith("# Needs you")
+    local_day = dt.datetime(2026, 10, 22, 8, tzinfo=dt.timezone.utc).astimezone().date().isoformat()
+    assert (ws / needs_you.SHOWN).read_text(encoding="utf-8").strip() == local_day
+    assert needs_you.main([str(ws), "--once-a-day"]) == 0 and capsys.readouterr().out == ""
+    monkeypatch.setenv("SPACE_NOW", "2026-10-23T08:00:00Z")
+    assert needs_you.main([str(ws), "--once-a-day"]) == 0 and capsys.readouterr().out.startswith("# Needs you")
+    assert needs_you.main([str(ws)]) == 0 and capsys.readouterr().out.startswith("# Needs you")   # no flag: always

@@ -28,7 +28,8 @@ EDGE = r"(?<![A-Za-z0-9])"
 PATTERNS = {
     "private_key": re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"),
     "aws_key": re.compile(EDGE + r"AKIA[0-9A-Z]{16}(?![A-Za-z0-9])"),
-    "github_token": re.compile(EDGE + r"gh[pousr]_[A-Za-z0-9]{36,}"),
+    "github_token": re.compile(EDGE + r"(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})"),
+    "gitlab_token": re.compile(EDGE + r"glpat-[A-Za-z0-9_-]{20,}"),
     "slack_token": re.compile(EDGE + r"xox[abprs]-[A-Za-z0-9-]{10,}"),
     "api_key_sk": re.compile(EDGE + r"sk-[A-Za-z0-9]{20,}"),
     "jwt": re.compile(EDGE + r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
@@ -170,7 +171,7 @@ def scrub_link_tokens(text: str) -> str:
 # Only an obvious password or key: a platform key or private key block, a labelled password, or a
 # value the export cut out as `[redacted]`. A token in a link, a meeting passcode or PIN, a one-time
 # code, a bare token and a bank number are kept out of the repository but warn nobody.
-ALARM_KINDS = ("private_key", "aws_key", "github_token", "slack_token", "api_key_sk")
+ALARM_KINDS = ("private_key", "aws_key", "github_token", "gitlab_token", "slack_token", "api_key_sk")
 PASSWORD_BEFORE = re.compile(r"(?i)" + PASSWORD_WORDS + r"\s*[:=]?\s*$")
 QUIET_BEFORE = re.compile(r"(?i)(?:passcode|wachtwoordcode|pincode|pin|code|verificatiecode|iban|"
                           r"rekeningnummer|account number)\s*[:=]?\s*$")

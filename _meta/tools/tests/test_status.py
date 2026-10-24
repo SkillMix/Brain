@@ -335,7 +335,7 @@ def test_health_lines(tmp_path):
     text = (root / "live" / "health.md").read_text(encoding="utf-8")
     line = ("- ada: runs 2 in 24h, cost 1234 tokens, checker hit rate 0.50, held in doubt 1, "
             "open questions 1, candidates 1, probe none yet, capture rate n/a, "
-            "requests asked 0 answered 0 expired 0, index none")
+            "requests asked 0 answered 0 expired 0, index none, links 0")
     assert line in text
     assert ("- brain: runs 0 in 24h, cost 0 tokens, checker hit rate n/a, held in doubt 0, "
             "open questions 0, candidates 0, probe none yet, requests asked 0 answered 0 expired 0, "
@@ -347,6 +347,15 @@ def test_health_lines(tmp_path):
         encoding="utf-8").splitlines() if l.strip()]
     assert runs[-1]["routine"] == "status" and runs[-1]["space"] == "ada"
     assert runs[-1]["at"] == pages.iso(NOW) and runs[-1]["cost_tokens"] == 0
+
+
+def test_health_line_counts_codebase_links(tmp_path):
+    root = make_space(tmp_path / "ada", name="ada")
+    (root / "_meta" / "state" / "links.json").write_text(
+        json.dumps({"at": pages.iso(NOW), "links": 1, "wider": 1, "repaired": 0}) + "\n", encoding="utf-8")
+    (root / "_meta" / "state" / "stale.yaml").write_text("release: '2026-10-11T09:00:00Z'\n", encoding="utf-8")
+    line = status.run(root, now=NOW).health_lines[0]
+    assert "index none, links 1, wider 1, repaired 0, stale: release since 2026-10-11" in line   # stale stays last
 
 
 def test_now_pin(tmp_path):
@@ -588,3 +597,45 @@ def test_only_the_home_moves_a_subject_between_active_and_dormant(tmp_path):
     assert outcome == "applied" and reg.get("harbor").state == "dormant"
     unknown = dict(signal, **{"from": "harbor", "data": {"state": "gone"}})
     assert classify.apply_note(brain, spaceyaml.load(brain), reg, unknown, NOW)[0] == "refused"
+
+
+def test_status_page_links_pointers(tmp_path):
+    # harbor holds a landed journal record for harbor-voice-agent with ref northwind/harbor-voice:docs/spec.md@abc,
+    # and an older witness with a pull request ref and the same file ref again
+    harbor = make_space(tmp_path / "harbor", profile="project", name="harbor",
+                        subjects=[{"id": "harbor-voice-agent", "kind": "projects", "title": "Harbor voice agent"}])
+    witness(harbor, "journal-20261012T1015", "harbor-voice-agent", "2026-10-12T10:15:00Z", title="call-flow spec written",
+            body="ref: northwind/harbor-voice:docs/spec.md@abc\n\n- The call-flow spec.\n",
+            released_from="ada", landed_from="ada")
+    witness(harbor, "m-0001", "harbor-voice-agent", "2026-10-10T09:00:00Z",
+            body="Ref: INV-2026\n- ref: https://github.com/northwind/harbor-voice/pull/7\n- ref: northwind/harbor-voice:docs/spec.md@abc\n")
+    status.run(harbor, now=NOW)
+    text = (harbor / "live/subjects/harbor-voice-agent.md").read_text(encoding="utf-8")
+    pointers = text.split("## Pointers\n\n", 1)[1].strip().splitlines()
+    assert pointers == ["- [northwind/harbor-voice:docs/spec.md@abc](https://github.com/northwind/harbor-voice/blob/abc/docs/spec.md)",
+                        "- [https://github.com/northwind/harbor-voice/pull/7](https://github.com/northwind/harbor-voice/pull/7)"]
+    assert errors(harbor) == []
+
+
+def test_status_page_without_pointers_has_no_section(tmp_path):
+    root = make_space(tmp_path / "ada", subjects=[HARBOR])
+    witness(root, "m-0001", "harbor", "2026-10-10T09:00:00Z")
+    status.run(root, now=NOW)
+    assert "## Pointers" not in (root / "live/subjects/harbor.md").read_text(encoding="utf-8")
+
+
+def test_the_daily_pass_keeps_the_installed_instruction_current(tmp_path):
+    # a block onboarding installed for this space with an older template; the person's own lines stay
+    import onboard
+    from pathlib import Path
+    root = make_space(tmp_path / "ada")
+    ui = Path.home() / ".claude" / "CLAUDE.md"
+    ui.parent.mkdir(parents=True, exist_ok=True)
+    ui.write_text(f"# mine\n\n{onboard.MARK_OPEN}\nold text for {root.resolve().as_posix()}\n{onboard.MARK_CLOSE}\n",
+                  encoding="utf-8")
+    status.run(root, now=NOW)
+    text = ui.read_text(encoding="utf-8")
+    assert text.startswith("# mine\n") and "link.py" in text and "old text" not in text
+    ui.write_text("# mine only\n", encoding="utf-8")   # never installed here: left alone
+    status.run(root, now=NOW)
+    assert ui.read_text(encoding="utf-8") == "# mine only\n"

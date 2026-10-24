@@ -71,11 +71,20 @@ def test_sweep_chain_runs_sweep_distill_check_in_order(tmp_path, fakes):
     assert all(call[2] == NOW for call in fakes.calls)
     assert result["errors"] == []
     # a personal space also reads email replies to its briefing (no fake here: skipped)
-    assert set(result["steps"]) == {"sweep", "reply", "distill", "check", "tracker_observe"}
+    assert set(result["steps"]) == {"journal_records", "sweep", "reply", "distill", "check", "tracker_observe"}
     lines = (root / "_meta" / "state" / "runs.jsonl").read_text(encoding="utf-8").splitlines()
     line = json.loads(lines[-1])
     assert line["routine"] == "sweep_chain" and line["at"] == "2026-10-12T09:00:00Z"
     assert {"space", "cost_tokens", "notes"} <= set(line)
+
+
+def test_a_personal_sweep_chain_writes_journal_records_before_the_sweep(tmp_path, fakes):
+    fakes.modules["link"] = types.SimpleNamespace(journal_records=fakes._fn("journal_records"))
+    chain.sweep_chain(make_space(tmp_path / "ada"), now=NOW)
+    assert fakes.names() == ["journal_records", "sweep", "distill", "check"]
+    fakes.calls.clear()
+    chain.sweep_chain(make_space(tmp_path / "harbor", profile="project", name="harbor"), now=NOW)
+    assert fakes.names() == ["sweep", "distill", "check"]
 
 
 def test_a_failing_step_is_recorded_and_the_chain_continues(tmp_path, monkeypatch):
@@ -113,6 +122,16 @@ def test_daily_order_and_tests_only_when_the_files_exist(tmp_path, fakes):
     (root / "_meta" / "tests" / "leaks.yaml").write_text("leaks: []\n", encoding="utf-8")
     chain.daily(root, "Ada Okafor", now=NOW)
     assert fakes.names() == ["status", "release", "morning_view", "answers", "leaks"]
+
+
+def test_daily_checks_codebase_links_right_after_access(tmp_path, fakes):
+    fakes.modules["access"] = types.SimpleNamespace(run=fakes._fn("access"))
+    fakes.modules["link"] = types.SimpleNamespace(check=fakes._fn("link_check"))
+    root = make_space(tmp_path / "ada")
+    result = chain.daily(root, "Ada Okafor", now=NOW)
+    assert fakes.names() == ["status", "access", "link_check", "release", "morning_view"]
+    assert [c[2] for c in fakes.calls if c[0] == "link_check"] == [NOW]
+    assert result["steps"]["link_check"] == {"ran": "link_check"}
 
 
 def test_a_step_that_fails_in_the_daily_run_shows_in_the_same_mornings_view(tmp_path, monkeypatch):

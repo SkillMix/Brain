@@ -163,3 +163,18 @@ def test_a_sub_team_mounts_every_ancestor_flat(tmp_path, monkeypatch):
     assert space.parent == "delivery"
     assert {m["name"] for m in space.mounts} == {"brain", "delivery"}
     assert space.mount_root("delivery") is not None and space.mount_root("brain") is not None
+
+
+def test_mint_scans_for_the_new_subject(tmp_path, monkeypatch):
+    import link
+    monkeypatch.setattr(mint, "run_cmd", never)
+    monkeypatch.setattr(onboard, "run_cmd", never)
+    seen = []   # the subject as the scan finds it: registered, with its new home
+    monkeypatch.setattr(link, "scan", lambda root, now=None, **k: seen.append(
+        registry.Registry(root).get("lighthouse")) or {"seen": 0, "linked": 0, "asked": 0, "skipped": ""})
+    brain, ada = seeded(tmp_path)
+    report = mint.run(ada, seed="work/projects/lighthouse/kickoff", name="lighthouse",
+                      crew=["Ada Okafor"], online=False)
+    assert len(seen) == 1 and seen[0] is not None and seen[0].home == "lighthouse"
+    row = next(s for s in report.steps if s.name == "codebases linked")
+    assert row.done and row.result == "0 linked, 0 asked" and not row.needs_owner

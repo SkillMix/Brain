@@ -310,7 +310,7 @@ def requeue(root, space=None, reg=None, now=None) -> dict:
 
 
 # ----- registry notes: how a space changes the registry that holds a subject -----------------------
-NOTE_KINDS = ("owner", "workspace", "ask", "classification", "obligation", "checked", "state")
+NOTE_KINDS = ("owner", "workspace", "ask", "classification", "obligation", "checked", "state", "link")
 NOTES_LOG = registry_mod.NOTES_LOG
 SIGNALS_OUT = Path("_outbound") / "signals"
 SIGNALS_IN = Path("_inbound") / "signals"
@@ -415,6 +415,33 @@ def may_decide(space, reg, sid, by) -> bool:
     return may_decide_for(space, reg, subject_owner(reg, sid), by)
 
 
+def may_link(reg, subject, by: str, sender: str) -> bool:
+    """Whether a note by `by` from the space `sender` may link a codebase to `subject`: the note
+    comes from its home, or `by` owns the space whose registry holds it, owns the subject, is on
+    its crew or an umbrella's (or the walled classification's that governs it, so a project's crew
+    links its parts), or is anyone registered when its home is the brain."""
+    space = reg.space
+    home = reg.home_of(subject.id)
+    if home and sender == home:
+        return True
+    holder = space
+    if space is not None and subject.space:
+        try:
+            holder = spaceyaml.load(space.mount_root(subject.space))
+        except Exception:
+            holder = None
+    if _same(by, holder.owner if holder is not None else None) or _same(by, subject_owner(reg, subject.id)):
+        return True
+    c = reg.classification(subject.id) or {}
+    crew = {p for s in [subject, *reg.ancestors_of(subject.id)] for p in _ids(s.crew)} \
+        | (set(_ids(c.get("crew"))) if c.get("class") == "walled" else set())
+    named = [s for s in reg.everywhere() if s.kind == "people" and _same(s.title, by)]
+    if any(p.id in crew for p in named):
+        return True
+    brain = brain_space(space)
+    return brain is not None and home == brain.name and any(p.state != "archived" for p in named)
+
+
 def _seen(value) -> int:
     try:
         return max(int(value), 0)
@@ -486,6 +513,51 @@ def apply_note(root, space, reg, signal: dict, now) -> tuple:
         if not home or sender != home:
             return "refused", f"only {sid}'s home ({home or 'none'}) says it is {state}"
         subject.state = state
+        return "applied", ""
+    if kind == "link":   # a codebase linked to the subject (docs/design/2026-10-22-codebase-link-design.md)
+        if not may_link(reg, subject, by, sender):
+            return "refused", f"only the subject's crew may link a repository to {sid}"
+        repo = str(data.get("repo") or "").strip()
+        if not repo:
+            return "refused", "a link note names its repository"
+        repos = list(subject.extra.get("repos") or [])
+
+        def names(entry) -> list:   # the repository's name and the names it had before
+            return [entry.get("repo"), *(entry.get("was") or [])]
+
+        def same(a, b) -> bool:   # one repository: the same id when both have one, else a shared name
+            if a.get("repo_id") and b.get("repo_id"):
+                return a["repo_id"] == b["repo_id"]
+            return any(registry_mod.same_repo(x, y) for x in names(a) for y in names(b))
+        found = next((r for r in repos if isinstance(r, dict) and same(r, dict(data, repo=repo))), None)
+        if data.get("remove"):
+            repos = [r for r in repos if r is not found]
+        else:
+            entry = dict(found or {})
+            entry.update({k: data[k] for k in ("repo_id", "linked_by", "linked", "readers", "checked", "gone", "was")
+                          if k in data and not (k == "linked" and entry.get("linked"))})
+            if found is None or "was" in data:   # only a rename moves a link's name, so none moves it back
+                entry["repo"] = repo
+            entry = {k: v for k, v in entry.items() if v is not None}   # `gone: null` brings a link back
+            merged = [r for r in repos if isinstance(r, dict) and r is not found and same(r, entry)]
+            if merged:   # the same repository under a second entry: one entry stays, with every name
+                every, was = [entry, *([found] if found is not None else []), *merged], []   # found's names before the note too
+                for name in (n for e in every for n in names(e)):
+                    if name and not any(registry_mod.same_repo(name, w) for w in [entry["repo"], *was]):
+                        was.append(name)
+                linked = min((e["linked"] for e in every if e.get("linked")), key=str, default=None)
+                repo_id = next((e["repo_id"] for e in every if e.get("repo_id")), None)
+                entry = {k: v for k, v in dict(entry, was=was or None, linked=linked, repo_id=repo_id).items()
+                         if v is not None}
+            bad = registry_mod._repo_errors(sid, [entry])
+            if bad:
+                return "refused", bad[0]
+            kept = [r for r in repos if not any(r is m for m in merged)]
+            repos = [entry if r is found else r for r in kept] if found is not None else kept + [entry]
+        if repos:
+            subject.extra["repos"] = repos
+        else:
+            subject.extra.pop("repos", None)
         return "applied", ""
     c = classification_of(subject)
     if kind == "owner":
