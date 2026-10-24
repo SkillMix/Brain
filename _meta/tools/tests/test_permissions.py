@@ -2,8 +2,14 @@
 to every unattended run. A swept record is text anyone can write, so neither profile may let an
 agent write a script and then run it, and the routine profile keeps routines off the machinery."""
 import json
+import os
 import re
+import shutil
+import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 import routine
 import start
@@ -18,6 +24,16 @@ ASKS = {"template_sync.py": "copies machinery from the path --from names into _m
 ROUTINE_SKILLS = ("sweep", "route", "classify", "distill", "check", "status", "release", "request",
                   "tracker", "owner-email", "morning-view", "outbox-reconcile", "sync")
 NOT_FOR_ROUTINES = {"sign.py": "signing is the person's", "reply.py": "applies the person's replies"}
+# Template sync installs these tests in every space, and a project may keep `.claude/skills`
+# untracked; the template ships every skill and template these tests read.
+IN_TEMPLATE = (REPO / ".github" / "template-marker").exists()
+
+
+def present(*paths) -> list:
+    """The files that are here: in a space the ones it has, in the template every one."""
+    missing = [Path(p).relative_to(REPO).as_posix() for p in paths if not Path(p).is_file()]
+    assert not (IN_TEMPLATE and missing), f"the template ships {missing}"
+    return [Path(p) for p in paths if Path(p).is_file()]
 
 
 def profile() -> dict:
@@ -59,8 +75,8 @@ def test_the_profile_allows_each_tool_by_name_never_the_folder():
 
 def test_every_tool_a_skill_or_instruction_names_runs_without_a_prompt():
     files = [*(REPO / ".claude" / "skills").glob("*/SKILL.md"), *(REPO / "_meta" / "templates" / "routines").glob("*.md"),
-             REPO / "_meta" / "templates" / "AGENTS.md.tpl", REPO / "_meta" / "templates" / "personal-instruction.md",
-             REPO / "CLAUDE.md"]
+             *present(REPO / "_meta" / "templates" / "AGENTS.md.tpl",
+                      REPO / "_meta" / "templates" / "personal-instruction.md", REPO / "CLAUDE.md")]
     rules = profile()
     missing = sorted(t for t in named_tools(*files) - set(ASKS) if not allowed(rules, f"python _meta/tools/{t} ."))
     assert missing == []
@@ -101,7 +117,7 @@ def test_a_windows_drive_is_matched_the_way_claude_code_spells_it():
 
 def test_every_tool_the_routines_name_is_in_the_routine_profile():
     files = [*(REPO / "_meta" / "templates" / "routines").glob("*.md"),
-             *(REPO / ".claude" / "skills" / s / "SKILL.md" for s in ROUTINE_SKILLS)]
+             *present(*(REPO / ".claude" / "skills" / s / "SKILL.md" for s in ROUTINE_SKILLS))]
     assert sorted(named_tools(*files) - set(routine.ROUTINE_TOOLS) - set(NOT_FOR_ROUTINES)) == []
     assert all((TOOLS / t).is_file() for t in routine.ROUTINE_TOOLS)
 
@@ -143,3 +159,25 @@ def test_a_prompt_cannot_name_its_own_interpreter_or_root(tmp_path):
     body = f"Run `{planted.as_posix()} {(tmp_path / 'elsewhere').as_posix()}/_meta/tools/chain.py daily .`"
     rules = routine.routine_settings(ws, body, roots=[ws])["permissions"]
     assert not [r for r in rules["allow"] if planted.as_posix() in r or "elsewhere" in r]
+
+
+@pytest.mark.parametrize("template", [False, True])
+def test_a_space_checks_the_skills_it_has_and_the_template_every_one(tmp_path, template):
+    """Template sync installs these tests in every space, and a project may keep `.claude/skills`
+    untracked: there the skill and template checks read what is present. The template must have
+    each one, so there a missing skill still fails."""
+    root = tmp_path / "space"
+    shutil.copytree(TOOLS, root / "_meta" / "tools", ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
+    (root / ".claude").mkdir()
+    shutil.copy2(PROFILE, root / ".claude" / "settings.json")
+    if template:
+        (root / ".github").mkdir()
+        (root / ".github" / "template-marker").write_text("", encoding="utf-8")
+    test = root / "_meta" / "tools" / "tests" / "test_permissions.py"
+    done = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+                           f"{test}::test_every_tool_a_skill_or_instruction_names_runs_without_a_prompt",
+                           f"{test}::test_every_tool_the_routines_name_is_in_the_routine_profile"],
+                          cwd=str(root), capture_output=True, text=True,
+                          env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
+    assert ("2 failed" if template else "2 passed") in done.stdout, done.stdout[-2000:]
+    assert "FileNotFoundError" not in done.stdout

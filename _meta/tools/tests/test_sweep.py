@@ -520,7 +520,7 @@ def test_the_export_contract_is_lossless_and_keeps_private_records_out():
     import pytest
     root = Path(sweep.__file__).resolve().parents[2]
     paths = (root / ".claude" / "skills" / "sweep" / "SKILL.md", root / "_meta" / "templates" / "routines" / "sweep-chain.md")
-    if not all(p.exists() for p in paths):
+    if not all(p.exists() for p in paths) and not (root / ".github" / "template-marker").exists():
         pytest.skip("this repository does not carry the skills (a project may keep .claude/skills untracked)")
     for text in (p.read_text(encoding="utf-8") for p in paths):
         flat = " ".join(text.split())
