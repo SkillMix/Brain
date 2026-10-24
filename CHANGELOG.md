@@ -179,3 +179,24 @@ company, before the first release.
 - **Each sending space's conflict note has an id of its own.** Two spaces contesting one page
   both reach its owner.
 - **The forget listing finds doubt items and signals about the subject.**
+
+Found while landing the drill fixes and preparing the first release.
+
+- **A later different value from the same space sends a conflict note of its own.** The note's
+  id includes the value, so a second value no longer overwrites the first.
+- **A spec page queued with a tracker request gets the issue key.** `tracker.py queue --spec`
+  names the page; once the issue is made, `tracker: <key>` is written into it and its state moves.
+- **A step that fails in the daily run shows on the same morning's briefing.** `stale.yaml`
+  moves as each step ends, and the morning view reads it directly.
+- **The sync script names a chain its scheduler never starts.** A chain whose last run is older
+  than twice its schedule's longest gap is labelled stale until it runs again.
+- **A failed shape migration is undone whole and tried again after a template update.** Every
+  path it changed is restored, and nothing asks a person.
+- **A green pull request is merged when the base moves under it.** The merge step retries after
+  a short wait and arms auto-merge with a method the repository allows.
+- **A token in a link is cut from the page and sends no security email.** Verification,
+  unsubscribe, invitation, signing and tracking links keep their host and path; only a key, a
+  private key or a labelled password still warns.
+- **The full template copy test runs in the template only, not in every space.**
+- **A link into a mount that is not on disk is a warning, not an error.** A space whose checks
+  cannot read one of its mounts still validates.
