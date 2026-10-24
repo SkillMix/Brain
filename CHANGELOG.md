@@ -5,7 +5,7 @@ versioning](https://semver.org); while the version starts with 0, a minor releas
 the shape and ships its migration. Each choice behind a change has a line in
 `docs/decisions.md`.
 
-## [0.1.0] - 2026-10-23
+## [0.1.0] - 2026-10-24
 
 The first public release.
 
@@ -200,3 +200,5 @@ Found while landing the drill fixes and preparing the first release.
 - **The full template copy test runs in the template only, not in every space.**
 - **A link into a mount that is not on disk is a warning, not an error.** A space whose checks
   cannot read one of its mounts still validates.
+- **The permission tests read the skills a space has.** A project space without the personal
+  skills no longer fails them; in the template every skill is still required.
