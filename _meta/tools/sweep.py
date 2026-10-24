@@ -19,8 +19,8 @@ Deterministic from files: an adapter exports records to `_meta/state/feed/<sourc
    re-attached from an older page, and anything else -> held in doubt, where one yes from its
    person releases it (a standing choice {destination, kind} makes yes the recommendation, never
    the answer). The person's own journal note pointing into code linked to its subject
-   (link.journal_records) leaves at once to a walled home whose crew includes them, else after
-   the window (D8). A content-free
+   (link.journal_records) leaves after the window: at once only when the router judged it (D8).
+   A content-free
    signal goes to the subject's home for every attached record queued for the window (one that
    leaves at once arrives itself). A record matching several
    subjects with a home elsewhere is held in doubt and shown as a count;
@@ -44,7 +44,6 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import classify as gating  # noqa: E402
-import link  # noqa: E402
 import pages  # noqa: E402
 import registry  # noqa: E402
 import release  # noqa: E402
@@ -159,10 +158,13 @@ def read_feed(root: Path) -> list:
 def declared_feed(root: Path, space: spaceyaml.Space) -> list:
     """The feed records of the sources this space declared; the brain sweeps only its own
     `repository` feed (a product company's repository), nothing else of its own.
-    A personal space always reads its `journal` feed (link.journal_records), declared or not."""
+    A personal space always reads its `journal` feed (link.journal_records), and every space its
+    `repository` feed (the codebases link.check lists in `_meta/state/links.json`), declared or not."""
     declared = {str(s.get("name")) for s in space.sources if isinstance(s, dict) and s.get("name")}
     if declared and space.profile == "personal":
         declared.add("journal")
+    if declared:
+        declared.add("repository")
     feed = read_feed(root)
     if space.profile == "brain":
         feed = [r for r in feed if r.get("_feed") == "repository"]
@@ -345,11 +347,8 @@ def classify(space: spaceyaml.Space, record: dict, subject: registry.Subject, de
     if inferred or record.get("_reattach"):
         how = "re-attached from an older page" if record.get("_reattach") else "attached by its domain or title"
         return Verdict(hold="doubt", why=f"widens who can read it; {how}, which nobody chose")
-    if record.get("source") == "journal":   # D8: the person's own note with a pointer to linked code
-        path = f"journal:{destination}"
-        if link.journal_at_once(space, reg, subject.id) and not release.is_paused(space.root, path, now):
-            return Verdict(cls="at_once", stage_after=now, extra={"path": path},
-                           why="your own note to a walled home whose crew includes you")
+    if record.get("source") == "journal":   # the person's own note with a pointer to linked code
+        path = f"journal:{destination}"   # at once only when the router judged it (D8, route.py)
         return Verdict(cls="window", stage_after=now + space.window(), extra={"path": path},
                        why="your own note with a pointer to linked code; it leaves after the window")
     paused_why = ""

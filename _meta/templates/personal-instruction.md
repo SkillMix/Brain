@@ -19,7 +19,7 @@ more than one lookup is captured with its sources and appended to the question l
    plan, preparing a call, or answering anything about a client, the product or a past decision,
    run `{python} {workspace_path}/_meta/tools/link.py {workspace_path} resolve --cwd <this folder>`.
    Exit 3: the code is not linked; when the person says which subject it is, run
-   `{python} {workspace_path}/_meta/tools/link.py {workspace_path} link <owner/repo> <subject>`,
+   `{python} {workspace_path}/_meta/tools/link.py {workspace_path} link <this folder> <subject>`,
    otherwise go on without. Linked: read its `status_page`, and answer
    questions with `{python} {workspace_path}/_meta/tools/search.py {workspace_path} query --for
    <subject> <words>`. A plain coding task never triggers this.

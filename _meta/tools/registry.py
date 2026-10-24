@@ -407,11 +407,14 @@ class Registry:
     def match(self, record: dict) -> list:
         """Subjects whose identifiers the record carries: its fixed identifiers, a repository
         linked to the subject, the mail domain of one of its addresses, a keyword in the title of
-        a call or event. A record that names its subject (`identifiers.subject`) belongs to it alone."""
+        a call or event. A record that names its subject (`identifiers.subject`) belongs to it alone;
+        one from a linked repository to the subject it is linked to (another's `match.repo` aside)."""
         named = self.get(str((record.get("identifiers") or {}).get("subject") or ""))
         if named is not None and named.state != "archived":
             return [named]
-        return [s for s in self.everywhere() if self.matched_by(s, record)]
+        hits = [(s, self.matched_by(s, record)) for s in self.everywhere()]
+        linked = [s for s, keys in hits if "repos" in keys]   # a linked codebase is its subject's alone
+        return linked or [s for s, keys in hits if keys]
 
     def matched_by(self, subject: Subject, record: dict) -> set:
         """The `match` keys by which the record belongs to the subject (empty: it does not), plus

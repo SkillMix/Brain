@@ -9,8 +9,8 @@ repository nothing links, it scores the repository's owner and name against the 
 space's owner may link: one clear match is linked at once (the undo is logged), a tie becomes one
 Needs-you item, no match leaves it unlinked. Every decision is remembered
 (`_meta/state/links-seen.jsonl`), so no repository is asked about twice; a `yes` to the question
-links the recommended subject at the next resolve or scan. One that matched nothing leaves no trace
-and is scored again, so a subject registered later still claims it. A link to a registry
+(or `edit <subject>` for another) links it at the next resolve, scan or check. One that matched
+nothing leaves no trace and is scored again, so a subject registered later still claims it. A link to a registry
 this space does not hold travels as a registry note (classify.py) and counts as pending until
 that registry has applied it.
 
@@ -20,19 +20,21 @@ account and this space's organisation list on the host, leaving out the spaces' 
 its name, else its id (the old name still resolves, so old clones keep working, until another repository takes
 that name), marks a lost one (found before) `gone` and
 brings it back when the host finds it again, sets the readers against the home's audience (a
-public repository is always wider), keeps the older of two claims wherever each is homed, and lists the linked
-repositories on the space's `repository` source; the health line shows `links N, wider M,
-repaired K`. Without the host (no `gh`, signed out, a fixture space) both skip their host calls
+public repository is always wider), keeps the older of two claims wherever each is homed, applies
+a link question answered since, and lists the linked repositories for the space's repository
+feed in `_meta/state/links.json` (space.yaml is protected); the health line shows `links N,
+wider M, repaired K`. Without the host (no `gh`, signed out, a fixture space) both skip their host calls
 and try again next run.
 
 Entries point into a codebase with a `ref:` line: `owner/repo:path@commit`, `owner/repo@commit`
 or a pull request URL. In a personal space, an entry about a subject homed elsewhere that points
 into a codebase linked to that subject (or its parent) becomes a `journal` feed record, pointers
-first; the sweep sends it to the home at once when the home is walled and its crew includes the
-writer, else after the window (D8). Every other entry stays home.
+first; the sweep sends it to the home after the window, the router at once when the home is
+walled and its crew includes the writer (D8). Every other entry stays home.
 
     python link.py <root> resolve [--cwd DIR]   the link as JSON; exit 3 when there is none
-    python link.py <root> link <repo> <subject>  link a codebase detection cannot place
+    python link.py <root> link <repo> <subject>  link a codebase detection cannot place (owner/name,
+                                                 its clone URL or the clone's folder)
     python link.py <root> unlink <repo>          undo a link
 """
 from __future__ import annotations
@@ -55,7 +57,7 @@ import spaceyaml  # noqa: E402
 # when it travelled to another registry; an `asked` row's subject is the recommended one
 SEEN = Path("_meta") / "state" / "links-seen.jsonl"
 NEEDS_YOU = Path("_inbound") / "needs-you" / "links.yaml"
-STATE = Path("_meta") / "state" / "links.json"   # the last check: {at, links, wider, repaired}
+STATE = Path("_meta") / "state" / "links.json"   # the last check: {at, links, wider, repaired, repos, audience}
 JOURNAL_FEED = Path("_meta") / "state" / "feed" / "journal.jsonl"   # journal entries that travel (D8)
 REF_LINE = re.compile(r"^\s*(?:[-*]\s*)?ref:\s*`?(\S+?)`?\s*$", re.I | re.M)
 # a lesson's other subject, on its own line or after the lesson: ring 3, never travels (distill reads it too)
@@ -135,9 +137,10 @@ def remote_of(path, name: str = "origin") -> str | None:
 
 
 def _unalias(url: str) -> str:
-    """An SSH remote through a host alias (`git@github-work:owner/name`, the usual two-account
-    setup) with the alias's `HostName` from ~/.ssh/config; any other remote as it is."""
-    found = re.match(r"^(?:ssh://)?[^/@:\s]+@([^/:.\s]+)(?=[:/])", url)
+    """An SSH remote through a host alias (`git@github-work:owner/name` or `git@github.com-work:...`,
+    the usual two-account setup) with the alias's `HostName` from ~/.ssh/config; any other remote
+    as it is."""
+    found = re.match(r"^(?:ssh://)?[^/@:\s]+@([^/:\s]+)(?=[:/])", url)
     if not found:
         return url
     try:
@@ -146,7 +149,7 @@ def _unalias(url: str) -> str:
         return url
     hosts = []
     for line in text.splitlines():
-        key, _, value = line.strip().replace("=", " ", 1).partition(" ")
+        key, _, value = line.strip().replace("=", " ", 1).replace("\t", " ").partition(" ")
         if key.lower() == "host":
             hosts = value.split()
         elif key.lower() == "hostname" and found.group(1) in hosts:
@@ -221,7 +224,8 @@ def _tokens(*texts) -> set:
 def score(repo: str, subject, reg) -> int:
     """How well the repository's owner and name fit the subject: 2 per name word in the subject's
     names, 1 per owner word in its names or its client's, 1 more when another of its links has
-    the same owner. People, archived subjects and those this space's owner may not link score 0."""
+    the same owner. People, archived subjects, those homed nowhere (no one would read the
+    codebase) and those this space's owner may not link score 0."""
     import classify
     if subject.kind == "people" or subject.state == "archived":
         return 0
@@ -235,6 +239,8 @@ def score(repo: str, subject, reg) -> int:
     space = reg.space
     if total and not classify.may_link(reg, subject, space.owner if space else "", space.name if space else ""):
         return 0   # a link this space sends is never refused at the holder
+    if total and space is not None and _home_name(space, reg, subject) is None:
+        return 0
     return total
 
 
@@ -262,7 +268,7 @@ def _ask(root: Path, space, repo: str, ids: list) -> None:
     named = ", ".join(ids[:-1]) + f" or {ids[-1]}"
     _needs_you(root, {"id": "link-" + _slug(repo), "kind": "question",
                       "for": space.owner, "text": f"{repo} could belong to {named}.",
-                      "recommendation": f"yes: link it to {ids[0]}",
+                      "recommendation": f"yes: link it to {ids[0]} (edit <subject> for another)",
                       "default": "nothing is linked", "depends": 0})
 
 
@@ -282,11 +288,14 @@ def _needs_you(root: Path, item: dict | None, drop: str | None = None) -> None:
 
 def detect(root, repo: str, now=None, id_fn=None) -> dict:
     """Place a repository nothing links yet: one clear match is linked, a tie is asked once, no
-    match leaves it unlinked; a link or a question is a SEEN row. A repository already linked
-    (under this name or one it had) or unlinked is `known`, and nothing is written; so is one
-    asked about, until the person answers `yes`: then the recommended subject is linked. One
+    match leaves it unlinked; a link or a question is a SEEN row. A clear match scores 3, or 2
+    for a repository in this space's own organisation (the owner of its remote), where a name
+    word alone is the company's own naming. A repository already linked (under this name or one
+    it had) or unlinked is `known`, and nothing is written; so is one asked about, until the
+    person answers: `yes` links the recommended subject, `edit <subject>` the one named. One
     that matched nothing leaves no trace, so a subject registered later still claims it."""
     import classify
+    import onboard
     import status
     root = Path(root)
     space = spaceyaml.load(root)
@@ -298,17 +307,22 @@ def detect(root, repo: str, now=None, id_fn=None) -> dict:
         return known
     if row is not None:
         verdict = status.verdicts(root).get("link-" + _slug(repo)) or {}
-        if row.get("outcome") != "asked" or not row.get("subject") or verdict.get("verb") not in ("yes", "always"):
+        verb = verdict.get("verb")
+        sid = row.get("subject") if verb in ("yes", "always") else (
+            str(verdict.get("note") or "").strip() if verb == "edit" else None)
+        if row.get("outcome") != "asked" or not sid:
             return known
         try:
-            link(root, repo, row["subject"], now=now)
+            link(root, repo, sid, now=now)
         except (ValueError, classify.ClassifyError):
             return known
-        return {"outcome": "linked", "subject": row["subject"], "candidates": [row["subject"]]}
+        return {"outcome": "linked", "subject": sid, "candidates": [sid]}
     reg = registry.Registry(root, space)
     scored = [(s, score(repo, s, reg)) for s in reg.everywhere()]
     top = max((n for _, n in scored), default=0)
-    contenders = [s.id for s, n in sorted(scored, key=lambda p: -p[1]) if n >= 3 and n >= top - 1]
+    remote = onboard.git_remote(root)
+    need = 2 if remote and _parts(repo)[0] == remote.split("/")[0].lower() else 3
+    contenders = [s.id for s, n in sorted(scored, key=lambda p: -p[1]) if n >= need and n >= top - 1]
     if len(contenders) == 1:
         sid = contenders[0]
         data = {"linked_by": "detect", "linked": now.date().isoformat()}
@@ -395,14 +409,21 @@ def resolve(root, cwd, now=None) -> dict | None:
             "status_page": status_page, "repo": found.repo}
 
 
-def link(root, repo: str, sid: str, now=None) -> None:
-    """The person's own link, for a codebase detection cannot place. A repository with no active
-    link (a gone one under this name may be a new repository) starts without the old id, readers
-    and check; one unlinked here keeps the names it had before a rename."""
+def link(root, repo: str, sid: str, now=None) -> str:
+    """The person's own link, for a codebase detection cannot place: the repository as owner/name,
+    its clone URL or its clone's folder (keyed by its remote, as resolve keys it); returns the key
+    stored. A repository with no active link (a gone one under this name may be a new repository)
+    starts without the old id, readers and check; one unlinked here keeps the names it had
+    before a rename."""
     import classify
-    if LOCAL.match(str(repo).strip()):
-        raise ValueError(f"{repo} is a folder; give the repository as owner/name or its URL")
+    given = str(repo).strip()
+    if LOCAL.match(given):
+        repo = remote_of(given) or ""
+        if not repo:
+            raise ValueError(f"{given} is no clone of a repository")
     repo = repo_key(repo) or repo
+    if "://" not in repo and not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
+        raise ValueError(f"{repo} is not a repository; give it as owner/name, its clone URL or the clone's folder")
     root = Path(root)
     space = spaceyaml.load(root)
     now = now or space.now()
@@ -427,6 +448,7 @@ def link(root, repo: str, sid: str, now=None) -> None:
     _log(root, now, f"linked {repo} to {sid} (person); undo: python _meta/tools/link.py . unlink {repo}")
     _remember(root, repo, now, "linked", sid, signal=signal, was=was)
     _needs_you(root, None, drop="link-" + _slug(repo))
+    return repo
 
 
 def unlink(root, repo: str, now=None) -> None:
@@ -568,9 +590,9 @@ def check(root, now=None, lookup_fn=None, readers_fn=None) -> dict:
     until another repository takes one, a lost one is marked gone (one this check never found, such as
     a client's private repository, is kept) and comes back when found again,
     readers are set against this space's audience (a public repository is wider), the older of two
-    claims stays, and the `repository` source lists what is linked. Never an owner alert."""
+    claims stays, a link question answered since is applied, and STATE lists what is linked for
+    the repository feed. Never an owner alert."""
     import classify
-    import onboard
     root = Path(root)
     space = spaceyaml.load(root)
     now = now or space.now()
@@ -578,6 +600,9 @@ def check(root, now=None, lookup_fn=None, readers_fn=None) -> dict:
     fixture = space.mode == "fixture"   # a fixture space never asks the host with the default functions
     lookup = lookup_fn or (None if fixture else _host_lookup)
     readers_of = readers_fn or (None if fixture else access.readers)
+    for row in list(_seen_rows(root).values()):   # a question answered since: detect applies the answer
+        if row.get("outcome") == "asked":
+            detect(root, row["repo"], now=now)
     reg = registry.Registry(root, space)
     repaired = 0
 
@@ -626,11 +651,14 @@ def check(root, now=None, lookup_fn=None, readers_fn=None) -> dict:
         repaired += sum(send(other, other.repo, remove=True) for other in rest)
         if rest:
             names = [first.subject] + [o.subject for o in rest]
+            other = names[1] if len(rest) == 1 else "<subject>"
             _needs_you(root, {"id": "link-claim-" + _slug(first.repo), "kind": "question", "for": space.owner,
                               "text": f"{first.repo} was linked to {', '.join(names[:-1])} and {names[-1]}; "
                                       f"I kept {first.subject}, linked first.",
-                              "recommendation": f"keep {first.subject}", "default": f"{first.subject} keeps it",
-                              "depends": 0})
+                              "recommendation": f"keep {first.subject}; to give it to {other} instead: "
+                                                f"python _meta/tools/link.py . unlink {first.repo}, then "
+                                                f"python _meta/tools/link.py . link {first.repo} {other}",
+                              "default": f"{first.subject} keeps it", "depends": 0})
     known = access.logins(root, space)
     allowed = {known[name].lower() for name in access.audience_names(root, space) if name in known}
     final = []   # (subject, repo, readers) of the links that stay
@@ -676,23 +704,18 @@ def check(root, now=None, lookup_fn=None, readers_fn=None) -> dict:
         key = (sid, repo_key(repo))
         spelling.setdefault(key[1], repo)
         pairs[key] = "wider" if "wider" in (readers, pairs.get(key)) else readers
-    wanted = sorted(spelling.values())
-    source = next((s for s in space.sources if isinstance(s, dict) and s.get("name") == "repository"), None)
-    if source is None and wanted:
-        audience = {"brain": "everyone", "project": "crew"}.get(space.profile, "owner")
-        onboard.connect(root, "repository", audience=audience, scope={"repos": wanted})
-    elif source is not None and list(source.get("repos") or []) != wanted:
-        source["repos"] = wanted   # only this key: a manual `repo` stays
-        spaceyaml.save(space)
     counts = {"links": len(pairs), "wider": sum(r == "wider" for r in pairs.values()), "repaired": repaired}
+    # what the repository feed reads (sweep skill), kept here: space.yaml is protected, links are routine state
+    data = dict(counts, repos=sorted(spelling.values()),
+                audience={"brain": "everyone", "project": "crew"}.get(space.profile, "owner"))
     path = root / STATE
     try:
         before = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         before = None
-    if not isinstance(before, dict) or {k: before.get(k) for k in counts} != counts:
+    if not isinstance(before, dict) or {k: before.get(k) for k in data} != data:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"at": pages.iso(now), **counts}) + "\n", encoding="utf-8", newline="\n")
+        path.write_text(json.dumps({"at": pages.iso(now), **data}) + "\n", encoding="utf-8", newline="\n")
     return counts
 
 
@@ -746,11 +769,13 @@ def journal_records(root) -> int:
     """Append a `journal` feed row for each journal entry about a subject homed elsewhere that
     carries a `ref:` into a codebase linked to that subject or its parent; the rows appended.
     Personal spaces only; an entry already in the feed is not written again. Only those pointers
-    travel, first, since the sweep sends a body cut short; any other `ref:` (another subject's
-    code, a private path) stays home, as does a line carrying `from:` (the other subject a lesson
-    came from, ring 3; D5, D6) and whatever follows the entry's last `subject:`, `ref:`,
-    `lesson:` or `from:` line. A row is `admitted`: the sweep takes it however old its heading
-    time, since an entry can be written or become eligible after a newer one was swept."""
+    travel, first, since the sweep sends a body cut short; a pointer into a codebase on another
+    host travels with that host's URL in place of owner/name, so no GitHub page is made of it.
+    Any other `ref:` (another subject's code, a private path) stays home, as do the `lesson:` and
+    `from:` lines (a lesson from another subject, ring 3; D5, D6: distill takes the lesson to the
+    brain through the scrub and a signer) and whatever follows the entry's last `subject:`,
+    `ref:`, `lesson:` or `from:` line. A row is `admitted`: the sweep takes it however old its
+    heading time, since an entry can be written or become eligible after a newer one was swept."""
     import distill
     root = Path(root)
     space = spaceyaml.load(root)
@@ -765,13 +790,19 @@ def journal_records(root) -> int:
         home = reg.home_of(sid)
         if entry.record in have or subject is None or not home or home == space.name:
             continue
-        refs = [r for r in refs_in(entry.body) if _ref_link(root, r, (sid, subject.part_of)) is not None]
+        refs = []
+        for ref in refs_in(entry.body):
+            found = _ref_link(root, ref, (sid, subject.part_of))
+            if found is None:
+                continue
+            key = repo_key(found.repo) or ""   # on another host: its URL, which no GitHub link is made of
+            refs.append(key + ref[len(ref_repo(ref)):] if "://" in key and REF_AT.match(ref) else ref)
         if not refs:
             continue
         last = list(STRUCTURED.finditer(entry.body))
         body = entry.body[:last[-1].end()] if last else entry.body
-        rest = "\n".join(line for line in body.splitlines()
-                         if not REF_LINE.match(line) and not FROM_LINE.search(line)).strip()
+        rest = "\n".join(line for line in body.splitlines() if not REF_LINE.match(line)
+                         and not FROM_LINE.search(line) and not distill.LESSON_LINE.match(line)).strip()
         text = "\n".join(f"ref: {r}" for r in refs) + ("\n\n" + rest if rest else "") + "\n"
         _append(root / JOURNAL_FEED, json.dumps({
             "id": entry.record, "source": "journal", "kind": "document", "at": pages.iso(entry.at),
@@ -812,13 +843,14 @@ def main(argv=None) -> int:
     import classify
     try:
         if args.command == "link":
-            link(args.root, args.repo, args.subject)
+            shown = link(args.root, args.repo, args.subject)
         else:
             unlink(args.root, args.repo)
+            shown = repo_key(args.repo) or args.repo
     except (ValueError, classify.ClassifyError) as exc:
         print(f"refused: {exc}")
         return 1
-    print(f"{args.command}ed {repo_key(args.repo) or args.repo}")
+    print(f"{args.command}ed {shown}")
     return 0
 
 

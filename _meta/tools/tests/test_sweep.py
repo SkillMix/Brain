@@ -779,14 +779,15 @@ def test_a_backfill_re_export_deepens_old_pages_behind_the_mark(tmp_path):
 
 
 # ----- notes from a codebase session (D8) ---------------------------------------------------------
-def test_walled_crew_home_gets_journal_at_once(tmp_path):
-    # harbor-voice-agent classified walled, home harbor, crew ["ada"]; routing off; only mail declared
+def test_without_the_router_a_journal_note_waits_the_window_even_to_its_crew(tmp_path):
+    # harbor-voice-agent classified walled, home harbor, crew ["ada"]; routing off; only mail declared:
+    # nothing read what the note says, so it waits where its person can pull it
     ws = journal_ws(tmp_path, crew=["ada"])
     link.journal_records(ws)
     sweep.run(ws, now=NOW)
     item = only_queue_item(ws)
-    assert item["class"] == "at_once" and item["destination"] == "harbor"
-    assert item["path"] == "journal:harbor" and pages.parse_iso(item["stage_after"]) == NOW
+    assert item["class"] == "window" and item["destination"] == "harbor" and item["path"] == "journal:harbor"
+    assert pages.parse_iso(item["stage_after"]) == NOW + spaceyaml.load(ws).window()
 
 
 def test_other_home_gets_it_after_the_window(tmp_path):
@@ -797,14 +798,6 @@ def test_other_home_gets_it_after_the_window(tmp_path):
     item = only_queue_item(ws)
     assert item["class"] == "window" and held_in_doubt(ws) == 0
     assert pages.parse_iso(item["stage_after"]) == NOW + spaceyaml.load(ws).window()
-
-
-def test_a_paused_journal_path_waits_the_window(tmp_path):
-    ws = journal_ws(tmp_path, crew=["ada"])
-    release.pause(ws, "journal:harbor", NOW, "pulled back", "x", spaceyaml.load(ws))
-    link.journal_records(ws)
-    sweep.run(ws, now=NOW)
-    assert only_queue_item(ws)["class"] == "window"
 
 
 def test_a_journal_entry_headed_before_a_swept_one_still_travels(tmp_path):
@@ -836,6 +829,34 @@ def test_brain_reads_its_repository_feed_only(tmp_path):
                         "text": "The spec.", "identifiers": {"repo": "lumen/app"}}], source="repository")
     write_feed(brain, [record()])
     assert {r["_feed"] for r in sweep.declared_feed(brain, spaceyaml.load(brain))} == {"repository"}
+
+
+def test_the_linked_repositories_feed_is_read_beside_the_declared_sources(tmp_path):
+    # harbor declares only mail; link.check lists its linked codebase in _meta/state/links.json, not space.yaml
+    harbor = make_space(tmp_path / "harbor", profile="project", name="harbor",
+                        sources=[{"name": "mail", "adapter": "gmail", "audience": "crew"}])
+    write_feed(harbor, [{"id": "northwind/harbor-voice#7", "source": "repository", "kind": "change",
+                         "at": "2026-10-12T08:00:00Z", "subject": "Add call transfer", "text": "Adds transfer.",
+                         "identifiers": {"repo": "northwind/harbor-voice"}}], source="repository")
+    assert {r["_feed"] for r in sweep.declared_feed(harbor, spaceyaml.load(harbor))} == {"repository"}
+
+
+def test_a_merged_pull_request_attaches_to_the_linked_subject_and_settles(tmp_path):
+    # harbor holds harbor (match.repo, as onboarding writes it) and its part harbor-voice-agent, linked
+    harbor = make_space(tmp_path / "harbor", profile="project", name="harbor", subjects=[
+        {"id": "harbor", "kind": "projects", "match": {"repo": "northwind/harbor-voice"}},
+        {"id": "harbor-voice-agent", "kind": "projects", "part_of": "harbor",
+         "repos": [{"repo": "northwind/harbor-voice", "linked": "2026-10-01"}]}])
+    write_feed(harbor, [{"id": "northwind/harbor-voice#7", "source": "repository", "kind": "change",
+                         "at": "2026-10-12T08:00:00Z", "subject": "Add call transfer", "text": "Adds transfer.",
+                         "identifiers": {"repo": "northwind/harbor-voice"}, "audience": "crew"}], source="repository")
+    seen = []
+    for hour in range(1, 3):
+        sweep.run(harbor, now=NOW + dt.timedelta(hours=hour))
+        (page,) = [p for p in (harbor / "knowledge" / "sources").rglob("*.md") if pages.is_page_path(p)]
+        fm, _ = pages.read(page)
+        seen.append((fm.get("subject"), fm["id"]))
+    assert seen[0][0] == "harbor-voice-agent" and seen[0] == seen[1]
 
 
 def test_a_pull_request_permalink_is_not_an_attachment_to_read(tmp_path):

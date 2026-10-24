@@ -56,9 +56,9 @@ it, by title only, as evidence on that subject's candidate.
 
 What will still matter tomorrow. When unsure, one line costs nothing. An entry leaves only
 when it names a subject homed elsewhere and carries a `ref:` to a repository linked to that
-subject: at once to a walled home whose crew includes you, otherwise after the window, listed in
-your morning view first so you can pull it. Every other entry stays here as evidence. A secret
-costs everything and never goes anywhere.
+subject: after the window, listed in your morning view first so you can pull it (at once only
+when the router judged it, to a walled home whose crew includes you). Every other entry stays
+here as evidence. A secret costs everything and never goes anywhere.
 
 ## Never
 

@@ -23,9 +23,9 @@ the shape and ships its migration. Each choice behind a change has a line in
   subject's audience passes the release scrub; entries carry `subject:` and a `ref:` pointer
   into the code.
 - **Notes from linked codebases travel as records.** A journal entry about a subject homed
-  elsewhere, with a `ref:` into a codebase linked to that subject, goes to its home: at once to
-  a walled home whose crew includes the writer, otherwise after the window. Every other entry
-  stays home.
+  elsewhere, with a `ref:` into a codebase linked to that subject, goes to its home after the
+  window (at once when the router judged it, to a walled home whose crew includes the writer).
+  Every other entry stays home.
 - **Pointers on status pages.** Distill names an entry's pointers on its evidence lines, and a
   subject's status page lists them under `## Pointers`.
 - **Lessons to the brain.** A `lesson:` line becomes a candidate for the brain carrying the

@@ -234,3 +234,14 @@ def test_identifiers_repo_matches_the_linked_subject(tmp_path):
     hits = reg.match(record)
     assert [s.id for s in hits] == ["harbor-voice-agent"]
     assert reg.matched_by(hits[0], record) == {"repos"}
+
+
+def test_a_linked_repository_belongs_to_its_subject_alone(tmp_path):
+    # harbor names the repository in match.repo (as onboarding writes it); its part harbor-voice-agent links it
+    root = make_space(tmp_path / "harbor", profile="project", subjects=[
+        {"id": "harbor", "kind": "projects", "match": {"repo": "northwind/harbor-voice"}},
+        {"id": "harbor-voice-agent", "kind": "projects", "part_of": "harbor",
+         "repos": [{"repo": "northwind/harbor-voice"}]}])
+    reg = registry.Registry(root)
+    assert [s.id for s in reg.match({"kind": "change", "identifiers": {"repo": "northwind/harbor-voice"}})] == [
+        "harbor-voice-agent"]
