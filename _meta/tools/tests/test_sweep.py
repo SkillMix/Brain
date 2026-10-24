@@ -821,3 +821,28 @@ def test_a_journal_entry_headed_before_a_swept_one_still_travels(tmp_path):
     assert len(queue_items(ws)) == 2
     sweep.run(ws, now=later)
     assert len(queue_items(ws)) == 2   # a re-read finds the witness page and stops
+
+
+# ----- the repository feed in a brain (the product company) ----------------------------------------
+def test_brain_reads_its_repository_feed_only(tmp_path):
+    # a brain with sources [repository]; feed files repository.jsonl and mail.jsonl
+    brain = make_space(tmp_path / "brain", profile="brain", name="brain", subjects=[],
+                       sources=[{"name": "repository", "adapter": "files", "audience": "everyone",
+                                 "repos": ["lumen/app"]}])
+    write_feed(brain, [{"id": "lumen/app#7", "source": "repository", "kind": "document",
+                        "at": "2026-10-12T08:00:00Z", "subject": "Transfer spec",
+                        "text": "The spec.", "identifiers": {"repo": "lumen/app"}}], source="repository")
+    write_feed(brain, [record()])
+    assert {r["_feed"] for r in sweep.declared_feed(brain, spaceyaml.load(brain))} == {"repository"}
+
+
+def test_a_pull_request_permalink_is_not_an_attachment_to_read(tmp_path):
+    # harbor holds harbor-voice-agent linked to northwind/harbor-voice; a merged pull request carries its url
+    harbor = make_space(tmp_path / "harbor", profile="project", name="harbor", subjects=[
+        {"id": "harbor-voice-agent", "kind": "projects", "title": "Harbor voice agent", "home": "harbor",
+         "repos": [{"repo": "northwind/harbor-voice"}]}])
+    write_feed(harbor, [{"id": "northwind/harbor-voice#7", "source": "repository", "kind": "change",
+                         "at": "2026-10-12T08:00:00Z", "subject": "Add call transfer", "text": "Adds transfer.",
+                         "identifiers": {"repo": "northwind/harbor-voice"},
+                         "attachments": ["https://github.com/northwind/harbor-voice/pull/7"]}], source="repository")
+    assert sweep.attachments(harbor) == []

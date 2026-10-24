@@ -6,7 +6,8 @@ description: Export new records from this space's own connected sources into fee
 # sweep: evidence in
 
 A space sweeps only the sources its audience owns (`space.yaml: sources`). The brain
-sweeps nothing of its own. You export; the tool decides.
+sweeps nothing of its own but its `repository` source (a product company's repository). You
+export; the tool decides.
 
 ## When
 
@@ -17,8 +18,8 @@ sweeps nothing of its own. You export; the tool decides.
 ## Run
 
 1. For each entry in `space.yaml: sources` (`name`, `adapter`, `audience`, and for a project's
-   own sources what to read: `channels`, `team` and `project`, `repo`; read only those), read
-   with your connector for that system the records newer than the last `at` already in
+   own sources what to read: `channels`, `team` and `project`, `repo` or `repos`; read only
+   those), read with your connector for that system the records newer than the last `at` already in
    `_meta/state/feed/<name>.jsonl` (no file yet: the last 90 days) and append one JSON
    object per line:
    `{"id", "source", "kind": mail|call|message|event|document, "at": ISO, "from",
@@ -39,14 +40,22 @@ sweeps nothing of its own. You export; the tool decides.
    event = one calendar entry (`calendar`), `subject` the title, `text` the description,
    `participants` the guests by address; document = one new or changed file, `text` its full
    text, the file only as a pointer in `attachments`; issue = a tracker issue created,
-   changed or closed (`identifiers.tracker` the project, `issue`, `state`); change = a pull request merged or a release in the repository
-   (`identifiers.repo`, `text` its title and description), never the space's own machinery
-   pull requests (`chore: sync`, `chore: pins`, `chore: release`, `chore: structure`). Export
-   them with `gh pr list -R <repo> --state merged --search "merged:>=<since> NOT chore in:title"
-   --limit 200 --json number,title,body,mergedAt,baseRefName,author` (the search, not a filter
-   afterwards: the machinery pull requests outnumber the rest and would fill any limit), `id`
-   `<repo>#<number>`. `audience` is the source's declared audience, copied as is. `id` is the
-   system's own id, stable across runs. A backfill (a person's first 90 days, or a project's
+   changed or closed (`identifiers.tracker` the project, `issue`, `state`); change = a pull
+   request merged or a release in each repository the source names (its `repos` list and its
+   `repo` key) (`identifiers.repo`, `text` its title and description, `attachments` its `url`),
+   never the space's own machinery pull requests (`chore: sync`, `chore: pins`,
+   `chore: release`, `chore: structure`). Export them with `gh pr list -R <repo> --state merged
+   --search "merged:>=<since> NOT chore in:title" --limit 200 --json
+   number,title,body,mergedAt,baseRefName,author,url` (the search, not a filter afterwards: the
+   machinery pull requests outnumber the rest and would fill any limit), `id`
+   `<repo>#<number>`. Then list each one's files (`gh pr view <number> -R <repo> --json
+   files,mergeCommit`) and keep a `.md` or `.mdx` file that is under `docs/`, `specs/` or
+   `.kiro/specs/`, or under any folder named `adr` or `decisions`, or whose file name contains
+   `design`; nothing else (`src/design.py` stays out). Each kept file is one `document` record:
+   `id` `<repo>@<merge commit>:<path>`, `text` the file's content at the merge commit,
+   `identifiers.repo`, `attachments` its permalink
+   `https://github.com/<repo>/blob/<commit>/<path>`. `audience` is the source's declared
+   audience, copied as is. `id` is the system's own id, stable across runs. A backfill (a person's first 90 days, or a project's
    history back to its first mention) re-reads older records in full with the same `id` and
    adds `"backfill": true`: the sweep reads them behind the feed's mark and deepens their pages.
    A record exported by research for a subject carries `"research": "<subject id>"`; its page

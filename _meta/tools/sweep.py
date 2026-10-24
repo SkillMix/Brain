@@ -156,12 +156,15 @@ def read_feed(root: Path) -> list:
 
 
 def declared_feed(root: Path, space: spaceyaml.Space) -> list:
-    """The feed records of the sources this space declared; the brain sweeps nothing of its own.
+    """The feed records of the sources this space declared; the brain sweeps only its own
+    `repository` feed (a product company's repository), nothing else of its own.
     A personal space always reads its `journal` feed (link.journal_records), declared or not."""
     declared = {str(s.get("name")) for s in space.sources if isinstance(s, dict) and s.get("name")}
     if declared and space.profile == "personal":
         declared.add("journal")
-    feed = [] if space.profile == "brain" else read_feed(root)
+    feed = read_feed(root)
+    if space.profile == "brain":
+        feed = [r for r in feed if r.get("_feed") == "repository"]
     return [r for r in feed if str(r.get("_feed")) in declared] if declared else feed
 
 
@@ -176,7 +179,7 @@ def attachments(root) -> list:
     have = {str(r["id"]) for r in feed}
     out = []
     for record in feed:
-        if record.get("kind") == "document":   # its attachment points at the file it already holds
+        if record.get("kind") in ("document", "change"):   # its attachment points at what it holds
             continue
         names = [str(a.get("name") or "") if isinstance(a, dict) else str(a)
                  for a in record.get("attachments") or []]
