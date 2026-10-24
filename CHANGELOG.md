@@ -5,7 +5,10 @@ versioning](https://semver.org); while the version starts with 0, a minor releas
 the shape and ships its migration. Each choice behind a change has a line in
 `docs/decisions.md`.
 
-## [Unreleased]
+## [0.2.0] - 2026-10-24
+
+Codebase links: a session opened in a linked repository gets its project's context, and its
+notes about that work reach the project.
 
 ### Added
 
