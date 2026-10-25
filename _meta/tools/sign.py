@@ -41,6 +41,10 @@ import spaceyaml  # noqa: E402
 
 VERBS = ("yes", "edit", "no", "later", "always")
 CANDIDATE_ONLY = ("destination", "target", "deadline", "recommendation", "depends")
+# what a page already at the target keeps when an edit of it is signed, unless the edit sets it:
+# open conflict notes and what its release and landing recorded
+KEPT_ON_RESIGN = ("contested", "released_by", "released_from", "released_at", "release_class",
+                  "acted_for", "path", "domain", "landed_at", "landed_from")
 CHECK_VERDICTS = Path("_meta") / "state" / "check-verdicts.jsonl"
 CHECK_VERDICT_OF = {"yes": "yes", "always": "yes", "no": "no", "edit": "edit"}
 
@@ -252,6 +256,10 @@ def _candidate(root, space, entry: Found, item_id, verb, note, by, now, report: 
     body = landing_text(body)
     fingerprint = pages.fingerprint(body)
     target = root / target_of(fm, path, now)
+    if target.exists():   # an edit of a page already here: its id is permanent (shape-1.md, Pages)
+        old_fm, _ = pages.read(target)
+        fm["id"] = old_fm.get("id") or fm.get("id")
+        fm.update({k: old_fm[k] for k in KEPT_ON_RESIGN if k in old_fm and k not in fm})
     signature = {"status": "stable", "signed_by": by, "signed_at": pages.iso(now),
                  "signed_in": space.name, "fingerprint": fingerprint}
     repo = _own_repo(root)
