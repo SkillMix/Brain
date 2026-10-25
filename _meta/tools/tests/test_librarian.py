@@ -135,6 +135,37 @@ def test_a_change_that_would_move_ownership_is_asked_once(tmp_path):
     assert report.asked == [] and len(list((root / "_inbound/questions").glob("librarian-*.md"))) == 1
 
 
+def test_the_owners_yes_to_an_ownership_question_applies_the_change(tmp_path):
+    import sign
+    subjects = [{"id": "tidewater", "kind": "clients", "title": "Tidewater", "owner": "Chloe Martin"},
+                {"id": "dock", "kind": "projects", "title": "Dock", "client": "tidewater"},
+                {"id": "pier", "kind": "projects", "title": "Pier", "client": "tidewater"},
+                {"id": "quay", "kind": "projects", "title": "Quay", "client": "tidewater"}]
+    root = make_space(tmp_path / "ada", subjects=subjects)
+    librarian.run(root, now=NOW, scorer=lambda r: (0, 0))
+    (key,) = librarian.proposals(root)
+    assert librarian.apply(root, key, "second agent", now=NOW, scorer=lambda r: (0, 0)) == "asked"
+    (question,) = (root / "_inbound/questions").glob("librarian-*.md")
+    qid = pages.read(question)[0]["id"]
+    sign.apply(root, {qid: "yes"}, by="Chloe Martin", now=NOW)
+    reg = registry.Registry(root)
+    assert [reg.get(s).part_of for s in ("dock", "pier", "quay")] == ["tidewater"] * 3
+    assert not question.exists()
+    assert "approved by Chloe Martin" in (root / "log.md").read_text(encoding="utf-8")
+    data = yaml.safe_load((root / "_meta/state/librarian" / f"{key}.yaml").read_text(encoding="utf-8"))
+    assert data["status"] == "applied" and data["approved_by"] == "Chloe Martin"
+    assert errors(root) == []
+
+
+def test_a_yes_to_an_ownership_question_whose_proposal_is_gone_is_logged(tmp_path):
+    import sign
+    root = make_space(tmp_path / "ada", subjects=[HARBOR])
+    write_page(root, "_inbound/questions/librarian-lib-0badc0de.md", id="p-0badc0de", type="review",
+               title="Ownership would move: gone", question="Make the change?", status="draft")
+    sign.apply(root, {"p-0badc0de": "yes"}, by="Ada Okafor", now=NOW)
+    assert "could not be applied" in (root / "log.md").read_text(encoding="utf-8")
+
+
 def test_shape_migrations_run_in_order_and_are_verified(tmp_path):
     root = make_space(tmp_path / "ada")
     folder = tmp_path / "migrations"

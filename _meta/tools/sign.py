@@ -424,6 +424,14 @@ def _question(root, space, entry: Found, item_id, verb, note, by, now, report: A
         _log(root, f"- {pages.iso(now)} routing answer {verb} for {fm['record']} by {by}")
         report.verdicts_recorded += 1
         return
+    if path.name.startswith("librarian-") and verb in ("yes", "always"):
+        import librarian   # an ownership question: the owner's yes makes the asked change
+        key = path.stem[len("librarian-"):]
+        try:
+            outcome = librarian.answer(root, key, by=by, now=now)
+            _log(root, f"- {pages.iso(now)} ownership answer yes for {key} by {by}: {outcome}")
+        except (ValueError, OSError, yaml.YAMLError) as exc:
+            _log(root, f"- {pages.iso(now)} ownership answer for {item_id} by {by} could not be applied: {exc}")
     if note.strip():
         _log(root, f"- {pages.iso(now)} note {item_id} by {by}: {' '.join(note.split())}")
     path.unlink()
