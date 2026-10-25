@@ -501,6 +501,21 @@ def test_items_held_for_a_shadow_destination_return_to_the_queue(tmp_path):
     assert report.requeued == 1 and report.shipped == 1 and held_items(ada) == []
 
 
+def test_a_doubt_page_held_before_recommendations_gets_one_on_the_next_release(tmp_path):
+    """A page held in doubt before holds carried a recommendation gets the hold's recommendation
+    and default written on it; a page with its own recommendation keeps it."""
+    _, harbor, ada = build(tmp_path)
+    held = ada / "_outbound" / "held"
+    pages.write(held / "old.md", {"id": "old", "reason": "doubt", "why": "privacy doubt"}, "old body\n")
+    pages.write(held / "own.md", {"id": "own", "reason": "doubt", "why": "privacy doubt",
+                                  "recommendation": "yes: send it", "default": "goes"}, "own body\n")
+    release.ship(ada, now=NOW, offline_roots={"harbor": harbor})
+    old, _ = pages.read(held / "old.md")
+    own, _ = pages.read(held / "own.md")
+    assert (old["recommendation"], old["default"]) == ("no: keep it home", "stays home")
+    assert (own["recommendation"], own["default"]) == ("yes: send it", "goes")
+
+
 def test_refresh_checkout_reads_the_destination_as_it_is_now(tmp_path):
     git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.test"]
     origin = make_space(tmp_path / "harbor", profile="project", name="harbor", mode="shadow", time_scale=48)

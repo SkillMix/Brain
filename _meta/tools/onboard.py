@@ -1423,7 +1423,8 @@ def invite(root, slug: str, org: str | None = None, workspace_org: str | None = 
            name: str | None = None, email: str | None = None) -> Path:
     """Write `_meta/state/invitations/<slug>.yaml` (the colleague's answers: name, parent, the
     brain, the projects they are crew on, their host login when the registry has it) and one
-    Needs-you item for the owner with its read-back. The sentence works only once the colleague
+    Needs-you item for the owner with its read-back (their workspace's first synced run line).
+    The sentence works only once the colleague
     can read the template and the brain: when the host does not confirm both (or no login is
     known), a second item recommends the access and who grants it (`grant_advice`: a team, a
     collaborator on a personal account, or the owner of a repository this person cannot
@@ -1490,7 +1491,10 @@ def invite(root, slug: str, org: str | None = None, workspace_org: str | None = 
                            f"{target.relative_to(root).as_posix()}. The sentence works once they can "
                            f"read {readable}"),
                   "recommendation": "yes, on their first day", "default": "they work without a workspace for now "
-                  "(rules.md section 10)", "depends": 1, "check": f"gh repo view {workspace}"})
+                  "(rules.md section 10)", "depends": 1,
+                  # done once their first sync landed a run line, not when the repository exists: a
+                  # setup can stop right after its first push, with no sync task to land anything
+                  "check": f"gh api repos/{workspace}/contents/_meta/state/runs.jsonl -q .path"})
     blocked = [r for r in both if not login or r.startswith("<") or not can_read(r, login)]
     if blocked:
         text = (f"{person.title} cannot read {' and '.join(blocked)} yet (checked as {login}), so the "
