@@ -235,12 +235,29 @@ def destination_space(space: spaceyaml.Space, destination: str,
 
 
 
+def _doubt_defaults(fm: dict) -> dict:
+    """The recommendation and default a doubt hold carries; a page's own are kept."""
+    fm.setdefault("recommendation", "no: keep it home")
+    fm.setdefault("default", "stays home")
+    return fm
+
+
+def _recommend_held_doubt(root: Path) -> None:
+    """Pages held in doubt before holds carried a recommendation get the hold's own on disk."""
+    for path in sorted((Path(root) / HELD).glob("*.md")):
+        try:
+            fm, body = pages.read(path)
+        except Exception:
+            continue
+        if fm.get("reason") == "doubt" and "recommendation" not in fm:
+            pages.write(path, _doubt_defaults(fm), body)
+
+
 def hold(root: Path, fm: dict, body: str, reason: str, why: str) -> Path:
     """Write an item to _outbound/held/ with its reason; held items never leave by themselves."""
     held_fm = dict(fm, reason=reason, why=why)
     if reason == "doubt":  # shown as one count; opened on demand, each with a recommendation
-        held_fm.setdefault("recommendation", "no: keep it home")
-        held_fm.setdefault("default", "stays home")
+        _doubt_defaults(held_fm)
     return pages.write(Path(root) / HELD / f"{fm['id']}.md", held_fm, body)
 
 
@@ -497,6 +514,7 @@ def ship(root, now: dt.datetime | None = None,
     except Exception as exc:  # a note never stops the ship
         print(f"release: registry notes not applied ({exc.__class__.__name__})", file=sys.stderr)
     report.requeued = _requeue_mode_held(root, space)
+    _recommend_held_doubt(root)
     try:   # what waited for a classification goes back to the queue once it has one
         import classify
         back = classify.requeue(root, space, None, now)
