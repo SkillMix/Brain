@@ -440,7 +440,7 @@ def test_an_invitation_carries_the_crew_projects_and_the_colleague_onboards_offl
     assert answers["name"] == "Ben Liu" and answers["brain"] == "https://github.com/lantern-org/brain"
     assert [p["name"] for p in answers["crew_projects"]] == ["harbor"]
     items = yaml.safe_load((brain / "_inbound" / "needs-you" / "invitations.yaml").read_text(encoding="utf-8"))["items"]
-    assert items[0]["id"] == "invite-ben" and items[0]["check"].startswith("gh repo view")
+    assert items[0]["id"] == "invite-ben" and "ben-workspace/contents/_meta/state/runs.jsonl" in items[0]["check"]
     # the one sentence the colleague says, in the invitation and on the owner's item
     assert answers["say"].startswith("Onboard me to Lantern: https://github.com/")   # the company, not the host owner
     assert answers["say"].endswith("with my invitation lantern-org/brain:ben")
@@ -534,6 +534,30 @@ def test_the_access_item_leaves_once_the_colleague_can_read_both(tmp_path, monke
     levels.update({"lantern-org/brain-template": "read", "lantern-org/brain": "write"})
     onboard.invite(brain, "ben")
     assert [i["id"] for i in yaml.safe_load(path.read_text(encoding="utf-8"))["items"]] == ["invite-ben"]
+
+
+def test_an_invitation_reads_back_done_only_once_the_workspace_has_synced(tmp_path, monkeypatch):
+    # a setup that stopped right after its first push: the workspace repository exists, but no
+    # sync ever landed a run line, so the invitation stays on the inviter's Needs you
+    landed = []
+    world = _access_world({"lantern-org/brain-template": "read", "lantern-org/brain": "read"}, [])
+
+    def fake(argv, dry_run=False, cwd=None):
+        line = " ".join(str(a) for a in argv)
+        if line.startswith("gh repo view lantern-org/ben-workspace"):
+            return subprocess.CompletedProcess(argv, 0, "name: lantern-org/ben-workspace\n", "")
+        if "repos/lantern-org/ben-workspace/contents/_meta/state/runs.jsonl" in line and landed:
+            return subprocess.CompletedProcess(argv, 0, "_meta/state/runs.jsonl\n", "")
+        return world(argv, dry_run, cwd)
+    monkeypatch.setattr(onboard, "run_cmd", fake)
+    brain = _invited_brain(tmp_path)
+    onboard.invite(brain, "ben")
+    items = yaml.safe_load((brain / "_inbound" / "needs-you" / "invitations.yaml").read_text(encoding="utf-8"))["items"]
+    check = next(i for i in items if i["id"] == "invite-ben")["check"]
+    assert "lantern-org/ben-workspace" in check
+    assert onboard.readback(check) is False   # the repository alone is not a working setup
+    landed.append(True)                       # the first sync landed its run line
+    assert onboard.readback(check) is True
 
 
 def test_an_offline_space_is_made_under_home_when_given(tmp_path):
