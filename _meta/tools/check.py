@@ -38,6 +38,10 @@ ROUTINE = "check"
 CHECKS_DIR = Path("_inbound") / "checks"
 VERDICTS = Path("_meta") / "state" / "check-verdicts.jsonl"
 LABEL_RE = re.compile(r"([A-Za-z][A-Za-z ]{1,30}?)\s*[:=]\s*(\d{4}-\d{2}-\d{2}|\d[\d.,]*\s?%?)")
+# a signed page is prose: only a label that starts a line or a bullet, or opens a parenthesis,
+# is a value to compare; one inside a sentence ("a follow up: 3 weeks later") is not
+PAGE_LABEL_RE = re.compile(r"(?:^[ 	]*(?:[-*][ 	]+)?|\()([A-Za-z][A-Za-z -]{1,30}?)[ 	]*[:=][ 	]*"
+                           r"(\d{4}-\d{2}-\d{2}|\d[\d.,]*\s?%?)", re.M)
 ROLE_RE = re.compile(r"^\s*(?:[-*]\s*)?role\s*:\s*(.+?)\s*$", re.I | re.M)
 ALL_CHECKS = ("disagree", "newer_evidence", "past_window", "person_claim", "named_number")
 NARROWABLE = ("past_window", "named_number")
@@ -67,7 +71,7 @@ class Page:
                                 or (gen.get("at") if isinstance(gen, dict) else None))
 
     def labels(self) -> dict:
-        return labelled_values(self.body)
+        return labelled_values(self.body, PAGE_LABEL_RE)
 
 
 @dataclass
@@ -89,6 +93,7 @@ class CheckReport:
     hits: list = field(default_factory=list)      # the items written this run
     checks_run: list = field(default_factory=list)
     pages_read: int = 0
+    labelled_pages: int = 0    # signed pages in scope the value checks can read; 0 means they had nothing
     disabled: list = field(default_factory=list)
     window_pass: bool = False
     cost_tokens: int = 0
@@ -97,14 +102,14 @@ class CheckReport:
 
 
 # ----- reading -----------------------------------------------------------------
-def labelled_values(text: str) -> dict:
+def labelled_values(text: str, pattern: re.Pattern = LABEL_RE) -> dict:
     """label key (its last word) -> (full label, value); the first occurrence wins."""
     out: dict = {}
-    for match in LABEL_RE.finditer(text):
+    for match in pattern.finditer(text):
         label = " ".join(match.group(1).lower().split())
         value = match.group(2).replace(" ", "").rstrip(".,")
         if label and value:
-            out.setdefault(label.split()[-1], (label, value))
+            out.setdefault(re.split(r"[\s-]+", label)[-1], (label, value))   # go-live: live, as in evidence
     return out
 
 
@@ -587,6 +592,10 @@ def run(root, now: dt.datetime | None = None) -> CheckReport:
     scoped = sorted(in_scope.values(), key=lambda p: p.rel)
     signed = [p for p in scoped if p.signed]
 
+    value_pages = {p.rel: p for plist in subject_pages.values() for p in plist if p.signed}
+    value_pages.update({p.rel: p for p in signed})
+    report.labelled_pages = sum(1 for p in value_pages.values() if p.labels())
+
     found: list = []
     if "disagree" in report.checks_run:
         for sid, plist in subject_pages.items():
@@ -618,6 +627,7 @@ def run(root, now: dt.datetime | None = None) -> CheckReport:
     report.pages_read, report.cost_tokens = reader.pages, reader.cost_tokens
     distill.append_run(root, ROUTINE, space, now, report.cost_tokens, {
         "hits": len(report.hits), "checks_run": report.checks_run, "pages_read": report.pages_read,
+        "labelled_pages": report.labelled_pages,
         "disabled": report.disabled, "window_pass": report.window_pass,
         "batch_lines": report.batch_lines, "conflict_notes": report.conflict_notes})
     return report

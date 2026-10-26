@@ -80,6 +80,29 @@ def test_apply_yes_without_destination_queues_nothing(tmp_path):
     assert list((root / "_outbound/queue").glob("*.md")) == []
 
 
+def test_signing_an_edit_of_a_signed_page_keeps_its_id_contested_and_release_fields(tmp_path):
+    import ids
+    root = make_space(tmp_path / "ada")
+    page = root / "knowledge/projects/harbor/harbor.md"
+    candidate(root, dest=None)
+    sign.apply(root, {"p-00000101": "yes"}, by="Ada Okafor", now=NOW)
+    released = {"released_by": "Bo Lind", "released_from": "bo", "released_at": "2026-10-11T08:00:00Z",
+                "release_class": "window", "landed_at": "2026-10-11T09:00:00Z", "landed_from": "bo"}
+    fm, body = pages.read(page)
+    pages.write(page, dict(fm, contested=["conflict-1"], **released), body)
+    write_page(root, "_inbound/conflicts/conflict-1.md", id="conflict-1", type="review", title="Conflict",
+               conflict_note=True, page="p-00000101", body="Harbor goes live on 9 November.\n")
+    # distill's next candidate for the page carries an id of its own
+    candidate(root, id="p-00000102", dest=None)
+    sign.apply(root, {"p-00000102": ("edit", "Harbor goes live on 9 November.\n")}, by="Ada Okafor", now=NOW)
+    fm, body = pages.read(page)
+    assert body == "Harbor goes live on 9 November.\n" and fm["status"] == "stable"
+    assert fm["id"] == "p-00000101"   # a page's id is permanent: the open conflict note still finds it
+    assert fm["contested"] == ["conflict-1"]
+    assert {k: fm.get(k) for k in released} == released
+    assert ids.scan(root)["p-00000101"] == "knowledge/projects/harbor/harbor.md"
+
+
 def test_apply_always_adds_the_standing_choice_once(tmp_path):
     root = make_space(tmp_path / "ada")
     candidate(root)

@@ -17,7 +17,8 @@ Every change is act-then-verify: the answer and leak tests run before and after,
 score restores the snapshot, and each change is one line in `log.md` with how to undo it. A
 shape migration that lowers it is undone whole and tried again after the next template update.
 Links are by id, so a move never breaks one. A change that would move who owns a subject is
-never made: it becomes one question to the owners, asked once (`_meta/state/librarian/asked.yaml`).
+never made unasked: it becomes one question to the owners, asked once (`_meta/state/librarian/asked.yaml`).
+An owner's yes to that question, through `sign.py apply`, makes the change (`answer`), still verified.
 Judgment proposals wait in `_meta/state/librarian/<id>.yaml` until an independent second agent
 reviewed them: `apply <id> --reviewed-by <name>`. With `--land`, each applied change asks the
 sync script to land exactly its paths as one commit (`sync.py --only ...`).
@@ -234,8 +235,9 @@ def _ask(root: Path, space, change: Change, before: dict, after: dict, now, repo
 
 
 def apply_change(root, change: Change, key: str, now=None, land_it: bool = False, scorer=None,
-                 report: Report | None = None, runner=None) -> str:
-    """Act, then verify: 'applied', 'reverted' or 'asked'."""
+                 report: Report | None = None, runner=None, approved_by: str = "") -> str:
+    """Act, then verify: 'applied', 'reverted' or 'asked'. With `approved_by`, the owner already
+    answered yes to the ownership question, so the change is made (and still verified)."""
     root = Path(root)
     space = spaceyaml.load(root)
     now = now or space.now()
@@ -244,7 +246,7 @@ def apply_change(root, change: Change, key: str, now=None, land_it: bool = False
     reg = registry_mod.Registry(root, space)
     before_owners = owners(reg)
     after_owners = owners(_registry_after(root, space, change))
-    if any(before_owners.get(sid) != after_owners.get(sid) for sid in before_owners):
+    if not approved_by and any(before_owners.get(sid) != after_owners.get(sid) for sid in before_owners):
         _ask(root, space, change, before_owners, after_owners, now, report, key)
         return "asked"
     snap = _snapshot(root, change)
@@ -262,7 +264,8 @@ def apply_change(root, change: Change, key: str, now=None, land_it: bool = False
         ids.build(root)
     except Exception:
         pass
-    _append(root / "log.md", f"- {pages.iso(now)} librarian {change.kind}: {change.summary}. "
+    approved = f" (approved by {approved_by})" if approved_by else ""
+    _append(root / "log.md", f"- {pages.iso(now)} librarian {change.kind}: {change.summary}{approved}. "
                              f"Undo: {change.undo or 'move the files back and restore the registry line'}")
     report.applied.append(key)
     paths = change.paths() + ["log.md", "_meta/state/ids.yaml"]
@@ -608,6 +611,19 @@ def apply(root, key: str, reviewed_by: str, now=None, land_it: bool = False, sco
     report = Report()
     outcome = apply_change(root, change, key, now, land_it, scorer, report, runner)
     data.update(status=outcome, reviewed_by=reviewed_by, closed_at=pages.iso(now or spaceyaml.load(root).now()))
+    path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8", newline="\n")
+    return outcome
+
+
+def answer(root, key: str, by: str, now=None) -> str:
+    """The owner's yes to an ownership question (`librarian-<key>.md`): make the asked change."""
+    root = Path(root)
+    path = root / STATE / f"{key}.yaml"
+    data = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}) if path.exists() else {}
+    if data.get("status") != "asked" or not data.get("change"):
+        raise ValueError(f"{key} is not an asked proposal")
+    outcome = apply_change(root, Change.from_dict(data["change"]), key, now, approved_by=by)
+    data.update(status=outcome, approved_by=by, closed_at=pages.iso(now or spaceyaml.load(root).now()))
     path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8", newline="\n")
     return outcome
 
