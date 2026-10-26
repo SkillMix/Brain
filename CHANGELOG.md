@@ -7,6 +7,77 @@ the shape and ships its migration. Each choice behind a change has a line in
 
 ## [Unreleased]
 
+<!-- onboarding-launch-entry -->
+### Added
+
+- **Setup as a guided conversation.** One sentence still starts it. The onboard skill runs
+  `start.py`'s phases (`signins`, `apps`, `research`, `build`, `history`) and shows one message
+  per milestone in plain words (`.claude/skills/onboard/messages.md`); the detail lives on the
+  progress page. A setup journal (`~/.spaces/setup.yaml`) lets a closed session, or the same
+  sentence the next day, continue where setup stopped (`start.py resume`).
+- **Every sign-in in the first two minutes.** GitHub's device code and the Claude command line's
+  browser sign-in start together; the doctor installs GitHub's tool and Claude's command line
+  first (pinned, checksummed, no admin rights). In the desktop app setup asks once, through the
+  app's own approval card, to run without asking for each step, and switches back when it is
+  done; the agent never switches without that card.
+- **The template without git.** Each tagged release carries `brain-template-<tag>.zip` and
+  `SHA256SUMS` (`template_archive.py`, `.github/workflows/release.yml`); setup downloads the
+  zip and checks it before unpacking.
+- **One analysis run per app, and the app card.** A read-only reader per connected app decides
+  whose account it is, whether it holds work for the company and how much there is per month.
+  What holds no work is skipped and the card says why; it is shown at least ten minutes before
+  any content is copied.
+- **Extensive company research.** The company's own site, business register entry and code
+  organisation, its documents in the connected documents app, its files on this computer and
+  the person's Claude notes (as weak evidence), with secrets dropped, merged into a profile that
+  cites a source on every line and is drafted in the brain for the person to correct or sign.
+- **Routines that run on their own and prove it.** The build registers the routines itself with
+  a scheduler that catches up after sleep (Task Scheduler, a launch agent on macOS, a systemd
+  user timer on Linux, cron as the last resort with a plain line that says it does not catch
+  up), and says done only after a test run through the scheduler passes twice. Routines run on
+  an allowlist built from what a scheduled run sees, never in bypass mode, with a send guard that
+  lets mail go to the person alone; one run per workspace at a time; each run writes its own
+  outcome line with the usage it really used.
+- **The history, oldest first, in paced parts.** The plan's window, 90 days by default, is read
+  in consecutive parts, the oldest stretch first, so what was settled stays settled. Parts pace
+  themselves to the person's own limits (in working hours at least half the 5-hour window stays
+  free; on day one at most 30% of the week left), save as they read with a checkpoint after
+  every batch of at most 50 records, pause at a limit and resume where they stopped, and never
+  draw on extra usage. On a paid account the plan is written and the person starts the read.
+- **The progress page and the manual.** The page shows what runs now, what was found, the
+  history's parts, usage, what is waiting with the one thing that clears it, and the settings
+  nobody was asked about; the sync task keeps it true without the model. Once part 1 is read it
+  opens on a manual, "Your <company> brain", in the company's own names.
+- **Routines run on one computer, through one scheduler, and can be paused.** The workspace
+  records which computer runs them (`_meta/state/routine-host.yaml`); a second computer, or an
+  install whose routines are the desktop app's scheduled tasks, schedules none, and a routine
+  started anywhere else leaves by itself. "Run my routines here" moves them once the probe passes
+  on the new computer, then turns the app's old tasks off; "pause my routines" (until 06:00 the
+  next morning, or a date) and "resume my routines" hold them, the history's parts included.
+  Two computers that claim before either syncs end with neither running and one plain Waiting
+  line: the record merges by union, and sync writes that rule into each space's own
+  `.git/info/attributes`.
+- **The friction log ships** with its format (`_meta/friction-log.md`), so the personal
+  instruction's rule has a log in every new space.
+
+### Changed
+
+- **One first-read window everywhere.** It is the plan's, 90 days by default, in the skills and
+  the README; onboarding no longer runs a 14-day first sweep, since part 1 of the history read
+  replaces it.
+- **The sweep saves as it reads.** It exports oldest first and appends at most 50 records per
+  batch; while the history is read, the workspace's own sources are read by part from the plan's
+  start mark; a sweep asked for in a session first checks that no routine holds the workspace's
+  lock; a personal workspace's documents are the person's own files only.
+- **A usage reading at session start.** In the desktop app, while the history is read, each
+  session records the person's limits, so a part may start during working hours without crowding
+  their own chats.
+- **Workspaces in the company's organisation** by default, private. Members can read it while the
+  organisation's base permission allows that; setup puts that setting on the owner's Needs-you list.
+  The decisions log records what the launch supersedes: "Export watermark" for
+  the backfill, "Workspace owner on the platform", and "Connector permissions stay per person"
+  for routines.
+
 The sign sitting: a page's questions are ready before the person sits down, they are answered
 back to back, and nothing a record or the person settled is asked again.
 
