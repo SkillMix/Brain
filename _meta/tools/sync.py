@@ -10,7 +10,9 @@ routines only edit files. Each run:
   3. scan the staged paths; unstage every file with a finding (count recorded, never
      the match); commit `chore: sync`
   4. advance the pin of every clean mount to its remote branch; commit `chore: pins`
-  5. fetch origin and merge origin/main in (append-only files by union); a conflict
+  5. fetch origin and merge origin/main in (append-only files by union, and the record of which
+     computer runs the routines: `MERGE_RULES` is written into the space's own git first, so a
+     space whose .gitattributes is older has it too); a conflict
      where origin holds only an earlier copy of this checkout's own change keeps ours
      (the rebuilt commits of step 6 share no history with it); any other conflict is
      aborted and recorded
@@ -79,6 +81,11 @@ NOTABLE = ("committed", "pins", "conflict", "scan_hits", "errors", "held_tests",
            "healing", "healed", "pr_red")
 HEAL_STATE = "sync-heal.json"   # in the git dir: the repair waiting to be seen merged
 CHAINS = {"sweep_chain": "sweep-chain", "daily": "daily-chain"}   # run line routine: its routine prompt
+
+
+# Merged by union in every space, whatever its .gitattributes says: two computers that claim the routines before
+# either synced leave a record that reads as unclear (nobody runs) instead of a conflict that wedges the sync.
+MERGE_RULES = ("_meta/state/routine-host.yaml merge=union",)
 
 
 def git(root, *args, check: bool = False, input: str | None = None, env: dict | None = None) -> subprocess.CompletedProcess:
@@ -497,6 +504,7 @@ class Run:
         if self.dry:
             print("would fetch origin and merge origin/main")
             return
+        self.merge_rules()
         if git(self.root, "fetch", "--quiet", "--prune", "--no-recurse-submodules", "origin").returncode != 0:
             self.error("fetch failed")
             return
@@ -511,6 +519,26 @@ class Run:
             return
         if git(self.root, "rev-parse", "HEAD").stdout.strip() != before:
             print("merge: origin/main brought in")
+
+    def merge_rules(self) -> None:
+        """The rules of `MERGE_RULES` in this space's own git (`info/attributes`, which outranks .gitattributes):
+        each one missing is appended; a line already there is left as it is."""
+        done = git(self.root, "rev-parse", "--git-path", "info/attributes")
+        if done.returncode != 0:
+            return
+        path = Path(done.stdout.strip())
+        path = path if path.is_absolute() else self.root / path
+        try:
+            # a byte that is not UTF-8 in the person's own lines stays as it is: this only appends
+            text = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+            have = {line.strip() for line in text.splitlines()}
+            missing = [rule for rule in MERGE_RULES if rule not in have]
+            if missing:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("a", encoding="utf-8", newline="\n") as fh:
+                    fh.write(("\n" if text and not text.endswith("\n") else "") + "".join(f"{rule}\n" for rule in missing))
+        except OSError as exc:
+            self.error(f"merge rule not written: {type(exc).__name__}")
 
     def keep_ours(self) -> bool:
         """Finish a conflicted merge when every conflict is origin holding an earlier copy of this

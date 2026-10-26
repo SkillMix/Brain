@@ -802,3 +802,158 @@ def test_a_signed_profile_asks_nothing_and_a_profile_with_no_lines_writes_nothin
     assert onboard.write_profile(brain, {}, NOW) == path and yaml.safe_load(item.read_text(encoding="utf-8")) == {"items": []}   # no line either
     item.unlink()
     assert onboard.write_profile(brain, {"offering": [LINE]}, NOW) == path and not item.exists()   # and none is written for a signed page
+
+
+# ----- one computer, one runner, and a pause (Task 14) ------------------------------------------------
+import datetime as dt   # noqa: E402
+
+import routine   # noqa: E402
+import start   # noqa: E402
+
+LOCAL = dt.datetime(2026, 10, 24, 23, 10).astimezone()   # late evening on this computer's own clock
+
+
+def schtasks(monkeypatch, present: set) -> list:
+    """schtasks as --check meets it: the `present` tasks answer /Query until they are deleted."""
+    monkeypatch.setattr(onboard, "SYSTEM", "Windows")
+    monkeypatch.setattr(onboard.doctor, "diagnose", lambda *a, **k: [])
+    deleted = []
+
+    def fake(argv, dry_run=False, cwd=None):
+        argv = [str(a) for a in argv]
+        if argv[:2] == ["schtasks", "/Delete"]:
+            deleted.append(argv[-1])
+        name = argv[argv.index("/TN") + 1] if "/TN" in argv else ""
+        gone = argv[:2] == ["schtasks", "/Query"] and (name in deleted or name not in present)
+        return subprocess.CompletedProcess(argv, 1 if gone else 0, "", "")
+    monkeypatch.setattr(onboard, "run_cmd", fake)
+    import offboard
+    monkeypatch.setattr(offboard, "run_cmd", fake)
+    return deleted
+
+
+def test_check_leaves_the_probe_task_alone_while_a_setup_is_running(tmp_path, monkeypatch):
+    ada = make_space(tmp_path / "ada", name="ada")
+    onboard.write_yaml(ada / "_meta" / "state" / "onboard.yaml", {"case": "person", "probe_task": {"name": "space-probe-ada"}})
+    deleted = schtasks(monkeypatch, {"space-probe-ada"})
+    lock = start.take_lock()   # a build is proving the routines with that task right now
+    assert lock is not None
+    assert not [s for s in onboard.check(ada) if "probe" in s.name] and deleted == []
+    assert onboard.read_yaml(ada / "_meta" / "state" / "onboard.yaml")["probe_task"] == {"name": "space-probe-ada"}
+    lock.unlink()
+    assert [s.name for s in onboard.check(ada) if "probe" in s.name] == ["routine probe task space-probe-ada removed"]
+    assert deleted == ["space-probe-ada"]
+
+
+def test_check_on_a_computer_that_does_not_run_the_routines_says_where_they_run(tmp_path, monkeypatch):
+    ada = make_space(tmp_path / "ada", name="ada")
+    onboard.write_yaml(ada / "_meta" / "state" / "onboard.yaml", {"case": "person", "routine_tasks": [
+        {"name": "space-daily-chain-ada", "kind": "schtasks", "check": ["schtasks", "/Query", "/TN", "space-daily-chain-ada", "/XML"]}]})
+    monkeypatch.setattr(routine, "this_machine", lambda: "m-desktop")
+    monkeypatch.setattr(routine, "machine_name", lambda: "ADA-DESKTOP")
+    routine.claim_host(ada, "os", NOW)
+    monkeypatch.setattr(routine, "this_machine", lambda: "m-laptop")
+    schtasks(monkeypatch, set())   # the desktop's task is not on the laptop
+    rows = [s for s in onboard.check(ada) if s.name.startswith("routine")]
+    assert [(s.name, s.done) for s in rows] == [("routines on this computer", True)]
+    assert "ADA-DESKTOP" in rows[0].result and "run my routines here" in rows[0].result
+
+
+def test_a_pause_ends_at_six_the_next_morning_or_when_the_person_says():
+    assert onboard.pause_end(None, LOCAL) == dt.datetime(2026, 10, 25, 6, 0).astimezone()
+    small_hours = dt.datetime(2026, 10, 24, 2, 0).astimezone()
+    assert onboard.pause_end(None, small_hours) == dt.datetime(2026, 10, 24, 6, 0).astimezone()   # this morning's six
+    assert onboard.pause_end("2026-11-02", LOCAL) == dt.datetime(2026, 11, 2, 6, 0).astimezone()
+    assert onboard.pause_end("2026-11-02T09:30", LOCAL) == dt.datetime(2026, 11, 2, 9, 30).astimezone()   # local time
+    zoned = onboard.pause_end("2026-11-02T09:30Z", LOCAL)
+    assert zoned == dt.datetime(2026, 11, 2, 9, 30, tzinfo=dt.timezone.utc)
+    for said in ("2026-10-20", "next week", "2026-13-01"):
+        with pytest.raises(ValueError):
+            onboard.pause_end(said, LOCAL)
+
+
+def cron_tasks(ada, monkeypatch, here: bool) -> None:
+    """Ada's routines recorded as cron lines; `here`: this computer's crontab holds them."""
+    line = "33 3 * * * routine.py daily-chain"
+    onboard.write_yaml(ada / "_meta" / "state" / "onboard.yaml", {"routine_tasks": [
+        {"name": "space-daily-chain-ada", "kind": "cron", "check": ["crontab", "-l"], "line": line}]})
+    monkeypatch.setattr(onboard, "run_cmd", lambda argv, *a, **k: subprocess.CompletedProcess(
+        argv, 0 if here else 1, f"{line}\n" if here else "", "" if here else "no crontab for ada"))
+
+
+def test_pausing_with_nothing_recorded_records_this_computer_and_resuming_clears_it(tmp_path, monkeypatch, capsys):
+    ada = make_space(tmp_path / "ada", name="ada")
+    cron_tasks(ada, monkeypatch, here=True)
+    assert onboard.main([str(ada), "--pause", "--until", "2099-01-02"]) == 0
+    said = capsys.readouterr().out
+    assert said.startswith("Your routines are paused until") and "2 January" in said
+    record = routine.host(ada)
+    assert record["machine"] == routine.this_machine() and record["runner"] == "os"
+    assert routine.gate(ada, NOW).startswith("paused until 2099-01-02 06:00")
+    assert onboard.main([str(ada), "--resume"]) == 0 and routine.gate(ada, NOW) is None
+    assert onboard.main([str(ada), "--resume"]) == 0 and "not paused" in capsys.readouterr().out.splitlines()[-1]
+
+
+def test_a_pause_says_the_apps_own_tasks_are_not_paused_by_it(tmp_path, capsys):
+    ada = make_space(tmp_path / "ada", name="ada")
+    task = tmp_path / "scheduled-tasks" / "daily" / "SKILL.md"
+    task.parent.mkdir(parents=True)
+    task.write_text("the routine\n", encoding="utf-8")
+    onboard.write_yaml(ada / "_meta" / "state" / "onboard.yaml", {"routine_checks": [
+        {"name": "routine scheduled 1", "check": f"test -f {task.as_posix()}"}]})
+    assert onboard.main([str(ada), "--pause"]) == 0
+    assert "does not stop" in capsys.readouterr().out and routine.host(ada)["runner"] == "harness"
+
+
+def test_a_pause_in_the_past_or_on_a_record_that_is_not_one_changes_nothing(tmp_path, capsys):
+    ada = make_space(tmp_path / "ada", name="ada")
+    assert onboard.main([str(ada), "--pause", "--until", "2020-01-01"]) == 1
+    assert "passed" in capsys.readouterr().out and routine.host(ada) is None
+    (ada / routine.HOST).write_text("machine: [\n", encoding="utf-8")
+    assert onboard.main([str(ada), "--pause"]) == 1
+    assert "unclear" in capsys.readouterr().out and (ada / routine.HOST).read_text(encoding="utf-8") == "machine: [\n"
+
+
+def test_a_pause_with_nothing_recorded_is_made_on_the_computer_that_runs_them(tmp_path, monkeypatch, capsys):
+    """Nothing recorded and none of the routines' tasks here: pausing here would move them here, where none runs."""
+    ada = make_space(tmp_path / "ada", name="ada")
+    cron_tasks(ada, monkeypatch, here=False)
+    assert onboard.main([str(ada), "--pause"]) == 1
+    said = capsys.readouterr().out
+    assert "computer that runs them" in said and "pause my routines" in said
+    assert routine.host(ada) is None and routine.gate(ada, NOW) is None   # the computer that runs them goes on
+
+
+@pytest.mark.parametrize("flags", [["--until", "2099-01-02"], ["--pause", "--resume"], ["--resume", "--until", "2099-01-02"],
+                                   ["--routines-here", "--pause"], ["--routines-here", "--resume"]])
+def test_flags_that_do_not_go_together_are_refused_plainly(tmp_path, capsys, flags):
+    ada = make_space(tmp_path / "ada", name="ada")
+    assert onboard.main([str(ada), *flags]) == 2
+    said = capsys.readouterr().out.strip()
+    assert len(said.splitlines()) == 1 and "--pause" in said and "one at a time" in said
+    assert routine.host(ada) is None
+
+
+SKILL = TEMPLATE / ".claude" / "skills" / "onboard"
+PHRASES = ("pause my routines", "resume my routines", "run my routines here")
+
+
+def test_the_three_routine_phrases_reach_the_onboard_skill():
+    description = (SKILL / "SKILL.md").read_text(encoding="utf-8").split("---")[1]
+    instruction = " ".join((TEMPLATE / "_meta" / "templates" / "personal-instruction.md").read_text(encoding="utf-8").split())
+    routing = instruction[instruction.index("The toolbox is in"):]
+    to_onboard = routing[routing.index("(sign)"):routing.index("(onboard)")]
+    for phrase in PHRASES:
+        assert f'"{phrase}"' in description and f'"{phrase}"' in to_onboard
+
+
+def test_a_second_computers_built_message_says_where_the_routines_run():
+    built = (SKILL / "messages.md").read_text(encoding="utf-8").split("## built\n")[1].split("\n## ")[0]
+    assert "routines_where" in built and "{routines_where}" in built
+
+
+def test_the_skill_turns_the_apps_tasks_off_by_a_path_in_any_slash_and_case():
+    text = " ".join((SKILL / "SKILL.md").read_text(encoding="utf-8").split())
+    section = text[text.index('"Pause my routines", "resume my routines", "run my routines here"'):]
+    section = section[:section.index("## ")]
+    assert "slash" in section and "case" in section and "another computer" in section and "enabled" in section

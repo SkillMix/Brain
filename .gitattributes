@@ -3,6 +3,8 @@ journal/**            merge=union
 log.md                merge=union
 _meta/questions.log   merge=union
 _meta/friction-log.md merge=union
+# Where the routines run: two computers' claims merged both ways read as unclear, so neither runs.
+_meta/state/routine-host.yaml merge=union
 _meta/state/*.jsonl   merge=union
 _meta/state/**/*.jsonl merge=union
 * text=auto eol=lf

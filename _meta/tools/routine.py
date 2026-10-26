@@ -5,10 +5,13 @@ routines outlive the session that set them up. The OS scheduler starts it at the
 The prompt is the rendered routine file without its frontmatter. Claude runs in the workspace
 with its permission profile plus the routine profile this tool writes for each run
 (`--settings`, see `routine_settings`); nobody is there to answer a permission prompt, so anything
-that would ask is refused and the routine goes on without it. One run at a time per workspace
-(`take_lock`): a second one writes `stopped` and leaves. Each run appends its own outcome line, with
-the tokens it really used, to `_meta/state/runs.jsonl` (`outcome`, read from what the command line
-said, never from its exit code), and a summary to `~/.spaces/logs/<routine>-<space>.log`. A run
+that would ask is refused and the routine goes on without it. One computer runs a workspace's
+routines, through one scheduler (`HOST`, `gate`): on any other a run leaves one log line and goes,
+and while the person has paused them a run writes `paused` and goes, before the lock or the history.
+One run at a time per workspace (`take_lock`): a second one writes `stopped` and leaves. Each run
+appends its own outcome line, with the tokens it really used, to `_meta/state/runs.jsonl` (`outcome`,
+read from what the command line said, never from its exit code), and a summary to
+`~/.spaces/logs/<routine>-<space>.log`. A run
 that found Claude signed out, or an app that needs a new sign-in, leaves one item on Needs you.
 
 `probe_tools` asks the command line itself what it would let a run call (its `init` event), since
@@ -139,6 +142,8 @@ PROTECTED_EDITS = ("_meta/tools/**", "_meta/migrations/**", "_meta/tests/**", "_
                    ".git/**", ".gitmodules", ".mcp.json", "rules.md", "space.yaml", "CLAUDE.md", "AGENTS.md",
                    "conftest.py", "pytest.ini", "pyproject.toml", "setup.cfg", "tox.ini")
 PROTECTED_EDITS += ("_meta/state/backfill.yaml",)   # the history's pacing and the paid hold: written only through backfill.py
+PROTECTED_EDITS += ("_meta/state/routine-host.yaml",)   # where the routines run, and their pause: only a session moves them
+PROTECTED_EDITS += ("_meta/state/onboard.yaml",)   # the OS tasks onboard registered: no routine names one to remove
 # Rooted at each space: a folder name a subject could also have.
 PROTECTED_IN_ROOT = ("identity/**",)
 PROTECTED_EDITS += ("_meta/state/routine-limits.jsonl",)   # each run's windows and tokens: written by this process alone
@@ -1394,6 +1399,169 @@ def _probe(workspace: Path, run) -> int:
     return 0 if ok else 1
 
 
+# ----- one computer, one runner: where the routines run ------------------------------------------
+# A workspace's routines run on one computer through one scheduler: its OS tasks, which start this tool (`os`),
+# or the desktop app's own scheduled tasks (`harness`). The record sits in the workspace and is synced, so every
+# computer reads it; a session writes it (`onboard.py`: the build, `--routines-here`, `--pause`, `--resume`), never
+# a routine (PROTECTED_EDITS). One line per key, the claim's four together and the pause a line apart: a merge that
+# keeps both sides of two claims leaves a key twice, which reads as no record anyone may run under (`host`); of two
+# pauses made before a sync, the later stands. Every space merges the file by union (.gitattributes, sync.MERGE_RULES).
+HOST = Path("_meta/state/routine-host.yaml")
+RUNNERS = ("os", "harness")
+CLAIM_KEYS = ("machine", "name", "runner", "since")
+MACHINE = re.compile(r"m-[0-9A-Za-z-]{1,64}")
+CONFLICT = re.compile(r"^(?:<{7}|={7}|>{7})", re.M)   # what a merge git left half done puts in a file
+UNCLEAR = "which computer runs the routines is unclear"
+HARNESS = "they run as the app's scheduled tasks"
+
+
+def this_machine() -> str:
+    """This computer as the record names it: its part of the sync branch names (`sync.hostname`)."""
+    import sync
+    return sync.hostname()
+
+
+def machine_name() -> str:
+    """This computer's own name, the one its person knows it by, for the lines that say where the routines run."""
+    import socket
+    return socket.gethostname().split(".")[0]
+
+
+def _now() -> dt.datetime:
+    return dt.datetime.now().astimezone()
+
+
+def _moment(value) -> dt.datetime | None:
+    """A moment as the record holds it (ISO; one written without a zone is this computer's own time); None for
+    anything else."""
+    if isinstance(value, str):
+        text = value.strip()
+        try:
+            value = dt.datetime.fromisoformat(text[:-1] + "+00:00" if text[-1:] in ("Z", "z") else text)
+        except ValueError:
+            return None
+    if not isinstance(value, dt.datetime):
+        return None
+    return value if value.tzinfo else value.astimezone()
+
+
+class _OneRecord(yaml.SafeLoader):
+    """YAML that refuses a key twice: what a merge that kept both sides of two records leaves. The pause alone may
+    come twice (two computers paused before either synced): the later moment stands, and one that is no moment is
+    kept, so the record reads as unclear."""
+
+
+def _keys_once(loader, node, deep=False):
+    seen, pauses = set(), []
+    for key, value in node.value:
+        name = loader.construct_object(key, deep=deep)
+        if not isinstance(name, str) or (name in seen and name != "paused_until"):
+            raise yaml.constructor.ConstructorError(None, None, "a key twice", key.start_mark)
+        seen.add(name)
+        if name == "paused_until":
+            pauses.append(loader.construct_object(value, deep=deep))
+    mapping = loader.construct_mapping(node, deep=deep)
+    if len(pauses) > 1:
+        moments = [_moment(p) for p in pauses if p is not None]
+        bad = [p for p in pauses if p is not None and _moment(p) is None]
+        mapping["paused_until"] = bad[0] if bad else (max(moments).isoformat() if moments else None)
+    return mapping
+
+
+_OneRecord.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _keys_once)
+
+
+def host(workspace) -> dict | None:
+    """Where the routines run: {"machine", "name", "runner", "since", "paused_until"} (the pause an ISO moment, or
+    None), or None when nothing is recorded. A file that is not one record (a key twice, but for the pause, of which
+    the later stands; a merge left half done, a machine or runner that is none, a pause that is no moment) is
+    {"unclear": True}: no computer runs under it."""
+    try:
+        text = (Path(workspace) / HOST).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeDecodeError):
+        return {"unclear": True}
+    try:
+        data = None if CONFLICT.search(text) else yaml.load(text, Loader=_OneRecord)
+    except yaml.YAMLError:
+        data = None
+    if not isinstance(data, dict):
+        return {"unclear": True}
+    machine, runner, name, paused = data.get("machine"), data.get("runner"), data.get("name"), data.get("paused_until")
+    until = None if paused is None else _moment(paused)
+    if not (isinstance(machine, str) and MACHINE.fullmatch(machine) and runner in RUNNERS) or (paused is not None and until is None):
+        return {"unclear": True}
+    return {"machine": machine, "name": _one_line(name, 60) if isinstance(name, str) else "", "runner": runner,
+            "since": _one_line(data.get("since"), 40), "paused_until": until.isoformat(timespec="seconds") if until else None}
+
+
+def _write_host(workspace, record: dict) -> dict:
+    """The record written whole, each value on its own line as JSON (which YAML reads as it is)."""
+    lines = ["# Where this workspace's routines run: one computer, one runner. Written by onboard.py, never by a routine."]
+    lines += [f"{key}: {json.dumps(record.get(key), ensure_ascii=False)}" for key in CLAIM_KEYS]
+    lines += ["# The pause, a line apart from the claim: a pause on one computer and a move on another merge into one.",
+              f"paused_until: {json.dumps(record.get('paused_until'))}"]
+    path = Path(workspace) / HOST
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    return host(workspace)
+
+
+def paused_until(record, now) -> dt.datetime | None:
+    """When a pause still to come at `now` ends; None when the routines are not paused then."""
+    until = _moment((record or {}).get("paused_until"))
+    now = now if now.tzinfo else now.astimezone()
+    return until if until is not None and until > now else None
+
+
+def claim_host(workspace, runner: str, now) -> dict:
+    """The routines run on this computer through `runner` ("os" or "harness") from `now` on: every other computer's
+    runs stop by themselves (`gate`). A pause still to come is kept: a move is no resume."""
+    if runner not in RUNNERS:
+        raise ValueError(f"a runner is one of {', '.join(RUNNERS)}, not {runner!r}")
+    old = host(workspace) or {}
+    keep = old.get("paused_until") if paused_until(old, now) else None
+    name = _one_line(machine_name(), 60) or "this computer"
+    return _write_host(workspace, {"machine": this_machine(), "name": name, "runner": runner,
+                                   "since": (now if now.tzinfo else now.astimezone()).isoformat(timespec="seconds"),
+                                   "paused_until": keep})
+
+
+def set_pause(workspace, until) -> dict | None:
+    """The record with its pause set to `until` (a moment; None resumes); None when there is no record to set it in."""
+    record = host(workspace)
+    if record is None or record.get("unclear"):
+        return None
+    when = _moment(until) if until is not None else None
+    return _write_host(workspace, {**record, "paused_until": when.isoformat(timespec="seconds") if when else None})
+
+
+def _held(workspace, now) -> tuple | None:
+    """("away", why) when a run must not start on this computer: another one is the host, the app's own scheduled
+    tasks run the routines, or the record is not one; ("paused", why) while paused; None to go on."""
+    record = host(workspace)
+    if record is None:
+        return None
+    if record.get("unclear"):
+        return "away", UNCLEAR
+    if record["machine"] != this_machine():
+        return "away", f"runs on {record['name'] or 'another computer'}"
+    if record["runner"] != "os":
+        return "away", HARNESS
+    until = paused_until(record, now)
+    if until is not None:
+        return "paused", f"paused until {until.astimezone():%Y-%m-%d %H:%M}"
+    return None
+
+
+def gate(workspace, now) -> str | None:
+    """Why a routine run must not start here: "runs on <name>" (another computer is the host), "paused until <time>",
+    the app's own scheduled tasks run them, or which computer does is unclear. None to go on. `main` asks it first."""
+    held = _held(workspace, now)
+    return held[1] if held else None
+
+
 # ----- one routine run --------------------------------------------------------------------------
 NO_CLAUDE = "Claude Code's command line is not installed on this machine"
 BUSY = "another run is busy"
@@ -1496,6 +1664,14 @@ def main(argv=None, run=subprocess.run) -> int:
     name = spaceyaml.load(workspace).name
     log = Path.home() / ".spaces" / "logs" / f"{prompt.stem}-{name}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
+    now = _now()
+    held = _held(workspace, now)   # before the lock and the history: one computer, one runner, and the pause
+    if held:
+        with log.open("a", encoding="utf-8") as fh:
+            fh.write(f"{now.isoformat(timespec='seconds')} {prompt.stem} not run: {held[1]}\n")
+        if held[0] == "paused":   # another computer's runs leave no line: that computer's own is the one that counts
+            write_outcome(workspace, prompt.stem, {**_stopped(held[1]), "outcome": "paused"}, now)
+        return 0
     part, why = next_part(workspace, prompt.stem)
     if meta.get("only_while") == "backfill" and part is None:   # a run would spend its first tokens to find that out
         with log.open("a", encoding="utf-8") as fh:

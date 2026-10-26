@@ -3,6 +3,7 @@
     python _meta/tools/onboard.py [root] [--answers FILE] [--brain URL|PATH] [--seed PATH]
                                   [--offline] [--org ORG] [--home DIR]
                                   [--user-instructions PATH] [--check] [--fixture DIR] [--dry-run]
+    python _meta/tools/onboard.py <workspace> --routines-here | --pause [--until ISO] | --resume
 
 Cases: no brain in reach, a company (this repository becomes the brain and the top
 owner's workspace is created); a brain in reach, a person (this repository becomes their
@@ -16,6 +17,10 @@ SPACES_TASK_PREFIX=space-test-<id>- so that its tasks, and only those, carry tha
 runs through the scheduler of the system that catches up after sleep: the Task Scheduler on Windows, a
 launch agent (`com.spaces.<task>`) on macOS, a systemd user timer on a Linux that has one, else cron,
 which does not catch up and says so.
+
+A workspace's routines run on one computer through one scheduler (`routine.HOST`): the build registers
+them only where nothing else runs them, `--routines-here` moves them to this computer once the probe
+passed there, and `--pause` (until 06:00 the next morning, or `--until`) and `--resume` hold them.
 """
 from __future__ import annotations
 
@@ -1398,23 +1403,75 @@ def register_sync(report, root, name, minutes, offline, dry_run) -> dict:
 
 
 ROUTINE_PROMPTS = Path("_meta") / "state" / "routines"
+ELSEWHERE_STEP = "routines on this computer"   # begins "routine": the progress page files it under Routines
+ELSEWHERE = "Your routines run on {name}; say 'run my routines here' to move them"
+IN_THE_APP = ("Your routines run as scheduled tasks in the Claude app, so this computer's scheduler runs none of them; "
+              "say 'run my routines here' to move them to it")
+UNCLEAR_HOST = ("Which computer runs your routines is unclear, so none of them runs; say 'run my routines here' on the "
+                "computer that should run them")
 
 
-def register_routines(report, workspace, offline=False, dry_run=False) -> list:
+def _onboard_state(workspace) -> dict:
+    """onboard.yaml as a mapping; {} when there is none or it cannot be read."""
+    try:
+        state = read_yaml(Path(workspace) / "_meta" / "state" / "onboard.yaml", {})
+    except (OSError, yaml.YAMLError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def _harness_checks(workspace) -> list:
+    rows = _onboard_state(workspace).get("routine_checks")
+    return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+
+def routines_elsewhere(workspace) -> Step | None:
+    """Why this computer's scheduler runs none of the routines, as a step under Routines that fails nothing: another
+    computer runs them, the app's own scheduled tasks do (so recorded, or read back as `routine_checks` while nothing
+    is recorded), or which computer does is unclear (`routine.host`). None when they run here, or nothing says where."""
+    import routine
+    record = routine.host(workspace)
+    check = f"cat {(Path(workspace) / routine.HOST).as_posix()}"
+    if record is None:
+        return Step(ELSEWHERE_STEP, True, check, IN_THE_APP) if _harness_checks(workspace) else None
+    if record.get("unclear"):
+        return Step(ELSEWHERE_STEP, True, check, UNCLEAR_HOST)
+    if record["machine"] != routine.this_machine():
+        return Step(ELSEWHERE_STEP, True, check, ELSEWHERE.format(name=record["name"] or "another computer"))
+    return Step(ELSEWHERE_STEP, True, check, IN_THE_APP) if record["runner"] != "os" else None
+
+
+def _no_claude(report) -> bool:
+    """Whether this machine lacks the `claude` command the OS tasks would start (the desktop app alone installs
+    none); a failed step says so."""
+    import routine
+    if routine.find_claude() is not None:
+        return False
+    report.add("routines as OS tasks", False, "claude --version",
+               "no `claude` command on this machine, so OS tasks would never run: schedule the "
+               "routines with the app's own scheduled tasks if they persist, and record them "
+               "with --routines-scheduled")
+    return True
+
+
+def register_routines(report, workspace, offline=False, dry_run=False, here=False) -> list:
     """The routines' schedule that outlives the session: each routine rendered under
     `_meta/state/routines/` becomes an OS task that runs `routine.py <prompt>` at the routine's
-    times, which hands the prompt to `claude -p`. Recorded as `routine_tasks` for `--check`."""
+    times, which hands the prompt to `claude -p`. Recorded as `routine_tasks` for `--check`.
+    One computer runs them, through one scheduler: where another computer or the app's own scheduled
+    tasks run them, nothing is registered and one step says where (`routines_elsewhere`); with nothing
+    recorded, this computer claims them once their tasks are registered (`routine.claim_host`). `here`
+    (`--routines-here`) registers them whatever is recorded and claims nothing: the routines move only
+    once the probe has passed."""
     workspace = Path(workspace).resolve()
     name = spaceyaml.load(workspace).name
     records = []
-    if not offline:
-        import routine
-        if routine.find_claude() is None:   # the desktop app alone installs no `claude` command
-            report.add("routines as OS tasks", False, "claude --version",
-                       "no `claude` command on this machine, so OS tasks would never run: schedule the "
-                       "routines with the app's own scheduled tasks if they persist, and record them "
-                       "with --routines-scheduled")
-            return records
+    elsewhere = None if here else routines_elsewhere(workspace)
+    if elsewhere is not None:
+        report.add(elsewhere.name, elsewhere.done, elsewhere.check, elsewhere.result)
+        return records
+    if not offline and _no_claude(report):
+        return records
     for prompt in sorted((workspace / "_meta" / "state" / "routines").glob("*.md")):
         meta = yaml.safe_load(prompt.read_text(encoding="utf-8").split("---")[1]) or {}
         routine, schedule = meta.get("name") or prompt.stem, str(meta.get("schedule") or "")
@@ -1435,7 +1492,148 @@ def register_routines(report, workspace, offline=False, dry_run=False) -> list:
         state = read_yaml(path, {}) or {}
         state["routine_tasks"] = records
         write_yaml(path, state)
+        import routine
+        if not here and routine.host(workspace) is None:
+            routine.claim_host(workspace, "os", dt.datetime.now().astimezone())
     return records
+
+
+def _task_file(check: str) -> str:
+    """The file a harness task's read-back names (`test -f <path>`, `grep -c '<text>' <path>`), else the read-back."""
+    words = check.split(None, 2)
+    if len(words) == 3 and words[0] == "test" and words[1] in ("-s", "-f", "-d"):
+        return words[2].strip("'\"")
+    grep = re.match(r"grep -c '[^']+' (.+)$", check)
+    return grep.group(1).strip().strip("'\"") if grep else check
+
+
+def routines_here(report, workspace) -> list:
+    """`--routines-here`: the routines move to this computer's scheduler, in an order that leaves the old runner as
+    it is until this one is proved. The probe runs first, through its own one-shot task, twice, as the build proves
+    the routines (`start.prove_routines`): a probe that fails registers nothing and changes no record. Then this
+    computer's OS tasks are registered; a registration that fails takes back what it did (`_take_back`). Only then is
+    this computer the host (`routine.claim_host`, `os`), when every other computer's runs stop by themselves, and the
+    app's scheduled tasks the routines ran as are no longer read back (`routine_checks` goes). Returns those tasks to
+    turn off (the file each read-back named), else []."""
+    import routine
+    import start
+    workspace = Path(workspace).resolve()
+    if not any((workspace / ROUTINE_PROMPTS).glob("*.md")) or _no_claude(report):
+        return []
+    if not start.prove_routines(report, workspace).get("ok"):
+        return []
+    before, failed = _onboard_state(workspace), len(report.failed())
+    harness = _harness_checks(workspace)
+    records = register_routines(report, workspace, here=True)
+    if not records or len(report.failed()) > failed:
+        _take_back(report, workspace, records, before)
+        return []
+    record = routine.claim_host(workspace, "os", dt.datetime.now().astimezone())
+    state = _onboard_state(workspace)
+    if state.pop("routine_checks", None) is not None:
+        write_yaml(workspace / "_meta" / "state" / "onboard.yaml", state)
+    report.add(ELSEWHERE_STEP, True, f"cat {(workspace / routine.HOST).as_posix()}",
+               f"your routines run on {record['name']} from now on")
+    return list(dict.fromkeys(_task_file(str(r.get("check") or "")) for r in harness if r.get("check")))
+
+
+def _take_back(report, workspace: Path, records: list, before: dict) -> None:
+    """A move whose registration failed after the probe passed: the tasks it registered on this computer are removed
+    again (not when this computer already ran the routines through them), and the task records it replaced come back,
+    so the old runner and its records stay as they were."""
+    import offboard
+    import routine
+    record = routine.host(workspace) or {}
+    if not (record.get("machine") == routine.this_machine() and record.get("runner") == "os"):
+        for task in records:
+            if isinstance(task, dict) and task.get("name"):
+                offboard.remove_sync_task(report, workspace, {"routine_tasks": [task]}, task["name"], False,
+                                          label=f"routine task {task['name']} taken back")
+    state = _onboard_state(workspace)
+    if "routine_tasks" in before:
+        state["routine_tasks"] = before["routine_tasks"]
+    else:
+        state.pop("routine_tasks", None)
+    write_yaml(workspace / "_meta" / "state" / "onboard.yaml", state)
+
+
+PAUSE_HOUR = 6   # a pause without an end lasts until this hour the next morning
+PAUSE_ELSEWHERE = ("None of your routines' tasks is on this computer, so nothing was paused. Say 'pause my routines' "
+                   "on the computer that runs them.")
+
+
+def _runs_here(workspace) -> str | None:
+    """Which scheduler of this computer holds the routines, read back now: "os" when every recorded routine task
+    reads back here, "harness" when every recorded read-back of the app's own tasks passes here, else None."""
+    state = _onboard_state(workspace)
+    tasks = [t for t in state.get("routine_tasks") or [] if isinstance(t, dict) and t.get("check")]
+    try:
+        if tasks and all(task_step(f"routine task {t.get('name')}", t).done for t in tasks):
+            return "os"
+    except (IndexError, KeyError, TypeError, OSError):   # a record a merge changed is one that does not read back
+        pass
+    checks = _harness_checks(workspace)
+    if checks and all(readback(str(r.get("check") or "")) is True for r in checks):
+        return "harness"
+    return None
+
+
+def pause_end(until: str | None, now: dt.datetime) -> dt.datetime:
+    """When a pause ends: `until` (ISO; a time without a zone is this computer's own, a date alone that day at
+    PAUSE_HOUR), else PAUSE_HOUR the next morning. ValueError, in plain words, for what is no moment or has passed."""
+    now = now.astimezone()
+    if until is None:
+        end = dt.datetime.combine(now.date(), dt.time(PAUSE_HOUR)).astimezone()
+        return end if end > now else dt.datetime.combine(now.date() + dt.timedelta(days=1), dt.time(PAUSE_HOUR)).astimezone()
+    text = str(until).strip()
+    try:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+            end = dt.datetime.combine(dt.date.fromisoformat(text), dt.time(PAUSE_HOUR))
+        else:
+            end = dt.datetime.fromisoformat(text[:-1] + "+00:00" if text[-1:] in ("Z", "z") else text)
+    except ValueError:
+        raise ValueError(f'"{text[:40]}" is not a date or a time: give one like 2026-11-02 or 2026-11-02T09:00') from None
+    end = end if end.tzinfo else end.astimezone()
+    if end <= now:
+        raise ValueError("that time has passed: give one still to come")
+    return end
+
+
+def pause_routines(workspace, until: str | None = None, now=None, resume: bool = False) -> tuple:
+    """`--pause` and `--resume`: (done, what to say). A pause sets the record's `paused_until` (`pause_end`), which
+    every computer's runs read before they start; resuming clears it. With nothing recorded yet, this computer is
+    recorded as the one that runs them first, as the build would record it, but only when their tasks read back here
+    (`_runs_here`); else nothing is paused and the line says to pause them where they run. A record that is not one
+    is not touched."""
+    import onboarding_page
+    import routine
+    workspace = Path(workspace).resolve()
+    now = (now or dt.datetime.now()).astimezone()
+    record = routine.host(workspace)
+    if record is not None and record.get("unclear"):
+        return False, UNCLEAR_HOST
+    if resume:
+        if record is None or routine.paused_until(record, now) is None:
+            return True, "Your routines are not paused."
+        routine.set_pause(workspace, None)
+        return True, "Your routines run again from their next time."
+    try:
+        end = pause_end(until, now)
+    except ValueError as exc:
+        return False, str(exc)
+    if record is None:   # nothing says where they run: here only when their tasks read back on this computer
+        runner = _runs_here(workspace)
+        if runner is None:
+            return False, PAUSE_ELSEWHERE
+        record = routine.claim_host(workspace, runner, now)
+    routine.set_pause(workspace, end)
+    said = f"Your routines are paused until {onboarding_page.words(end, now)}, the history's reading with them."
+    if record["machine"] != routine.this_machine():
+        said += f" {record['name'] or 'The other computer'} hears of it at its next sync."
+    if record["runner"] != "os":
+        said += (" They run as scheduled tasks in the Claude app, which this pause does not stop; say 'run my routines "
+                 "here' first.")
+    return True, said
 
 
 def record_routine_checks(report, workspace, checks) -> list:
@@ -2066,12 +2264,16 @@ def prune_offboarded(root) -> list:
 def check(root) -> list:
     """Re-run only the read-back checks, the doctor's included (read only); print nothing here.
     Two writes: an onboarding root forgets spaces that were offboarded (`prune_offboarded`), and a probe
-    task a build left behind is removed (`offboard.remove_probe_task`), with its step."""
+    task a build left behind is removed (`offboard.remove_probe_task`), with its step; not while a setup
+    holds this computer's start lock, since its probe task is then the one it is running. Routines that
+    another computer runs are one row that says so: its tasks are not this computer's to read back."""
+    import onboarding_page
+    import routine
     root = Path(root).resolve()
     prune_offboarded(root)
     state = read_yaml(root / "_meta" / "state" / "onboard.yaml", {}) or {}
     steps = []
-    if state.get("probe_task"):
+    if state.get("probe_task") and not onboarding_page.setup_running():
         import offboard
         removed = Report(case="check")
         offboard.remove_probe_task(removed, root, state)
@@ -2095,11 +2297,15 @@ def check(root) -> list:
                           "cat _meta/state/sync-task.txt", "offline: recorded, not registered"))
     elif task.get("check"):
         steps.append(task_step("sync task", task))
-    scheduled = routine_schedule(root)
-    if not scheduled and not state.get("offline") and any((root / ROUTINE_PROMPTS).glob("*.md")):
-        scheduled = [unscheduled_step(root)]   # rendered is not scheduled: done only once it reads back
-    steps.extend(scheduled)
-    steps.extend(routine_run_step(t["name"], t.get("log")) for t in state.get("routine_tasks") or [] if t.get("name"))
+    record = routine.host(root)
+    if record and not record.get("unclear") and record["machine"] != routine.this_machine():
+        steps.append(routines_elsewhere(root))
+    else:
+        scheduled = routine_schedule(root)
+        if not scheduled and not state.get("offline") and any((root / ROUTINE_PROMPTS).glob("*.md")):
+            scheduled = [unscheduled_step(root)]   # rendered is not scheduled: done only once it reads back
+        steps.extend(scheduled)
+        steps.extend(routine_run_step(t["name"], t.get("log")) for t in state.get("routine_tasks") or [] if t.get("name"))
     if state and not state.get("offline"):
         # this machine's prerequisites, read only: what broke since onboarding is named with its fix
         for r in doctor.diagnose(doctor.Machine(run=run_cmd, reach=lambda: True), fix=False,
@@ -2589,7 +2795,27 @@ def main(argv=None) -> int:
     ap.add_argument("--routines-scheduled", nargs="+", metavar="CHECK",
                     help="the harness's own scheduled tasks hold the routines and persist: one read-back per "
                          "routine (test -f <path>, grep -c '<text>' <path>, or a gh command)")
+    ap.add_argument("--routines-here", action="store_true", dest="routines_here",
+                    help="run this workspace's routines on this computer: its OS tasks, proved by the probe; then "
+                         "every other computer's stop, and the app's scheduled tasks to turn off are printed")
+    ap.add_argument("--pause", action="store_true", help="pause the routines, on every computer, until --until "
+                    "(default 06:00 the next morning)")
+    ap.add_argument("--until", metavar="ISO", help="with --pause: a date (06:00 that day) or a time, this computer's "
+                    "own when it names no zone")
+    ap.add_argument("--resume", action="store_true", help="end a pause of the routines")
     args = ap.parse_args(argv)
+    if (args.until and not args.pause) or sum(map(bool, (args.pause, args.resume, args.routines_here))) > 1:
+        print("onboard: --until goes with --pause only, and --pause, --resume and --routines-here are given one at a time")
+        return 2
+    if args.pause or args.resume:   # they register no task
+        done, said = pause_routines(Path(args.root), until=args.until, resume=args.resume)
+        print(said)
+        import onboarding_page   # the progress page shows the pause at once, not at the next sync
+        try:
+            onboarding_page.refresh(Path(args.root).resolve())
+        except OSError:
+            pass
+        return 0 if done else 1
     if not (args.check or args.connect or args.invite or args.routines_scheduled):   # the others register no task
         try:
             task_prefix()
@@ -2619,6 +2845,18 @@ def main(argv=None) -> int:
         register_sync(report, root, spaceyaml.load(root).name, 15, args.offline, args.dry_run)
         print_steps(report.steps)
         return 1 if report.failed() else 0
+    if args.routines_here:
+        report = Report(case="routines")
+        to_turn_off = routines_here(report, root)
+        print_steps(report.steps or [Step("routines", False, "ls _meta/state/routines", "none rendered yet: run start.py")])
+        for task in to_turn_off:   # the app's own scheduled tasks that still run them: the agent turns each off
+            print(f"turn off: {task}")
+        import onboarding_page
+        try:
+            onboarding_page.refresh(root)
+        except OSError:
+            pass
+        return 1 if report.failed() or not report.steps else 0
     if args.os_routines or args.routines_scheduled:
         report = Report(case="routines")
         if args.os_routines:

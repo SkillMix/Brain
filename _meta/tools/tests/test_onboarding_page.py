@@ -905,3 +905,91 @@ def test_a_stop_whose_reset_passed_days_ago_shows_the_day_of_that_reset(tmp_path
     said = next(r["text"] for r in rows_of(tmp_path, "waiting", setup) if r["label"] == "Stopped")
     assert said == ("Your history reading stopped at your Claude limit on 20 October. It should have reset on 20 October at 18:20, "
                     "so it starts again at its next time.")
+
+
+# ----- one computer, one runner, and a pause (Task 14) ------------------------------------------------
+import routine   # noqa: E402
+
+
+def hosted(ws, machine="m-desktop", name="ADA-DESKTOP", monkeypatch=None, here=None) -> None:
+    """The record of where Ada's routines run: on `machine` (called `name`); this computer is `here`."""
+    monkeypatch.setattr(routine, "this_machine", lambda: machine)
+    monkeypatch.setattr(routine, "machine_name", lambda: name)
+    routine.claim_host(ws, "os", NOW - dt.timedelta(days=3))
+    monkeypatch.setattr(routine, "this_machine", lambda: here or machine)
+
+
+def test_a_pause_shows_its_clock_time_and_no_routine_is_called_not_started_meanwhile(tmp_path, monkeypatch):
+    def setup(ws, journal):
+        hosted(ws, monkeypatch=monkeypatch)
+        routine.set_pause(ws, "2026-10-25T06:00:00+02:00")
+        stale(ws, "daily not started")   # a paused briefing does not start: that is the pause, not the scheduler
+    texts = [r["text"] for r in rows_of(tmp_path, "waiting", setup)]
+    assert "Routines paused until tomorrow at 06:00. Say 'resume my routines' to start them sooner." in texts
+    assert not any("not started" in t or "Schedule my routines" in t for t in texts)
+    over = [r["text"] for r in rows_of(tmp_path / "later", "waiting", setup, now=NOW + dt.timedelta(days=1))]
+    assert not any(t.startswith("Routines paused") for t in over)   # a pause that ended is no line
+
+
+def test_routines_another_computer_stopped_running_are_offered_here(tmp_path, monkeypatch):
+    def setup(ws, journal):
+        hosted(ws, monkeypatch=monkeypatch, here="m-laptop")
+        stale(ws, "daily not started", since="2026-10-22T06:30:00+02:00")   # on the clock it was written for
+        stale(ws, "sweep_chain not started", since="2026-10-23T07:00:00+02:00")
+    texts = [r["text"] for r in rows_of(tmp_path, "waiting", setup)]
+    assert texts.count("Your routines haven't run on ADA-DESKTOP since 22 October; say 'run my routines here' to run "
+                       "them on this computer.") == 1
+    assert not any("Schedule my routines" in t for t in texts)   # this computer's scheduler is not the one that stopped
+    assert not any(t.startswith("Your routines run on") for t in texts)   # one line on the other computer, not two
+    quiet = [r["text"] for r in rows_of(tmp_path / "quiet", "waiting", lambda ws, j: hosted(ws, monkeypatch=monkeypatch, here="m-laptop"))]
+    assert quiet == ["Your routines run on ADA-DESKTOP. Say 'run my routines here' to run them on this computer."]
+
+
+def test_on_the_computer_that_runs_them_a_routine_not_started_is_still_this_schedulers(tmp_path, monkeypatch):
+    def setup(ws, journal):
+        hosted(ws, monkeypatch=monkeypatch)
+        stale(ws, "daily not started")
+    texts = [r["text"] for r in rows_of(tmp_path, "waiting", setup)]
+    assert any("morning briefing has not started" in t and "Schedule my routines" in t for t in texts)
+
+
+def test_a_record_of_where_the_routines_run_that_is_not_one_is_said_plainly(tmp_path):
+    def setup(ws, journal):
+        (ws / routine.HOST).write_text('machine: "m-a"\nmachine: "m-b"\nrunner: "os"\n', encoding="utf-8")
+        stale(ws, "daily not started")
+    texts = [r["text"] for r in rows_of(tmp_path, "waiting", setup)]
+    assert page.HOST_UNCLEAR in texts and not any("not started" in t for t in texts)
+
+
+def test_the_computers_name_is_escaped_on_the_page(tmp_path, monkeypatch):
+    ws, journal = lantern_works_after_part_1(tmp_path)
+    hosted(ws, name='<img src=x onerror="alert(1)">', monkeypatch=monkeypatch, here="m-laptop")
+    stale(ws, "daily not started")
+    html = page.render_workspace(ws, journal, NOW)
+    assert "<img src=x" not in html and "&lt;img src=x onerror=&quot;alert(1)&quot;&gt;" in html
+
+
+def test_a_paused_run_is_neither_a_stop_nor_a_part_that_failed(tmp_path, monkeypatch):
+    def setup(ws, journal):
+        hosted(ws, monkeypatch=monkeypatch)
+        routine.set_pause(ws, "2026-10-25T06:00:00+02:00")
+        run_line(ws, "backfill-night", "2026-10-24T11:30:00Z", outcome="paused", why="paused until 2026-10-25 06:00",
+                 resets_at=None, usage={})
+        run_line(ws, "sweep-chain", "2026-10-24T11:40:00Z", outcome="paused", why="paused until 2026-10-25 06:00",
+                 resets_at=None, usage={})
+    ws, journal = lantern_works_after_part_1(tmp_path)
+    setup(ws, journal)
+    got = page.sections(ws, journal, NOW)
+    assert not any(r["label"] == "Stopped" for r in got["waiting"])
+    parts = by_label(got["history"])
+    assert parts["Part 2"].startswith("Waiting its turn.") and parts["Part 3"].startswith("Waiting its turn.")
+
+
+def test_where_the_routines_run_that_cannot_be_read_is_a_plain_row(tmp_path, monkeypatch):
+    def broken(ws):
+        raise RuntimeError("the record could not be read")
+    monkeypatch.setattr(routine, "host", broken)
+    rows = rows_of(tmp_path, "waiting", lambda ws, journal: None)
+    assert {"label": "Could not read", "text": "Where your routines run could not be read this time. It is tried again "
+                                               "at the next sync."} in rows
+

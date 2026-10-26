@@ -657,3 +657,72 @@ def test_a_page_that_cannot_be_written_is_one_plain_line_and_the_sync_goes_on(re
     out = capsys.readouterr().out
     assert out.count("the progress page could not be updated") == 1
     assert "work/old.md" in head_files(repo) and not (repo / ".git" / "sync.lock").exists()
+
+
+# ----- one computer runs the routines: two claims made before a sync (Task 14) ----------------------
+from conftest import NOW   # noqa: E402
+
+TEMPLATE = Path(sync.__file__).resolve().parents[2]
+template_only = pytest.mark.skipif(not (TEMPLATE / ".github" / "template-marker").exists(),
+                                   reason="reads the template's own .gitattributes")
+
+
+def claimed(clone: Path, machine: str, name: str, monkeypatch) -> None:
+    """`clone`'s computer records itself as the one that runs the routines, and an earlier sync committed it."""
+    import routine
+    monkeypatch.setattr(routine, "this_machine", lambda: machine)
+    monkeypatch.setattr(routine, "machine_name", lambda: name)
+    routine.claim_host(clone, "os", NOW)
+    git(clone, "add", "-A")
+    git(clone, "commit", "-q", "-m", f"routines on {name}")
+
+
+def test_two_claims_made_before_a_sync_leave_nobody_running_and_nothing_stuck(repo, tmp_path, monkeypatch):
+    import onboarding_page
+    import routine
+    other = tmp_path / "other"
+    git(tmp_path, "clone", "-q", str(tmp_path / "origin.git"), str(other))
+    for key, value in (("user.name", "t"), ("user.email", "t@example.test"), ("commit.gpgsign", "false")):
+        git(other, "config", key, value)
+    claimed(other, "m-laptop", "LAPTOP", monkeypatch)
+    git(other, "push", "-q", "origin", "main")   # the laptop's claim landed first
+    claimed(repo, "m-desktop", "DESK", monkeypatch)   # the desktop claimed before it heard of it
+    assert run(repo) == 0
+    assert not (repo / ".git" / "MERGE_HEAD").exists()
+    assert not any(line["notes"].get("conflict") for line in run_lines(repo))   # the sync goes on: nothing is wedged
+    git(repo, "push", "-q", "origin", "main")   # the desktop's merge lands, as its pull request would
+    assert run(other) == 0 and not any(line["notes"].get("conflict") for line in run_lines(other))
+    for clone, machine in ((repo, "m-desktop"), (other, "m-laptop")):
+        monkeypatch.setattr(routine, "this_machine", lambda m=machine: m)
+        assert routine.host(clone) == {"unclear": True}
+        assert routine.gate(clone, NOW) == routine.UNCLEAR   # neither computer runs a routine: never two
+        texts = [r["text"] for r in onboarding_page.sections(clone, {}, NOW)["waiting"]]
+        assert onboarding_page.HOST_UNCLEAR in texts
+    claimed(repo, "m-desktop", "DESK", monkeypatch)   # "run my routines here" writes the record whole
+    assert run(repo) == 0 and routine.host(repo)["machine"] == "m-desktop"
+
+
+def test_the_record_merge_rule_is_written_into_the_spaces_own_git_once(repo):
+    attributes = repo / ".git" / "info" / "attributes"
+    attributes.parent.mkdir(parents=True, exist_ok=True)
+    attributes.write_text("*.bin binary", encoding="utf-8")   # a rule of the person's own, with no newline at its end
+    assert run(repo, "--dry-run") == 0 and attributes.read_text(encoding="utf-8") == "*.bin binary"
+    assert run(repo) == 0 and run(repo) == 0
+    assert attributes.read_text(encoding="utf-8") == "*.bin binary\n_meta/state/routine-host.yaml merge=union\n"
+
+
+def test_an_attributes_file_that_is_not_utf8_still_gets_the_rule_and_the_sync_runs(repo):
+    """A byte the person's own attributes file can't decode never stops the sync: the rule is appended all the same."""
+    attributes = repo / ".git" / "info" / "attributes"
+    attributes.parent.mkdir(parents=True, exist_ok=True)
+    own = b"*.bin binary # caf\xe9\n"   # Latin-1, not UTF-8
+    attributes.write_bytes(own)
+    assert run(repo) == 0
+    assert attributes.read_bytes() == own + b"_meta/state/routine-host.yaml merge=union\n"
+
+@template_only
+def test_the_template_merges_the_routine_record_and_the_friction_log_by_union():
+    rules = (TEMPLATE / ".gitattributes").read_text(encoding="utf-8").splitlines()
+    for path in ("_meta/state/routine-host.yaml", "_meta/friction-log.md"):
+        assert any(line.split() == [path, "merge=union"] for line in rules)
+    assert sync.MERGE_RULES == ("_meta/state/routine-host.yaml merge=union",)

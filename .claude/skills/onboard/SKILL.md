@@ -1,6 +1,6 @@
 ---
 name: onboard
-description: One sentence sets a person or a company up - "onboard me", "set me up", "get started", "join <company>", "set up our company brain", an invitation sentence ("Onboard me to X - <link> with my invitation <brain>:<slug>"), "invite <colleague>", "schedule my routines", "change the plan", "start reading my history", "skip <app>", "is this set up?", or any sentence while a setup is partway (~/.spaces/setup.yaml holds a phase not done; a history marked in_background counts as done, since the routines read it from there). A guided conversation over start.py's phases (signins, apps, research, build, history, resume), one message per milestone; onboard.py --invite or --check for the rest. The agent does every step but the sign-ins only the person can give.
+description: One sentence sets a person or a company up - "onboard me", "set me up", "get started", "join <company>", "set up our company brain", an invitation sentence ("Onboard me to X - <link> with my invitation <brain>:<slug>"), "invite <colleague>", "schedule my routines", "pause my routines", "resume my routines", "run my routines here", "change the plan", "start reading my history", "skip <app>", "is this set up?", or any sentence while a setup is partway (~/.spaces/setup.yaml holds a phase not done; a history marked in_background counts as done, since the routines read it from there). A guided conversation over start.py's phases (signins, apps, research, build, history, resume), one message per milestone; onboard.py --invite or --check for the rest. The agent does every step but the sign-ins only the person can give.
 ---
 
 # onboard: one sentence, then a guided conversation
@@ -274,6 +274,31 @@ The build schedules them itself, with this computer's scheduler, and proves them
 shows "routines scheduled" failing when one is missing; then run `start.py build --json` again:
 it changes nothing that is right and registers what is missing. The next day's run lines in
 `_meta/state/runs.jsonl` carry `sweep-chain` and `daily-chain`.
+
+## "Pause my routines", "resume my routines", "run my routines here"
+
+One computer runs a workspace's routines, through one scheduler. Every computer reads which one, and a
+routine started on any other leaves by itself.
+- **Pause my routines** (optionally "until <date>"):
+  `python <workspace>/_meta/tools/onboard.py <workspace> --pause`, with `--until <YYYY-MM-DD or YYYY-MM-DDTHH:MM>`
+  when the person names an end (a date alone means 06:00 that day; a time without a zone is this computer's
+  own). Without one the pause lasts until 06:00 the next morning. Say the one line it prints. The history's
+  parts pause with the routines; a run that falls in the pause is skipped, not made up later. When the line
+  says the app's scheduled tasks run them, offer "run my routines here". When it says none of the routines'
+  tasks is on this computer, say that line: the pause is made on the computer that runs them.
+- **Resume my routines**: `onboard.py <workspace> --resume`; say the line it prints.
+- **Run my routines here**: run `onboard.py <workspace> --routines-here` in the background (or with the
+  10-minute command timeout) and read its output when it ends: it proves the routines twice through this
+  computer's scheduler, about eight minutes, and only then registers them there. A failing row: say its fix in
+  one line; the routines keep running where they ran. When it passes, the other computer stops on its own, and
+  each `turn off: <path>` line names one of the app's scheduled tasks that still runs a routine: load
+  `mcp__scheduled-tasks__list_scheduled_tasks` and `mcp__scheduled-tasks__update_scheduled_task` with tool
+  search, find the task whose `path` is that path, comparing them without regard to slash direction (`\` or
+  `/`) or letter case, and call `update_scheduled_task` with `{"taskId": <its taskId>, "enabled": false}`. Turn
+  it off; never delete it. When no listed task has that path, the app's tasks may be on another computer: say
+  so, and that they are turned off in the app's Scheduled tab there. When the tool is absent or refuses, give
+  the person the click path once (the app's Scheduled tab, the task, its switch) and say that until then both
+  run.
 
 ## "Is this set up?"
 

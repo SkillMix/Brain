@@ -181,6 +181,11 @@ this computer's scheduler catches up after sleep (the skill says how to tell).
 >
 > Your briefing goes from your own mailbox to you alone: your routines can't mail anyone else.
 
+When the answer has `routines_where` (another computer, or the app's own scheduled tasks, runs the
+routines, so nothing was tested here), the **Every day** line is instead:
+
+> - **Every day**: {routines_where}.
+
 When the person's Needs-you list holds the item on who in the organisation can read their
 repositories (its `id` is onboard-org-members), the workspace line is instead, with that item's
 `text`:

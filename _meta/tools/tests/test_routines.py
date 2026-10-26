@@ -2635,3 +2635,297 @@ def test_a_probe_that_found_a_routine_running_says_so_in_plain_words(tmp_path, m
     monkeypatch.setattr(onboard, "run_now", busy)
     result = start.phase_build(given)
     assert result["state"] == "failed" and result["why"] == start.PROBE_BUSY
+
+
+# ----- one computer, one runner, and a pause (Task 14) ------------------------------------------------
+import onboarding_page   # noqa: E402
+from conftest import NOW   # noqa: E402
+
+
+def nothing_outside(monkeypatch):
+    """claude is installed and no scheduler is asked anything: a test that would reach one fails."""
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")
+    monkeypatch.setattr(onboard, "run_cmd", lambda *a, **k: (_ for _ in ()).throw(AssertionError(a)))
+
+
+def on(monkeypatch, machine: str) -> None:
+    monkeypatch.setattr(routine, "this_machine", lambda: machine)
+
+
+def test_a_second_computer_syncs_but_schedules_no_routines(tmp_path, monkeypatch):
+    ws = workspace(tmp_path)
+    monkeypatch.setattr(routine, "this_machine", lambda: "m-desktop")
+    routine.claim_host(ws, "os", NOW)
+    monkeypatch.setattr(routine, "this_machine", lambda: "m-laptop")
+    nothing_outside(monkeypatch)
+    monkeypatch.setattr(onboard, "register_task", lambda *a, **k: (_ for _ in ()).throw(AssertionError(a)))
+    report = onboard.Report(case="test")
+    assert onboard.register_routines(report, ws) == []
+    assert "run my routines here" in report.steps[-1].result
+    assert report.steps[-1].name.startswith("routine") and report.steps[-1].done   # filed under Routines, failing nothing
+    assert routine.host(ws)["machine"] == "m-desktop"   # the laptop took nothing
+
+
+def test_a_run_on_a_machine_that_is_not_the_host_never_calls_claude(tmp_path, monkeypatch):
+    ws = workspace(tmp_path)
+    monkeypatch.setattr(routine, "this_machine", lambda: "m-desktop"); routine.claim_host(ws, "os", NOW)
+    monkeypatch.setattr(routine, "this_machine", lambda: "m-laptop")
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")
+    called = []
+    assert routine.main([str(ws / "_meta/state/routines/sweep-chain.md")], run=lambda *a, **k: called.append(a)) == 0
+    assert called == [] and not (ws / "_meta/state/runs.jsonl").exists()
+    log = (Path.home() / ".spaces" / "logs" / "sweep-chain-ada.log").read_text(encoding="utf-8")
+    assert len(log.strip().splitlines()) == 1 and "runs on" in log   # one log line, no run line
+    assert routine.locked(ws) is None
+
+
+def test_routines_here_moves_the_host_and_the_old_machine_stops_on_its_own(tmp_path, monkeypatch):
+    ws = workspace(tmp_path)
+    monkeypatch.setattr(routine, "this_machine", lambda: "m-desktop"); routine.claim_host(ws, "os", NOW)
+    monkeypatch.setattr(routine, "this_machine", lambda: "m-laptop")
+    nothing_outside(monkeypatch)
+    seen = probing(monkeypatch, PASSED, PASSED)
+    assert onboard.main([str(ws), "--routines-here"]) == 0
+    assert seen["events"].count("start") == 2   # the probe ran twice, as the build runs it
+    names = [task for task, _, _ in seen["registered"]]
+    assert "probe" in names[0] and len(names) == 4 and not any("probe" in n for n in names[1:])   # proved, then registered
+    assert routine.host(ws)["machine"] == "m-laptop"
+    monkeypatch.setattr(routine, "this_machine", lambda: "m-desktop")
+    assert routine.gate(ws, NOW).startswith("runs on")
+
+
+def test_an_install_on_desktop_scheduled_tasks_is_not_scheduled_twice(tmp_path, monkeypatch):
+    ws = workspace(tmp_path)
+    onboard.write_yaml(ws / "_meta/state/onboard.yaml", {"routine_checks": [{"name": "routine scheduled 1", "check": "test -f x"}]})
+    nothing_outside(monkeypatch)
+    assert onboard.register_routines(onboard.Report(case="test"), ws) == []
+    assert routine.host(ws) is None   # nothing claimed: the app's own tasks run them, wherever they are
+
+
+def harness_tasks(tmp_path, ws) -> list:
+    """Three of the app's own scheduled tasks hold the routines, recorded with their read-backs."""
+    paths = [tmp_path / "scheduled-tasks" / name / "SKILL.md" for name in ("night", "daily", "sweep")]
+    for path in paths:
+        path.parent.mkdir(parents=True)
+        path.write_text("the routine\n", encoding="utf-8")
+    onboard.write_yaml(ws / "_meta/state/onboard.yaml", {"routine_checks": [
+        {"name": f"routine scheduled {n}", "check": f"test -f {p.as_posix()}"} for n, p in enumerate(paths, 1)]})
+    return [p.as_posix() for p in paths]
+
+
+def test_harness_tasks_are_named_for_turning_off_only_after_the_probe_passes(tmp_path, monkeypatch, capsys):
+    ws = workspace(tmp_path)
+    paths = harness_tasks(tmp_path, ws)
+    before = onboard.read_yaml(ws / "_meta/state/onboard.yaml")
+    nothing_outside(monkeypatch)
+    seen = probing(monkeypatch, PASSED, SEND_FAILED)
+    assert onboard.main([str(ws), "--routines-here"]) == 1
+    assert "turn off" not in capsys.readouterr().out
+    assert [task for task, _, _ in seen["registered"] if "probe" not in task] == []   # a failed probe registers nothing
+    assert routine.host(ws) is None and onboard.read_yaml(ws / "_meta/state/onboard.yaml") == before   # the old runner stays
+    probing(monkeypatch, PASSED, PASSED)
+    assert onboard.main([str(ws), "--routines-here"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert [line for line in out if line.startswith("turn off")] == [f"turn off: {p}" for p in paths]
+    assert routine.host(ws)["runner"] == "os" and routine.gate(ws, NOW) is None
+    state = onboard.read_yaml(ws / "_meta/state/onboard.yaml")
+    assert "routine_checks" not in state and len(state["routine_tasks"]) == 3   # the app's tasks are no longer read back
+
+
+def test_a_pause_until_morning_skips_runs_and_shows_under_waiting(tmp_path, monkeypatch):
+    ws = workspace(tmp_path); routine.claim_host(ws, "os", NOW)
+    onboard.main([str(ws), "--pause"])
+    assert routine.gate(ws, NOW).startswith("paused until")
+    texts = [r["text"] for r in onboarding_page.sections(ws, {}, NOW)["waiting"]]
+    assert any(t.startswith("Routines paused until") for t in texts)
+    onboard.main([str(ws), "--resume"])
+    assert routine.gate(ws, NOW) is None
+
+
+def test_a_paused_run_writes_paused_and_never_calls_claude_nor_reads_the_history(tmp_path, monkeypatch):
+    ws = workspace(tmp_path)
+    routine.claim_host(ws, "os", NOW)
+    routine.set_pause(ws, NOW + dt.timedelta(hours=8))
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")
+    monkeypatch.setattr(routine, "next_part", lambda *a, **k: (_ for _ in ()).throw(AssertionError("a part was read")))
+    monkeypatch.setattr(routine, "_now", lambda: NOW + dt.timedelta(hours=1))
+    called = []
+    assert routine.main([str(ws / "_meta/state/routines/sweep-chain.md")], run=lambda *a, **k: called.append(a)) == 0
+    line, = runs_of(ws)
+    assert called == [] and line["outcome"] == "paused" and line["routine"] == "sweep-chain" and line["cost_tokens"] == 0
+    assert line["why"].startswith("paused until")
+    monkeypatch.setattr(routine, "_now", lambda: NOW + dt.timedelta(hours=9))   # the pause is over
+    monkeypatch.setattr(routine, "next_part", lambda *a, **k: (None, ""))
+    routine.main([str(ws / "_meta/state/routines/sweep-chain.md")], run=fake_run(stdout=stream(result_event())))
+    assert [r["outcome"] for r in runs_of(ws)] == ["paused", "finished"]
+
+
+def test_a_pause_that_has_passed_is_no_pause(tmp_path):
+    ws = workspace(tmp_path)
+    routine.claim_host(ws, "os", NOW)
+    routine.set_pause(ws, NOW - dt.timedelta(minutes=1))
+    assert routine.gate(ws, NOW) is None
+    assert not any(r["text"].startswith("Routines paused") for r in onboarding_page.sections(ws, {}, NOW)["waiting"])
+
+
+def test_the_record_is_one_line_per_key_with_the_claim_apart_from_the_pause(tmp_path, monkeypatch):
+    ws = workspace(tmp_path)
+    monkeypatch.setattr(routine, "machine_name", lambda: "Ada's \"desk\" PC: 100% \\ yes")
+    routine.claim_host(ws, "os", NOW)
+    routine.set_pause(ws, NOW + dt.timedelta(hours=2))
+    text = (ws / routine.HOST).read_text(encoding="utf-8").splitlines()
+    lines = [line for line in text if not line.startswith("#")]
+    assert [line.split(":", 1)[0] for line in lines] == ["machine", "name", "runner", "since", "paused_until"]
+    assert text.index(lines[-1]) - text.index(lines[3]) == 2   # a line between the claim and the pause
+    got = routine.host(ws)
+    assert got["machine"] == routine.this_machine() and got["runner"] == "os" and "desk" in got["name"]
+    assert " " not in got["name"] and routine.paused_until(got, NOW) is not None
+
+
+@pytest.mark.parametrize("merged", [
+    # two computers claimed before either synced, merged line by line keeping both (a union merge)
+    'machine: "m-desktop"\nname: "DESK"\nrunner: "os"\nsince: "2026-10-12T09:00:00+00:00"\n'
+    'machine: "m-laptop"\nname: "LAPTOP"\nrunner: "os"\nsince: "2026-10-12T09:05:00+00:00"\npaused_until: null\n',
+    # a merge git left half done
+    '<<<<<<< HEAD\nmachine: "m-desktop"\n=======\nmachine: "m-laptop"\n>>>>>>> origin/main\nrunner: "os"\n',
+    'machine: "m-desktop"\nrunner: "cron"\n', 'machine: 42\nrunner: "os"\n', "- machine\n", "",
+    'machine: "m-desktop"\nrunner: "os"\npaused_until: "next week"\n'])
+def test_a_record_that_is_not_one_record_runs_nowhere_and_says_so(tmp_path, monkeypatch, merged):
+    ws = workspace(tmp_path)
+    (ws / routine.HOST).write_text(merged, encoding="utf-8")
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")
+    for machine in ("m-desktop", "m-laptop"):
+        on(monkeypatch, machine)
+        assert routine.host(ws) == {"unclear": True}
+        called = []
+        assert routine.main([str(ws / "_meta/state/routines/daily-chain.md")], run=lambda *a, **k: called.append(a)) == 0
+        assert called == [] and not (ws / "_meta/state/runs.jsonl").exists()
+    texts = [r["text"] for r in onboarding_page.sections(ws, {}, NOW)["waiting"]]
+    assert any("unclear" in t and "run my routines here" in t for t in texts)
+
+
+def test_routines_the_apps_own_tasks_run_never_run_as_os_tasks_too(tmp_path, monkeypatch):
+    ws = workspace(tmp_path)
+    routine.claim_host(ws, "harness", NOW)
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")
+    called = []
+    assert routine.main([str(ws / "_meta/state/routines/daily-chain.md")], run=lambda *a, **k: called.append(a)) == 0
+    assert called == [] and routine.gate(ws, NOW) is not None
+
+
+def test_a_move_keeps_a_pause_still_to_come(tmp_path, monkeypatch):
+    ws = workspace(tmp_path)
+    on(monkeypatch, "m-desktop")
+    routine.claim_host(ws, "os", NOW)
+    routine.set_pause(ws, NOW + dt.timedelta(days=2))
+    on(monkeypatch, "m-laptop")
+    routine.claim_host(ws, "os", NOW + dt.timedelta(hours=1))
+    assert routine.gate(ws, NOW + dt.timedelta(hours=1)).startswith("paused until")
+    assert routine.paused_until(routine.host(ws), NOW + dt.timedelta(days=3)) is None
+
+
+def test_the_probe_runs_on_any_computer(tmp_path, monkeypatch):
+    """`--routines-here` probes a computer before it is the host: the probe is never gated."""
+    ws = workspace(tmp_path)
+    on(monkeypatch, "m-desktop"); routine.claim_host(ws, "os", NOW)
+    on(monkeypatch, "m-laptop")
+    probed = []
+    monkeypatch.setattr(routine, "probe", lambda workspace, run=None: probed.append(workspace) or 0)
+    assert routine.main(["--probe", str(ws)]) == 0 and probed == [ws]
+
+
+def test_no_routine_may_move_pause_or_unregister_the_routines(tmp_path):
+    ws = workspace(tmp_path)
+    rules = routine.routine_settings(ws, "", [ws])["permissions"]
+    for path in ("_meta/state/routine-host.yaml", "_meta/state/onboard.yaml"):
+        assert path in routine.PROTECTED_EDITS and f"Edit(//**/{path})" in rules["deny"]
+
+
+def test_without_a_record_a_build_claims_this_computer_once_its_tasks_are_registered(tmp_path, monkeypatch):
+    ws = workspace(tmp_path)
+    nothing_outside(monkeypatch)
+    probing(monkeypatch)
+    records = onboard.register_routines(onboard.Report(case="test"), ws)
+    assert len(records) == 3
+    got = routine.host(ws)
+    assert got["machine"] == routine.this_machine() and got["runner"] == "os" and got["paused_until"] is None
+    since = got["since"]
+    onboard.register_routines(onboard.Report(case="test"), ws)
+    assert routine.host(ws)["since"] == since   # a record of this computer is kept as it is
+
+
+def test_a_failed_move_with_nothing_recorded_registers_no_routine_task(tmp_path, monkeypatch):
+    ws = workspace(tmp_path)
+    nothing_outside(monkeypatch)
+    seen = probing(monkeypatch, PASSED, SEND_FAILED)
+    assert onboard.main([str(ws), "--routines-here"]) == 1
+    assert [task for task, _, _ in seen["registered"] if "probe" not in task] == []   # nothing runs beside the old runner
+    assert routine.host(ws) is None and "routine_tasks" not in (onboard.read_yaml(ws / "_meta/state/onboard.yaml", {}) or {})
+
+
+def desktop_hosts(ws, monkeypatch) -> list:
+    """The desktop runs Ada's routines through its launch agents; this computer is the laptop."""
+    on(monkeypatch, "m-desktop")
+    routine.claim_host(ws, "os", NOW)
+    desk = [{"name": "space-daily-chain-ada", "kind": "launchd", "label": "com.spaces.space-daily-chain-ada"}]
+    state = onboard.read_yaml(ws / "_meta/state/onboard.yaml", {}) or {}
+    onboard.write_yaml(ws / "_meta/state/onboard.yaml", {**state, "routine_tasks": desk})
+    on(monkeypatch, "m-laptop")
+    return desk
+
+
+def test_a_failed_move_leaves_the_host_and_its_task_records_alone(tmp_path, monkeypatch):
+    ws = workspace(tmp_path)
+    desk = desktop_hosts(ws, monkeypatch)
+    nothing_outside(monkeypatch)
+    probing(monkeypatch, PASSED, SEND_FAILED)
+    assert onboard.main([str(ws), "--routines-here"]) == 1
+    assert routine.host(ws)["machine"] == "m-desktop"
+    assert onboard.read_yaml(ws / "_meta/state/onboard.yaml")["routine_tasks"] == desk
+
+
+def test_a_registration_that_fails_after_the_probe_passed_claims_nothing_and_takes_its_tasks_back(tmp_path, monkeypatch):
+    ws = workspace(tmp_path)
+    desk = desktop_hosts(ws, monkeypatch)
+    nothing_outside(monkeypatch)
+    seen = probing(monkeypatch, PASSED, PASSED)
+    registering = onboard.register_task
+
+    def refusing(report, label, task, root, argv, **kw):
+        if "daily-chain" in task:
+            report.add(label, False, f"schtasks /Query /TN {task}", "Access is denied.")
+            return {"name": task, "kind": "schtasks"}
+        return registering(report, label, task, root, argv, **kw)
+    monkeypatch.setattr(onboard, "register_task", refusing)
+    removed, removing = [], offboard.remove_sync_task
+    monkeypatch.setattr(offboard, "remove_sync_task",
+                        lambda report, root, state, task, dry_run, label="": removed.append(task) or
+                        removing(report, root, state, task, dry_run, label))
+    assert onboard.main([str(ws), "--routines-here"]) == 1
+    made = [task for task, _, _ in seen["registered"] if "probe" not in task]
+    assert made and all(task in removed for task in made)   # what it did register is taken back
+    assert routine.host(ws)["machine"] == "m-desktop"
+    assert onboard.read_yaml(ws / "_meta/state/onboard.yaml")["routine_tasks"] == desk
+
+
+CLAIM = 'machine: "m-desktop"\nname: "DESK"\nrunner: "os"\nsince: "2026-10-12T09:00:00+00:00"\n'
+LATER, EARLIER = 'paused_until: "2026-10-27T06:00:00+00:00"\n', 'paused_until: "2026-10-25T06:00:00+00:00"\n'
+
+
+@pytest.mark.parametrize("pauses, kept", [(EARLIER + LATER, "2026-10-27T06:00:00+00:00"),
+                                          (LATER + EARLIER, "2026-10-27T06:00:00+00:00"),
+                                          ('paused_until: null\n' + EARLIER, "2026-10-25T06:00:00+00:00")])
+def test_two_pauses_merged_keep_the_later_one(tmp_path, pauses, kept):
+    """Two computers paused before either synced: a union merge keeps both lines, and the later pause stands."""
+    ws = workspace(tmp_path)
+    (ws / routine.HOST).write_text(CLAIM + pauses, encoding="utf-8")
+    got = routine.host(ws)
+    assert got["machine"] == "m-desktop" and got["paused_until"] == kept
+
+
+def test_a_pause_twice_beside_a_claim_twice_or_a_pause_that_is_no_moment_is_still_unclear(tmp_path):
+    ws = workspace(tmp_path)
+    for text in (CLAIM + CLAIM.replace("desktop", "laptop") + 'paused_until: null\n' + EARLIER,
+                 CLAIM + EARLIER + 'paused_until: "soon"\n'):
+        (ws / routine.HOST).write_text(text, encoding="utf-8")
+        assert routine.host(ws) == {"unclear": True}

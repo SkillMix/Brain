@@ -35,20 +35,21 @@ def run_cmd(argv, dry_run=False, cwd=None):
 def remove_probe_task(report, root, state=None, dry_run=False) -> None:
     """The routines' probe task a build recorded (`probe_task` in onboard.yaml, written before the task was
     registered) and did not remove, because it was stopped first: removed through `remove_sync_task`, and
-    forgotten once it is gone. The record is read from a file a merge can change, so only this space's own
-    probe task (`<prefix>probe-<name>`) is ever removed by it; nothing else is touched."""
+    forgotten once it is gone. The record is read from a file a merge can change, so it only says whether there
+    is one: what is removed is this space's own probe task by the name and launch agent label the code derives
+    (`<prefix>probe-<name>`, the prefix `onboard.task_prefix` gives), never by a name or label the record holds."""
     root = Path(root)
     state = state if state is not None else onboard.read_yaml(root / "_meta" / "state" / "onboard.yaml", {}) or {}
     record = state.get("probe_task")
-    name = record.get("name") if isinstance(record, dict) else None
     try:
-        own = isinstance(name, str) and re.fullmatch(r"space-[a-z0-9-]*probe-" + re.escape(spaceyaml.load(root).name),
-                                                     name) is not None
+        name = f"{onboard.task_prefix()}probe-{spaceyaml.load(root).name}"
     except Exception:
-        own = False
-    if not own:
         return
-    remove_sync_task(report, root, {"routine_tasks": [record]}, name, dry_run, label=f"routine probe task {name} removed")
+    if not (isinstance(record, dict) and record.get("name") == name):
+        return
+    kind = {"kind": record["kind"]} if record.get("kind") in ("schtasks", "launchd", "systemd", "cron") else {}
+    remove_sync_task(report, root, {"routine_tasks": [{"name": name, **kind}]}, name, dry_run,
+                     label=f"routine probe task {name} removed")
     if not dry_run and report.steps and report.steps[-1].done:
         onboard.forget_probe_task(root)
 

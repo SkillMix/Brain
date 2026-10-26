@@ -1420,6 +1420,8 @@ PROBE_ERROR = ("Claude's command line could not be asked what your routines may 
                "run on their own. Say the sentence again once Claude works in a terminal.")
 PROBE_BUSY = ("A routine was running, so the check that proves your routines run on their own could not start. "
               "Say the sentence again once it is done; a routine runs an hour at most.")
+PROBE_STARTING = ("Another setup is running on this computer, so the check that proves your routines run on their own "
+                  "could not start. Try again once it is done.")
 
 
 def _probe_result(started: float) -> dict | None:
@@ -1459,12 +1461,25 @@ def prove_routines(report, workspace) -> dict:
     removed whatever happened, and it is recorded in onboard.yaml before it is registered
     (`onboard.record_probe_task`): a build stopped before it removed the task leaves the record, by which the
     next build (first thing here), `onboard --check` and offboard remove it (`offboard.remove_probe_task`).
+    It holds this computer's start lock while it runs (`take_lock`), so `onboard --check` leaves its probe task
+    alone and no second start probes at the same time; with another start running it proves nothing and says so.
     Each failed check is one step that names it; the result is {"ok", "checks", "notes", "why"}."""
     workspace = Path(workspace).resolve()
+    check = f'{onboard.python_cmd()} "{workspace.as_posix()}/_meta/tools/routine.py" --probe "{workspace.as_posix()}"'
+    lock = take_lock()
+    if lock is None:
+        report.add(PROBE_STEP, False, check, PROBE_STARTING)
+        return {"ok": False, "checks": [], "notes": [], "why": PROBE_STARTING}
+    try:
+        return _prove(report, workspace, check)
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+def _prove(report, workspace: Path, check: str) -> dict:
     name = spaceyaml.load(workspace).name
     task = f"{onboard.task_prefix()}probe-{name}"
     hour, minute = PROBE_TIME
-    check = f'{onboard.python_cmd()} "{workspace.as_posix()}/_meta/tools/routine.py" --probe "{workspace.as_posix()}"'
     offboard.remove_probe_task(report, workspace)   # one an earlier build was stopped before it removed
     record = {"name": task}
     onboard.record_probe_task(workspace, record)
@@ -1554,14 +1569,18 @@ def phase_build(args) -> dict:
         fill_address(report, spaceyaml.load(report.workspace).owner, address_in(args.email), replace=True)
     if not args.dry_run:
         keep_findings(report, journal, (found["email"] or "", found["email_source"]))
-    probe = None
+    probe = elsewhere = None
     if not (args.offline or args.dry_run or report.failed()) and getattr(report, "workspace", None):
+        elsewhere = onboard.routines_elsewhere(report.workspace)   # another computer, or the app, runs them
+    if elsewhere is None and not (args.offline or args.dry_run or report.failed()) and getattr(report, "workspace", None):
         probe = prove_routines(report, report.workspace)   # after keep_findings: the grant is read from the verdicts
         notes = probe.get("notes") or []
         if notes or (setup_journal.load().get("build") or {}).get("routines_note"):
             setup_journal.set_phase("build", "running", routines_note=notes[0] if notes else None)
     result = summary(report)
     result["probe"] = probe
+    if elsewhere is not None:   # nothing was proved here: the built message says where they run instead
+        result["routines_where"] = elsewhere.result
     if new_company and not args.dry_run:   # the research of phase 3 goes into the brain just made
         try:
             landed = _land_research(report)
@@ -1588,6 +1607,8 @@ def phase_build(args) -> dict:
             print(f"yours: {row.get('name')}: {row.get('result')} (check: {row.get('check')})")
         for note in (probe or {}).get("notes") or []:
             print(f"routines: {note}")
+        if result.get("routines_where"):
+            print(f"routines: {result['routines_where']}")
         if result["failed"] or result["yours"]:
             print("then say the sentence again: every step already done is kept")
     state = ("failed" if result["failed"] else "pending" if args.dry_run
@@ -1649,10 +1670,10 @@ def _sweep_task(workspace: Path) -> dict | None:
 def _stopped_since(workspace: Path, since) -> bool:
     """Whether the newest run routine.py itself kept (`backfill.meter_rows`, never a line in runs.jsonl, where a
     routine's agent can append its own; R43, O-3), dated after `since`, stopped (it did not start, or ended with no
-    result): nothing is reading, so waiting on it is no use."""
+    result) or was held by a pause of the routines: nothing is reading, so waiting on it is no use."""
     import backfill
     rows = backfill.meter_rows(workspace, _now())
-    return bool(rows) and rows[-1]["at"] > since and rows[-1].get("outcome") == "stopped"
+    return bool(rows) and rows[-1]["at"] > since and rows[-1].get("outcome") in ("stopped", "paused")
 
 
 ACCOUNT_SECONDS = 120   # two readings of one account's window end this close at most (R38; never observed live)
@@ -1668,7 +1689,7 @@ def usage_account(workspace: Path, reading: dict, state: dict, now: dt.datetime 
     import backfill
     since = backfill._dt(state.get("started"))
     row = next((r for r in reversed(backfill.meter_rows(workspace, now or _now()))
-                if since and r["at"] >= since and r.get("outcome") != "stopped"), None)
+                if since and r["at"] >= since and r.get("outcome") not in ("stopped", "paused")), None)   # a held run never started
     if row is None:
         return None
     limits = row.get("limits") if isinstance(row.get("limits"), dict) else {}

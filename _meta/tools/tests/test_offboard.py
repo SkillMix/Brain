@@ -90,3 +90,49 @@ def test_offboard_keeps_another_spaces_instruction_block(tmp_path, monkeypatch):
     report = offboard.run(project, online=False)
     assert not report.failed(), [s.row() for s in report.failed()]
     assert onboard.instruction_present(instructions, owner_ws)
+
+
+def mac(monkeypatch, loaded: set) -> list:
+    """launchd as offboard meets it on a Mac: `loaded` agents answer `print` until they are booted out."""
+    import subprocess
+    monkeypatch.setattr(onboard, "SYSTEM", "Darwin")
+    monkeypatch.setattr(onboard, "user_id", lambda: 501)
+    calls = []
+
+    def fake(argv, dry_run=False, cwd=None):
+        argv = [str(a) for a in argv]
+        calls.append(argv)
+        if argv[:2] == ["launchctl", "bootout"]:
+            loaded.discard(argv[2])
+        gone = argv[:2] == ["launchctl", "print"] and argv[2] not in loaded
+        return subprocess.CompletedProcess(argv, 113 if gone else 0, "", "")
+    monkeypatch.setattr(offboard, "run_cmd", fake)
+    monkeypatch.setattr(onboard, "run_cmd", fake)
+    return calls
+
+
+def test_a_probe_record_naming_the_sync_agents_label_leaves_the_sync_agent_alone(tmp_path, monkeypatch):
+    """onboard.yaml is a file a merge can change: the probe task goes by the name and label the code derives."""
+    ada = make_space(tmp_path / "ada", name="ada")
+    agents = Path.home() / "Library" / "LaunchAgents"
+    for ident in ("com.spaces.space-sync-ada", "com.spaces.space-probe-ada"):
+        onboard.write_text(agents / f"{ident}.plist", "<plist/>")
+    loaded = {"gui/501/com.spaces.space-sync-ada", "gui/501/com.spaces.space-probe-ada"}
+    calls = mac(monkeypatch, loaded)
+    onboard.write_yaml(ada / "_meta" / "state" / "onboard.yaml", {"case": "person", "probe_task": {
+        "name": "space-probe-ada", "kind": "launchd", "label": "com.spaces.space-sync-ada"}})
+    report = onboard.Report(case="check")
+    offboard.remove_probe_task(report, ada)
+    assert [c for c in calls if c[:2] == ["launchctl", "bootout"]] == [["launchctl", "bootout", "gui/501/com.spaces.space-probe-ada"]]
+    assert (agents / "com.spaces.space-sync-ada.plist").exists() and "gui/501/com.spaces.space-sync-ada" in loaded
+    assert not (agents / "com.spaces.space-probe-ada.plist").exists() and report.steps[-1].done
+
+
+def test_a_probe_record_under_another_runs_prefix_is_not_this_runs_to_remove(tmp_path, monkeypatch):
+    """The name comes from the prefix in force (SPACES_TASK_PREFIX): a probe task of another run is left alone."""
+    ada = make_space(tmp_path / "ada", name="ada")
+    calls = mac(monkeypatch, {"gui/501/com.spaces.space-test-1a2b-probe-ada"})
+    onboard.write_yaml(ada / "_meta" / "state" / "onboard.yaml", {"probe_task": {"name": "space-test-1a2b-probe-ada"}})
+    report = onboard.Report(case="check")
+    offboard.remove_probe_task(report, ada)
+    assert calls == [] and report.steps == []

@@ -1,6 +1,8 @@
 """Start: one sentence in an agent session sets a person or a company up, offline here."""
+import datetime as dt
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1184,3 +1186,68 @@ def test_the_organisation_read_is_for_the_account_the_workspace_landed_in(tmp_pa
     start.setup(report, TEMPLATE, f"{brain.as_posix()}:ada", None, None, "Ada Okafor", "ada@lanternworks.example", None, "acme",
                 tmp_path / "home", "acme/Brain", False, False, None)
     assert made == ["acme", "tess-v"] and finished == ["tess-v"]
+
+
+# ----- one computer, one runner (Task 14) ---------------------------------------------------------------
+def test_a_second_computers_build_schedules_and_proves_no_routines_and_says_where_they_run(tmp_path, monkeypatch):
+    """The build goes through the routines' registration: on a second computer it registers nothing, proves
+    nothing, and the step that says where the routines run is on the progress page; the build is done."""
+    no_outside(monkeypatch)
+    finished_setup()
+    real = start.start
+    monkeypatch.setattr(start, "start", lambda *a, **k: real(*a, **{**k, "offline": True}))   # the spaces offline; the proof online
+    proved = []
+    monkeypatch.setattr(start, "prove_routines", lambda report, ws: proved.append(ws) or {"ok": True, "checks": [], "notes": [], "why": None})
+    monkeypatch.setattr(routine, "this_machine", lambda: "m-desktop")
+    monkeypatch.setattr(routine, "machine_name", lambda: "ADA-DESKTOP")
+    first = start.phase_build(args(tmp_path, offline=False))
+    assert first["state"] == "done" and len(proved) == 1   # the computer that runs them proves them
+    routine.claim_host(Path(first["workspace"]), "os", dt.datetime.now().astimezone())
+    monkeypatch.setattr(routine, "this_machine", lambda: "m-laptop")
+    second = start.phase_build(args(tmp_path, offline=False))
+    assert second["state"] == "done", second
+    assert len(proved) == 1 and second["probe"] is None and "routines_where" not in first
+    where = "Your routines run on ADA-DESKTOP; say 'run my routines here' to move them"
+    assert second["routines_where"] == where   # the build's answer carries it, for the built message
+    step = next(s for s in last_report().steps if s.name == "routines on this computer")
+    assert step.done and step.result == where
+    page = (Path.home() / ".spaces" / "onboarding.html").read_text(encoding="utf-8")
+    stages = dict((title, state) for state, title in
+                  re.findall(r'<li class="step state-([a-z-]+)"[^>]*>.*?<span class="name">([^<]+)', page, re.S))
+    assert stages["Routines"] == "done"   # the step files under Routines on the progress page, and fails nothing
+    assert "Your routines run on ADA-DESKTOP. Say &#x27;run my routines here&#x27; to run them on this computer." in page
+    assert routine.host(Path(second["workspace"]))["machine"] == "m-desktop"
+
+
+def test_the_probe_holds_the_start_lock_and_waits_for_no_second_start(tmp_path, monkeypatch):
+    ws = make_space(tmp_path / "ada", name="ada")
+    monkeypatch.setattr(onboard, "register_task", lambda *a, **k: (_ for _ in ()).throw(AssertionError("registered")))
+    lock = start.take_lock()   # another start runs on this computer
+    report = onboard.Report(case="routines")
+    got = start.prove_routines(report, ws)
+    assert got["ok"] is False and got["why"] == start.PROBE_STARTING and not report.steps[-1].done
+    assert "setup" in got["why"] and "start.py" not in got["why"]
+    lock.unlink()
+    seen = []
+
+    def register(report, label, task, root, argv, **kw):
+        seen.append(start.lock_path().exists())   # held while the probe task exists
+        report.add(label, False, "schtasks /Query", "refused")
+        return {"name": task}
+    monkeypatch.setattr(onboard, "register_task", register)
+    import offboard
+    monkeypatch.setattr(offboard, "remove_sync_task", lambda report, *a, **k: report.add("removed", True, "", ""))
+    start.prove_routines(onboard.Report(case="routines"), ws)
+    assert seen == [True] and not start.lock_path().exists()   # and let go of after
+
+
+def test_a_paused_run_ends_the_wait_for_a_part_and_is_no_reading_of_the_account(tmp_path):
+    """A run the pause held started nothing: waiting on it is no use, and it says nothing of the routines' account."""
+    ws = make_space(tmp_path / "ada", name="ada")
+    since = dt.datetime(2026, 10, 24, 12, 0, tzinfo=dt.timezone.utc)
+    paused = {**routine._stopped("paused until 2026-10-25 06:00"), "outcome": "paused"}
+    routine.write_outcome(ws, "sweep-chain", paused, since + dt.timedelta(minutes=2))
+    assert start._stopped_since(ws, since)
+    reading = {"at": "2026-10-24T12:05:00Z", "five_hour_resets": "2026-10-24T16:00:00Z", "week_resets": "2026-10-30T09:00:00Z"}
+    assert start.usage_account(ws, reading, {"started": since.isoformat()}) is None   # no run that started to compare
+

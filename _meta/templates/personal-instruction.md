@@ -44,8 +44,9 @@ brainstorm) and run `{python} {workspace_path}/_meta/tools/tracker.py {workspace
 only they can take) goes through the owner-email skill, to their own address only.
 {planning}
 The toolbox is in `{workspace_path}/.claude/skills/`. When the person asks in plain words, read
-the matching skill there and follow it: "what needs me" (sign), "invite <colleague>" and
-"schedule my routines" (onboard), "status of <subject>", "prep me for the call with <subject>"
+the matching skill there and follow it: "what needs me" (sign), "invite <colleague>",
+"schedule my routines", "pause my routines", "resume my routines" and "run my routines here"
+(onboard), "status of <subject>", "prep me for the call with <subject>"
 and "item 2 of <subject> is done" (query and status), "ask <space> about ..." (request).
 
 Never put company knowledge in the harness's own memory; pointers and preferences only.
