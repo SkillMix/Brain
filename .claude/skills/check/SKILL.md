@@ -37,7 +37,8 @@ Once a scaled week, instead of one item per page past its window, it wrote one w
 review batch `_inbound/candidates/review-<date>.md`: every signed page past its window in an
 active subject, every draft older than its window and every page another space contested,
 one numbered line each with the evidence since it was last verified and a recommendation
-(answered per line: `review-<date>#3: yes`, `[edit, "<text>"]` or `no` to retire). Newer
+(answered per line: `review-<date>#3: yes`, `[edit, "<text>"]` or `no` to retire; a line that
+names a draft candidate is signed by the candidate's own id after its read-back). Newer
 evidence against a page that a mounted space owns became a conflict note queued to that
 space (window class, scrubbed on the way out); there its librarian marks the page
 `contested` and the note joins the owner's next batch.

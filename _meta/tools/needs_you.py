@@ -153,13 +153,25 @@ def answered_ids(root: Path) -> set:
 
 
 # ----- the kinds -----------------------------------------------------------------
+def _open_questions(root: Path, cid: str, subject) -> int:
+    """How many questions to the person are open for a candidate: its subject's, because distill
+    gives a subject's next candidate a new id and the questions carried over keep the old page;
+    a candidate with no subject counts the questions asked for its own id."""
+    import sign_questions   # here and not at the top, as registry and classify are
+    found = (sign_questions.for_subject(root, str(subject)) if subject
+             else sign_questions.for_page(root, cid))
+    return len(found)
+
+
 def _candidates(root: Path, space: spaceyaml.Space | None = None) -> list:
+    import distill   # here and not at the top, as registry and classify are
     out = []
     waiting = {rel for rel, _, _ in waiting_candidates(root, space)}
     for rel, fm, body in pages_in(root, CANDIDATES):
         if rel in waiting:   # counted on the classification line, never offered for a signature
             continue
         title = _text(fm.get("title"), Path(rel).stem)
+        cid = _text(fm.get("id"), Path(rel).stem)
         subject = fm.get("subject")
         text = f"{title} for {subject}: sign?" if subject else f"{title}: sign?"
         if fm.get("review_batch"):
@@ -169,11 +181,18 @@ def _candidates(root: Path, space: spaceyaml.Space | None = None) -> list:
         elif fm.get("landing"):  # a release that arrived and waits (landing.py says why)
             who = f", for {fm['for']}" if fm.get("for") else ""
             text = f"{title} from {fm.get('released_from', 'another space')} ({fm['landing']}{who}): sign?"
-        out.append(Item(id=_text(fm.get("id"), Path(rel).stem), kind="candidate",
+        else:
+            asked = _open_questions(root, cid, subject)
+            if asked:
+                text += f" ({asked} question{'s' if asked != 1 else ''})"
+        # what sign.read_back prints: a page lands without its tool-kept New evidence list,
+        # a record (`type: source`) is filed whole
+        signed = body if str(fm.get("type")) == "source" else distill.without_evidence(body)
+        out.append(Item(id=cid, kind="candidate",
                         text=text,
                         recommendation=_text(fm.get("recommendation"), "yes"), default="stays a draft",
                         deadline=_when(fm.get("deadline")), depends=_int(fm.get("depends")),
-                        payload=rel, fingerprint=pages.fingerprint(body)))
+                        payload=rel, fingerprint=pages.fingerprint(signed)))
     return out
 
 

@@ -31,12 +31,19 @@ list, only the candidate's id kept (with `--subject`, that one subject, whether 
 the watermark stays). `verify` lists what keeps a candidate from the signer (a line without
 `[src: ...]`, a source not in `evidence`, a never-leaves term, a left-out term of the
 destination, a bracketed placeholder); `checked` stamps `checked: {by, at}` once it is clean.
+A source also passes when it is the `q-` id of a question of the candidate's subject that was
+answered or settled (`sign_questions.py`). `verify --body <file>` checks that file's text, a
+write-up, against the candidate's frontmatter instead of the candidate's own body.
+`prepare` lists the subject candidates whose questions need preparing, one tab-separated line
+(candidate, subject, why) each: a subject never checked, or with records that arrived since its
+last check (`sign_questions.needs_recheck`). It only reads; it writes nothing.
 
 Nothing here writes `status: stable`, edits a page under knowledge/, or runs git.
 
     python distill.py [root] [--rebuild [--subject <id>]]
-    python distill.py [root] verify <candidate path or subject id>
+    python distill.py [root] verify <candidate path or subject id> [--body <file>]
     python distill.py [root] checked <candidate path or subject id> --by <name>
+    python distill.py [root] prepare
 """
 from __future__ import annotations
 
@@ -67,7 +74,7 @@ SOURCES = Path("knowledge") / "sources"
 EVIDENCE_HEADING = "## New evidence"
 MENTION_BLIND_KINDS = ("people", "domains")
 DECISION_RE = re.compile(r"^\s*decision\s*:\s*(.*)$", re.I)
-COMMANDS = ("verify", "checked")
+COMMANDS = ("verify", "checked", "prepare")
 LESSON_LINE = re.compile(r"^\s*(?:[-*]\s*)?lesson:\s*(.+?)(?:[\s;,(]+from:.*)?\s*$", re.I | re.M)
 LESSONS_PROPOSED = STATE / "lessons-proposed.jsonl"   # {slug, from, candidate, at}
 
@@ -346,6 +353,16 @@ def archives_on(space) -> bool:
     return bool(getattr(space, "routing_archives", False))
 
 
+def evidence_by_subject(root) -> dict:
+    """Subject id -> the evidence that counts for it, as `run` reads it: archive-derived pages
+    are left out unless the space has `routing.archives` on."""
+    space = spaceyaml.load(root)
+    evidence = gather_evidence(root, Reader(), space.name)
+    if not archives_on(space):
+        evidence = [ev for ev in evidence if not provenance.is_archive_derived(ev.fm)]
+    return by_subject(evidence)
+
+
 def set_aside_of(fm: dict) -> list:
     """The candidate's `set_aside: [{id, why}]` entries, as the agent wrote them."""
     return [item for item in fm.get("set_aside") or [] if isinstance(item, dict) and item.get("id")]
@@ -619,7 +636,17 @@ def verify(root, candidate) -> list:
     text = candidate_path(root, candidate).read_text(encoding="utf-8")
     fm, body = pages.split(text)
     offset = text[:len(text) - len(body)].count("\n")   # report lines of the file, not the body
+    return verify_body(root, fm, body, offset)
+
+
+def verify_body(root, fm: dict, body: str, offset: int = 0) -> list:
+    """The problems `verify` reports for `body` against the frontmatter `fm` of its candidate.
+    A source passes when it is in `evidence`, or is the `q-` id of a question of the candidate's
+    subject that was answered or settled. `offset` is the number of lines before `body`."""
+    import sign_questions   # here and not at the top: sign_questions imports distill
     evidence = {str(r) for r in fm.get("evidence") or []}
+    subject = str(fm.get("subject") or "")
+    answered = None   # the subject's citable questions, read from the ledger at the first `q-` source
     problems = []
     for number, heading, unit in body_units(body):
         where = f"line {number + offset}"
@@ -628,8 +655,15 @@ def verify(root, candidate) -> list:
             problems.append(f"{where}: no source: {short}")
         for marker in SRC_RE.findall(unit):
             for rid in (r.strip() for r in marker.split(",")):
-                if rid and rid not in evidence:
-                    problems.append(f"{where}: source {rid} is not in evidence")
+                if not rid or rid in evidence:
+                    continue
+                if rid.startswith("q-"):
+                    if answered is None:
+                        answered = {q.id for q in sign_questions.load(root).values()
+                                    if q.subject == subject and q.status in ("answered", "settled")}
+                    if rid in answered:
+                        continue
+                problems.append(f"{where}: source {rid} is not in evidence")
         mark = next((m for m in PLACEHOLDERS if m in unit.lower()), None)
         if mark:
             problems.append(f"{where}: placeholder `{mark}`")
@@ -649,6 +683,41 @@ def checked(root, candidate, by: str, now: dt.datetime | None = None) -> list:
     return []
 
 
+# ----- prepare: which pages need their questions prepared ------------------------------------------
+def is_subject_candidate(path: Path, fm: dict) -> bool:
+    """A candidate for a subject's own page: it names a subject, and is not a lesson, a decision,
+    a review batch, a released record or a source."""
+    return bool(fm.get("subject")) and not path.stem.startswith("lesson-") \
+        and fm.get("type") not in ("decision", "source") \
+        and not fm.get("review_batch") and not fm.get("released_from")
+
+
+def to_prepare(root) -> list:
+    """The subject candidates whose questions need preparing, by file name: {candidate (the file's
+    stem), subject, why}. A subject needs it when it was never checked or has a record that
+    arrived since its last check (`sign_questions.needs_recheck`). Reads only."""
+    import sign_questions   # here and not at the top: sign_questions imports distill
+    root = Path(root)
+    found = []
+    base = root / CANDIDATES
+    if base.is_dir():
+        for path in sorted(base.glob("*.md")):
+            try:
+                fm, _ = pages.read(path)
+            except Exception:
+                continue
+            if is_subject_candidate(path, fm):
+                found.append((path.stem, str(fm["subject"])))
+    grouped = evidence_by_subject(root) if found else {}   # the space read once, not once per candidate
+    rows = []
+    for stem, subject in found:
+        if sign_questions.needs_recheck(root, subject, grouped):
+            never = sign_questions.last_checked(root, subject) is None
+            rows.append({"candidate": stem, "subject": subject,
+                         "why": "never checked" if never else "new records since the last check"})
+    return rows
+
+
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     flags: dict = {}
@@ -657,18 +726,34 @@ def main(argv=None) -> int:
         arg = argv.pop(0)
         if arg == "--rebuild":
             flags["rebuild"] = True
-        elif arg in ("--subject", "--by") and argv:
+        elif arg in ("--subject", "--by", "--body") and argv:
             flags[arg[2:]] = argv.pop(0)
         else:
             positional.append(arg)
     root = Path(positional.pop(0)) if positional and positional[0] not in COMMANDS else Path(".")
+    if "body" in flags and positional[:1] != ["verify"]:   # --body belongs to verify alone
+        print(__doc__)
+        return 2
     if positional:
         command, args = positional[0], positional[1:]
-        if command not in COMMANDS or len(args) != 1 or (command == "checked" and not flags.get("by")):
+        if command not in COMMANDS or len(args) != (0 if command == "prepare" else 1) \
+                or (command == "checked" and not flags.get("by")):
             print(__doc__)
             return 2
+        if command == "prepare":
+            rows = to_prepare(root)
+            print("\n".join(f"{row['candidate']}\t{row['subject']}\t{row['why']}" for row in rows)
+                  or "nothing to prepare")
+            return 0
         try:
-            problems = verify(root, args[0]) if command == "verify" else checked(root, args[0], flags["by"])
+            if command == "checked":
+                problems = checked(root, args[0], flags["by"])
+            elif "body" in flags:   # a write-up, checked against the candidate's frontmatter
+                fm, _ = pages.split(candidate_path(root, args[0]).read_text(encoding="utf-8"))
+                # utf-8-sig, as sign.write_up: an editor may save the write-up with a BOM
+                problems = verify_body(root, fm, Path(flags["body"]).read_text(encoding="utf-8-sig"))
+            else:
+                problems = verify(root, args[0])
         except OSError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1

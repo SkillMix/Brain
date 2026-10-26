@@ -8,6 +8,7 @@ import distill
 import link
 import pages
 import sign
+import sign_questions
 import sweep
 import yaml
 from conftest import NOW, make_space, mount_brain, write_page
@@ -429,6 +430,48 @@ def test_verify_flags_a_source_not_in_evidence(tmp_path):
     assert len(problems) == 1 and "rec-9" in problems[0]
 
 
+def test_verify_accepts_an_answered_question_of_the_subject(tmp_path):
+    root = make_space(tmp_path / "ada")
+    q = sign_questions.ask(root, "harbor", "p-00000101", "Has Harbor gone live?", "why", "rec", [],
+                           by="routine:distill", now=NOW)
+    path = candidate_file(root, f"- Harbor went live on 3 November. [src: {q.id}]\n", evidence=[])
+    assert any(p.endswith(f"source {q.id} is not in evidence") for p in distill.verify(root, path))
+    sign_questions.answer(root, q.id, by="Ada Okafor", text="yes, 3 November", now=NOW)
+    assert distill.verify(root, path) == []
+
+
+def test_verify_refuses_a_question_of_another_subject(tmp_path):
+    root = make_space(tmp_path / "ada")
+    q = sign_questions.ask(root, "beacon", "p-00000102", "Has Beacon gone live?", "why", "rec", [],
+                           by="routine:distill", now=NOW)
+    sign_questions.answer(root, q.id, by="Ada Okafor", text="yes, 3 November", now=NOW)
+    path = candidate_file(root, f"- Harbor went live on 3 November. [src: {q.id}]\n", evidence=[])
+    assert any("is not in evidence" in p for p in distill.verify(root, path))
+
+
+def test_verify_checks_a_write_up_against_the_candidate(tmp_path, capsys):
+    root = make_space(tmp_path / "ada")
+    candidate_file(root, "- Kept as it is. [src: m-1]\n", evidence=["m-1"])
+    file = tmp_path / "write-up.md"
+    file.write_text("- Line one. [src: m-1]\n- Line two.\n", encoding="utf-8")
+    assert distill.main([str(root), "verify", "harbor", "--body", str(file)]) == 1
+    assert "no source: - Line two." in capsys.readouterr().out
+    file.write_text("- Line one. [src: m-1]\n", encoding="utf-8")
+    assert distill.main([str(root), "verify", "harbor", "--body", str(file)]) == 0
+
+
+def test_verify_reads_a_write_up_saved_with_a_bom(tmp_path, capsys):   # final review, Minor 1
+    root = make_space(tmp_path / "ada")
+    candidate_file(root, "- Kept as it is. [src: m-1]\n", evidence=["m-1"])
+    q = sign_questions.ask(root, "harbor", "p-0000c0de", "Has Harbor gone live?", "why", "rec", [],
+                           by="routine:distill", now=NOW)
+    sign_questions.answer(root, q.id, by="Ada Okafor", text="yes, 3 November", now=NOW)
+    file = tmp_path / "write-up.md"
+    file.write_text(f"# Harbor\n\n- Harbor went live on 3 November. [src: {q.id}]\n", encoding="utf-8-sig")
+    assert distill.main([str(root), "verify", "harbor", "--body", str(file)]) == 0
+    assert capsys.readouterr().out.strip() == "clean"
+
+
 def test_verify_checks_facts_and_leaves_topics_to_the_page_check(tmp_path):
     """Never-leaves and left-out matter is the page check's judgement (a second agent reading
     the lists); a word in a line is no problem for verify."""
@@ -465,6 +508,45 @@ def test_checked_refuses_when_verify_finds_problems(tmp_path, capsys):
     assert distill.main([str(root), "checked", str(path), "--by", "Ben Liu"]) == 1
     assert path.read_text(encoding="utf-8") == before
     assert "source" in capsys.readouterr().out
+
+
+# ----- prepare: which pages need their questions prepared --------------------------------------
+def test_prepare_lists_subject_candidates_only(tmp_path, capsys):
+    root = make_space(tmp_path / "ada", subjects=[
+        {"id": "harbor", "kind": "projects", "title": "Harbor", "state": "active"}])
+    candidate_file(root, CLEAN)
+    old = pages.generated("test", NOW - 5 * D)   # none of these is evidence that arrived after a check
+    # each of these has a `subject` and still is not a subject candidate: a lesson (by its name), a
+    # decision, a review batch, a released record and a source
+    for name, extra in (("lesson-retry-webhooks", {}), ("2026-10-05-use-a-queue", {"type": "decision"}),
+                        ("review-2026-w41", {"review_batch": True}), ("m-released", {"released_from": "m-9"}),
+                        ("m-source", {"type": "source"})):
+        write_page(root, f"_inbound/candidates/{name}.md", "Text.\n", subject="harbor", generated=old, **extra)
+    rows = distill.to_prepare(root)
+    assert [row["candidate"] for row in rows] == ["harbor"]
+    assert rows[0] == {"candidate": "harbor", "subject": "harbor", "why": "never checked"}
+    sign_questions.mark_checked(root, "harbor", by="routine:distill", now=NOW)
+    assert distill.to_prepare(root) == []
+    assert distill.main([str(root), "prepare"]) == 0 and "nothing to prepare" in capsys.readouterr().out
+    witness(root, "m-3", "harbor", "Harbor went live.\n", NOW + H)
+    assert [(r["candidate"], r["why"]) for r in distill.to_prepare(root)] == [
+        ("harbor", "new records since the last check")]
+    assert distill.main([str(root), "prepare"]) == 0
+    assert capsys.readouterr().out.splitlines() == ["harbor\tharbor\tnew records since the last check"]
+
+
+def test_prepare_writes_nothing_and_takes_no_argument(tmp_path, capsys):
+    root = make_space(tmp_path / "ada", subjects=[
+        {"id": "harbor", "kind": "projects", "title": "Harbor", "state": "active"}])
+    path = candidate_file(root, CLEAN)
+    before = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    assert distill.main([str(root), "prepare"]) == 0
+    assert {p: p.read_bytes() for p in root.rglob("*") if p.is_file()} == before
+    capsys.readouterr()
+    # `prepare` takes no argument; `verify` and `checked` keep exactly one; `--body` stays verify's
+    assert distill.main([str(root), "prepare", "harbor"]) == 2
+    assert distill.main([str(root), "verify"]) == 2 and distill.main([str(root), "checked", "--by", "Ben Liu"]) == 2
+    assert distill.main([str(root), "prepare", "--body", str(path)]) == 2
 
 
 def candidate_text(root, name):

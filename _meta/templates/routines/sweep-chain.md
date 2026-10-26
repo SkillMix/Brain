@@ -31,12 +31,13 @@ and lands every file. For each root <root>:
 2. Run `{python} <root>/_meta/tools/chain.py sweep <root>` (sweep, distill, check). Then follow
    `.claude/skills/distill/SKILL.md` and `.claude/skills/check/SKILL.md` for the judgment: for
    each new or refreshed candidate read `_meta/lessons.md` and the subject's brief, read every
-   evidence record in full, set aside what is not about the subject, research the gaps, write
-   the page in its kind's shape with a source on every line, run `distill.py <root> verify`,
-   and have a second agent check it (`distill.py <root> checked`); sharpen each check hit's
-   recommendation. Quality over token cost. Never write `status: stable`; never edit a signed
-   page; never read `personal/`, `academic/` or `_scratch/`, nor the archive while
-   `routing.archives` is off.
+   evidence record in full, set aside what is not about the subject, recheck its questions,
+   research the gaps and ask what only the person can answer (the distill skill's Recheck and
+   Ask steps), write the page in its kind's shape with a source on every line, run
+   `distill.py <root> verify`, and have a second agent check it (`distill.py <root> checked`);
+   sharpen each check hit's recommendation. Quality over token cost. Never write
+   `status: stable`; never edit a signed page; never read `personal/`, `academic/` or
+   `_scratch/`, nor the archive while `routing.archives` is off.
 3. In the workspace only: follow `.claude/skills/tracker/SKILL.md`: create or update what
    `{python} {workspace}/_meta/tools/tracker.py {workspace} pending` lists with the tracker
    connector, and record each. Write nothing else to the tracker.

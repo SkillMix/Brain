@@ -4,6 +4,7 @@ import json
 import pytest
 import yaml
 
+import needs_you
 import pages
 import sign
 import spaceyaml
@@ -243,7 +244,19 @@ def test_signing_leaves_the_tool_kept_evidence_list_on_the_candidate(tmp_path):
     assert clean(root) == []
 
 
-def test_cli_apply_reads_a_verdicts_file_with_bare_yes_and_no(tmp_path, monkeypatch, capsys):
+def pins_in(text):
+    """{id: {"fingerprint", "base"}} from a read-back of several items."""
+    out, current = {}, None
+    for line in text.splitlines():
+        if line.startswith("## "):
+            current = out.setdefault(line[3:].split(":", 1)[0], {})
+        elif current is not None and line.split(": ", 1)[0] in ("fingerprint", "base"):
+            key, value = line.split(": ", 1)
+            current.setdefault(key, value)
+    return out
+
+
+def test_cli_apply_requires_the_pin_and_still_takes_bare_verbs_elsewhere(tmp_path, monkeypatch, capsys):
     root = make_space(tmp_path / "ada")
     candidate(root, dest=None)
     candidate(root, stem="beacon", id="p-00000102", target="knowledge/projects/beacon/beacon.md", dest=None)
@@ -257,14 +270,159 @@ def test_cli_apply_reads_a_verdicts_file_with_bare_yes_and_no(tmp_path, monkeypa
     assert sign.main([str(root), "apply", "--by", "routine:x", "--verdicts", str(verdicts)]) == 1
     assert (root / "_inbound/candidates/harbor.md").exists()
     assert sign.main([str(root), "apply", "--by", "Ada Okafor", "--verdicts", str(verdicts)]) == 0
+    out = json.loads(capsys.readouterr().out)
+    # the two pages carry no fingerprint: refused and still waiting; the check's no is recorded
+    assert out["signed"] == [] and out["refused"] == [
+        {"id": "p-00000101", "why": "no fingerprint: read it back first"},
+        {"id": "p-00000102", "why": "no fingerprint: read it back first"}]
+    assert out["verdicts_recorded"] == 1
+    assert json.loads((root / "_meta/state/check-verdicts.jsonl").read_text().splitlines()[-1])["verdict"] == "no"
+    assert (root / "_inbound/candidates/harbor.md").exists() and (root / "_inbound/candidates/beacon.md").exists()
+    assert not (root / "knowledge/projects").exists() or not list((root / "knowledge/projects").rglob("*.md"))
+    # read back (the edit from its write-up), then submit the pinned verdicts
+    (root / "_scratch/sign").mkdir(parents=True)
+    (root / "_scratch/sign/p-00000101.md").write_bytes(b"New body.\r\n")
+    assert sign.main([str(root), "read-back", "p-00000101", "p-00000102",
+                      "--body", "p-00000101=_scratch/sign/p-00000101.md"]) == 0
+    back = capsys.readouterr().out
+    assert "(your edit)" in back and pages.fingerprint("New body.\n") in back
+    pins = pins_in(back)
+    verdicts.write_text(yaml.safe_dump({
+        "p-00000101": {"verb": "edit", "body_file": "_scratch/sign/p-00000101.md", **pins["p-00000101"]},
+        "p-00000102": {"verb": "yes", **pins["p-00000102"]}}), encoding="utf-8")
+    assert sign.main([str(root), "apply", "--by", "Ada Okafor", "--verdicts", str(verdicts)]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["signed"] == ["p-00000101", "p-00000102"] and out["refused"] == []
     fm, body = pages.read(root / "knowledge/projects/harbor/harbor.md")
     assert body == "New body.\n" and fm["signed_at"] == "2026-10-12T09:00:00Z"
     assert pages.read(root / "knowledge/projects/beacon/beacon.md")[0]["status"] == "stable"
-    out = json.loads(capsys.readouterr().out)
-    assert out["signed"] == ["p-00000101", "p-00000102"] and out["verdicts_recorded"] == 1
-    assert json.loads((root / "_meta/state/check-verdicts.jsonl").read_text().splitlines()[-1])["verdict"] == "no"
     assert sign.main([str(root), "read-back", "p-00000101"]) == 0
     assert "not found" in capsys.readouterr().out
+
+
+def pin(root, item_id, body=None):
+    text = sign.read_back(root, [item_id], bodies={item_id: body} if body else None)
+    get = lambda key: next(l.split(": ", 1)[1] for l in text.splitlines() if l.startswith(key + ": "))
+    return {"fingerprint": get("fingerprint"), "base": get("base")}
+
+
+def test_read_back_shows_the_base_and_an_edit_s_own_fingerprint(tmp_path):
+    root = make_space(tmp_path / "ada")
+    candidate(root)
+    text = sign.read_back(root, ["p-00000101"], bodies={"p-00000101": "Harbor goes live on 9 November.\n"})
+    assert "(your edit)" in text and pages.fingerprint("Harbor goes live on 9 November.\n") in text
+    fm, body = pages.read(root / "_inbound/candidates/harbor.md")
+    assert f"base: {sign.base_of(fm, body)}" in text
+
+
+def test_a_pinned_yes_signs(tmp_path):
+    root = make_space(tmp_path / "ada")
+    candidate(root)
+    report = sign.apply(root, {"p-00000101": {"verb": "yes", **pin(root, "p-00000101")}},
+                        by="Ada Okafor", now=NOW, require_pin=True)
+    assert report.signed == ["p-00000101"] and report.refused == []
+
+
+def test_a_draft_refreshed_after_the_read_back_is_refused_and_stays(tmp_path):
+    root = make_space(tmp_path / "ada")
+    candidate(root)
+    p = pin(root, "p-00000101")
+    candidate(root, high_stakes="claims about a named person")      # distill refreshed it in between
+    report = sign.apply(root, {"p-00000101": {"verb": "yes", **p}}, by="Ada Okafor", now=NOW, require_pin=True)
+    assert report.refused == [{"id": "p-00000101", "why": "the draft changed since the read-back: read it back again"}]
+    assert (root / "_inbound/candidates/harbor.md").exists()
+    log = (root / "log.md").read_text(encoding="utf-8")
+    assert "- 2026-10-12T09:00:00Z refused p-00000101 by Ada Okafor: the draft changed" in log
+    assert not needs_you.VERDICT_LINE.match(log.strip().splitlines()[-1])
+
+
+def test_an_edit_signs_exactly_its_body_file(tmp_path):
+    root = make_space(tmp_path / "ada")
+    candidate(root)
+    (root / "_scratch/sign").mkdir(parents=True)
+    (root / "_scratch/sign/p-00000101.md").write_bytes(b"Harbor goes live on 9 November.\r\n")   # Review Focus 1
+    p = pin(root, "p-00000101", body="Harbor goes live on 9 November.\n")
+    sign.apply(root, {"p-00000101": {"verb": "edit", "body_file": "_scratch/sign/p-00000101.md", **p}},
+               by="Ada Okafor", now=NOW, require_pin=True)
+    fm, body = pages.read(root / "knowledge/projects/harbor/harbor.md")
+    assert body == "Harbor goes live on 9 November.\n" and fm["fingerprint"] == p["fingerprint"]
+
+
+def test_a_write_up_changed_after_the_read_back_is_refused(tmp_path):
+    root = make_space(tmp_path / "ada")
+    candidate(root)
+    (root / "_scratch/sign").mkdir(parents=True)
+    (root / "_scratch/sign/p-00000101.md").write_text("Harbor goes live on 10 November.\n", encoding="utf-8")
+    p = pin(root, "p-00000101", body="Harbor goes live on 9 November.\n")
+    report = sign.apply(root, {"p-00000101": {"verb": "edit", "body_file": "_scratch/sign/p-00000101.md", **p}},
+                        by="Ada Okafor", now=NOW)   # a pin given is checked even when not required
+    assert report.refused == [{"id": "p-00000101", "why": "the text changed since the read-back"}]
+    assert report.signed == [] and (root / "_inbound/candidates/harbor.md").exists()
+
+
+def test_a_signed_leaving_item_is_pinned_too(tmp_path):
+    root = make_space(tmp_path / "ada")
+    queue_item(root, "p-00000203", "Go-live date", NOW + dt.timedelta(hours=10),   # ruling R2
+               fingerprint=pages.fingerprint("Go-live date body.\n"), signed_by="Ada Okafor")
+    assert sign.apply(root, {"p-00000203": "yes"}, by="Ada Okafor", now=NOW, require_pin=True).refused == [
+        {"id": "p-00000203", "why": "no fingerprint: read it back first"}]
+    p = pin(root, "p-00000203")
+    report = sign.apply(root, {"p-00000203": {"verb": "yes", **p}}, by="Ada Okafor", now=NOW, require_pin=True)
+    assert report.signed == ["p-00000203"] and report.refused == []
+
+
+def test_a_bare_yes_on_a_page_is_refused_when_the_pin_is_required(tmp_path):
+    root = make_space(tmp_path / "ada")
+    candidate(root)
+    queue_item(root, "p-00000202", "Kickoff notes", NOW + dt.timedelta(hours=10))   # unsigned: outside the pin
+    report = sign.apply(root, {"p-00000101": "yes", "p-00000202": "yes"}, by="Ada Okafor", now=NOW, require_pin=True)
+    assert report.refused == [{"id": "p-00000101", "why": "no fingerprint: read it back first"}]
+    assert report.signed == ["p-00000202"]
+
+
+def test_yes_read_as_true_inside_a_mapping_still_means_yes(tmp_path):   # Review Focus 2
+    root = make_space(tmp_path / "ada")
+    candidate(root)
+    p = pin(root, "p-00000101")
+    data = yaml.safe_load(f"p-00000101: {{verb: yes, fingerprint: {p['fingerprint']}, base: {p['base']}}}\n")
+    assert data["p-00000101"]["verb"] is True
+    assert sign.apply(root, data, by="Ada Okafor", now=NOW, require_pin=True).signed == ["p-00000101"]
+
+
+def test_a_missing_or_outside_body_file_stops_the_run_before_any_write(tmp_path):   # Review Focus 5
+    root = make_space(tmp_path / "ada")
+    candidate(root)
+    check_item(root)
+    (tmp_path / "outside.md").write_text("Harbor goes live on 9 November.\n", encoding="utf-8")   # ruling R4
+    before = snapshot(root)
+    for where in ("_scratch/sign/none.md", "../outside.md"):
+        with pytest.raises(ValueError):   # the check's no comes first and would write: the whole run stops
+            sign.apply(root, {"p-00000401": "no",
+                              "p-00000101": {"verb": "edit", "body_file": where, "fingerprint": "x", "base": "y"}},
+                       by="Ada Okafor", now=NOW, require_pin=True)
+    assert snapshot(root) == before
+
+
+def test_a_body_file_with_a_note_or_under_another_verb_stops_the_run(tmp_path):   # ruling R11
+    root = make_space(tmp_path / "ada")
+    candidate(root)
+    (root / "_scratch/sign").mkdir(parents=True)
+    (root / "_scratch/sign/p-00000101.md").write_text("Harbor goes live on 9 November.\n", encoding="utf-8")
+    check_item(root)
+    before = snapshot(root)
+    for verdict in ({"verb": "edit", "body_file": "_scratch/sign/p-00000101.md", "note": "Go-live moves."},
+                    {"verb": "yes", "body_file": "_scratch/sign/p-00000101.md"}):
+        with pytest.raises(ValueError):
+            sign.apply(root, {"p-00000401": "no", "p-00000101": verdict}, by="Ada Okafor", now=NOW)
+    assert snapshot(root) == before
+
+
+def test_cli_read_back_body_stays_inside_the_space(tmp_path, capsys):
+    root = make_space(tmp_path / "ada")
+    candidate(root)
+    (tmp_path / "outside.md").write_text("Harbor goes live on 9 November.\n", encoding="utf-8")
+    assert sign.main([str(root), "read-back", "p-00000101", "--body", "p-00000101=../outside.md"]) == 1
+    assert "inside the space" in capsys.readouterr().err
 
 
 def test_a_question_a_routine_wrote_takes_a_verdict_without_a_page(tmp_path):
@@ -295,3 +453,102 @@ def test_an_edited_lesson_lands_and_travels_under_its_new_text(tmp_path):
     qfm, qbody = pages.read(queued)
     assert qfm["title"] == "Retry webhooks with backoff." and "beacon" not in (yaml.safe_dump(qfm) + qbody).lower()
     assert qfm["target"] == "knowledge/topics/lessons/retry-webhooks-with-backoff.md"   # one page per lesson in the brain
+
+
+@pytest.mark.parametrize("require_pin", [True, False])
+@pytest.mark.parametrize("missing", ["fingerprint", "base"])
+def test_a_pin_missing_either_half_is_a_missing_pin(tmp_path, missing, require_pin):
+    root = make_space(tmp_path / "ada")
+    candidate(root)
+    half = {k: v for k, v in pin(root, "p-00000101").items() if k != missing}
+    report = sign.apply(root, {"p-00000101": {"verb": "yes", **half}}, by="Ada Okafor", now=NOW,
+                        require_pin=require_pin)
+    assert report.refused == [{"id": "p-00000101", "why": "no fingerprint: read it back first"}]
+    assert report.signed == [] and (root / "_inbound/candidates/harbor.md").exists()
+
+
+def review_batch(root):
+    """A weekly review batch: line 1 a waiting draft, line 2 a signed page past its window."""
+    write_page(root, "knowledge/projects/harbor/status.md", body="# Status\n\nAll green.\n", id="p-00000301",
+               type="snapshot", title="Status", status="stable", signed_by="Ada Okafor")
+    return write_page(root, "_inbound/candidates/review-2026-10-12.md", id="p-0000e001", type="review",
+                      title="Weekly review 2026-10-12: 2 pages", review_batch=True, body="# Weekly review\n",
+                      lines=[{"n": 1, "page": "_inbound/candidates/harbor.md", "id": "p-00000101",
+                              "title": "Harbor", "signed": False},
+                             {"n": 2, "page": "knowledge/projects/harbor/status.md", "id": "p-00000301",
+                              "title": "Status", "signed": True}])
+
+
+def test_a_review_line_that_would_sign_a_draft_is_refused_when_the_pin_is_required(tmp_path):
+    root = make_space(tmp_path / "ada")
+    candidate(root)
+    batch = review_batch(root)
+    report = sign.apply(root, {"review-2026-10-12#1": "yes", "review-2026-10-12#2": "yes"},
+                        by="Ada Okafor", now=NOW, require_pin=True)
+    assert report.refused == [{"id": "review-2026-10-12#1", "why": "no fingerprint: read it back first"}]
+    assert report.signed == ["review-2026-10-12#2"] and report.skipped == []
+    assert (root / "_inbound/candidates/harbor.md").exists()
+    assert not (root / "knowledge/projects/harbor/harbor.md").exists()
+    assert [l.get("answered") for l in pages.read(batch)[0]["lines"]] == [None, "yes"]   # line 1 stays open
+    log = (root / "log.md").read_text(encoding="utf-8")
+    assert ("- 2026-10-12T09:00:00Z refused review-2026-10-12#1 by Ada Okafor: "
+            "no fingerprint: read it back first") in log
+    assert "yes review-2026-10-12#1 by" not in log and "yes review-2026-10-12#2 by Ada Okafor" in log
+    # no and later on such a line need no pin, as before
+    report = sign.apply(root, {"review-2026-10-12#1": "later"}, by="Ada Okafor", now=NOW, require_pin=True)
+    assert report.deferred == ["review-2026-10-12#1"] and report.refused == []
+    report = sign.apply(root, {"review-2026-10-12#1": ["no", "out of date"]}, by="Ada Okafor", now=NOW,
+                        require_pin=True)
+    assert report.discarded == ["p-00000101"] and report.refused == []
+    assert not (root / "_inbound/candidates/harbor.md").exists() and not batch.exists()
+
+
+def test_a_whole_batch_yes_leaves_its_drafts_to_their_own_read_back(tmp_path):
+    root = make_space(tmp_path / "ada")
+    candidate(root)
+    batch = review_batch(root)
+    report = sign.apply(root, {"review-2026-10-12": "yes"}, by="Ada Okafor", now=NOW, require_pin=True)
+    assert report.refused == [{"id": "review-2026-10-12#1", "why": "no fingerprint: read it back first"}]
+    assert report.signed == ["review-2026-10-12#2"]
+    assert pages.read(root / "knowledge/projects/harbor/status.md")[0]["verified_by"] == "Ada Okafor"
+    assert (root / "_inbound/candidates/harbor.md").exists()
+    assert [l.get("answered") for l in pages.read(batch)[0]["lines"]] == [None, "yes"]
+    # the draft is signed by its own id, after its read-back
+    report = sign.apply(root, {"p-00000101": {"verb": "yes", **pin(root, "p-00000101")}},
+                        by="Ada Okafor", now=NOW, require_pin=True)
+    assert report.signed == ["p-00000101"]
+    assert pages.read(root / "knowledge/projects/harbor/harbor.md")[0]["status"] == "stable"
+
+
+def test_a_review_line_still_signs_a_draft_when_the_pin_is_not_required(tmp_path):
+    root = make_space(tmp_path / "ada")
+    candidate(root)
+    review_batch(root)
+    report = sign.apply(root, {"review-2026-10-12#1": "yes"}, by="Ada Okafor", now=NOW)
+    assert report.refused == [] and report.signed == ["p-00000101"]
+    assert pages.read(root / "knowledge/projects/harbor/harbor.md")[0]["status"] == "stable"
+
+
+# ----- the final review: read-backs of items that are not one page ---------------------------------
+def test_a_first_release_line_reads_back_beside_a_page(tmp_path):   # final review, Important 3
+    root = make_space(tmp_path / "ada")
+    candidate(root)
+    for item_id, title in (("p-00000201", "Go-live date"), ("p-00000202", "Kickoff notes")):
+        queue_item(root, item_id, title, NOW + dt.timedelta(hours=10), first_release="harbor")
+    text = sign.read_back(root, ["p-00000101", "first-harbor"])
+    page, first = text.split("## first-harbor", 1)
+    fm, body = pages.read(root / "_inbound/candidates/harbor.md")
+    assert BODY in page and f"base: {sign.base_of(fm, body)}" in page
+    assert "p-00000201: Go-live date" in first and "p-00000202: Kickoff notes" in first
+    assert "fingerprint:" not in first and "base:" not in first   # a bare verb answers it (R10)
+    assert pins_in(text) == {"p-00000101": pin(root, "p-00000101"), "first-harbor": {}}
+    report = sign.apply(root, {"first-harbor": "yes"}, by="Ada Okafor", now=NOW, require_pin=True)
+    assert report.refused == [] and sorted(report.signed) == ["p-00000201", "p-00000202"]
+
+
+def test_a_read_back_says_when_a_write_up_is_not_used(tmp_path):   # final review, Minor 9
+    root = make_space(tmp_path / "ada")
+    check_item(root)
+    text = sign.read_back(root, ["p-00000401"], bodies={"p-00000401": "Harbor is at 20%.\n"})
+    assert "the write-up is not used for this item" in text and "(your edit)" not in text
+    assert "Harbor is at 20%." not in text and "I think 20%" in text

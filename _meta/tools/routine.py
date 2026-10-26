@@ -40,7 +40,7 @@ CLAUDE = ["-p", "--permission-mode", "acceptEdits", "--permission-prompts", "non
 ROUTINE_TOOLS = ("brief.py", "chain.py", "check.py", "classify.py", "distill.py", "landing.py",
                  "librarian.py", "morning_view.py", "outbox_reconcile.py",
                  "owner_email.py", "registry.py", "release.py", "request.py", "route.py", "search.py",
-                 "status.py", "sweep.py", "sync.py", "tests_run.py", "tracker.py")
+                 "sign_questions.py", "status.py", "sweep.py", "sync.py", "tests_run.py", "tracker.py")
 # What no routine edits, in any space on this machine: the code that runs (tools, migrations,
 # tests and their configuration), the instructions every session loads, git, the rules and the
 # routine prompts. A path rule for Edit covers Write and NotebookEdit too; Claude Code reads no
