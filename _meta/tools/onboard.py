@@ -560,6 +560,76 @@ def write_needs_you(root, skipped, path="_inbound/needs-you/onboard.yaml", prefi
         write_yaml(target, {"items": items})
 
 
+# The company profile: what the research read about the company, drafted for the owner to correct and sign.
+PROFILE_TITLES = {"company": "The company", "offering": "What we offer", "vision": "Vision", "locations": "Locations",
+                  "people": "People", "clients": "Clients", "brand": "Brand", "tools": "Tools",
+                  "signs_for": "Who signs for the company"}
+PROFILE_ASK = "Correct any line of your company profile, or sign it"
+PROFILE_ITEMS = "_inbound/needs-you/onboard-profile.yaml"   # its own file: onboard.yaml is rewritten by every run
+
+
+def _own_draft(path) -> bool:
+    """Whether a page is absent or still the draft onboard wrote: a signed page, or one that
+    someone else wrote, is never overwritten (the rule `write_identity` keeps)."""
+    fm = pages.read(path)[0] if Path(path).exists() else {}
+    return not (fm.get("status") == "stable" or (fm and (fm.get("generated") or {}).get("by") != "onboard"))
+
+
+def fill_what_we_do(root, bullets, now) -> bool:
+    """Put the profile's offering lines under "What we do" in the spine, in place of the placeholder
+    (or of an earlier fill). The spine must still be onboard's draft."""
+    path = Path(root) / "identity" / "spine.md"
+    if not bullets or not path.exists() or not _own_draft(path):
+        return False
+    fm, body = pages.read(path)
+    filled, n = re.subn(r"(## What we do\n\n).*?(?=\n\n## |\Z)", lambda m: m.group(1) + "\n".join(f"- {b}" for b in bullets),
+                        body, count=1, flags=re.S)
+    if not n:
+        return False
+    pages.write(path, {**fm, "generated": pages.generated("onboard", now)}, filled)
+    return True
+
+
+def write_profile(root, profile: dict, now) -> Path | None:
+    """Draft `identity/profile.md` from the research: `profile` is {section: [{"text", "source",
+    "at"}]} (`research.PROFILE_SECTIONS`), and each line becomes one bullet ending ` (source:
+    <source>, <date>)`; a line without text or a source is left out, and so is a section without a
+    line. The offering lines also fill the spine's "What we do". One item on Needs you (id
+    `onboard-profile`, in its own file: `onboard.yaml` is rewritten by every run) asks the owner to
+    correct any line or sign. A signed page, or one someone else wrote, is never overwritten, and
+    asks nothing: an item an earlier run left is emptied. Returns the page's path; None when there
+    was no line to write."""
+    import research
+    today = f"{now:%Y-%m-%d}"
+    sections = {}
+    for section in research.PROFILE_SECTIONS:
+        bullets = []
+        for line in (profile or {}).get(section) or []:
+            text, source = " ".join(str(line.get("text") or "").split()), " ".join(str(line.get("source") or "").split())
+            if text and source:
+                bullets.append(f"{text} (source: {source}, {str(line.get('at') or '')[:10] or today})")
+        if bullets:
+            sections[section] = bullets
+    path = Path(root) / "identity" / "profile.md"
+    if not _own_draft(path):   # signed (or someone's own): the question to sign it is withdrawn, not left to be asked
+        write_needs_you(root, [], path=PROFILE_ITEMS, prefix="onboard")
+        return path
+    if not sections:
+        return None
+    body = ("# Company profile\n\nDrafted from the company's own sources: its site, the business register, its code "
+            "organisation, its documents and files. Every line says where it comes from. Correct any line, then sign "
+            "the page.\n")
+    for section, bullets in sections.items():
+        body += f"\n## {PROFILE_TITLES[section]}\n\n" + "\n".join(f"- {b}" for b in bullets) + "\n"
+    fm = pages.read(path)[0] if path.exists() else {}
+    pages.write(path, {"id": fm.get("id") or pages.new_id(), "type": "concept", "title": "Company profile",
+                       "status": "draft", "generated": pages.generated("onboard", now)}, body)
+    fill_what_we_do(root, sections.get("offering"), now)
+    write_needs_you(root, [{"key": "profile", "ask": PROFILE_ASK, "default": "sign it when it reads right"}],
+                    path=PROFILE_ITEMS, prefix="onboard")
+    return path
+
+
 # ----- the personal instruction ---------------------------------------------
 def instruction_block(workspace) -> str:
     text = (TEMPLATES / "personal-instruction.md").read_text(encoding="utf-8")

@@ -10,10 +10,11 @@ import subprocess
 import yaml
 
 import onboard
+import pages
 import registry
 import spaceyaml
 import validate
-from conftest import make_space
+from conftest import NOW, make_space
 
 TEMPLATE = Path(__file__).resolve().parents[3]
 FIXTURE_COMPANY = TEMPLATE / "_meta" / "tests" / "fixture" / "company.yaml"
@@ -679,3 +680,125 @@ def test_inviting_someone_not_yet_registered_registers_them_or_says_how(tmp_path
     answers = yaml.safe_load((brain / "_meta" / "state" / "invitations" / "ravi.yaml").read_text(encoding="utf-8"))
     assert answers["name"] == "Ravi Mendes" and answers["say"].startswith("Onboard me to Lantern Works:")
     assert registry.Registry(brain, spaceyaml.load(brain)).check() == []
+
+
+# ----- the company profile: a cited draft, never over a signed page -------------------------------------
+LINE = {"text": "Wayfinding and signage for ports and transit", "source": "site, About", "at": "2026-10-24"}
+
+
+def test_the_profile_page_cites_every_line_and_skips_a_signed_page(tmp_path):
+    brain = make_space(tmp_path / "brain", profile="brain", name="brain")
+    onboard.write_profile(brain, {"offering": [{"text": "Wayfinding and signage for ports and transit", "source": "site, About", "at": "2026-10-24"}]}, NOW)
+    text = (brain / "identity" / "profile.md").read_text(encoding="utf-8")
+    assert "Wayfinding and signage for ports and transit (source: site, About, 2026-10-24)" in text
+    fm, _ = pages.read(brain / "identity" / "profile.md")
+    assert fm["status"] == "draft" and fm["type"] == "concept" and fm["generated"]["by"] == "onboard"
+    # signed by the owner: never overwritten, whatever the research finds later
+    signed = {**fm, "status": "stable", "signed_by": "Ada Okafor", "signed_at": "2026-10-25T08:00:00Z"}
+    signed["fingerprint"] = pages.fingerprint("# Company profile\n\nSigned text.\n")
+    pages.write(brain / "identity" / "profile.md", signed, "# Company profile\n\nSigned text.\n")
+    before = (brain / "identity" / "profile.md").read_text(encoding="utf-8")
+    onboard.write_profile(brain, {"offering": [{**LINE, "text": "Something new"}]}, NOW)
+    assert (brain / "identity" / "profile.md").read_text(encoding="utf-8") == before
+    assert [e for e in validate.validate(brain) if not e.startswith("warning:")] == []
+
+
+def test_a_profile_page_that_someone_else_wrote_is_left_alone_too(tmp_path):
+    brain = make_space(tmp_path / "brain", profile="brain", name="brain")
+    pages.write(brain / "identity" / "profile.md", {"id": pages.new_id(), "type": "concept", "title": "Company profile",
+                "status": "draft", "generated": pages.generated("ada", NOW)}, "# Company profile\n\nMine.\n")
+    onboard.write_profile(brain, {"offering": [LINE]}, NOW)
+    assert "Mine." in (brain / "identity" / "profile.md").read_text(encoding="utf-8")
+
+
+def test_the_profile_lists_the_sections_in_order_one_cited_bullet_a_line_and_drops_what_has_no_source(tmp_path):
+    brain = make_space(tmp_path / "brain", profile="brain", name="brain")
+    profile = {"people": [{"text": "Ada Okafor, founder", "source": "file, Pitch deck.pdf", "at": "2026-08-01"}],
+               "company": [{"text": "A signage studio", "source": "register, Entry", "at": "2026-10-01"}],
+               "offering": [LINE, {"text": "No source for this", "source": "", "at": "2026-10-24"}, {"text": "", "source": "x", "at": "2026-10-24"}],
+               "brand": [], "invented": [{"text": "Not a section", "source": "x", "at": "2026-10-24"}],
+               "clients": [{"text": "A line with no date", "source": "documents, Brand book"}]}
+    onboard.write_profile(brain, profile, NOW)
+    text = (brain / "identity" / "profile.md").read_text(encoding="utf-8")
+    bullets = [l for l in text.splitlines() if l.startswith("- ")]
+    assert bullets == ["- A signage studio (source: register, Entry, 2026-10-01)",
+                       f"- {LINE['text']} (source: site, About, 2026-10-24)",
+                       "- Ada Okafor, founder (source: file, Pitch deck.pdf, 2026-08-01)",
+                       "- A line with no date (source: documents, Brand book, 2026-10-12)"]   # the day it was drafted
+    assert "No source for this" not in text and "Not a section" not in text
+    headings = [l for l in text.splitlines() if l.startswith("## ")]
+    assert len(headings) == 4 and "## Brand" not in text   # a section with no line has no heading
+
+
+def test_the_profile_fills_what_we_do_in_the_spine_and_nothing_else_of_it(tmp_path):
+    brain = make_space(tmp_path / "brain", profile="brain", name="brain")
+    onboard.write_identity(brain, "Lantern Works", "Ada Okafor", [], [], NOW)
+    before = (brain / "identity" / "spine.md").read_text(encoding="utf-8")
+    assert "(to be confirmed by the owner)" in before
+    onboard.write_profile(brain, {"offering": [LINE, {**LINE, "text": "Maps for clinics"}], "company": [LINE]}, NOW)
+    fm, body = pages.read(brain / "identity" / "spine.md")
+    assert fm["status"] == "draft" and "(to be confirmed by the owner)" not in body
+    assert (f"## What we do\n\n- {LINE['text']} (source: site, About, 2026-10-24)\n"
+            "- Maps for clinics (source: site, About, 2026-10-24)\n\n## What we never do") in body
+    assert body.startswith("# Spine") and "- We never send, post, spend or delete" in body
+    # new research later: the section is made again from the new lines, not added to
+    onboard.write_profile(brain, {"offering": [{**LINE, "text": "Signs only"}]}, NOW)
+    body = pages.read(brain / "identity" / "spine.md")[1]
+    assert "Signs only" in body and "Maps for clinics" not in body and body.count("## What we do") == 1
+    # no offering: the spine stays as it was
+    onboard.write_identity(brain, "Lantern Works", "Ada Okafor", [], [], NOW)
+    onboard.write_profile(brain, {"company": [LINE]}, NOW)
+    assert (brain / "identity" / "spine.md").read_text(encoding="utf-8").count("(to be confirmed by the owner)") == 1
+
+
+def test_a_signed_spine_is_never_filled(tmp_path):
+    brain = make_space(tmp_path / "brain", profile="brain", name="brain")
+    onboard.write_identity(brain, "Lantern Works", "Ada Okafor", [], [], NOW)
+    fm, body = pages.read(brain / "identity" / "spine.md")
+    pages.write(brain / "identity" / "spine.md", {**fm, "status": "stable", "signed_by": "Ada Okafor",
+                "signed_at": "2026-10-25T08:00:00Z", "fingerprint": pages.fingerprint(body)}, body)
+    before = (brain / "identity" / "spine.md").read_text(encoding="utf-8")
+    onboard.write_profile(brain, {"offering": [LINE]}, NOW)
+    assert (brain / "identity" / "spine.md").read_text(encoding="utf-8") == before
+    assert (brain / "identity" / "profile.md").exists()   # the profile is its own page
+
+
+def test_the_profile_is_one_needs_you_item_in_its_own_file_and_no_other_item_is_touched(tmp_path):
+    brain = make_space(tmp_path / "brain", profile="brain", name="brain")
+    onboard.write_needs_you(brain, [{"key": "identity", "ask": "Sign the identity", "default": "sign it"},
+                                    {"key": "domains", "ask": "Which domains?", "default": "none"}])
+    onboard.write_profile(brain, {"offering": [LINE]}, NOW)
+    onboard.write_profile(brain, {"offering": [LINE, {**LINE, "text": "More"}]}, NOW)   # again
+    own = yaml.safe_load((brain / "_inbound" / "needs-you" / "onboard-profile.yaml").read_text(encoding="utf-8"))["items"]
+    assert len(own) == 1 and own[0]["id"] == "onboard-profile" and own[0]["kind"] == "question"
+    assert own[0]["text"] == "Correct any line of your company profile, or sign it"
+    assert own[0]["recommendation"] and own[0]["default"] == "the default stays" and own[0]["depends"] == 1
+    assert set(own[0]) == {"id", "kind", "text", "recommendation", "default", "deadline", "depends", "payload", "fingerprint"}
+    first = yaml.safe_load((brain / "_inbound" / "needs-you" / "onboard.yaml").read_text(encoding="utf-8"))["items"]
+    assert [i["id"] for i in first] == ["onboard-identity", "onboard-domains"]   # the other writer's file is as it was
+    import needs_you
+    assert {"onboard-identity", "onboard-domains", "onboard-profile"} <= {i.id for i in needs_you.collect(brain, online=False)}
+    # and the onboard run's own rewrite of its file keeps the profile item, which is in another file
+    onboard.write_needs_you(brain, [{"key": "identity", "ask": "Sign the identity", "default": "sign it"}])
+    assert [i["id"] for i in yaml.safe_load((brain / "_inbound" / "needs-you" / "onboard-profile.yaml").read_text(encoding="utf-8"))["items"]] == ["onboard-profile"]
+
+
+def test_a_signed_profile_asks_nothing_and_a_profile_with_no_lines_writes_nothing(tmp_path):
+    brain = make_space(tmp_path / "brain", profile="brain", name="brain")
+    assert onboard.write_profile(brain, {}, NOW) is None and onboard.write_profile(brain, {"offering": [{"text": "x", "source": ""}]}, NOW) is None
+    assert not (brain / "identity" / "profile.md").exists()
+    assert not list((brain / "_inbound" / "needs-you").glob("onboard-profile.yaml"))
+    path = onboard.write_profile(brain, {"offering": [LINE]}, NOW)
+    assert path == brain / "identity" / "profile.md" and path.exists()
+    fm, body = pages.read(path)
+    pages.write(path, {**fm, "status": "stable", "signed_by": "Ada Okafor", "signed_at": "2026-10-25T08:00:00Z",
+                       "fingerprint": pages.fingerprint(body)}, body)
+    item = brain / "_inbound" / "needs-you" / "onboard-profile.yaml"
+    import needs_you
+    assert "onboard-profile" in {i.id for i in needs_you.collect(brain, online=False)}   # the draft asked to be signed
+    assert onboard.write_profile(brain, {"offering": [LINE]}, NOW) == path               # the owner signed it, and research ran again
+    assert yaml.safe_load(item.read_text(encoding="utf-8")) == {"items": []}             # the question is withdrawn, not left to be asked
+    assert "onboard-profile" not in {i.id for i in needs_you.collect(brain, online=False)}
+    assert onboard.write_profile(brain, {}, NOW) == path and yaml.safe_load(item.read_text(encoding="utf-8")) == {"items": []}   # no line either
+    item.unlink()
+    assert onboard.write_profile(brain, {"offering": [LINE]}, NOW) == path and not item.exists()   # and none is written for a signed page

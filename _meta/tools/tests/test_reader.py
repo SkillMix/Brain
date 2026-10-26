@@ -3,6 +3,7 @@
 starts the real claude: `fake_run` stands in for it with the output the command line really prints
 (docs/design/cli-facts.md)."""
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -612,3 +613,225 @@ def test_the_error_carries_its_kind_and_its_text():
     err = reader.ReaderError("auth", "connector needs re-authentication")
     assert (err.kind, err.text) == ("auth", "connector needs re-authentication")
     assert "auth" in str(err) and "re-authentication" in str(err)
+
+
+# ----- a reader of local files (Ruling R20): copies in an empty folder, the Read tool and nothing else --
+def office(path: Path, members: dict) -> Path:
+    import zipfile
+    with zipfile.ZipFile(path, "w") as z:
+        for name, xml in members.items():
+            z.writestr(name, xml)
+    return path
+
+
+RECORDS = {"required": ["records"]}
+
+
+def local_files(tmp_path) -> list:
+    folder = tmp_path / "Documents" / "Lantern Works"
+    folder.mkdir(parents=True)
+    (folder / "Brand book v3.pdf").write_bytes(b"%PDF-1.4 brand")
+    (folder / "Wayfinding \u00e9tude - sch\u00e9ma.md").write_text("# Notes\n", encoding="utf-8")
+    return [folder / "Brand book v3.pdf", folder / "Wayfinding \u00e9tude - sch\u00e9ma.md"]
+
+
+def files_run(seen):
+    """A run stand-in that looks at the folder the command runs in while the run is going."""
+    def run(argv, **kw):
+        seen.update(argv=list(argv), **kw)
+        folder = Path(kw["cwd"])
+        seen.update(folder=folder, listing=sorted(p.name for p in folder.iterdir()),
+                    content={p.name: p.read_bytes() for p in folder.iterdir()})
+        if "--settings" in argv:
+            path = Path(argv[argv.index("--settings") + 1])
+            seen.update(rules=json.loads(path.read_text(encoding="utf-8")), settings=path, guard=reader.guard_command(folder))
+        return subprocess.CompletedProcess(argv, 0, answered({"records": []}), "")
+    return run
+
+
+def test_a_files_reader_runs_in_an_empty_folder_holding_safe_named_copies_and_the_folder_goes_afterwards(tmp_path):
+    files, seen = local_files(tmp_path), {}
+    answer, names = reader.read_files("Read {files}", files, {"required": ["records"]}, run=files_run(seen), claude="claude")
+    assert answer == {"records": []}
+    assert seen["listing"] == ["01-brand-book-v3.pdf", "02-wayfinding-etude-schema.md"]   # ASCII, numbered, nothing else
+    assert all(re.fullmatch(r"[a-z0-9.-]+", n) for n in seen["listing"])
+    assert seen["content"]["01-brand-book-v3.pdf"] == b"%PDF-1.4 brand"
+    assert names == {"01-brand-book-v3.pdf": files[0], "02-wayfinding-etude-schema.md": files[1]}   # the caller maps back
+    assert "01-brand-book-v3.pdf" in seen["input"] and "{files}" not in seen["input"]   # the prompt names the copies
+    assert files[0].read_bytes() == b"%PDF-1.4 brand"   # the originals are untouched
+    assert not seen["folder"].exists()                  # the folder, copies and all, is removed
+    assert tmp_path not in seen["folder"].parents       # and it was never among the person's own folders
+
+
+def test_a_files_reader_has_the_read_tool_and_toolsearch_and_no_allow_rule_at_all(tmp_path):
+    seen = {}
+    reader.read_files("x {files}", local_files(tmp_path), RECORDS, run=files_run(seen), claude="C:/bin/claude.exe")
+    argv = seen["argv"]
+    assert argv[:2] == ["C:/bin/claude.exe", "-p"] and has(argv, routine.REFUSE) and has(argv, routine.JSON_OUT)
+    start = argv.index("--tools") + 1
+    assert argv[start:start + 2] == ["ToolSearch", "Read"] and argv[start + 2].startswith("--")   # no third built-in tool
+    assert "--allowedTools" not in argv                  # a bare Read allow reads any file on the machine
+    assert argv.count("Read") == 1                       # named once, by --tools
+    denied = argv[argv.index("--disallowedTools") + 1:]
+    for name in ("Bash", "PowerShell", "Edit", "Write", "WebFetch", "WebSearch", "Skill", "Monitor"):
+        assert name in denied
+    assert "Read" not in denied and "Glob" not in denied and "Grep" not in denied   # not built in: not asked for
+    assert "--no-session-persistence" in argv and "ANTHROPIC_API_KEY" not in seen["env"]
+
+
+def test_a_files_reader_denies_every_connector_tool_the_probe_knows(tmp_path):
+    seen = {}
+    reader.read_files("x {files}", local_files(tmp_path), RECORDS, run=files_run(seen), claude="claude", known_tools=KNOWN)
+    assert seen["rules"]["permissions"] == {"deny": sorted(t for t in KNOWN if t.startswith("mcp__"))}   # none is given
+    assert set(seen["rules"]) == {"permissions", "hooks"}
+
+
+def test_a_files_reader_carries_its_own_guard_a_hook_on_read_that_refuses_any_path_outside_its_folder(tmp_path):
+    """The person's own settings may allow Read everywhere (or add folders): the run's settings file adds
+    a PreToolUse hook on Read, and under --restricted the person's settings are not loaded at all."""
+    seen = {}
+    reader.read_files("x {files}", local_files(tmp_path), RECORDS, run=files_run(seen), claude="claude")   # no connector known
+    assert seen["rules"] == {"hooks": {"PreToolUse": [{"matcher": "Read", "hooks": [{"type": "command", "command": seen["guard"]}]}]}}
+    assert seen["guard"].startswith('"') and " -I " in seen["guard"] and "read_guard.py" in seen["guard"]
+    assert seen["guard"].endswith(f'"{Path(seen["folder"]).resolve().as_posix()}" || exit 2')   # guarding the folder the run starts in; a guard that cannot start blocks
+    argv = seen["argv"]
+    assert "--restricted" in argv and argv.index("--restricted") < argv.index("--tools")   # before the flags that take several values
+    assert argv[argv.index("--settings") + 1] == str(seen["settings"])
+    assert seen["settings"].parent != seen["folder"] and not seen["settings"].exists()   # beside the copies, removed with them
+
+
+def test_only_the_files_reader_is_restricted_and_hooked_the_connector_and_web_readers_are_as_they_were(tmp_path):
+    for tools in ([GMAIL], [PAGE], []):
+        seen = {}
+        reader.read("x", tools, SCHEMA, tmp_path, run=settings_run(seen), claude="claude", known_tools=KNOWN)
+        assert "--restricted" not in seen["argv"]
+        assert "hooks" not in seen.get("rules", {})
+
+
+def test_a_files_reader_that_cannot_be_guarded_does_not_run(tmp_path, monkeypatch):
+    def unquotable(folder, python=None):
+        raise ValueError("a name the command cannot quote")
+    monkeypatch.setattr(reader, "guard_command", unquotable)
+    seen = {}
+    with pytest.raises(reader.ReaderError) as e:
+        reader.read_files("x {files}", local_files(tmp_path), RECORDS, run=fake_run(seen, stdout=answered({"records": []})), claude="claude")
+    assert e.value.kind == "cli" and not seen
+    assert e.value.text == ("your documents were not read: a folder or program on this computer has a character in its name "
+                            "that cannot be handled safely")
+    assert not re.search(r"guard|\.py|Read|hook|--|command", e.value.text)   # plain words: no file, tool or flag names
+
+
+def test_the_office_text_is_found_in_linear_time_whatever_the_input(tmp_path):
+    """A crafted file that is a few kilobytes zipped and two megabytes unpacked must not stall the phase:
+    unclosed text elements, and attributes that never end, were quadratic."""
+    import time
+    for name, xml in (("unclosed text", "<w:t>" * 400_000), ("attributes", "<w:t x" * 333_000), ("open run", "<w:t>" + "a" * 1_900_000),
+                      ("paragraphs", "</w:p>" * 330_000)):
+        doc = office(tmp_path / f"{name}.docx", {"word/document.xml": xml})
+        started = time.perf_counter()
+        reader._office_text(doc, ".docx")
+        assert time.perf_counter() - started < 3, name
+    good = office(tmp_path / "good.docx", {"word/document.xml": '<w:p><w:r><w:t xml:space="preserve">kept &amp; read</w:t></w:r></w:p>'})
+    assert reader._office_text(good, ".docx") == "kept & read\n"
+
+
+def test_read_cannot_be_passed_to_a_files_reader_through_the_tools_argument(tmp_path):
+    refused(["Read"], tmp_path)          # read() still refuses a bare Read, as it refuses a shell
+    with pytest.raises(TypeError):
+        reader.read_files("x {files}", local_files(tmp_path), SCHEMA, tools=["Read"], run=fake_run(), claude="claude")   # and takes no tools
+
+
+def test_only_files_a_reader_can_read_are_copied_and_each_is_checked_before_it_is(tmp_path):
+    good = tmp_path / "ok.pdf"
+    good.write_bytes(b"%PDF")
+    (tmp_path / "pic.png").write_bytes(b"\x89PNG")
+    (tmp_path / "tool.exe").write_bytes(b"MZ")
+    folder = tmp_path / "stage"
+    folder.mkdir()
+    link = tmp_path / "link.pdf"
+    try:
+        link.symlink_to(good)
+    except (OSError, NotImplementedError):
+        link = None   # no right to make links here (Windows without developer mode)
+    others = [tmp_path / "pic.png", tmp_path / "tool.exe", tmp_path / "missing.pdf", tmp_path, *([link] if link else [])]
+    names = reader.stage([good, *others], folder)
+    assert list(names) == ["01-ok.pdf"] and names["01-ok.pdf"] == good   # not a picture, a program, a folder, a link, nothing
+    assert [p.name for p in folder.iterdir()] == ["01-ok.pdf"]
+
+
+def test_a_file_over_the_size_cap_is_left_out(tmp_path, monkeypatch):
+    big = tmp_path / "big.pdf"
+    big.write_bytes(b"%PDF" + b"0" * 10)
+    folder = tmp_path / "stage"
+    folder.mkdir()
+    monkeypatch.setattr(reader, "MAX_FILE_BYTES", 8)
+    assert reader.stage([big], folder) == {}
+    monkeypatch.setattr(reader, "MAX_FILE_BYTES", 14)
+    assert list(reader.stage([big], folder)) == ["01-big.pdf"]
+
+
+def test_a_word_or_slide_file_is_copied_as_its_text_and_a_broken_one_is_left_out(tmp_path):
+    doc = office(tmp_path / "Company profile.docx", {"word/document.xml":
+                 '<w:document><w:body><w:p><w:r><w:t>We make signs &amp; maps</w:t></w:r></w:p>'
+                 '<w:p><w:r><w:t xml:space="preserve">for ports.</w:t></w:r></w:p></w:body></w:document>'})
+    deck = office(tmp_path / "Pitch deck.pptx", {
+        "ppt/slides/slide2.xml": "<p:sld><a:p><a:r><a:t>Second</a:t></a:r></a:p></p:sld>",
+        "ppt/slides/slide1.xml": "<p:sld><a:p><a:r><a:t>First</a:t></a:r></a:p></p:sld>",
+        "ppt/slides/slide10.xml": "<p:sld><a:p><a:r><a:t>Tenth</a:t></a:r></a:p></p:sld>"})
+    broken = tmp_path / "Broken.docx"
+    broken.write_bytes(b"not a zip")
+    wrong = office(tmp_path / "Other.docx", {"xl/sheet.xml": "<x/>"})   # a zip with no document in it
+    folder = tmp_path / "stage"
+    folder.mkdir()
+    names = reader.stage([doc, deck, broken, wrong], folder)
+    assert list(names) == ["01-company-profile.txt", "02-pitch-deck.txt"] and names["01-company-profile.txt"] == doc
+    assert (folder / "01-company-profile.txt").read_text(encoding="utf-8") == "We make signs & maps\nfor ports.\n"
+    assert (folder / "02-pitch-deck.txt").read_text(encoding="utf-8") == "First\nSecond\nTenth\n"   # slides in order
+
+
+def test_two_files_of_one_name_get_two_copies_and_a_long_name_is_cut(tmp_path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    one, two = tmp_path / "a" / "Brand.pdf", tmp_path / "b" / "Brand.pdf"
+    one.write_bytes(b"%PDF 1")
+    two.write_bytes(b"%PDF 2")
+    long = tmp_path / ("x" * 100 + ".md")
+    long.write_text("text", encoding="utf-8")
+    folder = tmp_path / "stage"
+    folder.mkdir()
+    names = reader.stage([one, two, long], folder)
+    assert list(names)[:2] == ["01-brand.pdf", "02-brand.pdf"] and len(list(names)[2]) < 60
+    assert (folder / "01-brand.pdf").read_bytes() == b"%PDF 1" and (folder / "02-brand.pdf").read_bytes() == b"%PDF 2"
+
+
+def test_with_nothing_to_copy_no_reader_is_started(tmp_path):
+    (tmp_path / "a.exe").write_bytes(b"MZ")
+    seen = {}
+    got = reader.read_files("x {files}", [tmp_path / "a.exe"], SCHEMA, run=fake_run(seen, stdout=answered()), claude="claude")
+    assert got == ({}, {}) and not seen
+
+
+def test_a_files_reader_fails_like_any_other_reader(tmp_path, monkeypatch):
+    files = local_files(tmp_path)
+    with pytest.raises(reader.ReaderError) as e:
+        reader.read_files("x {files}", files, SCHEMA, run=fake_run(stdout=stream(init(), result(LIMIT, error=True))), claude="claude")
+    assert e.value.kind == "limit"
+    with pytest.raises(reader.ReaderError) as e:
+        reader.read_files("x {files}", files, {"required": ["records"]}, run=fake_run(stdout=answered({"other": 1})), claude="claude")
+    assert e.value.kind == "format"
+    monkeypatch.setattr(routine, "find_claude", lambda: None)
+    with pytest.raises(reader.ReaderError) as e:
+        reader.read_files("x {files}", files, SCHEMA, run=fake_run(stdout=answered()))
+    assert e.value.kind == "cli" and "claude" in e.value.text
+
+
+def test_the_folder_goes_when_the_run_fails_too(tmp_path):
+    seen = {}
+
+    def slow(argv, **kw):
+        seen["folder"] = Path(kw["cwd"])
+        assert seen["folder"].is_dir()
+        raise subprocess.TimeoutExpired(argv, kw["timeout"])
+    with pytest.raises(reader.ReaderError):
+        reader.read_files("x {files}", local_files(tmp_path), SCHEMA, run=slow, claude="claude")
+    assert not seen["folder"].exists()

@@ -51,9 +51,17 @@ copied) and the feeds go into the journal; an app to sign in to again, or one th
 read, is a need that waits. `apps --probe` stops after the question, in the first minutes: it
 records the apps found and, when there is none, asks the person to connect one.
 
+`research` reads the company's own sources (`research.py`): its site, the public business register of
+its country, its code organisation, the documents on this computer, a few notes of Claude's and, once
+the app card has been shown for ten minutes, the documents app. What was read goes, with keys and
+passwords dropped, to `~/.spaces/research/records.jsonl`, merged into a cited profile
+(`profile.yaml`); the company card goes into the journal, where the apps phase finds it. A colleague
+joining a brain skips it. The build puts the records into the new brain and drafts its company
+profile (`onboard.write_profile`), one item on Needs you.
+
     python start.py [signins|apps|research|build|history|resume] [--wait] [--json] [--probe]
                     [--invitation <brain repo>:<slug> | --brain <brain repo>] [--company NAME]
-                    [--name NAME] [--email EMAIL] [--feeds mail,calendar,chat,calls,tracker]
+                    [--domain DOMAIN] [--name NAME] [--email EMAIL] [--feeds mail,calendar,chat,calls,tracker]
                     [--org ORG] [--home DIR] [--template REPO] [--offline] [--dry-run]
 """
 from __future__ import annotations
@@ -141,6 +149,7 @@ import doctor  # noqa: E402
 import onboard  # noqa: E402
 import onboarding_page  # noqa: E402
 import reader  # noqa: E402
+import research  # noqa: E402
 import routine  # noqa: E402
 import setup_journal  # noqa: E402
 import signin  # noqa: E402
@@ -604,10 +613,13 @@ def _start_claude(m, record, errors) -> None:
 def _settle_namespace(args, login, who, record, facts) -> tuple:
     """Where a new company's repositories go, once GitHub reads back: what `--org` said or an
     earlier run settled, else `pick_namespace`; a choice only the person can make is a need.
-    Returns (account or None, the choices)."""
+    The organisations that were looked up are kept in the journal (`orgs`): the research finds the
+    person's other companies there. Returns (account or None, the choices)."""
     namespace, choices = args.org or record.get("namespace"), []
     if not namespace:
-        namespace, choices = pick_namespace(login, member_orgs(), args.company, email_domain(who["email"]))
+        orgs = member_orgs()
+        facts["orgs"] = orgs
+        namespace, choices = pick_namespace(login, orgs, args.company, email_domain(who["email"]))
     setup_journal.clear_need("namespace")   # asked again below when it is still not clear, whatever the list was
     if namespace:
         facts["namespace"] = namespace
@@ -771,8 +783,311 @@ def phase_apps(args) -> dict:
     return _read_apps(args, groups, unsigned, tools, claude, cwd, facts)
 
 
+HEAD_START_LOOK = 60   # seconds between looks at the clock while a phase waits for the app card's ten minutes
+_now = lambda: dt.datetime.now().astimezone()   # noqa: E731  the tests stand in for it, and for the next
+_sleep = time.sleep
+LIMIT_WHY = ("Your Claude limit was reached while the company was being researched{text}. Say the sentence again "
+             "once it resets: what was read is kept, and only the rest is read then.")
+HEAD_START_WHY = ("Your documents are read after {when}, ten minutes after you were shown which apps are read. Say "
+                  "the sentence again then.")
+
+
+def _company_card(args, journal: dict) -> dict:
+    """The company the research is about: its name (`--company`, else the name its domain gives) and
+    its domain (`--domain`, else the first of the person's own addresses that is not a free mail
+    provider's: the one given, the Claude sign-in's, git's). The card is what `apps.company_of`
+    reads from the journal."""
+    record = journal.get("signins") if isinstance(journal.get("signins"), dict) else {}
+    who = identity(args.name, args.email, offline=True)
+    emails = [e for e in dict.fromkeys([args.email, record.get("claude_email"), who["email"]]) if e]
+    own = (research.clean_domain(email_domain(e)) for e in emails)
+    domain = (research.clean_domain(getattr(args, "domain", None))
+              or next((d for d in own if d and d not in apps.FREE_MAIL), ""))
+    name = args.company or (onboard.humanize(research.domain_label(domain)) if domain else "")
+    return {"name": name, "domain": domain, "domains": [domain] if domain else []}
+
+
+def _documents_apps(journal: dict) -> list:
+    """The apps of the apps phase that hold documents and are read (`apps.READ`), with their read tools."""
+    record = journal.get("apps") if isinstance(journal.get("apps"), dict) else {}
+    return [v for v in record.get("verdicts") or []
+            if isinstance(v, dict) and "documents" in (v.get("kinds") or []) and v.get("verdict") in apps.READ and v.get("read")]
+
+
+def _card_opens(journal: dict) -> dt.datetime | None:
+    """When the app card has been shown for ten minutes (`starts_after`): before it no app's content is copied."""
+    record = journal.get("apps") if isinstance(journal.get("apps"), dict) else {}
+    try:
+        when = dt.datetime.fromisoformat(record["card"]["starts_after"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return when if when.tzinfo else when.astimezone()
+
+
+class _Reading:
+    """The sources of one run of the research phase, read one after the other. A source that
+    finished is remembered (`done`) and is not read again; what its readers returned goes through
+    `research.clean` and into the records file; one that could not be read is noted (`unread`) and
+    tried again next time. The plan's limit stops the run: `stop` holds its error."""
+
+    def __init__(self, prior: dict):
+        self.done = list(prior.get("sources_done") or [])
+        self.unread: dict = {}
+        self.faults: dict = {}   # the class of a fault that was ours, never its text: journal only
+        old = prior.get("dropped") if isinstance(prior.get("dropped"), dict) else {}
+        self.dropped = {"records": int(old.get("records") or 0), "kinds": sorted(old.get("kinds") or [])}
+        self.stop = None
+
+    def run(self, batch: list) -> None:
+        for name, source in batch:
+            if name in self.done or self.stop:
+                continue
+            try:
+                found = source()
+            except reader.ReaderError as exc:
+                if exc.kind == "limit":
+                    self.stop = exc
+                else:
+                    self.unread[name] = exc.text
+                continue
+            except routine.ProbeError:
+                raise
+            except Exception as exc:   # a fault in one source is that source's, with a fixed sentence: its text could repeat a page
+                self.unread[name], self.faults[name] = research.UNEXPECTED, type(exc).__name__
+                continue
+            if found is None:   # nothing there to read (no file, no note): looked at again next time
+                continue
+            kept, kinds = research.clean(found)
+            self.dropped = {"records": self.dropped["records"] + len(found) - len(kept),
+                            "kinds": sorted({*self.dropped["kinds"], *kinds})}
+            research.write_records(kept)
+            self.done.append(name)
+
+
+def _read_company(args, card: dict, prior: dict, journal: dict, reading: _Reading, others: list) -> dict:
+    """Read the company's sources that are not read yet: its site, its public register (where its
+    country has one), its code organisation, the documents on this computer (not in the folders of
+    `others`, the person's other companies), a few notes of Claude's, and last the documents app
+    (not before the app card has been shown for ten minutes). Then one reader with no tool at all
+    merges the records into the profile, every line citing a record. Returns the facts for the
+    journal."""
+    now, home, cwd = dt.datetime.now(dt.timezone.utc), Path.home(), research.scratch()
+    claude, probed = routine.find_claude() or "claude", []
+    record = journal.get("signins") if isinstance(journal.get("signins"), dict) else {}
+    taken = {r.get("id") for r in research.read_records()}
+    used = list(prior.get("files") or [])
+
+    def known() -> list:   # what the probe sees: the connector tools a reader was not given are denied for its run
+        if not probed:
+            probed.append(routine.probe_tools(claude, cwd).get("tools") or [])
+        return probed[0]
+
+    def ask(prompt: str, tools: list, schema: dict) -> dict:
+        return reader.read(prompt, tools, schema, cwd, known_tools=known(), claude=claude)
+
+    rules = research.web_rules(card["domain"])
+    host = research.register_host(card["domain"])
+    org = str(args.org or record.get("namespace") or "")
+    own_account = bool(org) and org == record.get("github")
+    sources = []
+
+    def site() -> list:
+        answer = ask(research.site_prompt(card), rules, research.WEB_SCHEMA)
+        if not args.company and answer.get("name"):
+            card["name"] = " ".join(str(answer["name"]).split())[:80]
+        return research.web_records(answer, "site", research.hosts_of(rules), now, taken)
+
+    def register() -> list:
+        answer = ask(research.register_prompt(card, host), [f"WebFetch(domain:{host})"], research.WEB_SCHEMA)
+        return research.web_records(answer, "register", [host], now, taken)
+
+    def code() -> list:
+        answer = ask(research.code_prompt(card, org), ["WebFetch(domain:github.com)"], research.WEB_SCHEMA)
+        return research.web_records(answer, "code", ["github.com"], now, taken)
+
+    def files() -> list | None:
+        found = research.company_files(home, research.terms(card), limit=research.FILES_READ, others=others)   # the site may have named the company
+        if not found:
+            return None
+        answer, names = reader.read_files(research.files_prompt(card), found, research.FILES_SCHEMA,
+                                          known_tools=known(), claude=claude)
+        used.extend(str(p) for p in names.values() if str(p) not in used)
+        return research.file_records(answer, names, taken)
+
+    def notes() -> list | None:
+        return research.note_records(research.claude_notes(home, research.terms(card)), taken) or None
+
+    if rules:
+        sources.append(("site", site))
+    else:
+        reading.unread["site"] = "the company has no website address to read"
+    if host:
+        sources.append(("register", register))
+    else:
+        reading.unread["register"] = (f"no public business register is known for the .{card['domain'].rsplit('.', 1)[-1]} domain"
+                                      if card["domain"] else "the company has no domain to look up in a register")
+    if org and not own_account and re.fullmatch(r"[A-Za-z0-9-]+", org):
+        sources.append(("code", code))
+    else:
+        reading.unread["code"] = ("the GitHub account is the person's own account, not an organisation of the company"
+                                  if own_account else "no code organisation of the company is known")
+    sources += [("files", files), ("notes", notes)]
+    reading.run(sources)
+    waiting = None
+    docs = [v for v in _documents_apps(journal) if f"documents:{v['app']}" not in reading.done]
+    if docs and not reading.stop:
+        opens = _card_opens(journal)
+        if opens and _now() < opens:
+            if args.wait:   # stays until the app card has been shown for ten minutes
+                while _now() < opens:
+                    _sleep(min(HEAD_START_LOOK, max(1.0, (opens - _now()).total_seconds())))
+            else:
+                waiting = opens
+
+        def documents(app: dict):
+            def source() -> list:
+                answer = ask(research.documents_prompt(card, app["app"]), list(app["read"]), research.WEB_SCHEMA)
+                return research.document_records(answer, app["app"], now, taken)
+            return source
+        if not waiting:
+            reading.run([(f"documents:{v['app']}", documents(v)) for v in docs])
+    records, merged, lines = research.read_records(), prior.get("profile_for"), prior.get("profile_lines") or 0
+    if records and not reading.stop and (merged != len(records) or not research.profile_path().exists()):
+        try:
+            made = research.profile_lines(ask(research.merge_prompt(card, records), [], research.PROFILE_SCHEMA), records)
+            research.profile_path().write_text(yaml.safe_dump(made, sort_keys=False, allow_unicode=True),
+                                               encoding="utf-8", newline="\n")
+            merged, lines = len(records), sum(len(v) for v in made.values())
+        except reader.ReaderError as exc:
+            if exc.kind == "limit":
+                reading.stop = exc
+            else:
+                reading.unread["profile"] = exc.text
+        except routine.ProbeError:
+            raise
+        except Exception as exc:
+            reading.unread["profile"], reading.faults["profile"] = research.UNEXPECTED, type(exc).__name__
+    return {"files": used, "records": len(records), "profile_for": merged, "profile_lines": lines,
+            "documents_after": waiting.isoformat(timespec="seconds") if waiting else None, "waiting": waiting}
+
+
 def phase_research(args) -> dict:
-    return _pending("research")
+    """Company research (phase 3): what the company's own sources say about it, as cited records
+    and a profile. A colleague joining a brain skips it (`skipped: colleague`: the brain has the
+    profile); offline there is nothing to read. The company is `--company` and the domain of the
+    person's company mail address (or `--domain`); with neither, nothing is researched. Readers
+    run one after the other, each with only what its source needs: page rules for the site, the
+    public register of the domain's country, the code organisation (never the person's own GitHub
+    account); the documents on this computer, through the files reader (`reader.read_files`); a few
+    notes of Claude's about the company; the documents app's read tools, after the app card has
+    been shown for ten minutes (`--wait` stays until then, else the phase waits); last a reader
+    with no tools merges everything. Records (with any key or password dropped, only the kind
+    journaled) go to `~/.spaces/research/records.jsonl`, the profile to `profile.yaml`, the
+    company card to the journal's `research` record (`company`), which the apps phase judges
+    work against. Sources that finished are not read again; the plan's limit keeps them and waits.
+    The state is `done`, `waiting` (limit, or the documents' ten minutes), or `failed` when
+    Claude does not say which tools it has. A dry run reads nothing and changes nothing."""
+    if args.invitation or args.brain:   # a colleague: the brain already holds the company's profile (spec section 6)
+        if args.dry_run:
+            return {"state": "pending", "skipped": "colleague"}
+        setup_journal.set_phase("research", "done", skipped="colleague")
+        return {"state": "done", "skipped": "colleague"}
+    if args.offline:
+        return {"state": "done", "why": "offline: no site or app to read"}
+    journal = setup_journal.load()
+    card = _company_card(args, journal)
+    if not card["name"]:
+        result = {"state": "pending" if args.dry_run else "done", "skipped": "no company",
+                  "why": "There is no company name or company mail address to research. Give the company's name and "
+                         "say the sentence again to research it."}
+        if not args.dry_run:
+            setup_journal.set_phase("research", "done", skipped="no company")
+        return result
+    if args.dry_run:
+        return {"state": "pending", "company": card}
+    prior = journal.get("research") if isinstance(journal.get("research"), dict) else {}
+    asked = {"company": args.company or "", "domain": card["domain"]}
+    if prior.get("asked") != asked or (prior.get("sources_done") and not research.records_path().exists()):
+        research.reset()   # another company than the one that was read, or what was read is gone: start over
+        prior = {}
+    stored = prior.get("company") if isinstance(prior.get("company"), dict) else {}
+    if prior.get("asked") == asked and not args.company and stored.get("name"):
+        card["name"] = stored["name"]   # a run again: the site is not read again, and its name is what the card keeps
+    research.write_records([])
+    reading = _Reading(prior)
+    signins, apps_record = (journal.get(k) if isinstance(journal.get(k), dict) else {} for k in ("signins", "apps"))
+    others = list(dict.fromkeys([*(research.other_companies()),
+                                 *research.rivals(card, signins, apps_record, args.org or signins.get("namespace"))]))
+    setup_journal.set_phase("research", "running", company=card, asked=asked, others=others,
+                            **({"skipped": None} if (journal.get("research") or {}).get("skipped") else {}))
+    failure = None
+    try:
+        facts = _read_company(args, card, prior, journal, reading, others)
+    except routine.ProbeError as exc:
+        facts, failure = {}, exc
+    waiting = facts.pop("waiting", None)
+    state = "failed" if failure else "waiting" if reading.stop or waiting else "done"
+    setup_journal.set_phase("research", state, company=card, sources_done=reading.done, unread=reading.unread,
+                            faults=reading.faults, dropped=reading.dropped, **facts)
+    result = {"state": state, "company": card, "sources": reading.done, "unread": reading.unread,
+              "records": facts.get("records", 0), "profile_lines": facts.get("profile_lines", 0)}
+    if failure:
+        result.update(detail=str(failure), why="Claude did not say which apps it can reach, so the company could not be "
+                      "researched. Say the sentence again to try once more.")
+    elif reading.stop:
+        result["why"] = LIMIT_WHY.format(text=f" ({reading.stop.text})" if reading.stop.text else "")
+    elif waiting:
+        result["why"] = HEAD_START_WHY.format(when=f"{waiting.astimezone():%H:%M}")
+    return result
+
+
+NOT_THIS_COMPANY = ("the research kept on this machine is about another company, or does not say which, so it was "
+                    "not put into this brain")
+
+
+def _same_company(card, brain_name) -> bool:
+    """Whether the researched company (its card: name, domain) is the one a brain is named for: the
+    names agree letter for letter apart from spaces and hyphens, or one begins with the other, at
+    least four letters each (`lantern` for `lantern-works`; `works` is not). The same name is the same
+    company whatever its length (QXR)."""
+    brain = re.sub(r"[^a-z0-9]", "", str(brain_name or "").lower())
+    card = card if isinstance(card, dict) else {}
+    names = [re.sub(r"[^a-z0-9]", "", str(n or "").lower()) for n in (card.get("name"), research.domain_label(card.get("domain")))]
+    return any(n and (n == brain or (len(n) >= 4 and len(brain) >= 4 and (n.startswith(brain) or brain.startswith(n))))
+               for n in names)
+
+
+def _land_research(report) -> dict:
+    """What the research read, in the brain the build made: the records as witness pages (their
+    claims stay on the page, unconfirmed) and the profile as a draft page with one item on Needs
+    you. Only the research of this company: the company card in the journal must be the brain's
+    (`_same_company`); else nothing is landed and `skipped` says why. {} when there is nothing to land."""
+    brain = Path(report.spaces["brain"]) if report.spaces.get("brain") else None
+    records = research.records_path()
+    if brain is None or not (brain / "space.yaml").exists() or not records.exists():
+        return {}
+    card = (setup_journal.load().get("research") or {}).get("company")
+    if not _same_company(card, spaceyaml.load(brain).name):
+        return {"skipped": NOT_THIS_COMPANY}
+    out = research.ingest(brain, records, as_profile=True)
+    try:
+        lines = yaml.safe_load(research.profile_path().read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        lines = None
+    page = onboard.write_profile(brain, lines if isinstance(lines, dict) else {}, spaceyaml.load(brain).now())
+    landed = {"written": len(out["written"]), "kept": len(out["kept"]), "left_out": len(out["skipped"])}
+    if page:
+        landed["profile"] = page.relative_to(brain).as_posix()
+    return landed if landed["written"] or landed["kept"] or page else {}
+
+
+def _research_line(landed: dict) -> str:
+    """What the build did with the research, in a line: what it did, not what it set out to do."""
+    if landed.get("error") or landed.get("skipped"):
+        return landed.get("error") or landed["skipped"]
+    said = [f"{landed['written']} pages written"] if landed.get("written") else []
+    said += [f"{landed['kept']} already there"] if landed.get("kept") else []
+    return ", ".join(said + ["profile drafted" if landed.get("profile") else "no profile drafted"])
 
 
 def phase_build(args) -> dict:
@@ -798,10 +1113,22 @@ def phase_build(args) -> dict:
                    email=args.email, feeds=args.feeds, org=org, home=args.home, template=args.template,
                    offline=args.offline, dry_run=args.dry_run, user_instructions=args.user_instructions)
     result = summary(report)
+    if new_company and not args.dry_run:   # the research of phase 3 goes into the brain just made
+        try:
+            landed = _land_research(report)
+        except (OSError, ValueError, yaml.YAMLError):
+            landed = {"error": "what was read about the company could not be put into the brain yet"}
+        if landed:
+            result["research"] = landed
+        note = landed.get("skipped")
+        if note or (setup_journal.load().get("build") or {}).get("research_skipped"):   # the journal says what was left out, and forgets it when it is not
+            setup_journal.set_phase("build", "running", research_skipped=note)
     if not args.json:
         onboard.print_steps(report.steps)
         if result["workspace"]:
             print(f"\nworkspace: {result['workspace']}")
+        if result.get("research"):
+            print("research: " + _research_line(result["research"]))
         for r in result["routines"]:
             print(f"routine {r['name']} ({r['schedule']}, {r['timezone']} time): {r['prompt_file']}")
         for line in result["plan"]:
@@ -873,6 +1200,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--invitation", help="<brain repo>:<slug>, from the invitation sentence")
     ap.add_argument("--brain", help="the company's brain repository (owner/name, a URL or a local path)")
     ap.add_argument("--company", help="no brain yet: the company's name (default: the organization's)")
+    ap.add_argument("--domain", help="research: the company's website domain, when it is not the mail address's")
     ap.add_argument("--name")
     ap.add_argument("--email")
     ap.add_argument("--feeds", help="the connectors this session has: mail, calendar, chat, calls, tracker")

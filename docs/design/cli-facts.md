@@ -840,6 +840,23 @@ Each item names the command or check that settles it, for the owner.
   mcp__claude_ai_Gmail__search_threads --max-turns 4` with a prompt asking for one Gmail search
   that matches nothing, and see whether the tool is called. If it is, readers can add
   `--restricted` (one line in `reader._command`; the probe stays as it is, without it).
+- **The files reader's guard (Task 7, Ruling R23).** `reader.read_files` runs `--restricted --tools
+  ToolSearch Read` with a `--settings` file holding a `PreToolUse` hook on `Read` (`read_guard.py`).
+  Verified once, 2026-10-24 (one init-event probe, no tool called): `--settings` hooks **do run under
+  `--restricted`**. The run was `claude -p` with `REFUSE`, `JSON_OUT`, `--model haiku --max-turns 1
+  --no-session-persistence --restricted --settings <file with a SessionStart hook that printed a
+  marker> --tools ToolSearch`. It printed `hook_started` and `hook_response` for that hook (exit 0,
+  the marker on stdout) before `init`, and no other hook line; init reported `mcp_servers` 28, `tools`
+  279, `plugins` 4, and the result was `success`. One observation: with a SessionStart hook in the
+  run, the claude.ai connectors were in init even under `--restricted` (Task 5 saw them absent under
+  `--restricted` without hooks, so the timing of init decides which). Still not run: the read itself.
+  In a scratch folder holding one file, with a user settings file that allows `Read`, ask the run to
+  read the file in the folder (expected: read) and a file outside it (expected: refused, listed in
+  `permission_denials`, `PreToolUse:Read hook error`). The hook command ends in `|| exit 2`, so a
+  guard that cannot start blocks too (checked with Git Bash, Git `sh` and `cmd.exe`, not with the CLI).
+  The hooks documentation says hook commands run in `sh -c`, or Git Bash on Windows, and in
+  PowerShell only when Git Bash is missing; PowerShell 5.1 and 7 do not parse this command (exit 1,
+  which does not block), so on such a machine the guard rests on `--restricted` and the default rules.
 - **The doctor's own copy of `claude` and auto-update.** Whether a binary run from
   `~/.spaces/tools/claude/` updates itself, and where to: run it once with
   `DISABLE_AUTOUPDATER` unset and look at `claude doctor`'s install and auto-update lines.
