@@ -31,11 +31,14 @@ list, only the candidate's id kept (with `--subject`, that one subject, whether 
 the watermark stays). `verify` lists what keeps a candidate from the signer (a line without
 `[src: ...]`, a source not in `evidence`, a never-leaves term, a left-out term of the
 destination, a bracketed placeholder); `checked` stamps `checked: {by, at}` once it is clean.
+A source also passes when it is the `q-` id of a question of the candidate's subject that was
+answered or settled (`sign_questions.py`). `verify --body <file>` checks that file's text, a
+write-up, against the candidate's frontmatter instead of the candidate's own body.
 
 Nothing here writes `status: stable`, edits a page under knowledge/, or runs git.
 
     python distill.py [root] [--rebuild [--subject <id>]]
-    python distill.py [root] verify <candidate path or subject id>
+    python distill.py [root] verify <candidate path or subject id> [--body <file>]
     python distill.py [root] checked <candidate path or subject id> --by <name>
 """
 from __future__ import annotations
@@ -619,7 +622,17 @@ def verify(root, candidate) -> list:
     text = candidate_path(root, candidate).read_text(encoding="utf-8")
     fm, body = pages.split(text)
     offset = text[:len(text) - len(body)].count("\n")   # report lines of the file, not the body
+    return verify_body(root, fm, body, offset)
+
+
+def verify_body(root, fm: dict, body: str, offset: int = 0) -> list:
+    """The problems `verify` reports for `body` against the frontmatter `fm` of its candidate.
+    A source passes when it is in `evidence`, or is the `q-` id of a question of the candidate's
+    subject that was answered or settled. `offset` is the number of lines before `body`."""
+    import sign_questions   # here and not at the top: sign_questions imports distill
     evidence = {str(r) for r in fm.get("evidence") or []}
+    subject = str(fm.get("subject") or "")
+    answered = None   # the subject's citable questions, read from the ledger at the first `q-` source
     problems = []
     for number, heading, unit in body_units(body):
         where = f"line {number + offset}"
@@ -628,8 +641,15 @@ def verify(root, candidate) -> list:
             problems.append(f"{where}: no source: {short}")
         for marker in SRC_RE.findall(unit):
             for rid in (r.strip() for r in marker.split(",")):
-                if rid and rid not in evidence:
-                    problems.append(f"{where}: source {rid} is not in evidence")
+                if not rid or rid in evidence:
+                    continue
+                if rid.startswith("q-"):
+                    if answered is None:
+                        answered = {q.id for q in sign_questions.load(root).values()
+                                    if q.subject == subject and q.status in ("answered", "settled")}
+                    if rid in answered:
+                        continue
+                problems.append(f"{where}: source {rid} is not in evidence")
         mark = next((m for m in PLACEHOLDERS if m in unit.lower()), None)
         if mark:
             problems.append(f"{where}: placeholder `{mark}`")
@@ -657,18 +677,27 @@ def main(argv=None) -> int:
         arg = argv.pop(0)
         if arg == "--rebuild":
             flags["rebuild"] = True
-        elif arg in ("--subject", "--by") and argv:
+        elif arg in ("--subject", "--by", "--body") and argv:
             flags[arg[2:]] = argv.pop(0)
         else:
             positional.append(arg)
     root = Path(positional.pop(0)) if positional and positional[0] not in COMMANDS else Path(".")
+    if "body" in flags and positional[:1] != ["verify"]:   # --body belongs to verify alone
+        print(__doc__)
+        return 2
     if positional:
         command, args = positional[0], positional[1:]
         if command not in COMMANDS or len(args) != 1 or (command == "checked" and not flags.get("by")):
             print(__doc__)
             return 2
         try:
-            problems = verify(root, args[0]) if command == "verify" else checked(root, args[0], flags["by"])
+            if command == "checked":
+                problems = checked(root, args[0], flags["by"])
+            elif "body" in flags:   # a write-up, checked against the candidate's frontmatter
+                fm, _ = pages.split(candidate_path(root, args[0]).read_text(encoding="utf-8"))
+                problems = verify_body(root, fm, Path(flags["body"]).read_text(encoding="utf-8"))
+            else:
+                problems = verify(root, args[0])
         except OSError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1

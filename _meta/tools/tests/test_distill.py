@@ -8,6 +8,7 @@ import distill
 import link
 import pages
 import sign
+import sign_questions
 import sweep
 import yaml
 from conftest import NOW, make_space, mount_brain, write_page
@@ -427,6 +428,36 @@ def test_verify_flags_a_source_not_in_evidence(tmp_path):
     body = CLEAN.replace("[src: rec-1]\n- Chloe", "[src: rec-1, rec-9]\n- Chloe")
     problems = distill.verify(root, candidate_file(root, body))
     assert len(problems) == 1 and "rec-9" in problems[0]
+
+
+def test_verify_accepts_an_answered_question_of_the_subject(tmp_path):
+    root = make_space(tmp_path / "ada")
+    q = sign_questions.ask(root, "harbor", "p-00000101", "Has Harbor gone live?", "why", "rec", [],
+                           by="routine:distill", now=NOW)
+    path = candidate_file(root, f"- Harbor went live on 3 November. [src: {q.id}]\n", evidence=[])
+    assert any(p.endswith(f"source {q.id} is not in evidence") for p in distill.verify(root, path))
+    sign_questions.answer(root, q.id, by="Ada Okafor", text="yes, 3 November", now=NOW)
+    assert distill.verify(root, path) == []
+
+
+def test_verify_refuses_a_question_of_another_subject(tmp_path):
+    root = make_space(tmp_path / "ada")
+    q = sign_questions.ask(root, "beacon", "p-00000102", "Has Beacon gone live?", "why", "rec", [],
+                           by="routine:distill", now=NOW)
+    sign_questions.answer(root, q.id, by="Ada Okafor", text="yes, 3 November", now=NOW)
+    path = candidate_file(root, f"- Harbor went live on 3 November. [src: {q.id}]\n", evidence=[])
+    assert any("is not in evidence" in p for p in distill.verify(root, path))
+
+
+def test_verify_checks_a_write_up_against_the_candidate(tmp_path, capsys):
+    root = make_space(tmp_path / "ada")
+    candidate_file(root, "- Kept as it is. [src: m-1]\n", evidence=["m-1"])
+    file = tmp_path / "write-up.md"
+    file.write_text("- Line one. [src: m-1]\n- Line two.\n", encoding="utf-8")
+    assert distill.main([str(root), "verify", "harbor", "--body", str(file)]) == 1
+    assert "no source: - Line two." in capsys.readouterr().out
+    file.write_text("- Line one. [src: m-1]\n", encoding="utf-8")
+    assert distill.main([str(root), "verify", "harbor", "--body", str(file)]) == 0
 
 
 def test_verify_checks_facts_and_leaves_topics_to_the_page_check(tmp_path):
