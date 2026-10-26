@@ -151,6 +151,53 @@ def test_which_connector_tools_read():
         assert not reader.is_read_tool(other)
 
 
+def test_camel_case_connector_tools_read_by_their_words():
+    """A connector that names its tools in camel case (Jira's) reads by the same rule: the words
+    are cut at a change from lower to upper case before they are lower-cased."""
+    reads = ["mcp__claude_ai_Atlassian__getJiraIssue", "mcp__claude_ai_Atlassian__searchJiraIssuesUsingJql",
+             "mcp__claude_ai_Atlassian__getConfluencePage", "mcp__claude_ai_Atlassian__search", "mcp__claude_ai_Atlassian__fetch",
+             "mcp__claude_ai_Gmail__searchThreads"]
+    acts = ["mcp__claude_ai_Atlassian__createJiraIssue", "mcp__claude_ai_Atlassian__editJiraIssue",   # no read word
+            "mcp__claude_ai_Gmail__sendMessage", "mcp__claude_ai_Gmail__getAndSendMail",
+            "mcp__claude_ai_Gmail__unsubscribeThread",   # `Thread` is not the word `read`
+            "mcp__claude_ai_Gmail__getSharedFiles", "mcp__claude_ai_Atlassian__updateJiraIssue"]
+    assert all(reader.is_read_tool(t) for t in reads)
+    assert not any(reader.is_read_tool(t) for t in acts)
+    assert reader.name_words("getJiraIssue") == ["get", "jira", "issue"] and reader.name_words("slack_read-channel") == ["slack", "read", "channel"]
+    assert reader.name_words("claude.ai Microsoft 365") == ["claude", "ai", "microsoft", "365"]
+
+
+ACTING_VERBS = ("replace", "set", "add", "edit", "put", "patch", "assign", "transition", "approve", "reject", "cancel",
+                "confirm", "submit", "complete", "apply", "run", "execute", "open", "merge", "grant", "revoke")
+
+
+def test_a_read_word_beside_an_acting_verb_the_deny_list_lacks_is_refused_in_both_spellings():
+    """`searchAndReplace` has a read word and changes data. The short verbs are refused as whole
+    words of the name (as letters inside a word, `set` and `add` would refuse `getSettings`)."""
+    for verb in ACTING_VERBS:
+        for read in ("search", "get"):
+            camel, snake = f"{read}And{verb.capitalize()}", f"{read}_and_{verb}"
+            assert not reader.is_read_tool(f"mcp__claude_ai_Atlassian__{camel}"), camel
+            assert not reader.is_read_tool(f"mcp__claude_ai_Atlassian__{snake}"), snake
+    for other in ("fetchAndRun", "listAndCancel", "queryAndApprove", "readAndExecute", "downloadAndOpen", "listAndMerge",
+                  "getAndTransition", "search-and-replace", "get-and-set"):
+        assert not reader.is_read_tool(f"mcp__claude_ai_Atlassian__{other}"), other
+
+
+def test_a_word_that_only_holds_an_acting_verb_stays_a_read():
+    for name in ("getSettings", "getAddress", "get_settings", "get_address", "listAddresses", "searchRunbooks",
+                 "get_transitions", "getOpenapiSpec", "list_approvals", "get_completed"):
+        assert reader.is_read_tool(f"mcp__claude_ai_Atlassian__{name}"), name
+
+
+def test_the_real_atlassian_names_read_or_not_as_they_should():
+    reads = ["getJiraIssue", "searchJiraIssuesUsingJql", "getConfluencePage", "getTransitionsForJiraIssue",
+             "searchConfluenceUsingCql", "search", "fetch"]
+    acts = ["editJiraIssue", "transitionJiraIssue", "createConfluencePage", "createJiraIssue", "addCommentToJiraIssue"]
+    assert all(reader.is_read_tool(f"mcp__claude_ai_Atlassian__{t}") for t in reads)
+    assert not any(reader.is_read_tool(f"mcp__claude_ai_Atlassian__{t}") for t in acts)
+
+
 # ----- the connector tools it was not given are denied, whatever the person once allowed ------------
 KNOWN = [GMAIL, "mcp__claude_ai_Gmail__get_thread", "mcp__claude_ai_Gmail__send_message", "mcp__claude_ai_Gmail__reply",
          "mcp__claude_ai_Slack__slack_send_message", "mcp__plugin_azure_azure__storage", "Read", "Bash"]

@@ -43,7 +43,15 @@ works out where the company's repositories go (`pick_namespace`): when that is n
 one more need, the `namespace`, which `build` refuses to start before, and `build --org <name>`
 answers. Setup never stops at it.
 
-    python start.py [signins|apps|research|build|history|resume] [--wait] [--json]
+`apps` asks Claude's command line which apps it reaches (`apps.py`), then runs one read-only
+reader per app that decides whose account it is, whether it holds work for this company and how
+much there is per month. Apps that are not work are skipped, and a mailbox in someone else's name
+is only counted. The verdicts, the app card (shown at least ten minutes before any content is
+copied) and the feeds go into the journal; an app to sign in to again, or one that cannot be
+read, is a need that waits. `apps --probe` stops after the question, in the first minutes: it
+records the apps found and, when there is none, asks the person to connect one.
+
+    python start.py [signins|apps|research|build|history|resume] [--wait] [--json] [--probe]
                     [--invitation <brain repo>:<slug> | --brain <brain repo>] [--company NAME]
                     [--name NAME] [--email EMAIL] [--feeds mail,calendar,chat,calls,tracker]
                     [--org ORG] [--home DIR] [--template REPO] [--offline] [--dry-run]
@@ -51,6 +59,7 @@ answers. Setup never stops at it.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import getpass
 import importlib.util
 import json
@@ -127,9 +136,11 @@ if __name__ == "__main__":   # the agent does every step: the one library the to
 import yaml  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import apps  # noqa: E402
 import doctor  # noqa: E402
 import onboard  # noqa: E402
 import onboarding_page  # noqa: E402
+import reader  # noqa: E402
 import routine  # noqa: E402
 import setup_journal  # noqa: E402
 import signin  # noqa: E402
@@ -672,8 +683,92 @@ def phase_signins(args) -> dict:
     return result
 
 
+CONNECT_NEED = ("Connect the apps where your work lives (your email, calendar, chat and meeting notes) in "
+                "Claude's connector settings.")
+RECONNECT_NEED = "{app} needs to be connected again: its sign-in ran out. Sign in to {app} in Claude's connector settings."
+ADMIN_NEED = ("{app} could not be read, so it is left out for now. If your organisation limits which apps Claude "
+              "may use, ask your IT administrator to allow {app}.")
+APPS_CHECK = "python _meta/tools/start.py apps --probe --json"   # the probe lists the app as connected
+APPS_RUN = "python _meta/tools/start.py apps --json"
+
+
+def _app_needs(verdicts: list) -> None:
+    """An app to sign in to again is a `reconnect` need, one that cannot be read an `it-admin`
+    need; both wait on the person and the rest of the setup goes on. A run replaces the needs of
+    the run before, so the line of an app that reads again goes."""
+    setup_journal.clear_need("reconnect")
+    setup_journal.clear_need("it-admin")
+    for v in verdicts:
+        if v["verdict"] == "reconnect":
+            setup_journal.need("reconnect", RECONNECT_NEED.format(app=v["app"]), APPS_CHECK, link=apps.CONNECTORS_LINK)
+        elif v["verdict"] == "blocked":
+            setup_journal.need("it-admin", ADMIN_NEED.format(app=v["app"]), APPS_RUN)
+
+
+def _read_apps(args, groups: list, unsigned: list, tools: list, claude: str, cwd: Path, facts: dict) -> dict:
+    """One reader per app, then the verdicts, the card and the feeds into the journal. The person
+    is compared with their own addresses (the one given, the Claude sign-in's, git's: no call to
+    the network), and work is judged against the researched company when research is through,
+    else the mail domain."""
+    journal = setup_journal.load()
+    who = identity(args.name, args.email, offline=True)
+    emails = [e for e in dict.fromkeys([args.email, (journal.get("signins") or {}).get("claude_email"), who["email"]]) if e]
+    person = {"name": who["name"], "email": emails[0] if emails else "", "emails": emails,
+              **apps.company_of(journal, args.company, emails)}
+    limit = None
+    try:
+        verdicts = apps.analyse(groups, person, cwd, reader=reader.read, known_tools=tools, claude=claude)
+    except apps.LimitReached as stop:   # what finished is kept; the rest waits for the limit to reset
+        verdicts, limit = stop.verdicts, stop
+    read = {v["app"] for v in verdicts}
+    unfinished = [g["app"] for g in groups if g["app"] not in read]
+    card, feeds = apps.card(verdicts, dt.datetime.now().astimezone(), unsigned), apps.feeds(verdicts)
+    state = "waiting" if limit else "done"
+    setup_journal.set_phase("apps", state, **facts, verdicts=verdicts, card=card, feeds=feeds, unfinished=unfinished)
+    _app_needs(verdicts)
+    result = {"state": state, "apps": [g["app"] for g in groups], "card": card, "feeds": feeds, "unfinished": unfinished}
+    if limit:
+        result["why"] = (f"Your Claude limit was reached with {len(verdicts)} of {len(groups)} apps read"
+                         + (f" ({limit.text})" if limit.text else "")
+                         + ". Say the sentence again once it resets: the others are read then.")
+    return result
+
+
 def phase_apps(args) -> dict:
-    return _pending("apps")
+    """Which apps hold work, and the app card. Claude's command line is asked which apps it
+    reaches (`routine.probe_tools`; a probe that fails is `failed`, never "no apps"), and every
+    claude.ai connector of a known kind with a tool that reads is an app (`apps.group`). With
+    none, the one need is to connect one (`connect-app`, and the phase `waiting`). `--probe` stops
+    there, having recorded the groups and the connectors that need a sign-in. Else one reader per
+    app decides whose account it is, whether it holds work and how much per month
+    (`apps.analyse`): the journal's `apps` record keeps `verdicts` (with `per_month`), `card`
+    (read, skip, not_signed_in, starts_after), `feeds` and `unfinished`. The state is `done` when
+    every app has a verdict (an app to reconnect or one that is blocked is a need, not a stop),
+    `waiting` when the plan's limit stopped the readers. A dry run only asks the question."""
+    if args.offline:
+        return {"state": "done", "why": "offline: no app to read"}
+    cwd = Path(tempfile.gettempdir()) if args.dry_run else apps.scratch()   # never the person's home or a repository
+    claude = routine.find_claude() or "claude"
+    try:
+        probe = routine.probe_tools(claude, cwd)
+    except routine.ProbeError as exc:
+        return {"state": "failed", "detail": str(exc),
+                "why": "Claude did not say which apps it can reach, so no app was read. Say the sentence again to try once more."}
+    tools, servers = probe.get("tools") or [], probe.get("mcp_servers") or []
+    groups, unsigned = apps.group(tools, servers), apps.not_signed_in(servers)
+    found = {"apps": [g["app"] for g in groups], "not_signed_in": unsigned}
+    if args.dry_run:
+        return {"state": "pending", **found}
+    facts = {"groups": groups, "not_signed_in": unsigned}
+    if not groups:
+        setup_journal.set_phase("apps", "waiting", **facts)
+        setup_journal.need("connect-app", CONNECT_NEED, APPS_CHECK, link=apps.CONNECTORS_LINK)
+        return {"state": "waiting", **found, "why": "No app is connected to Claude yet."}
+    setup_journal.clear_need("connect-app")
+    if getattr(args, "probe", False):
+        setup_journal.set_phase("apps", "pending", **facts)
+        return {"state": "pending", **found}
+    return _read_apps(args, groups, unsigned, tools, claude, cwd, facts)
 
 
 def phase_research(args) -> dict:
@@ -788,6 +883,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--offline", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--doctor", action="store_true", help="only check this machine and fix what needs no password")
+    ap.add_argument("--probe", action="store_true",
+                    help="apps: stop after asking Claude which apps it reaches (no content is read)")
     ap.add_argument("--wait", action="store_true",
                     help="a phase that waits on the person stays until what they must do is done")
     ap.add_argument("--json", action="store_true", help="print the result as JSON")

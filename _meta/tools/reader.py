@@ -55,9 +55,13 @@ SNIPPET = 300      # how much of what the command printed an error repeats
 # the command line to split on, no wildcard.
 CONNECTOR_TOOL = re.compile(r"mcp__(?P<server>[A-Za-z0-9][A-Za-z0-9_-]*?)__(?P<tool>[A-Za-z0-9_-]+)")
 WEB_TOOL = re.compile(r"WebFetch\(domain:(?P<host>(?:[A-Za-z0-9-]+\.)+[A-Za-z0-9-]+)\)")
-READ_WORDS = ("list", "get", "search", "read", "fetch", "query", "download")   # whole words of the tool name
+READ_WORDS = ("list", "get", "search", "read", "fetch", "query", "download")   # whole words of the tool name (`name_words`)
 ACT_WORDS = ("send", "reply", "forward", "create", "update", "delete", "trash", "remove", "save", "post",
-             "write", "move", "archive", "label", "mark", "upload", "share", "invite")   # anywhere in it
+             "write", "move", "archive", "label", "mark", "upload", "share", "invite", "replace")   # anywhere in it
+# Short or ambiguous acting verbs: as letters inside a word they would refuse `getSettings` (set)
+# and `getAddress` (add), so they count only as a whole word of the tool name (`name_words`).
+ACT_VERBS = ("set", "add", "edit", "put", "patch", "assign", "transition", "approve", "reject", "cancel", "confirm",
+             "submit", "complete", "apply", "run", "execute", "open", "merge", "grant", "revoke")
 # Built-in tools that act or reach out. `--tools ToolSearch` leaves none of them in the run;
 # denying them as well means a tool a later version adds under one of these names is refused too.
 # (WebFetch is added to the list unless the reader is a web reader.)
@@ -88,18 +92,32 @@ def server_part(name: str) -> str:
     return part
 
 
+def name_words(text: str) -> list:
+    """The lower-case words of a name: cut at anything that is not a letter or a digit (`_`, `-`,
+    a space, a dot) and where a lower-case letter or a digit meets a capital, before the case is
+    dropped. `slack_read-channel` is slack, read, channel; `getJiraIssue` (a connector that names
+    its tools in camel case) is get, jira, issue."""
+    return [w.lower() for w in re.split(r"[^A-Za-z0-9]+|(?<=[a-z0-9])(?=[A-Z])", text) if w]
+
+
 def is_read_tool(name: str) -> bool:
     """Whether a connector tool, by its full name `mcp__<server>__<tool>`, only reads: its tool
-    part has a read word (list, get, search, read, fetch, query, download; as a word, so `thread`
-    is not `read`) and no acting word anywhere in it (send, reply, forward, create, update,
-    delete, ...). A name of any other shape is not one. A tool that reads but is named otherwise
-    is left out: this errs towards refusing."""
+    part has a read word (list, get, search, read, fetch, query, download; as a word of `name_words`,
+    so `thread` is not `read` and `getJiraIssue` is `get`) and no acting word: none of ACT_WORDS
+    (send, reply, forward, create, update, delete, replace, ...) anywhere in it, and none of
+    ACT_VERBS (set, add, edit, run, ...) as a word of it, so `searchAndReplace` and `get_and_set`
+    are not reads and `getSettings` is. A name of any other shape is not one. A tool that reads
+    but is named otherwise is left out: this errs towards refusing. The cut at capitals is what
+    makes a camel-case name such as `getJiraIssue` a read (it was refused before); the two acting
+    lists only ever turn a read into a refusal, a name that read under shorter lists included."""
     found = CONNECTOR_TOOL.fullmatch(name) if isinstance(name, str) else None
     if not found:
         return False
-    tool = found.group("tool").lower()
-    return (any(word in re.split(r"[_-]+", tool) for word in READ_WORDS)
-            and not any(word in tool for word in ACT_WORDS))
+    tool = found.group("tool")
+    parts = name_words(tool)
+    return (any(word in parts for word in READ_WORDS)
+            and not any(word in tool.lower() for word in ACT_WORDS)
+            and not any(word in parts for word in ACT_VERBS))
 
 
 def _check_tools(tools: list) -> None:
