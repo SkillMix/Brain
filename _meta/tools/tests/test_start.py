@@ -750,7 +750,7 @@ def test_a_skip_before_the_apps_and_one_after_a_limit_are_never_read_and_never_c
     assert said["state"] == "done" and record["unfinished"] == [] and record["feeds"] == "mail: owner"
     seen.clear()
     got = start._read_apps(APPS_ARGS, groups, [], [], "/bin/claude", None, {"groups": groups, "not_signed_in": []})
-    assert seen == ["Gmail"] and got["feeds"] == "mail: owner" and got["state"] == "done"
+    assert seen == [] and got["feeds"] == "mail: owner" and got["state"] == "done"   # Gmail's verdict is kept (R45, I-2)
 
 
 def test_a_skip_kept_only_as_the_persons_word_still_holds_wherever_the_verdicts_are_read(tmp_path, monkeypatch):
@@ -1089,8 +1089,8 @@ def test_a_task_prefix_that_is_not_ours_fails_the_build_in_plain_words(tmp_path,
     finished_setup()
     monkeypatch.setenv("SPACES_TASK_PREFIX", "spaces--x-")   # one letter off a person's own tasks
     result = start.phase_build(args(tmp_path))
-    assert result["state"] == "failed" and "space-" in result["why"] and "SPACES_TASK_PREFIX" in result["why"]
-    assert not (tmp_path / "spaces").exists()   # nothing was created
+    assert result["state"] == "failed" and result["why"] == start.TASK_PREFIX_WHY and not (tmp_path / "spaces").exists()
+    assert "SPACES_TASK_PREFIX" in result["detail"] and "SPACES_" not in result["why"]   # the setting's name: journal only
 
 
 def _finishing(tmp_path, monkeypatch, org_answer):
@@ -1251,3 +1251,150 @@ def test_a_paused_run_ends_the_wait_for_a_part_and_is_no_reading_of_the_account(
     reading = {"at": "2026-10-24T12:05:00Z", "five_hour_resets": "2026-10-24T16:00:00Z", "week_resets": "2026-10-30T09:00:00Z"}
     assert start.usage_account(ws, reading, {"started": since.isoformat()}) is None   # no run that started to compare
 
+
+
+# ===== Fix wave F2 (Rulings R45 and R47) =========================================================================
+def offline_build(tmp_path, monkeypatch):
+    """`start.py build --offline` as the agent runs it: through `run_phase`, which journals it."""
+    no_outside(monkeypatch)
+    finished_setup()
+    result = start.run_phase(args(tmp_path))
+    assert result["state"] == "done", result
+    return result
+
+
+def test_the_builds_record_keeps_the_workspace_and_the_history_finds_it_there(tmp_path, monkeypatch):
+    """After an offline build in another process, the history reads the workspace from the build's record (R45, F-3)."""
+    result = offline_build(tmp_path, monkeypatch)
+    record = setup_journal.load()["build"]
+    assert record["workspace"] == result["workspace"]
+    (Path.home() / onboard.MACHINE_SPACES).unlink(missing_ok=True)               # nothing else names it
+    monkeypatch.setattr(start, "LAST_REPORT", None)                            # another process
+    found = start._history_workspace(types.SimpleNamespace(workspace=None, name=None, email=None), setup_journal.load())
+    assert found == Path(result["workspace"])
+
+
+def test_the_page_after_a_finished_build_says_nothing_is_building(tmp_path, monkeypatch):
+    """The last page the build writes is written once the build is marked done (R45, F-4)."""
+    offline_build(tmp_path, monkeypatch)
+    page = (Path.home() / ".spaces" / "onboarding.html").read_text(encoding="utf-8")
+    assert "Building your spaces" not in page
+
+
+def test_the_journal_keeps_a_plain_why_and_whether_the_run_was_offline(tmp_path, monkeypatch):
+    """Beside each phase's state the journal keeps a plain `why` and an offline marker (R45, F-6); a phase that
+    raised keeps a plain why, and the fault's class as its detail."""
+    offline_build(tmp_path, monkeypatch)
+    record = setup_journal.load()["build"]
+    assert record["offline"] is True and record["state"] == "done"
+    monkeypatch.setattr(start, "phase_apps", lambda a: {"state": "waiting", "why": "Your Claude limit was reached."})
+    start.run_phase(start.parser().parse_args(["apps", "--json"]))
+    record = setup_journal.load()["apps"]
+    assert record["why"] == "Your Claude limit was reached." and record["offline"] is False
+
+    def broken(a):
+        raise KeyError("verdicts")
+    monkeypatch.setattr(start, "phase_research", broken)
+    with pytest.raises(KeyError):
+        start.run_phase(start.parser().parse_args(["research", "--json"]))
+    record = setup_journal.load()["research"]
+    assert record["state"] == "failed" and record["why"] == start.FAULT_WHY and record["detail"] == "KeyError"
+
+
+def test_a_build_that_did_not_get_the_lock_leaves_the_running_builds_state_alone(tmp_path, monkeypatch):
+    """A second start while the first one builds: nothing is written to the journal, and it says so plainly
+    (R45, F-5)."""
+    no_outside(monkeypatch)
+    finished_setup()
+    setup_journal.set_phase("build", "running")
+    lock = start.take_lock()                                                   # the first start, alive
+    try:
+        result = start.run_phase(args(tmp_path))
+    finally:
+        lock.unlink()
+    assert result["state"] == "running" and result.get("busy") is True and result["why"] == start.BUSY_WHY
+    assert setup_journal.load()["build"]["state"] == "running" and not (tmp_path / "spaces").exists()
+    assert "lock" not in result["why"] and "start.py" not in result["why"]
+
+
+def test_the_build_holds_the_start_lock_until_its_state_is_written(tmp_path, monkeypatch):
+    """No second start can slip in between the spaces and the routines' proof, and the lock goes once the build's
+    state is in the journal (R45, F-5 and F-9)."""
+    no_outside(monkeypatch)
+    finished_setup()
+    held = []
+    real = start.phase_build
+
+    def build(a):
+        held.append(start.take_lock() is None)                                 # a second start finds it taken
+        return real(a)
+    monkeypatch.setattr(start, "phase_build", build)
+    assert start.run_phase(args(tmp_path))["state"] == "done"
+    assert held == [True] and not start.lock_path().exists()
+
+
+def test_resume_says_a_build_whose_process_died_stopped_and_can_be_run_again(tmp_path, monkeypatch, capsys):
+    """The journal says `running`, but no live start holds the lock: the build stopped (R45, F-9)."""
+    setup_journal.set_phase("signins", "done")
+    setup_journal.set_phase("apps", "done")
+    setup_journal.set_phase("research", "done")
+    setup_journal.set_phase("build", "running")
+    assert start.main(["resume", "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["next"] == "build" and out["phases"]["build"]["stopped"] is True
+    assert out["phases"]["build"]["why"] == start.STOPPED_WHY and not start.lock_path().exists()
+    assert setup_journal.load()["build"]["state"] == "running"                 # resume writes nothing
+    assert start.main(["resume"]) == 0
+    assert "build: stopped before it finished" in capsys.readouterr().out
+    lock = start.take_lock()                                                   # a live start: it is running
+    try:
+        assert start.main(["resume", "--json"]) == 0
+        assert "stopped" not in json.loads(capsys.readouterr().out)["phases"]["build"]
+    finally:
+        lock.unlink()
+
+
+def test_the_builds_why_is_plain_and_the_failed_checks_go_to_the_journal(tmp_path, monkeypatch):
+    """A routine check that failed: the build answers a plain line; the checks' own names and words are journaled
+    (R45, Minor 3)."""
+    no_outside(monkeypatch)
+    finished_setup()
+    real = start.start
+    monkeypatch.setattr(start, "start", lambda *a, **k: real(*a, **{**k, "offline": True}))
+    failed = {"ok": False, "checks": [{"name": "send_guard", "ok": False, "why": "hook exited 2 at C:/x/send_guard.py"}],
+              "notes": [], "why": "send_guard: hook exited 2 at C:/x/send_guard.py.", "detail": None}
+    monkeypatch.setattr(start, "prove_routines", lambda report, ws: dict(failed))
+    monkeypatch.setattr(onboard, "routines_elsewhere", lambda ws: None)
+    result = start.run_phase(args(tmp_path, offline=False))
+    assert result["why"] == start.PROBE_FAILED and "send_guard" not in result["why"] and ".py" not in result["why"]
+    assert "send_guard" in setup_journal.load()["build"]["detail"]
+
+
+def test_a_skip_on_a_damaged_journal_ends_in_plain_words(monkeypatch):
+    """Probe R6: `verdicts` that hold no verdict never change, so the skip asks again once, not for ever (R47, N3-3)."""
+    setup_journal.set_phase("apps", "running", groups=[{"app": "Gmail", "kinds": ["mail"], "read": ["x"]}],
+                            verdicts=["not a verdict"])
+    got = start.skip_apps(types.SimpleNamespace(skip=["Gmail"], workspace=None))
+    assert got["skipped"] == ["Gmail"] and setup_journal.load()["apps"]["person_skips"] == ["Gmail"]
+
+
+def test_a_skip_said_as_the_apps_are_written_is_on_the_card_the_feeds_and_the_answer(monkeypatch):
+    """Probe R7: the skip is saved between the phase's reload and its write. The card, the stored feeds and the answer
+    list the app as skipped too, not only `apps_verdicts` (R47, N3-2)."""
+    no_outside(monkeypatch)
+    groups = six_apps(2)
+    setup_journal.set_phase("apps", "running", groups=groups, not_signed_in=[])
+    monkeypatch.setattr(reader, "read", lambda prompt, tools, *a, **k: dict(WORK))
+    real, fired = setup_journal.set_phase, []
+
+    def set_phase(phase, state, **facts):
+        if phase == "apps" and "verdicts" in facts and not fired:
+            fired.append(say("Google Calendar"))
+        return real(phase, state, **facts)
+    monkeypatch.setattr(setup_journal, "set_phase", set_phase)
+    got = start._read_apps(APPS_ARGS, groups, [], [], "/bin/claude", None, {"groups": groups, "not_signed_in": []})
+    monkeypatch.setattr(setup_journal, "set_phase", real)
+    record = setup_journal.load()["apps"]
+    assert fired and record["feeds"] == got["feeds"] == "mail: owner"
+    assert not any(line.startswith("Google Calendar") for line in record["card"]["read"] + got["card"]["read"])
+    assert any(line.startswith("Google Calendar") for line in record["card"]["skip"])

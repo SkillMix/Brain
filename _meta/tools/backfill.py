@@ -9,14 +9,16 @@ sweep chain at 07:00, 13:00 and 19:00 and the backfill night at 01:00 ask `due` 
 the part its own lock names), export its records per feed oldest first in batches, and `checkpoint` after each
 batch. A closed lid, a usage limit or a sign-in that ran out pauses the part (`after_run`, called by `routine.py`
 with what the run came to); the next run that finds it `due` goes on from its checkpoints. A part is done only
-when a run read it: a checkpoint, or `read` (the range held nothing). Nothing here ever starts a part into paid
-usage.
+when a run said it is through it (`read`: every source's range read to its end, or holding nothing); a checkpoint
+says how far a run got, not that it is through (R45, I-4). Nothing here ever starts a part into paid usage.
 
 Pacing (Decision D keeps full judgment for every day inside the window; only the window shrinks):
 - 08:00 to 19:00 local a part leaves at least half of the 5-hour window free and needs a usage reading from
   the last hour (the person's own chats are not in the run lines); the other hours allow up to 90%.
-- A part whose estimate, with what is in use, passes the cap is not started. One day that cannot be cut is the
-  only exception, and only at night: the run stops itself after fifty minutes (`unfinished`) and goes on next time.
+- A part whose estimate, with what is in use, passes the cap is not started. One day that cannot be cut is an
+  exception, and only at night: the run stops itself after fifty minutes (`unfinished`) and goes on next time. A
+  part a run has begun is the other: the fifty-minute stop bounds every run, so at night it goes on however big it
+  is, when the latest reading says extra usage is off (R45, I-5).
 - On the setup day the backfill takes at most 30% of the week that was left at setup.
 - With extra usage on, a used-up week stops everything like a used-up 5-hour window, until the week resets or a
   newer reading shows room; after an `overage` that named no time the part waits for a newer reading.
@@ -33,9 +35,13 @@ Pacing (Decision D keeps full judgment for every day inside the window; only the
 - A routine may not say what only a session or the person says: `plan`, `reading`, `calibrate` and `start`
   refuse while a routine run holds the workspace's lock. A routine run says nothing about another space's history:
   every command refuses while the space it is said from (the working directory's) holds a live routine lock and
-  names another one (Ruling R43).
-- A reading dated more than FUTURE_SLACK after now is refused, and one kept anyway is not read, like a meter row
-  dated ahead.
+  names another one (Ruling R43). Nor does any command take a `--now` while that space holds a live routine lock,
+  or a `--now` later than this computer's clock (R47).
+- The history's notes are written on the computer that runs the routines only: on any other (`routine.host` names
+  another), `plan`, `reading`, `calibrate` and `start` refuse (`ELSEWHERE_WHY`), since two computers writing them
+  would stop the second one's sync (R45, I-1).
+- A reading dated more than FUTURE_SLACK after now, or after this computer's clock, is refused, and one kept anyway
+  is not read, like a meter row dated ahead; a first reading kept so still bounds the setup day (R47, N3-1).
 
 The state is `_meta/state/backfill.yaml` in the workspace (`PATH`): `started`, `window_days`, `current_by`,
 `per_token_share`, `tokens_per_record`, `counts`, `setup_reading` and `reading` (see `record_reading`), `waiting`
@@ -102,7 +108,8 @@ WHY = {   # plain words: what the person may read of a paused part
     "overage": "The run would have used extra usage, so it stopped; the read goes on when your limit has room.",
     "timeout": "The run took an hour and was stopped; the next run goes on from where it got to.",
     "auth": "Claude's sign-in ran out; sign in again and the read goes on from where it got to.",
-    "unfinished": "The run used up its fifty minutes; the next run goes on from where it got to.",
+    "unfinished": ("The run stopped before it was through this part, at its fifty minutes or earlier; the next run "
+                   "goes on from where it got to."),
     "idle": "The run ended and did not read this part, so the next run tries again.",
 }
 BROKEN_WHY = ("The notes that keep track of how far your history has been read could not be read, so the history "
@@ -114,8 +121,15 @@ REPLAN_WHY = ("A new plan was made because the notes on your history could not b
               "say go.")
 RUN_GOING_WHY = ("A routine run is going in this workspace right now, and this is for you to say in a session, not "
                  "for a routine; say it again when the run is over.")
-OTHER_SPACE_WHY = ("A routine run is going in the workspace this was said from, and a routine run may not touch another "
-                   "workspace's history; say it again when the run is over.")
+# The refusals below are read by whoever said the command: a routine run's agent, or the person in a session (R47, N3-4).
+OTHER_SPACE_WHY = ("A routine run is going in the workspace this was said from, so nothing here reads or changes another "
+                   "workspace's history until it ends; say it again when the run is over.")
+NOW_WHY = ("A routine run is going in the workspace this was said from, so no time other than this computer's own is "
+           "taken until it ends; say it again without one.")
+NOW_AHEAD_WHY = ("That time is later than this computer's clock, so it is not taken; say it again with the time it is "
+                 "now, or without one.")
+ELSEWHERE_WHY = ("Your routines run on {name}, so your history is planned, measured and read there, and this computer "
+                 "keeps none of it; say it on {name} instead.")
 AHEAD_WHY = "A usage reading dated later than now is not kept: a reading is taken now, or earlier."
 OVERAGE_WHY = ("The last run would have used extra usage and Claude didn't say when there is room again, so the read "
                "waits for your next reading of your usage.")
@@ -301,6 +315,19 @@ def _caller_space() -> Path | None:
     return next((folder for folder in (here, *here.parents) if (folder / "space.yaml").is_file()), None)
 
 
+def runs_elsewhere(workspace) -> str | None:
+    """The name of the other computer that runs the workspace's routines (`routine.host`), when it is not this one;
+    None when this computer runs them, or nothing (or nothing clear) is recorded."""
+    try:
+        import routine
+        record = routine.host(Path(workspace))
+        if not isinstance(record, dict) or record.get("unclear") or not record.get("machine"):
+            return None
+        return None if record["machine"] == routine.this_machine() else str(record.get("name") or "another computer")
+    except Exception:   # noqa: BLE001 - no record to read: nothing says it is another computer's
+        return None
+
+
 def _same_folder(a, b) -> bool:
     try:
         return os.path.samefile(a, b)
@@ -441,18 +468,24 @@ def _on_time(reading, now: dt.datetime) -> bool:
     return at is None or at <= _aware(now) + FUTURE_SLACK
 
 
-def _timely(state: dict, now: dt.datetime | None) -> dict:
+def _timely(state: dict, now: dt.datetime | None, cap: bool = False) -> dict:
     """The state without a kept reading dated more than FUTURE_SLACK after now: like a meter row dated ahead, it is
-    not read (R43, N2-1 a). The state as it is without a clock."""
+    not read (R43, N2-1 a). The state as it is without a clock. With `cap`, a first reading dropped so still bounds
+    the setup day: the share of the week it says was used stands, its time does not (R47, N3-1), so the setup day's
+    cap is never switched off and is never more than FIRST_DAY_WEEK of a whole week."""
     if now is None:
         return state
-    return {k: v for k, v in state.items() if k not in ("reading", "setup_reading") or _on_time(v, now)}
+    out = {k: v for k, v in state.items() if k not in ("reading", "setup_reading") or _on_time(v, now)}
+    setup = state.get("setup_reading")
+    if cap and isinstance(setup, dict) and "setup_reading" not in out:
+        out["setup_reading"] = {"week_pct": setup.get("week_pct")}
+    return out
 
 
 def _newest_reading(workspace, state: dict, now: dt.datetime | None = None) -> dict:
     """The state with the newest reading of the two: the one kept, or the routines' own (`routine_reading`). A kept
-    reading dated ahead of now is not one (`_timely`)."""
-    state = _timely(state, now)
+    reading dated ahead of now is not one (`_timely`), but a first one still bounds the setup day."""
+    state = _timely(state, now, cap=True)
     theirs, kept = routine_reading(workspace, now), state.get("reading")
     if theirs and (not kept or (_dt(kept.get("at")) or _dt("1970-01-01T00:00:00Z")) < _dt(theirs["at"])):
         return {**state, "reading": theirs}
@@ -656,7 +689,7 @@ def _refresh(workspace, state: dict, now: dt.datetime | None) -> None:
     now = now or _state_now(state)
     left = sum(_points(state, p) for p in _parts(state) if p.get("status") != DONE)
     use, end = _window_use(_timely(state, now), now)
-    room = _day_one_tokens(_timely(state, now))
+    room = _day_one_tokens(_timely(state, now, cap=True))
     day_one = None
     if room is not None and state.get("started"):
         share = state.get("per_token_share")
@@ -810,17 +843,22 @@ def unfinished(workspace, which: str) -> None:
 
 def begin(workspace, which: str) -> None:
     """A run begins to read part `which` (`routine.py`, as the run starts): until it checkpoints, says `read` or
-    `unfinished`, the run has read nothing of it, and `after_run` will not call it done."""
+    `unfinished`, the run has read nothing of it, and `after_run` will not call it done. A `read` said by an earlier
+    run is that run's: this one is through only when it says so itself."""
     state = _writable(workspace)
-    _find(state, which)["unread"] = True
+    part = _find(state, which)
+    part["unread"] = True
+    part.pop("through", None)
     save(workspace, state)
 
 
 def range_read(workspace, which: str) -> None:
-    """The run read the part's whole range in every source, or found nothing in it (a source with no record in the
-    range leaves no checkpoint): the run counts as having read it."""
+    """The run read the part's whole range in every source to its end, or found nothing in it (a source with no record
+    in the range leaves no checkpoint): the run is through the part (`through`), and `after_run` calls it done."""
     state = _writable(workspace)
-    _find(state, which).pop("unread", None)
+    part = _find(state, which)
+    part.pop("unread", None)
+    part["through"] = True
     save(workspace, state)
 
 
@@ -918,8 +956,9 @@ def calibrate(workspace, before_pct: float, after_pct: float, tokens: int, week_
     share = change / tokens if measured else DEFAULT_PER_TOKEN_SHARE
     state["per_token_share"] = share
     state["calibration"] = "measured" if measured else "assumed"
-    if tokens > 0 and _parts(state)[0].get("records"):
-        state["tokens_per_record"] = max(1, round(tokens / _parts(state)[0]["records"]))
+    first = _parts(state)[0]
+    if tokens > 0 and first.get("records") and first.get("status") == DONE:   # a paused part 1 is no record's cost (I-5)
+        state["tokens_per_record"] = max(1, round(tokens / first["records"]))
     if measured and week_before_pct is not None and week_after_pct is not None and week_after_pct > week_before_pct:
         state["week_per_token_share"] = (float(week_after_pct) - float(week_before_pct)) / tokens
     _settle_window(state, now)
@@ -1042,9 +1081,12 @@ def _gate(workspace, state: dict, part: dict, now: dt.datetime) -> tuple:
     cap = _cap(now)
     need = _points(state, part, share)
     single = _days(part) <= 1
+    begun = not _untouched(part)
     # one day cannot be cut: a night, stopped at fifty minutes, and only when the latest reading says extra usage is off
     lone = single and need > cap and not day and use < cap and bool(reading) and not extra
-    if use + need > cap and not lone:
+    # a part a run has begun goes on at night however big: every run stops at its fifty minutes (R45, I-5)
+    going_on = begun and not single and need > cap and not day and use < cap and bool(reading) and not extra
+    if use + need > cap and not lone and not going_on:
         if need > cap and single and (extra or not reading):
             return None, _lone_why(part, None if _unconfirmed(reading) else reading)
         if need > cap:
@@ -1052,7 +1094,13 @@ def _gate(workspace, state: dict, part: dict, now: dt.datetime) -> tuple:
             if single:
                 return None, (f"{figure}{cap}% that may be in use at this time of day, and it is a single day that cannot "
                               "be cut smaller, so it starts only at night.")
-            if need > NIGHT_CAP:
+            if begun and not day and use < cap:   # only extra usage holds it: it may be on, or no reading says it is off
+                return None, (f"{figure}{cap}% that may be in use at night, and {on}, so it goes on once a reading of "
+                              "your usage shows that extra usage is off.")
+            if begun and not day:
+                return None, (f"There is not enough room in your 5-hour limit right now: {use:.0f}% is in use, and at "
+                              f"this time of day at most {cap}% may be.")
+            if need > NIGHT_CAP and not begun:
                 return None, f"{figure}{NIGHT_CAP}% that a night allows, so it is not started."
             return None, f"{figure}{cap}% that may be in use by day, so it waits for the night."
         return None, (f"There is not enough room in your 5-hour limit right now: this part needs about {need:.0f}% of "
@@ -1148,10 +1196,13 @@ def _sum(usage) -> int:
 
 def after_run(workspace, which: str, outcome: dict, now: dt.datetime | None = None) -> None:
     """What the run that read part `which` came to (`routine.outcome`): the tokens it used are added;
-    `finished` sets the part done when the run read it (a checkpoint, or `read`; a run that began it with `begin` and
-    did neither leaves it paused, `idle`) and paused when the run said it stopped short (`unfinished`);
-    `limit`, `overage` and `timeout` pause it, with `resets_at` when the outcome gave one and none when it did not;
-    `auth` pauses it with why. Any other outcome leaves the part as it was. A part the plan does not have is ignored."""
+    `finished` sets the part done only when the run said it is through (`read`, R45 I-4); a run that checkpointed
+    and did not say so, or said it stopped short (`unfinished`), leaves it paused (WHY["unfinished"]), and one that
+    began it with `begin` and read nothing leaves it paused and counts it `idle`. `limit`, `overage` and `timeout`
+    pause it, with `resets_at` when the outcome gave one and none when it did not; `auth` pauses it with why. Any other
+    outcome leaves the part as it was, and a part that is done stays done. When part 1 is done, a record's cost is
+    its own from then on (`tokens_per_record`), and once it was measured what is left is cut again by it (I-5). A
+    part the plan does not have is ignored."""
     state = _writable(workspace)
     part = next((p for p in _parts(state) if p["id"] == which), None)
     if part is None or not isinstance(outcome, dict):
@@ -1160,23 +1211,31 @@ def after_run(workspace, which: str, outcome: dict, now: dt.datetime | None = No
     kind = outcome.get("outcome")
     part["tokens"] = part.get("tokens", 0) + _sum(outcome.get("usage"))
     cut, unread = bool(part.pop("unfinished", False)), bool(part.pop("unread", False))
+    through = bool(part.pop("through", False))
     runs = [r for r in part.get("runs") or [] if isinstance(r, dict)][-4:]
     part["runs"] = runs + [{"at": _iso(now), "outcome": str(kind)}]
-    if kind == "finished" and not cut and not unread:
+    if part.get("status") == DONE:   # read already: what this run used is counted, nothing more
+        pass
+    elif kind == "finished" and through and not cut:
         part.update(status=DONE, finished_at=_iso(now))
         for key in ("resets_at", "why", "idle"):
             part.pop(key, None)
-    elif kind == "finished" or kind in PAUSING:   # a finished run that stopped short, or read nothing, is paused too
+        first = _parts(state)[0]
+        if part is first and part.get("tokens") and part.get("records"):   # what a record really costs (I-5)
+            state["tokens_per_record"] = max(1, round(part["tokens"] / part["records"]))
+            if state.get("per_token_share") is not None:
+                _resplit(state)
+    elif kind == "finished" or kind in PAUSING:   # a finished run that was not through, or read nothing, is paused too
         resets = outcome.get("resets_at") if kind in ("limit", "overage", "timeout") else None
         part.update(status=PAUSED, resets_at=resets or None)
         if kind == "finished":
-            part["why"] = WHY["unfinished" if cut else "idle"]
-            if cut:
-                part.pop("idle", None)
-            else:
-                part["idle"] = part.get("idle", 0) + 1
+            part["why"] = WHY["idle" if unread else "unfinished"]
         else:
             part["why"] = WHY["limit" if resets else "limit_no_reset"] if kind == "limit" else WHY[kind]
+        if unread and kind == "finished":
+            part["idle"] = part.get("idle", 0) + 1
+        elif not unread:
+            part.pop("idle", None)
     _refresh(workspace, state, now)
     save(workspace, state)
 
@@ -1255,8 +1314,18 @@ def main(argv=None) -> int:
         if args.command in RUN_VERBS and going and args.part != named:
             raise ValueError(f"This routine run reads {named}, so it may not say anything about {args.part}." if named else
                              f"This routine run reads no part of the history, so it has nothing to say about {args.part}.")
+        if args.now and caller is not None and _own_run(caller)[0]:   # a run keeps the computer's clock (R47, O3-1)
+            raise ValueError(NOW_WHY)
+        if args.now and now > _real_now() + FUTURE_SLACK:
+            raise ValueError(NOW_AHEAD_WHY)
+        elsewhere = runs_elsewhere(ws) if args.command in PERSON_VERBS else None
+        if elsewhere:   # the history's notes are written where the routines run (R45, I-1)
+            raise ValueError(ELSEWHERE_WHY.format(name=elsewhere))
         if args.command == "plan":
-            state = plan(ws, _counts(args.counts), now, parse_reading(args.reading, now), args.window_days)
+            given = parse_reading(args.reading, now)
+            if given is not None:
+                reading_of(given, _real_now())   # dated ahead of this computer's clock: refused, whatever now says (N3-1)
+            state = plan(ws, _counts(args.counts), now, given, args.window_days)
             print(json.dumps(state, indent=2) if args.json else _show(state, now))
         elif args.command == "due":
             part, why = explain(ws, now, own=True)   # the agent of a run asks, as the holder of the lock
@@ -1277,6 +1346,7 @@ def main(argv=None) -> int:
             given = parse_reading(args.phrase, now)
             if given is None:
                 raise ValueError("that is not a usage reading")
+            reading_of(given, _real_now())   # dated ahead of this computer's clock: refused, whatever now says (N3-1)
             why = unconfirmed_why()
             if why:
                 given["confirmed"] = False

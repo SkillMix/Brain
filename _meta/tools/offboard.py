@@ -146,13 +146,18 @@ def run(root, online, dry_run=False, forget_records: bool = False,
             report.add("raw records listed", True, "python _meta/tools/offboard.py . --forget-records",
                        f"{len(raw)} raw records stay; the person removes them with --forget-records")
     state = onboard.read_yaml(root / "_meta" / "state" / "onboard.yaml", {}) or {}
-    task_name = (state.get("sync_task") or {}).get("name") or f"space-sync-{space.name}"
+    try:   # unrecorded, the name onboard gave it under the prefix in force (F-7): a test run never names the person's
+        task_name = (state.get("sync_task") or {}).get("name") or f"{onboard.task_prefix()}sync-{space.name}"
+    except ValueError as exc:   # a prefix that is none of ours names no task, so none is touched
+        task_name = None
+        report.add("sync task removed", False, f"echo ${onboard.TASK_PREFIX_ENV}", str(exc)[:200])
     if online:
-        remove_sync_task(report, root, state, task_name, dry_run)
+        if task_name:
+            remove_sync_task(report, root, state, task_name, dry_run)
         for routine in state.get("routine_tasks") or []:   # routines the OS ran, without a harness scheduler
             remove_sync_task(report, root, state, routine["name"], dry_run, label=f"routine task {routine['name']} removed")
         remove_probe_task(report, root, state, dry_run)   # a build stopped before it removed its probe task
-    else:
+    elif task_name:
         report.add("sync task removed", True, f"schtasks /Query /TN {task_name}",
                    "offline: nothing was registered")
     # Only a space that installed an instruction block (recorded by onboard) has one to remove;

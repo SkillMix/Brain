@@ -247,15 +247,30 @@ def minutes_of(value) -> int:
 
 
 # ----- the tree ----------------------------------------------------------------
+def _checkout_files(src: Path) -> list | None:
+    """What a fresh clone of `src` holds plus what is not committed yet: the files git lists as
+    tracked, or untracked and not ignored. None when `src` is not a git checkout (a plain copy)."""
+    try:
+        res = subprocess.run(["git", "-C", str(src), "ls-files", "-z", "-co", "--exclude-standard"],
+                             capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if res.returncode != 0:
+        return None
+    return [src / name for name in dict.fromkeys(res.stdout.decode("utf-8", "replace").split("\0")) if name]
+
+
 def copy_template(src, dst) -> bool:
-    """Copy the machinery and the empty skeleton of `src` to `dst`; never its content."""
+    """Copy the machinery and the empty skeleton of `src` to `dst`; never its content. In a git
+    checkout, never what its git ignores either (a tool's scratch folder, a worktree)."""
     src, dst = Path(src), Path(dst)
     if (dst / "space.yaml").exists():
         return False
-    for path in src.rglob("*"):
+    listed = _checkout_files(src)
+    for path in (src.rglob("*") if listed is None else listed):
         rel = path.relative_to(src)
         posix = rel.as_posix()
-        if path.is_dir() or any(p in SKIP_DIRS for p in rel.parts):
+        if not path.is_file() or any(p in SKIP_DIRS for p in rel.parts):
             continue
         if rel.parts[0] in MOUNT_DIRS:  # another space's checkout: never copied as files
             continue
@@ -2671,6 +2686,7 @@ def staged_history(spaces: dict, slugs=STAGED):
                 backfill.checkpoint(root, part["id"], feed, batch[-1]["at"])
                 if limited:
                     return "limit"
+        backfill.range_read(root, part["id"])   # every feed's range is read to its end: the run says so (R45, I-4)
         return "finished"
 
     def inject(day: int, at) -> None:

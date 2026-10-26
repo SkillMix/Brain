@@ -190,6 +190,13 @@ LOCK_HOURS = 1
 # A start never runs this long (a routine is stopped after one hour), so a live process id on an
 # older lock is a stranger's: Windows hands a finished process's number to the next one.
 PID_REUSE_HOURS = 3
+_HELD = None   # the start lock `run_phase` holds for a build: from before it is marked running until its state is written
+BUSY_WHY = ("Another setup is building your spaces on this computer right now. It finishes on its own; say the "
+            "sentence again once it has.")
+STOPPED_WHY = ("The build stopped before it finished, and nothing is running it now. Say the sentence again to carry "
+               "on; every step already done is kept.")
+FAULT_WHY = ("This step stopped on an unexpected fault, so it did not finish. Say the sentence again; if it stops "
+             "again, your agent has the details.")
 ROUTINES = HERE / "_meta" / "templates" / "routines"
 INVITATIONS = "_meta/state/invitations"
 GITHUB = "https://github.com/"
@@ -401,16 +408,28 @@ def _lock_pid(path) -> int | None:
 
 def take_lock(path=None) -> Path | None:
     """The sentence said twice: the second start waits for the first instead of racing it, for as
-    long as the first runs. A lock whose process is gone is taken over at once, and so is one
-    older than PID_REUSE_HOURS whose process id is running again as another process."""
+    long as the first runs. A lock whose process is gone is taken over at once. The lock keeps its
+    process's start time on its second line (`routine.process_started`, Ruling R45): the same pid that
+    started then is the start that still runs, however old the lock; one that started at another time
+    is another process with that number, and its lock is taken over at once. A lock without a start
+    time, or a system that does not say one, keeps the age rule: older than PID_REUSE_HOURS with its
+    process id running is a stranger's."""
     path = Path(path or lock_path())
     try:
         age = time.time() - path.stat().st_mtime
         held = _lock_pid(path)
         if held is None:
             stale = age >= LOCK_HOURS * 3600
+        elif not routine.pid_alive(held):
+            stale = True
         else:
-            stale = age >= PID_REUSE_HOURS * 3600 or not routine.pid_alive(held)
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except (OSError, UnicodeDecodeError):
+                lines = []
+            then = lines[1].strip() if len(lines) > 1 else ""
+            now = routine.process_started(held) if then else None
+            stale = then != now if then and now else age >= PID_REUSE_HOURS * 3600
         if not stale:
             return None
         path.unlink()
@@ -420,9 +439,19 @@ def take_lock(path=None) -> Path | None:
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError:
         return None
+    mark = routine.process_started(os.getpid())
     with os.fdopen(fd, "w") as fh:
-        fh.write(f"{os.getpid()}\n")
+        fh.write(f"{os.getpid()}\n{mark}\n" if mark else f"{os.getpid()}\n")
     return path
+
+
+def _hold_lock() -> tuple:
+    """(the start lock, whether the caller took it and so releases it): the lock `run_phase` holds for this build
+    (R45, F-5), else a new one (`take_lock`: None while another start holds it)."""
+    if _HELD is not None:
+        return _HELD, False
+    lock = take_lock()
+    return lock, lock is not None
 
 
 def checkup(report: onboard.Report, brain, tpl, offline: bool, fix: bool, spaces) -> bool:
@@ -455,7 +484,7 @@ def start(here=HERE, invitation=None, brain=None, company=None, name=None, email
           user_instructions=None, connected=()) -> onboard.Report:
     """`connected` are the feeds the apps phase has read already: no row asks the person to connect them."""
     report = onboard.Report(case="start")
-    lock = take_lock()
+    lock, own = _hold_lock()   # a build `run_phase` runs holds it already, until its state is written
     if lock is None:
         report.add("one start at a time", False, f"test -f {lock_path()}", "another start is running on this machine: "
                    "it finishes on its own; say the sentence again when it has")
@@ -474,7 +503,8 @@ def start(here=HERE, invitation=None, brain=None, company=None, name=None, email
     finally:
         if report.progress is not None:
             report.page = report.progress.finish(report)
-        lock.unlink(missing_ok=True)
+        if own:
+            lock.unlink(missing_ok=True)
     return report
 
 
@@ -627,6 +657,15 @@ def _pending(phase: str) -> dict:
 SIGNIN_NEEDS = ("github-code", "claude-signin", "namespace")
 GITHUB_NEED = "Sign in to GitHub: open the link and type the one-time code there."
 CLAUDE_NEED = "Sign in to Claude with your Claude account in the browser window that opened."
+# What the phase says when it fails, in plain words; the tools' own words go to the journal's `detail` (R45, Minor 3).
+NETWORK_WHY = ("This computer could not reach GitHub, so nothing could be signed in to. Check the internet connection, "
+               "then say the sentence again.")
+GH_MISSING_WHY = ("GitHub's command line is not on this computer and could not be put there by itself, so GitHub "
+                  "could not be signed in to.")
+CLAUDE_MISSING_WHY = ("Claude's command line is not on this computer and could not be put there by itself, so Claude "
+                      "could not be signed in to.")
+GITHUB_START_WHY = "GitHub's sign-in did not start. Say the sentence again to try once more."
+CLAUDE_START_WHY = "Claude's sign-in did not start. Say the sentence again to try once more."
 
 
 def _signins_record() -> dict:
@@ -651,7 +690,7 @@ def record_namespace(org: str) -> None:
     setup_journal.clear_need("namespace")
 
 
-def _start_github(m, record, errors) -> None:
+def _start_github(m, record, errors, plain) -> None:
     """Start GitHub's device flow, unless an earlier run's is still going and its code is still
     listed. The flow's process is written to the journal at once: a run that is closed while it
     waits must not start a second flow when it is run again. What cannot start is an error, not
@@ -662,12 +701,13 @@ def _start_github(m, record, errors) -> None:
         got = signin.github_start(m)
     except (OSError, signin.SigninError) as exc:
         errors.append(f"GitHub's sign-in did not start: {exc}")
+        plain.append(GITHUB_START_WHY)
         return
     setup_journal.need("github-code", GITHUB_NEED, "gh auth status", link=got["link"], code=got["code"])
     setup_journal.set_phase("signins", "running", github_pid=got["pid"], github_started=int(time.time()))
 
 
-def _start_claude(m, record, errors) -> None:
+def _start_claude(m, record, errors, plain) -> None:
     """Start the Claude command line's sign-in, on the same terms as GitHub's."""
     if signin.flow_alive(record.get("claude_pid"), record.get("claude_started")) and _asked("claude-signin"):
         return
@@ -675,6 +715,7 @@ def _start_claude(m, record, errors) -> None:
         got = signin.claude_start(m)
     except (OSError, signin.SigninError) as exc:
         errors.append(f"Claude's sign-in did not start: {exc}")
+        plain.append(CLAUDE_START_WHY)
         return
     setup_journal.need("claude-signin", CLAUDE_NEED, " ".join(signin.CLAUDE_STATUS), link=got["link"])
     setup_journal.set_phase("signins", "running", claude_pid=got["pid"], claude_started=int(time.time()))
@@ -712,30 +753,34 @@ def phase_signins(args) -> dict:
     tool is missing or a sign-in would not start. The journal's `signins` record keeps what later
     phases read: `github` (the account), `claude` (its state), `claude_email` and `claude_org`
     (whose Claude account the command line is: the desktop app can be another one), `namespace`,
-    and the running flows' ids. A dry run only reads."""
+    and the running flows' ids. Why it failed is said in plain words (NETWORK_WHY and the others); the tools' own
+    words are its `detail`, which the journal keeps and the person is not shown (R45, Minor 3). A dry run only
+    reads."""
     if args.offline:
         return {"state": "done", "needs": [], "github": False, "claude": "signed-out", "namespace": None,
                 "why": "offline: nothing to sign in to"}
-    m, fix, errors = doctor.Machine(), not args.dry_run, []
+    m, fix, errors, plain = doctor.Machine(), not args.dry_run, [], []
     record = {} if args.dry_run else _signins_record()
     gh = doctor.tool_row("gh", m, fix)
     github = gh.ok and signin.github_signed_in(m)
     if not gh.ok:
         errors.append(gh.yours or "GitHub's command line could not be checked")
+        plain.append(NETWORK_WHY if gh.name == "network" else GH_MISSING_WHY)   # with no network the row is the network's
     elif not github and not args.dry_run:
-        _start_github(m, record, errors)
+        _start_github(m, record, errors, plain)
     cli = doctor.tool_row("claude command line", m, fix)   # may install it: after the GitHub code exists
     claude = signin.claude_state(m) if cli.ok else "missing"
     if not cli.ok:
         errors.append(cli.yours or "Claude's command line could not be checked")
+        plain.append(NETWORK_WHY if cli.name == "network" else CLAUDE_MISSING_WHY)
     elif claude != "account" and not args.dry_run:
-        _start_claude(m, record, errors)
-    errors = list(dict.fromkeys(errors))   # no network: one sentence, not two
+        _start_claude(m, record, errors, plain)
+    errors, plain = list(dict.fromkeys(errors)), list(dict.fromkeys(plain))   # no network: one sentence, not two
+    failed = {"why": " ".join(plain), "detail": "; ".join(errors)} if plain else {}
     if args.dry_run:
-        return {"state": "pending", "needs": [], "github": github, "claude": claude, "namespace": None,
-                **({"why": "; ".join(errors)} if errors else {})}
+        return {"state": "pending", "needs": [], "github": github, "claude": claude, "namespace": None, **failed}
     facts = {}
-    if args.wait and not errors and not (github and claude == "account"):
+    if args.wait and not plain and not (github and claude == "account"):
         got = signin.wait(m)
         github, claude = got["github"], got["claude"]
     new_company = not (args.invitation or args.brain)
@@ -754,14 +799,13 @@ def phase_signins(args) -> dict:
         facts.update(claude_email=account.get("email"), claude_org=account.get("org"),
                      claude_pid=None, claude_started=None)
     setup_journal.set_phase("signins", "running", **facts)
-    state = ("failed" if errors else "done" if github and claude == "account" and (namespace or not new_company)
+    state = ("failed" if plain else "done" if github and claude == "account" and (namespace or not new_company)
              else "waiting")
     result = {"state": state, "github": github, "claude": claude, "namespace": namespace,
               "needs": [n for n in setup_journal.open_needs(setup_journal.load()) if n.get("kind") in SIGNIN_NEEDS]}
     if choices:
         result["choices"] = choices
-    if errors:
-        result["why"] = "; ".join(errors)
+    result.update(failed)
     return result
 
 
@@ -772,6 +816,14 @@ ADMIN_NEED = ("{app} could not be read, so it is left out for now. If your organ
               "may use, ask your IT administrator to allow {app}.")
 APPS_CHECK = "python _meta/tools/start.py apps --probe --json"   # the probe lists the app as connected
 APPS_RUN = "python _meta/tools/start.py apps --json"
+
+
+def _slow_why(names: list) -> str:
+    """Why the apps phase waits on apps whose readers ran out of turns or time (R45, I-3): plain, no reader's words."""
+    one = len(names) == 1
+    listed = names[0] if one else f"{', '.join(names[:-1])} and {names[-1]}"
+    return (f"{listed} took longer to read than a reader may take, so {'it is' if one else 'they are'} read again when "
+            f"you say the sentence again. Say \"skip {names[0]}\" to leave {'it' if one else 'one'} out instead.")
 
 
 def _app_needs(verdicts: list) -> None:
@@ -791,19 +843,29 @@ def _read_apps(args, groups: list, unsigned: list, tools: list, claude: str, cwd
     """One reader per app, then the verdicts, the card and the feeds into the journal. The person
     is compared with their own addresses (the one given, the Claude sign-in's, git's: no call to
     the network), and work is judged against the researched company when research is through,
-    else the mail domain."""
+    else the mail domain. What finished is kept (R45, I-2): an app the journal holds a final verdict for
+    (`apps.kept`) is not read again, so a run after a limit reads the apps without one and those connected since;
+    an app to reconnect, a blocked one and a slow one are read again. A slow app (its reader ran out of turns or
+    time) has no verdict: the phase waits, with a plain line that offers to skip it, and needs nothing of the IT
+    administrator (I-3). A skip saved while the verdicts were written is on the card, the stored feeds and the
+    answer too (R47, N3-2)."""
     journal = setup_journal.load()
     who = identity(args.name, args.email, offline=True)
     emails = [e for e in dict.fromkeys([args.email, (journal.get("signins") or {}).get("claude_email"), who["email"]]) if e]
     person = {"name": who["name"], "email": emails[0] if emails else "", "emails": emails,
               **apps.company_of(journal, args.company, emails)}
     limit = None
-    before = [str(s) for s in (journal.get("apps") or {}).get("person_skips") or []]
+    record = journal.get("apps") if isinstance(journal.get("apps"), dict) else {}
+    before = [str(s) for s in record.get("person_skips") or []]
+    kept = [v for v in apps.kept(record, groups) if v["app"] not in before]   # what finished before is kept (R45, I-2)
+    have = {v["app"] for v in kept}
     try:   # an app the person skipped is not read again, nor one skipped before its reader starts (R43, N2-3)
-        verdicts = apps.analyse([g for g in groups if g["app"] not in before], person, cwd, reader=reader.read,
-                                known_tools=tools, claude=claude, skipped=_skips_now)
+        verdicts = apps.analyse([g for g in groups if g["app"] not in before and g["app"] not in have], person, cwd,
+                                reader=reader.read, known_tools=tools, claude=claude, skipped=_skips_now)
     except apps.LimitReached as stop:   # what finished is kept; the rest waits for the limit to reset
         verdicts, limit = stop.verdicts, stop
+    merged = {**{v["app"]: v for v in kept}, **{v["app"]: v for v in verdicts}}
+    verdicts = [merged[g["app"]] for g in groups if g["app"] in merged]   # in the probe's order
     fresh = setup_journal.load().get("apps")   # read again before writing: a skip said while the readers ran wins (R40)
     skips = list(dict.fromkeys([*before, *((fresh if isinstance(fresh, dict) else {}).get("person_skips") or [])]))
     verdicts = [_skipped(v) if v.get("app") in skips and v.get("app") not in before else v for v in verdicts]
@@ -811,9 +873,19 @@ def _read_apps(args, groups: list, unsigned: list, tools: list, claude: str, cwd
     verdicts += [_skipped(g) for g in groups if g["app"] in skips and g["app"] not in read]
     unfinished = [g["app"] for g in groups if g["app"] not in read and g["app"] not in skips]
     verdicts = _person_skips(verdicts, skips)   # the person's word stays
-    card, feeds = _skip_lines(apps.card(verdicts, dt.datetime.now().astimezone(), unsigned), verdicts), apps.feeds(verdicts)
-    state = "waiting" if limit else "done"
+    now = dt.datetime.now().astimezone()
+    card, feeds = _skip_lines(apps.card(verdicts, now, unsigned), verdicts), apps.feeds(verdicts)
+    state = "waiting" if limit or unfinished else "done"
     setup_journal.set_phase("apps", state, **facts, verdicts=verdicts, card=card, feeds=feeds, unfinished=unfinished)
+    after = setup_journal.load().get("apps")   # a skip saved between the reload above and this write (R47, N3-2)
+    late = [str(s) for s in (after if isinstance(after, dict) else {}).get("person_skips") or [] if str(s) not in skips]
+    if late:
+        skips += late
+        verdicts = apps_verdicts(setup_journal.load())
+        unfinished = [a for a in unfinished if a not in late]
+        state = "waiting" if limit or unfinished else "done"
+        card, feeds = _skip_lines(apps.card(verdicts, now, unsigned), verdicts), apps.feeds(verdicts)
+        setup_journal.set_phase("apps", state, verdicts=verdicts, card=card, feeds=feeds, unfinished=unfinished)
     _app_needs(verdicts)
     result = {"state": state, "apps": [g["app"] for g in groups], "card": card, "feeds": feeds, "unfinished": unfinished}
     if limit:
@@ -822,6 +894,8 @@ def _read_apps(args, groups: list, unsigned: list, tools: list, claude: str, cwd
                          f"{len([g for g in groups if g['app'] not in skips])} apps read"
                          + (f" ({limit.text})" if limit.text else "")
                          + ". Say the sentence again once it resets: the others are read then.")
+    elif unfinished:   # no limit: what has no verdict ran out of turns or time (R45, I-3)
+        result["why"] = _slow_why(unfinished)
     return result
 
 
@@ -890,10 +964,10 @@ def skip_apps(args) -> dict:
     skipped = list(dict.fromkeys([*(record.get("person_skips") or []), *found]))
     facts = {"person_skips": skipped}
     result = {"state": state, "skipped": found}
-    if not verdicts:   # the readers may have written theirs since: the skip goes onto them, the state is theirs
-        latest = setup_journal.load().get("apps")
-        if isinstance(latest, dict) and latest.get("verdicts"):
-            return skip_apps(args)
+    if not verdicts and not getattr(args, "again", False):   # the readers may have written theirs since: the skip
+        latest = setup_journal.load().get("apps")                   # goes onto them, the state is theirs; asked once only,
+        if isinstance(latest, dict) and any(isinstance(v, dict) for v in latest.get("verdicts") or []):   # (R47, N3-3)
+            return skip_apps(argparse.Namespace(**{**vars(args), "again": True}))
     if verdicts:   # an app not read yet (stopped at a limit) is not read at all: its verdict is the person's word
         have = {v["app"] for v in verdicts}
         verdicts = _person_skips(verdicts, skipped) + [_skipped(g) for g in groups if g["app"] in found and g["app"] not in have]
@@ -943,6 +1017,8 @@ def phase_apps(args) -> dict:
     except routine.ProbeError as exc:
         return {"state": "failed", "detail": str(exc),
                 "why": "Claude did not say which apps it can reach, so no app was read. Say the sentence again to try once more."}
+    if not args.dry_run:
+        apps.keep_probe(probe)   # the research beside it reads this one instead of asking again (dry run B N-4)
     tools, servers = probe.get("tools") or [], probe.get("mcp_servers") or []
     groups, unsigned = apps.group(tools, servers), apps.not_signed_in(servers)
     found = {"apps": [g["app"] for g in groups], "not_signed_in": unsigned}
@@ -1028,6 +1104,13 @@ def _card_opens(journal: dict) -> dt.datetime | None:
     return when if when.tzinfo else when.astimezone()
 
 
+EMPTY_SITE_WHY = "The company's website was looked at, but nothing usable came back; it is read again next time."
+
+
+class _Empty(Exception):
+    """A source that was read and gave nothing to keep: it is not done, and is read again next time (R45, Minor 14)."""
+
+
 class _Reading:
     """The sources of one run of the research phase, read one after the other. A source that
     finished is remembered (`done`) and is not read again; what its readers returned goes through
@@ -1056,6 +1139,9 @@ class _Reading:
                 continue
             except routine.ProbeError:
                 raise
+            except _Empty as exc:   # read, and nothing came back: not done, tried again
+                self.unread[name] = str(exc)
+                continue
             except Exception as exc:   # a fault in one source is that source's, with a fixed sentence: its text could repeat a page
                 self.unread[name], self.faults[name] = research.UNEXPECTED, type(exc).__name__
                 continue
@@ -1082,8 +1168,8 @@ def _read_company(args, card: dict, prior: dict, journal: dict, reading: _Readin
     used = list(prior.get("files") or [])
 
     def known() -> list:   # what the probe sees: the connector tools a reader was not given are denied for its run
-        if not probed:
-            probed.append(routine.probe_tools(claude, cwd).get("tools") or [])
+        if not probed:   # the apps phase's own probe, when it is fresh: one probe for both (dry run B N-4)
+            probed.append(apps.recent_probe() or routine.probe_tools(claude, cwd).get("tools") or [])
         return probed[0]
 
     def ask(prompt: str, tools: list, schema: dict) -> dict:
@@ -1099,7 +1185,10 @@ def _read_company(args, card: dict, prior: dict, journal: dict, reading: _Readin
         answer = ask(research.site_prompt(card), rules, research.WEB_SCHEMA)
         if not args.company and answer.get("name"):
             card["name"] = " ".join(str(answer["name"]).split())[:80]
-        return research.web_records(answer, "site", research.hosts_of(rules), now, taken)
+        found = research.web_records(answer, "site", research.hosts_of(rules), now, taken)
+        if not found:   # pages fetched and nothing kept: not read, and read again next time (R45, Minor 14)
+            raise _Empty(EMPTY_SITE_WHY)
+        return found
 
     def register() -> list:
         answer = ask(research.register_prompt(card, host), [f"WebFetch(domain:{host})"], research.WEB_SCHEMA)
@@ -1422,6 +1511,14 @@ PROBE_BUSY = ("A routine was running, so the check that proves your routines run
               "Say the sentence again once it is done; a routine runs an hour at most.")
 PROBE_STARTING = ("Another setup is running on this computer, so the check that proves your routines run on their own "
                   "could not start. Try again once it is done.")
+PROBE_FAILED = ("The check that proves your routines run on their own found something that does not work yet, so they "
+                "were not proved. Your agent has the details; say the sentence again once it is put right.")
+PROBE_NOTHING = "The check that proves your routines run on their own reported nothing. Say the sentence again."
+PROBE_UNSCHEDULED = ("The check that proves your routines run on their own could not be scheduled on this computer. Say "
+                     "the sentence again.")
+# What the build may say of the proof as it is; any other line is PROBE_FAILED, its words the journal's detail (Minor 3).
+PROBE_PLAIN = (PROBE_REFUSED, PROBE_SILENT.format(minutes=PROBE_WAIT // 60), PROBE_ERROR, PROBE_BUSY, PROBE_STARTING,
+               PROBE_FAILED, PROBE_NOTHING, PROBE_UNSCHEDULED)
 
 
 def _probe_result(started: float) -> dict | None:
@@ -1461,19 +1558,21 @@ def prove_routines(report, workspace) -> dict:
     removed whatever happened, and it is recorded in onboard.yaml before it is registered
     (`onboard.record_probe_task`): a build stopped before it removed the task leaves the record, by which the
     next build (first thing here), `onboard --check` and offboard remove it (`offboard.remove_probe_task`).
-    It holds this computer's start lock while it runs (`take_lock`), so `onboard --check` leaves its probe task
-    alone and no second start probes at the same time; with another start running it proves nothing and says so.
-    Each failed check is one step that names it; the result is {"ok", "checks", "notes", "why"}."""
+    It holds this computer's start lock while it runs (the build's own, which `run_phase` holds, else `take_lock`),
+    so `onboard --check` leaves its probe task alone and no second start probes at the same time; with another start
+    running it proves nothing and says so. Each failed check is one step that names it; the result is {"ok",
+    "checks", "notes", "why", "detail"}: `why` is plain (PROBE_PLAIN), the failed checks' own words are `detail`."""
     workspace = Path(workspace).resolve()
     check = f'{onboard.python_cmd()} "{workspace.as_posix()}/_meta/tools/routine.py" --probe "{workspace.as_posix()}"'
-    lock = take_lock()
+    lock, own = _hold_lock()
     if lock is None:
         report.add(PROBE_STEP, False, check, PROBE_STARTING)
         return {"ok": False, "checks": [], "notes": [], "why": PROBE_STARTING}
     try:
         return _prove(report, workspace, check)
     finally:
-        lock.unlink(missing_ok=True)
+        if own:
+            lock.unlink(missing_ok=True)
 
 
 def _prove(report, workspace: Path, check: str) -> dict:
@@ -1489,8 +1588,7 @@ def _prove(report, workspace: Path, check: str) -> dict:
                                        times=[PROBE_TIME], cron=f"{minute} {hour} * * *")
         onboard.record_probe_task(workspace, record)   # how this scheduler names it, for a later removal
         if not report.steps or not report.steps[-1].done:
-            why = "The check that proves your routines run on their own could not be scheduled on this computer."
-            return {"ok": False, "checks": [], "notes": [], "why": why}
+            return {"ok": False, "checks": [], "notes": [], "why": PROBE_UNSCHEDULED}
         seen = _probe_once(record)
         if not (seen.get("why") or seen.get("error")):
             routine.write_allowlist(workspace)
@@ -1514,13 +1612,18 @@ def _prove(report, workspace: Path, check: str) -> dict:
             report.add(f"routine check: {c.get('name')}", False, check, str(c.get("why") or "it did not pass"))
         if not failed and not seen["checks"]:
             report.add(PROBE_STEP, False, check, "the check reported nothing")
-            seen["why"] = "The check that proves your routines run on their own reported nothing."
-        elif failed:
-            seen["why"] = " ".join(f"{c.get('name')}: {c.get('why')}." for c in failed)
+            seen["why"] = PROBE_NOTHING
+        elif failed:   # plain words for the person; the checks' own for the journal (R45, Minor 3)
+            seen["why"] = PROBE_FAILED
+            seen["detail"] = " ".join(f"{c.get('name')}: {c.get('why')}." for c in failed)
         else:
             report.add(PROBE_STEP, True, check, "proved twice, as the scheduler starts them")
     seen["ok"] = bool(seen.get("ok")) and not seen.get("why")
-    return {k: seen.get(k) for k in ("ok", "checks", "notes", "why")}
+    return {k: seen.get(k) for k in ("ok", "checks", "notes", "why", "detail")}
+
+
+TASK_PREFIX_WHY = ("This computer is set to name the routines' scheduled tasks in a way that is not ours, so nothing was "
+                   "created. Your agent has the details.")
 
 
 def phase_build(args) -> dict:
@@ -1533,14 +1636,15 @@ def phase_build(args) -> dict:
     is open it refuses to start (`waiting`, and why); `--org <name>` answers it: the name is
     remembered and the question closed. The account the signins phase settled on is used when no
     `--org` is given. A task-name prefix that is not ours (`SPACES_TASK_PREFIX`) fails it before
-    anything is created. The report is kept on `LAST_REPORT`."""
+    anything is created (TASK_PREFIX_WHY; the setting's own words are the journal's `detail`). The report is kept
+    on `LAST_REPORT`."""
     global LAST_REPORT
     try:
         onboard.task_prefix()
     except ValueError as exc:
         if not args.json:
-            print(f"build: failed: {exc}")
-        return {"phase": "build", "state": "failed", "why": str(exc)}
+            print(f"build: failed: {TASK_PREFIX_WHY}")
+        return {"phase": "build", "state": "failed", "why": TASK_PREFIX_WHY, "detail": str(exc)}
     if args.email and not address_in(args.email):
         why = (f'"{" ".join(str(args.email).split())[:80]}" is not an email address, or holds more than one: give the '
                "one address your morning briefing should go to.")
@@ -1613,8 +1717,12 @@ def phase_build(args) -> dict:
             print("then say the sentence again: every step already done is kept")
     state = ("failed" if result["failed"] else "pending" if args.dry_run
              else "waiting" if result["stopped"] or result["yours"] else "done")
-    if probe and probe.get("why"):
-        result["why"] = probe["why"]
+    if probe and probe.get("why"):   # plain words for the person, anything else in the journal only (R45, Minor 3)
+        plain = probe["why"] in PROBE_PLAIN
+        result["why"] = probe["why"] if plain else PROBE_FAILED
+        detail = probe.get("detail") or (None if plain else probe["why"])
+        if detail:
+            result["detail"] = detail
     return {"phase": "build", "state": state, **result}
 
 
@@ -1639,12 +1747,16 @@ def history_counts(journal: dict) -> dict:
 
 
 def _history_workspace(args, journal: dict) -> Path | None:
-    """The person's workspace: the one `--workspace` names, else the one this process just built, else the
-    personal workspace on the machine's list of spaces (the person's own, when there are several)."""
+    """The person's workspace: the one `--workspace` names, else the one this process just built, else the one the
+    build's journal record keeps (a build in another process; R45, F-3), else the personal workspace on the
+    machine's list of spaces (the person's own, when there are several)."""
     if getattr(args, "workspace", None):
         return Path(args.workspace)
     if getattr(LAST_REPORT, "workspace", None):
         return Path(LAST_REPORT.workspace)
+    built = journal.get("build") if isinstance(journal.get("build"), dict) else {}
+    if built.get("workspace") and (Path(str(built["workspace"])) / "space.yaml").exists():
+        return Path(str(built["workspace"]))
     try:
         rows = (yaml.safe_load((Path.home() / onboard.MACHINE_SPACES).read_text(encoding="utf-8")) or {}).get("spaces") or []
     except (OSError, yaml.YAMLError, AttributeError):
@@ -1667,13 +1779,31 @@ def _sweep_task(workspace: Path) -> dict | None:
     return next((r for r in state.get("routine_tasks") or [] if isinstance(r, dict) and r.get("name") == want), None)
 
 
-def _stopped_since(workspace: Path, since) -> bool:
-    """Whether the newest run routine.py itself kept (`backfill.meter_rows`, never a line in runs.jsonl, where a
-    routine's agent can append its own; R43, O-3), dated after `since`, stopped (it did not start, or ended with no
-    result) or was held by a pause of the routines: nothing is reading, so waiting on it is no use."""
+def _stopped_since(workspace: Path, since) -> str | None:
+    """The outcome of the newest run routine.py itself kept (`backfill.meter_rows`, never a line in runs.jsonl, where a
+    routine's agent can append its own; R43, O-3), dated after `since`, when it stopped (`stopped`: it did not start,
+    or ended with no result) or was held by a pause of the routines (`paused`): nothing is reading, so waiting on it
+    is no use. None otherwise."""
     import backfill
     rows = backfill.meter_rows(workspace, _now())
-    return bool(rows) and rows[-1]["at"] > since and rows[-1].get("outcome") in ("stopped", "paused")
+    if rows and rows[-1]["at"] > since and rows[-1].get("outcome") in ("stopped", "paused"):
+        return rows[-1]["outcome"]
+    return None
+
+
+STOPPED_RUN_WHY = "The run stopped before it read anything; the next routine run tries again."
+PAUSE_OVER_WHY = "Your routines were paused when the run was due; the next routine run reads it."
+
+
+def _paused_why(workspace: Path, which: str) -> str:
+    """Why a run was held by a pause: until when the routines are paused, as the person said it (R45, Minor 13)."""
+    record = routine.host(workspace)
+    until = routine.paused_until(record if isinstance(record, dict) else {}, _now())
+    if until is None:
+        return PAUSE_OVER_WHY
+    number = which[1:] if which[:1] == "p" and which[1:].isdigit() else which
+    return (f"Your routines are paused until {onboarding_page.words(until, _now())}; part {number} is read once they "
+            "run again.")
 
 
 ACCOUNT_SECONDS = 120   # two readings of one account's window end this close at most (R38; never observed live)
@@ -1722,9 +1852,10 @@ def _wait_part(workspace: Path, which: str) -> dict:
         coming, why = backfill.explain(workspace, _now())
         if (state.get("waiting") or coming is None) and not routine.locked(workspace):
             return {"part": which, "status": part.get("status"), "why": why}
-        if _stopped_since(workspace, since) and not routine.locked(workspace):
+        stopped = _stopped_since(workspace, since)
+        if stopped and not routine.locked(workspace):
             return {"part": which, "status": part.get("status"),
-                    "why": "The run stopped before it read anything; the next routine run tries again."}
+                    "why": _paused_why(workspace, which) if stopped == "paused" else STOPPED_RUN_WHY}
         if _clock() >= deadline:
             return {"part": which, "status": part.get("status"),
                     "why": "It had not finished within the hour; it goes on with the routines."}
@@ -1747,7 +1878,9 @@ def phase_history(args) -> dict:
     kept unconfirmed (paced as if extra usage were on) until a reading given after a run read part 1 compares its
     windows (`usage_account`); the journal's `usage_account` then says `same` (readings pace as the routines') or
     `different` (they are no longer kept: backfill paces from the routines' own meter, `backfill.meter_rows`).
-    Once part 1 has been started the journal's history says `in_background`: the setup counts as finished."""
+    Once part 1 has been started the journal's history says `in_background`: the setup counts as finished.
+    On a computer that does not run the routines (`backfill.runs_elsewhere`) it writes nothing: the history's notes
+    are kept where the routines run, and the phase is done here (R45, I-1)."""
     import backfill
     journal, now = setup_journal.load(), _now()
     counts = history_counts(journal)
@@ -1756,6 +1889,9 @@ def phase_history(args) -> dict:
         return {"phase": "history", "state": "failed", "why": NO_WORKSPACE}
     if args.dry_run:
         return {"phase": "history", "state": "pending", "counts": counts, "why": "dry run: nothing is planned"}
+    elsewhere = backfill.runs_elsewhere(workspace)
+    if elsewhere:   # two computers writing the history's notes would stop this one's sync
+        return {"phase": "history", "state": "done", "counts": counts, "why": backfill.ELSEWHERE_WHY.format(name=elsewhere)}
     text = (getattr(args, "reading", None) or "").strip()
     signins = journal.get("signins") if isinstance(journal.get("signins"), dict) else {}
     paid, reading = signins.get("claude") == "api-key" or text == "not_applicable", None
@@ -1824,23 +1960,50 @@ def phase_history(args) -> dict:
 
 def run_phase(args) -> dict:
     """One phase, journaled: `running` while it works, then the state it returns (when it names
-    none: `waiting` while the person is still needed, else `done`). One that raises is left
-    `failed`, not `running`. A dry run changes nothing, the journal included."""
+    none: `waiting` while the person is still needed, else `done`), with its plain `why`, whether it ran `offline`
+    and the `detail` that is not the person's to read (the tools' own words: the answer does not carry it), and for a
+    build the `workspace` it made (R45, F-3 and F-6). One that raises is left `failed`, not `running`, with FAULT_WHY
+    and the fault's class as its detail. A build holds this computer's start lock from before it is marked running
+    until its state is written (F-5): one that cannot take it writes nothing and answers the state the journal holds,
+    `busy`, with BUSY_WHY. Once a build's state is written its page is written again, so it never shows the build
+    running after it finished (F-4). A dry run changes nothing, the journal included."""
+    global _HELD
     name, journal = args.phase, not args.dry_run
-    if journal and not (name == "apps" and getattr(args, "skip", None)):   # a skip leaves the state alone (R40)
-        setup_journal.set_phase(name, "running")
+    offline, skip = bool(getattr(args, "offline", False)), name == "apps" and bool(getattr(args, "skip", None))
+    held, before = None, LAST_REPORT
+    if name == "build" and journal:
+        held = take_lock()
+        if held is None:   # another start builds now: the build's state is its own (R45, F-5)
+            record = setup_journal.load().get("build")
+            state = record.get("state") if isinstance(record, dict) else None
+            return {"phase": name, "state": str(state or "pending"), "busy": True, "why": BUSY_WHY}
+        _HELD = held
     try:
-        result = globals()[f"phase_{name}"](args)   # looked up now, so a test can stand in for one
-    except Exception:
+        if journal and not skip:   # a skip leaves the state alone (R40), and the record too
+            setup_journal.set_phase(name, "running")
+        try:
+            result = globals()[f"phase_{name}"](args)   # looked up now, so a test can stand in for one
+        except Exception as exc:
+            if journal:
+                setup_journal.set_phase(name, "failed", why=FAULT_WHY, detail=type(exc).__name__, offline=offline)
+            raise
+        result.setdefault("phase", name)
+        if "state" not in result:
+            result["state"] = "waiting" if setup_journal.open_needs(setup_journal.load()) else "done"
+        detail = result.pop("detail", None)
         if journal:
-            setup_journal.set_phase(name, "failed")
-        raise
-    result.setdefault("phase", name)
-    if "state" not in result:
-        result["state"] = "waiting" if setup_journal.open_needs(setup_journal.load()) else "done"
-    if journal:
-        setup_journal.set_phase(name, result["state"])
-    return result
+            facts = {} if skip else {"why": result.get("why"), "offline": offline, "detail": detail}
+            if name == "build" and result.get("workspace"):
+                facts["workspace"] = str(result["workspace"])
+            setup_journal.set_phase(name, result["state"], **facts)
+            report = LAST_REPORT
+            if name == "build" and report is not None and report is not before and report.progress is not None:
+                report.page = report.progress.finish(report)   # the page as the journal now says: not building (F-4)
+        return result
+    finally:
+        if held is not None:
+            _HELD = None
+            held.unlink(missing_ok=True)
 
 
 def say_needs(needs: list) -> None:
@@ -1872,10 +2035,18 @@ def resume(args) -> int:
     """Where the setup stands after a closed session or a day: the first phase that is not done,
     what waits for the person, every phase's record. It runs nothing; the agent runs the phase.
     Once part 1 of the history has been started, the history runs on in the background: it is not
-    `next`, and its record says so (`in_background`, `part1`)."""
+    `next`, and its record says so (`in_background`, `part1`). A build the journal says is running while no live
+    start holds the start lock stopped with its process: its record says so (`stopped`, STOPPED_WHY), and saying
+    the sentence again carries on (R45, F-9). It writes nothing about that."""
     data = setup_journal.load()
     result = {"next": setup_journal.next_phase(data), "needs": setup_journal.open_needs(data),
               "phases": {p: data.get(p) or {"state": "pending"} for p in PHASES}}
+    build = result["phases"].get("build") if isinstance(result["phases"].get("build"), dict) else {}
+    if build.get("state") == "running":
+        lock = take_lock()   # the lock's own liveness test: taken only when no live start holds it
+        if lock is not None:
+            lock.unlink(missing_ok=True)
+            result["phases"]["build"] = {**build, "stopped": True, "why": STOPPED_WHY}
     going = _history_going(args, data) if result["next"] == "history" else None
     if going:
         if not (data.get("history") or {}).get("in_background"):   # started by a routine run: marked now (R40, N-5)
@@ -1888,6 +2059,9 @@ def resume(args) -> int:
     for phase, record in result["phases"].items():
         if record.get("in_background"):
             print(f"{phase}: running in the background, part 1 {record['part1']['status']}")
+            continue
+        if record.get("stopped"):
+            print(f"{phase}: stopped before it finished; say the sentence again to carry on")
             continue
         print(f"{phase}: {record.get('state', 'pending')}")
     print(f"next: {result['next']}" if result["next"] else "every phase is done")
@@ -1950,7 +2124,7 @@ def main(argv=None) -> int:
     needs = setup_journal.open_needs(setup_journal.load())
     if args.json:
         print(json.dumps({**result, "needs": needs}, indent=2))
-    elif args.phase != "build":   # the build printed its steps itself, as it always did
+    elif args.phase != "build" or result.get("busy"):   # the build printed its steps itself, as it always did
         print(f"{result['phase']}: {result['state']}" + (f": {result['why']}" if result.get("why") else ""))
         say_needs(needs)
     return 1 if result["state"] == "failed" or result.get("stopped") else 0

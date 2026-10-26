@@ -394,7 +394,8 @@ def test_a_sign_in_that_will_not_start_is_reported_and_the_other_still_starts(mo
         raise signin.SigninError("GitHub did not give a sign-in code")
     monkeypatch.setattr(signin, "github_start", refused)
     code, result = signins(capsys, "--wait")   # nothing to wait for: it reports at once
-    assert code == 1 and result["state"] == "failed" and "did not give a sign-in code" in result["why"]
+    assert code == 1 and result["state"] == "failed" and result["why"] == start.GITHUB_START_WHY   # plain (R45, Minor 3)
+    assert "did not give a sign-in code" in setup_journal.load()["signins"]["detail"]   # its own words: the journal only
     assert started == ["claude"] and [n["kind"] for n in result["needs"]] == ["claude-signin"]
     assert setup_journal.load()["signins"]["state"] == "failed"
 
@@ -404,7 +405,8 @@ def test_a_tool_the_doctor_could_not_install_fails_the_phase_with_its_sentence(m
         doctor.Row("gh", False, "not found", "gh --version", yours="install GitHub's command line tool once"),
         doctor.Row("claude command line", True, "2.1.303 (Claude Code)", "claude --version")])
     code, result = signins(capsys)
-    assert code == 1 and result["state"] == "failed" and "install GitHub's command line tool" in result["why"]
+    assert code == 1 and result["state"] == "failed" and result["why"] == start.GH_MISSING_WHY
+    assert "winget" not in result["why"] and "install GitHub's command line tool" in setup_journal.load()["signins"]["detail"]
     assert started == ["claude"]
 
 
@@ -412,7 +414,7 @@ def test_no_network_is_one_sentence_not_two(monkeypatch, capsys):
     started = world(monkeypatch, rows=[doctor.Row("network", False, "github.com unreachable", "https://api.github.com",
                                                   yours="there is no connection to github.com: reconnect")])
     code, result = signins(capsys)
-    assert code == 1 and result["why"] == "there is no connection to github.com: reconnect" and started == []
+    assert code == 1 and result["why"] == start.NETWORK_WHY and started == []
 
 
 def test_a_dry_run_reads_and_starts_nothing(monkeypatch, capsys):
@@ -442,7 +444,7 @@ def test_a_failed_phase_says_why_in_its_first_line(monkeypatch, capsys):
     world(monkeypatch, rows=[doctor.Row("network", False, "github.com unreachable", "https://api.github.com",
                                         yours="there is no connection to github.com: reconnect")])
     assert start.main(["signins"]) == 1
-    assert capsys.readouterr().out.splitlines()[0] == "signins: failed: there is no connection to github.com: reconnect"
+    assert capsys.readouterr().out.splitlines()[0] == f"signins: failed: {start.NETWORK_WHY}"
 
 
 def test_one_matching_org_is_picked_and_two_are_a_choice():

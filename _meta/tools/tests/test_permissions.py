@@ -96,6 +96,15 @@ def test_the_routine_profile_refuses_edits_to_the_machinery_in_every_space(tmp_p
     assert not [r for r in data["deny"] + data["allow"] if re.match(r"(Write|MultiEdit|NotebookEdit)\(", r)]
 
 
+def test_the_routine_profile_refuses_edits_to_the_local_instructions_and_the_git_attributes_at_any_depth(tmp_path):
+    """I-9 and Minor 8: Claude Code loads CLAUDE.local.md beside CLAUDE.md (in a folder outside git too, dry run A),
+    and .gitattributes (the merge rules) and .gitignore decide what the sync script lands: no routine writes them."""
+    other = make_space(tmp_path / "brain")
+    data = routine.routine_settings(REPO, "", roots=[REPO, other])["permissions"]
+    for pattern in ("CLAUDE.local.md", ".gitattributes", ".gitignore"):
+        assert pattern in routine.PROTECTED_EDITS and f"Edit(//**/{pattern})" in data["deny"]
+
+
 def test_a_windows_drive_is_matched_the_way_claude_code_spells_it():
     if re.match(r"^[A-Za-z]:", str(REPO.resolve())):
         assert routine.rule_path(REPO).startswith(f"/{str(REPO.resolve())[0].lower()}/")

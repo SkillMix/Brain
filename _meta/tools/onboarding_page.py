@@ -110,19 +110,26 @@ def stages(rows: list, live: bool = False, workspace=None, now=None, readback: b
         if not group and any(groups[i + 1:]) and not (i == 4 and rendered):
             continue
         state = _state(group, i == latest) if group else "next"
-        out.append({"title": title, "state": state, "rows": group, "sub": "", "note": _note(state, group)})
+        out.append({"title": title, "state": state, "rows": group, "sub": "", "note": _note(state, group, title)})
     ready = all(s["state"] == "done" for s in out if s["title"] != "Sources")
     out.append(_briefing(workspace, now, ready))
     return out
 
 
-def _note(state: str, rows: list) -> str:
-    """The one line under the stages: the step running now, or the one that did not work."""
+# What the stage running now is doing, in plain words: a step's own name and result stay in the agent's terminal and
+# the setup journal, never on the page (R45, Minor 3).
+RUNNING_NOTES = {"Your machine": "checking this computer.", "Your spaces": "making your spaces.",
+                 "Connect": "connecting your spaces.", "First run": "the first run in your spaces.",
+                 "Routines": "setting up your routines.", "Sources": "connecting your sources."}
+FAILED_NOTE = "{title}: a step did not work. Your agent has the details and says what to do."
+
+
+def _note(state: str, rows: list, title: str = "") -> str:
+    """The one line under the stages: what the stage running now does, or that one of its steps did not work."""
     if state == "running":
-        return f"Now: {rows[-1]['name']}"
+        return f"Now: {RUNNING_NOTES.get(title, 'setting up.')}"
     if state == "failed":
-        first = next(r for r in rows if not r["done"] and not r["needs_owner"])
-        return f"{first['name']}: {first['result']}"[:220]
+        return FAILED_NOTE.format(title=title or "Setup")
     return ""
 
 
@@ -218,6 +225,8 @@ def _briefing(workspace, now, ready: bool = True) -> dict:
     if sent:
         return {"title": "Briefing", "state": "done", "rows": [], "note": "",
                 "sub": f"sent {_local(sent[0].get('at'))[:10]}"}
+    if offline(workspace):   # nothing is scheduled: no time to promise (R45, F-10)
+        return {"title": "Briefing", "state": "next", "rows": [], "note": "", "sub": ""}
     when = _first_time(next((s for n, s in _routines(workspace) if n == "daily-chain"), ""))
     return {"title": "Briefing", "state": "next", "rows": [], "note": "",
             "sub": f"tomorrow {when}".strip() if ready else when}
@@ -484,9 +493,24 @@ def routine_what(key: str) -> str:
     return said or f"{_routine_name(key)[0][:1].upper()}{_routine_name(key)[0][1:]} runs."
 
 
+OFFLINE_NEXT = ("Your routines start once setup has run online; nothing is scheduled on this computer yet, so no "
+                "time is promised.")
+
+
+def offline(workspace) -> bool:
+    """The workspace was set up offline (onboard.yaml's `offline`): its routines were rendered, never scheduled."""
+    if not workspace:
+        return False
+    try:
+        return bool(_yaml(Path(workspace) / STATE).get("offline"))
+    except Unreadable:
+        return False
+
+
 def rendered_routines(workspace) -> list:
-    """(name, schedule) of the routines rendered into the workspace; the template's are not scheduled."""
-    return _routines(workspace) if _rendered(workspace) else []
+    """(name, schedule) of the routines rendered into the workspace and scheduled; the template's are not, and
+    neither are those of a workspace set up offline (R45, F-10)."""
+    return _routines(workspace) if _rendered(workspace) and not offline(workspace) else []
 
 
 def sync_minutes(journal) -> int:
@@ -531,15 +555,24 @@ def _card_names(lines) -> list:
     return [[part.strip() for part in str(line).split(CARD_SEP)] for line in lines if str(line).strip()]
 
 
+def _skips(record: dict) -> set:
+    """The apps the person said to skip (`person_skips`): whatever the card or the verdicts still say, not read."""
+    return {_text(s) for s in record.get("person_skips") or []} if isinstance(record.get("person_skips"), list) else set()
+
+
 def apps_read(journal) -> list:
-    """(app, account) of the apps that are read: the app card's lines, else the verdicts."""
+    """(app, account) of the apps that are read: the app card's lines, else the verdicts; never one the person
+    skipped, though the card was written before their word was saved (R47, N3-2)."""
     record = (journal or {}).get("apps")
     record = record if isinstance(record, dict) else {}
     card = record.get("card") if isinstance(record.get("card"), dict) else {}
+    skipped = _skips(record)
     if card.get("read"):
-        return [(parts[0], parts[1] if len(parts) > 1 else "") for parts in _card_names(card["read"]) if parts[0]]
+        return [(parts[0], parts[1] if len(parts) > 1 else "") for parts in _card_names(card["read"])
+                if parts[0] and parts[0] not in skipped]
     return [(_text(v.get("app")), _text(v.get("account"))) for v in record.get("verdicts") or []
-            if isinstance(v, dict) and v.get("verdict") in ("work", "mixed") and _text(v.get("app"))]
+            if isinstance(v, dict) and v.get("verdict") in ("work", "mixed") and _text(v.get("app"))
+            and _text(v.get("app")) not in skipped]
 
 
 def profile_lines() -> dict:
@@ -589,22 +622,25 @@ def usage_line(plan: dict, now) -> str:
 
 def running_run(workspace, now):
     """The routine run that holds this workspace's lock now, as {"routine", "part"}: read from the lock the run
-    writes (`~/.spaces/locks/<space name>.lock`: pid, routine, started, and the part of the history it reads),
-    and only read. None when there is no lock, it cannot be read, its process is gone, or it is older than
-    LOCK_HOURS (then the process id is another process's)."""
+    writes (`~/.spaces/locks/<space name>.lock`: pid, routine, started, the part of the history it reads and its
+    process's start time), and only read, by the rule of `routine._live`: a lock whose process runs and started when
+    the lock says is that run's however old it is (a lid closed for hours); one whose process started at another time
+    is another process's. A lock without a start time, or a system that does not say one, keeps the age rule: None
+    when it is from the future or older than LOCK_HOURS. None too when there is no lock or it cannot be read."""
     try:
+        import routine
         name = spaceyaml.load(workspace).name
-        data = yaml.safe_load((Path.home() / ".spaces" / "locks" / f"{name}.lock").read_text(encoding="utf-8"))
-        pid, started = data.get("pid"), stamp(data.get("started"))
-        if not (isinstance(pid, int) and not isinstance(pid, bool) and pid > 0 and started is not None):
+        data = routine._lock_data((Path.home() / ".spaces" / "locks" / f"{name}.lock").read_bytes())
+        if data is None or not routine.pid_alive(data["pid"]):
             return None
-        age = now - started
+        held = {"routine": _text(data.get("routine")), "part": _text(data.get("part"))}
+        mark = routine.process_started(data["pid"]) if data["pid_started"] else None
+        if mark:
+            return held if mark == data["pid_started"] else None
+        age = now - data["started"]
         if age < -dt.timedelta(minutes=5) or age >= dt.timedelta(hours=LOCK_HOURS):
             return None
-        import routine
-        if not routine.pid_alive(pid):
-            return None
-        return {"routine": _text(data.get("routine")), "part": _text(data.get("part"))}
+        return held
     except Exception:   # no lock, a lock that is not one, no way to ask: no run to show
         return None
 
@@ -675,6 +711,8 @@ def _now_rows(ws, journal, now) -> list:
     if phase:
         return [_fact("Running now", COSTS[phase][0]), _fact("Why it costs", COSTS[phase][1])]
     rows = [_fact("Running now", "Nothing is running at this moment.")]
+    if offline(ws):
+        return rows + [_fact("Next", OFFLINE_NEXT)]
     soon = next_start(ws, now) if ws else None
     if soon:
         name = _routine_name(soon[0])[0]
@@ -738,9 +776,11 @@ def _months(per_month: dict) -> str:
 
 def _month_rows(record: dict) -> list:
     """How much each app read holds, month by month (what the history is planned from)."""
-    rows, total = [], {}
+    rows, total, skipped = [], {}, _skips(record)
     for verdict in record.get("verdicts") or []:
         if not isinstance(verdict, dict) or verdict.get("verdict") not in ("work", "mixed"):
+            continue
+        if _text(verdict.get("app")) in skipped:   # the person's word, saved after the verdicts (R47, N3-2)
             continue
         per_month = verdict.get("per_month") if isinstance(verdict.get("per_month"), dict) else {}
         said = _months(per_month)
@@ -845,13 +885,44 @@ def _waiting_rows(ws, journal, now) -> list:
     for i, part in enumerate(parts_of(plan), 1):
         if part.get("status") == "paused":
             paused = True
-            rows.append(_fact("Paused", _paused_text(part, _part_name(part, i), now)))
+            idle = part.get("idle") if isinstance(part.get("idle"), int) and not isinstance(part.get("idle"), bool) else 0
+            if idle >= IDLE_RUNS:   # runs that keep ending without reading it: someone should look (R45, Minor 1)
+                rows.append(_fact("Needs a look", IDLE_TEXT.format(name=_part_name(part, i), runs=idle)))
+            else:
+                rows.append(_fact("Paused", _paused_text(part, _part_name(part, i), now)))
     if _held(plan, running_run(ws, now) if ws else None):
         rows.append(_fact("Waiting for your word", "Your history is ready to read when you say so."))
+    rows += _sync_rows(ws, journal, now)
+    note = (journal.get("build") or {}).get("routines_note") if isinstance(journal.get("build"), dict) else None
+    if _text(note):   # the routines cannot send the briefing: said, so nobody waits for it (R45, I-6)
+        rows.append(_fact("Your briefing", _text(note)))
     rows += _stopped_rows(ws, now, skip=("backfill-night",) if paused else ())
     rows += _host_rows(ws, now)
     rows += _scheduler_rows(ws)
     return rows or [_fact("Waiting", "Nothing is waiting for you.")]
+
+
+IDLE_RUNS = 3
+IDLE_TEXT = ("{name} of your history was not read in its last {runs} runs, though each was meant to read it. Ask your "
+             "agent to look at what those runs did.")
+NOT_SAVED = ("What this computer changed is not shared yet: the other computer changed the same files, so the last "
+             "sync could not take its changes in. It tries again at every sync; if this stays, ask your agent to look.")
+
+
+def _sync_rows(ws, journal, now) -> list:
+    """A line when the newest sync run stopped before it could take in the other computer's changes (sync.py's run line
+    with `conflict`), and it is recent: within two syncs and five minutes (R45, I-1). Plain words: no git's."""
+    syncs = [r for r in _run_lines(ws) if r.get("routine") == "sync"] if ws else []
+    if not syncs:
+        return []
+    last = syncs[-1]
+    notes = last.get("notes") if isinstance(last.get("notes"), dict) else {}
+    when = stamp(last.get("at"))
+    if not notes.get("conflict") or when is None:
+        return []
+    if now - when > dt.timedelta(minutes=2 * sync_minutes(journal) + 5):
+        return []
+    return [_fact("Not saved", NOT_SAVED)]
 
 
 HOST_UNCLEAR = ("Which computer runs your routines is unclear, so none of them runs. Say 'run my routines here' on the "
@@ -906,12 +977,14 @@ def _why_kind(why) -> str:
         return "timeout"
     if "fifty minutes" in said or "50 minutes" in said:
         return "unfinished"
+    if "did not read" in said:
+        return "idle"
     return ""
 
 
 CAUSES = {"overage": " because it would have used extra, paid usage", "limit": " because your Claude limit was reached",
           "auth": " because Claude needs you to sign in again", "timeout": " because it ran longer than an hour",
-          "unfinished": " after a long run"}
+          "unfinished": " after a long run", "idle": " because its last run ended without reading it"}
 
 
 def _at(value, now) -> str:
@@ -950,6 +1023,8 @@ def _paused_text(part: dict, name: str, now) -> str:
         return text + " The reset time wasn't given, so it tries again at its next run."
     if kind in ("timeout", "unfinished"):
         return text + " It carries on from where it got to at its next run."
+    if kind == "idle":
+        return text + " It tries again at its next run."
     return text
 
 
@@ -1314,8 +1389,9 @@ def _unbuilt_page(now) -> str:
 
 def setup_running() -> bool:
     """Whether a setup is running on this machine, by the lock `start.py` takes for the whole of one: held by a live
-    process, and not so old that the process id is another process's now (the rule of `start.take_lock`, which this
-    only reads: nothing is taken, written or started). A setup writes this page itself, every step."""
+    process that started when the lock says, or, for a lock without that start time, not so old that the process id
+    is another process's now (the rule of `start.take_lock`, which this only reads: nothing is taken, written or
+    started). A setup writes this page itself, every step."""
     try:
         import routine
         import start
@@ -1324,7 +1400,14 @@ def setup_running() -> bool:
         held = start._lock_pid(path)
         if held is None:   # no id to ask about: the lock waits out its hour
             return age < start.LOCK_HOURS * 3600
-        return age < start.PID_REUSE_HOURS * 3600 and routine.pid_alive(held)
+        if not routine.pid_alive(held):
+            return False
+        lines = path.read_text(encoding="utf-8").splitlines()
+        then = lines[1].strip() if len(lines) > 1 else ""
+        mark = routine.process_started(held) if then else None
+        if then and mark:   # the start that took it, however old the lock; another start time is another process
+            return then == mark
+        return age < start.PID_REUSE_HOURS * 3600
     except Exception:   # no lock, or no way to read it: no setup to keep the page for
         return False
 

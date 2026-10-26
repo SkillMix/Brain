@@ -169,3 +169,29 @@ def test_the_skills_description_and_the_personal_instruction_say_the_same_of_a_s
     assert "holds a phase not done; a history marked in_background counts as done" in description
     instruction = " ".join((ROOT / "_meta" / "templates" / "personal-instruction.md").read_text(encoding="utf-8").split())
     assert "a `history` marked `in_background: true` counts as done" in instruction
+
+
+# ===== Fix wave F2 (Rulings R45 and R47) =========================================================================
+def test_the_built_message_promises_the_briefing_only_when_the_routines_can_send_it():
+    """`built` says the build's note on the briefing in place of the promise when there is one (R45, I-6)."""
+    messages = (SKILLS / "onboard" / "messages.md").read_text(encoding="utf-8")
+    built = messages[messages.index("## built"):messages.index("## plan")]
+    assert "Your briefing goes from your own mailbox to you alone" in built and "{probe.notes[0]}" in built
+    assert "`probe.notes`" in built
+
+
+def test_the_usage_reading_is_recorded_only_on_the_computer_that_runs_the_routines():
+    """A second computer that records readings stops its own sync: the instruction says where to record one, and the
+    refusal is not shown (R45, I-1)."""
+    instruction = " ".join((ROOT / "_meta" / "templates" / "personal-instruction.md").read_text(encoding="utf-8").split())
+    assert "only on the computer that runs the routines" in instruction and "routine-host.yaml" in instruction
+    assert "When the command refuses, say nothing either." in instruction
+
+
+def test_the_skill_shows_a_history_refusal_without_the_tools_name_and_keeps_what_finished():
+    """The refusal is shown from the sentence after `backfill: ` (R47, N3-4); "What finished is kept" holds for the
+    apps (R45, I-2) and a slow app is read again, never an IT question (I-3)."""
+    text = " ".join(skill("onboard").split())
+    assert "the sentence after `backfill: `" in text and "Show its line as it is" not in text
+    assert "What finished is kept" in text and "a slow app" in text
+    assert "`start.py --doctor`" in text   # a tool that could not be installed: its one command, from the doctor's row

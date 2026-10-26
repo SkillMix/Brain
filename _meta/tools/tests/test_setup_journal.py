@@ -236,7 +236,7 @@ def test_pid_alive_is_false_for_a_number_that_is_no_process():
 def test_a_lock_names_the_process_that_holds_it_and_keeps_others_out(tmp_path):
     lock = tmp_path / "start.lock"
     assert start.take_lock(lock) == lock
-    assert lock.read_text().split() == [str(os.getpid())]
+    assert lock.read_text().split()[:1] == [str(os.getpid())]
     assert start.take_lock(lock) is None   # that process is this one, and it runs
 
 
@@ -246,7 +246,7 @@ def test_a_lock_of_a_finished_process_is_taken_over_at_once(tmp_path):
     lock = tmp_path / "start.lock"
     lock.write_text(f"{finished.pid}\n")   # fresh: the hour rule alone would keep it
     assert start.take_lock(lock) == lock
-    assert lock.read_text().split() == [str(os.getpid())]
+    assert lock.read_text().split()[:1] == [str(os.getpid())]
 
 
 def test_a_lock_of_a_running_process_is_kept(tmp_path, monkeypatch):
@@ -270,7 +270,7 @@ def test_a_lock_of_a_running_process_is_still_taken_once_it_is_too_old_to_be_the
     assert start.take_lock(lock) is None   # one minute short of the bound
     old = time.time() - (start.PID_REUSE_HOURS * 3600 + 60)
     os.utime(lock, (old, old))
-    assert start.take_lock(lock) == lock and lock.read_text().split() == [str(os.getpid())]
+    assert start.take_lock(lock) == lock and lock.read_text().split()[:1] == [str(os.getpid())]
 
 
 def test_a_lock_without_a_readable_pid_waits_out_the_hour(tmp_path, monkeypatch):
@@ -282,6 +282,50 @@ def test_a_lock_without_a_readable_pid_waits_out_the_hour(tmp_path, monkeypatch)
         old = time.time() - 2 * 3600
         os.utime(lock, (old, old))
         assert start.take_lock(lock) == lock   # older than LOCK_HOURS
+        lock.unlink()
+
+
+def test_a_start_lock_keeps_its_processs_start_time_beside_its_pid(tmp_path, monkeypatch):
+    """I-8: the lock names the start's process by its id and by when it started, so a pid Windows has given to
+    another process since is told apart from the start that still runs."""
+    monkeypatch.setattr(routine, "process_started", lambda pid: "t-1" if pid == os.getpid() else None)
+    lock = tmp_path / "start.lock"
+    assert start.take_lock(lock) == lock and lock.read_text().splitlines() == [str(os.getpid()), "t-1"]
+    assert start._lock_pid(lock) == os.getpid()
+
+
+def test_a_start_that_runs_for_hours_keeps_its_lock(tmp_path, monkeypatch):
+    """A build that waits on a sign-in for an afternoon is still the same process: its lock holds, however old."""
+    lock = tmp_path / "start.lock"
+    lock.write_text("999999\nt-1\n")
+    monkeypatch.setattr(routine, "pid_alive", lambda pid: True)
+    monkeypatch.setattr(routine, "process_started", lambda pid: "t-1")
+    old = time.time() - (start.PID_REUSE_HOURS + 5) * 3600
+    os.utime(lock, (old, old))
+    assert start.take_lock(lock) is None and lock.read_text() == "999999\nt-1\n"
+
+
+def test_a_start_lock_whose_pid_names_another_process_now_is_taken_at_once(tmp_path, monkeypatch):
+    lock = tmp_path / "start.lock"
+    lock.write_text("999999\nt-1\n")   # fresh: the age rule alone would keep it
+    monkeypatch.setattr(routine, "pid_alive", lambda pid: True)
+    monkeypatch.setattr(routine, "process_started", lambda pid: "t-2" if pid == 999999 else "t-self")
+    assert start.take_lock(lock) == lock and lock.read_text().splitlines() == [str(os.getpid()), "t-self"]
+
+
+def test_a_start_lock_without_a_start_time_to_compare_keeps_the_age_rule(tmp_path, monkeypatch):
+    """A lock written before R45, or a system that does not say when a process started: PID_REUSE_HOURS decides."""
+    lock = tmp_path / "start.lock"
+    monkeypatch.setattr(routine, "pid_alive", lambda pid: True)
+    for text, now in (("999999\n", "t-1"), ("999999\nt-1\n", None)):
+        monkeypatch.setattr(routine, "process_started", lambda pid, now=now: now)
+        lock.write_text(text)
+        old = time.time() - (start.PID_REUSE_HOURS * 3600 - 60)
+        os.utime(lock, (old, old))
+        assert start.take_lock(lock) is None, text
+        old = time.time() - (start.PID_REUSE_HOURS * 3600 + 60)
+        os.utime(lock, (old, old))
+        assert start.take_lock(lock) == lock, text
         lock.unlink()
 
 

@@ -334,6 +334,9 @@ when the path contains `blocked`.
 | `--model haiku` | yes | init `"model": "claude-haiku-5-5"` |
 | `--settings` with `hooks.PreToolUse` | yes | the hook ran for all three reads (its log has three lines) |
 | hook exit 2 | blocks | `blocked.txt` not read; tool result `is_error: true`, `PreToolUse:Read hook error: [<command>]: spike hook: this file is blocked`; listed in `permission_denials` |
+| hook cut off at its `timeout` | does not block | 2.1.303, dry run A (2026-10-25), probe 3: a hook with `"timeout": 5` that ran longer got `hook_response` `outcome: "cancelled"`, `exit_code: 1`, and `echo hi` then ran, no denial. So each guard ends itself with exit 2 after 10 s (`LIMIT_SECONDS`), under a hook `timeout` of 30 s (`routine.GUARD_TIMEOUT`) |
+| hook `matcher` | a pattern | 2.1.303, live (2026-10-25, one run in a scratch folder): on one Glob call the matchers `Gl.*`, `Read\|Glob` and `Glob` all fired, so `Task\|Agent` and `mcp__.*` match as written |
+| path rules on Windows | match regardless of case | 2.1.303, live (2026-10-25, one run in a scratch folder): `Edit(//**/_meta/state/backfill.yaml)` refused a Write to `_META\STATE\BACKFILL.YAML` ("File is in a directory that is denied by your permission settings") |
 | `acceptEdits` write in cwd | allowed | `out.txt` written with no allow rule |
 
 The hook on a claude.ai connector tool works the same (run 7): matcher

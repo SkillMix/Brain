@@ -42,7 +42,10 @@ phase that is not done, what waits for the person (`needs`) and every phase's re
 - **`next` names a phase.** Show `back-again`, ask for the mode again (Phase 0 step 2: a new
   session runs in the default mode) and carry on at that phase below. The template is not
   downloaded again: Phase 0 step 3 is for a first setup. A phase that is `done` is never run
-  again for its own sake.
+  again for its own sake. When `phases.build.stopped` is true, the build's own session was closed
+  before it finished: say its `why` in a line (it carries on when the sentence is said again) and
+  run the build. Each phase's record keeps a plain `why` (say that one) and a `detail` (the
+  tools' own words: read it to know what to do, never show it as it is).
 - **`next` is empty and `phases.history.in_background` is true.** Setup is through and the
   routines read the history for days: Phase 5 is never run again. Show `back-again`'s line for
   it. When `phases.history.part1.status` is done or paused and `phases.history.part1_waited` is
@@ -103,7 +106,10 @@ Phase 5. With no journal, start at Phase 0.
    open (where the company's repositories go on GitHub), ask its question here, in its own
    words, and run `start.py signins --org <answer> --json`: the journal keeps the answer for
    research and the build. Show the read-back line of `signins` when `github` is true and
-   `claude` is `account`. A `failed` answer gives its `why` in a line and the step it names.
+   `claude` is `account`. A `failed` answer gives its `why` in a line. When the `why` says a
+   command line is not on this computer and could not be put there, run `start.py --doctor`
+   and give the one step its row for that tool names (`yours`); the journal's `signins` record
+   keeps the tool's own words under `detail`.
 5. **Apps, the first look.** Run `start.py apps --probe --json`. It only asks Claude which apps
    it reaches. A `connect-app` need means none is connected: show its line of `signins` now
    (the connect link), while the person is still here.
@@ -124,7 +130,13 @@ Phase 5. With no journal, start at Phase 0.
 2. This computer's checks run inside the build (phase 2): nothing in chat unless a sign-in
    from phase 0 is still open.
 3. A `waiting` answer at a usage limit says so in its `why`: show it once, plainly, and run the
-   phase again after the reset it names. What finished is kept.
+   phase again after the reset it names. What finished is kept: an app that already has a
+   verdict is not read again, so the run after the reset reads only the apps without one and
+   any connected since.
+   A slow app (its reader ran out of turns or time) has no verdict yet: the apps answer is
+   `waiting` with the app under `unfinished`, and its `why` says so and offers to skip it. Show it
+   once and run the phase again; a slow app is read again, never an IT question. "Skip <app>"
+   leaves it out instead.
 4. An app to sign in to again (`reconnect`) or one the organisation's IT must allow
    (`it-admin`) is a need on the `apps` message's Waiting line; the other apps go on.
 
@@ -146,7 +158,10 @@ only when this computer's scheduler catches up (always on Windows and macOS; on 
   grant): one sentence with the exact command (`! <command>` in Claude Code), wait, run the
   build again. Never type a password; never work around a row with another fix.
 - `failed`: say the failing row's fix in one line, do that fix, run the build again. A routine
-  probe that fails (`probe.why`) means the build is not done: say what failed and its fix.
+  probe that fails means the build is not done: its `why` is plain; the checks that failed are the
+  build record's `detail` in `~/.spaces/setup.yaml`. Read them to find the fix, and say the fix.
+- `busy`: another start is building on this computer; say its `why` and run nothing until it is
+  done. The journal keeps the running build's state as it is.
 - Quiet GitHub: for the brain and each mounted project repository the person did not have
   before, `gh api -X DELETE repos/<owner>/<repo>/subscription` (watching becomes
   "participating and mentions"; "watch" in GitHub undoes it), so the sync's own pull requests
@@ -232,9 +247,13 @@ fresh usage.
 - **Start reading my history** (a paid account):
   `python <workspace>/_meta/tools/backfill.py <workspace> start`, then Phase 5 from step 1:
   the history command with a reading is what starts part 1.
-- A backfill command refuses while a routine run is going in the workspace it names, and, when
-  it names another, in the space the session runs in: a routine run says nothing about another
-  space's history. Show its line as it is; it works again once that run is over (an hour at most).
+- A backfill command refuses (exit code 2, one line on stderr that starts `backfill: `) while a
+  routine run is going in the workspace it names, and, when it names another, in the space the
+  session runs in: a routine run says nothing about another space's history. `plan`, `reading`,
+  `calibrate` and `start` refuse too on a computer that does not run the routines, and every
+  command refuses a time of its own that is later than this computer's clock. Show the sentence
+  after `backfill: `, nothing else: it says what to do (it works again once that run is over, an
+  hour at most; or it names the computer to say it on).
 - **Skip <app>**: `start.py apps --skip "<app>" --json`, with the app's name as the card shows
   it. The person's word becomes the app's verdict: no feed, no read tool for the routines (from
   their next run, once the build is done), no documents read for the research, its records left

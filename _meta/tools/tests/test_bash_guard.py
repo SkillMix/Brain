@@ -45,7 +45,7 @@ def test_the_tools_a_routine_runs_pass(ws):
     here = f'"{py}"' if " " in py else py
     path = profile(ws)
     for command in ("python _meta/tools/status.py .", "python3 _meta/tools/chain.py spaces .",
-                    "python _meta/tools/needs_you.py",                                  # no argument at all
+                    "python _meta/tools/search.py",                                     # no argument at all
                     f'{here} {ws.resolve().as_posix()}/_meta/tools/chain.py daily {ws.resolve().as_posix()} --person "Ada Okafor"',
                     "python _meta/tools/route.py . record _meta/state/private/decisions/*.yaml",   # a glob is only names
                     'python _meta/tools/tracker.py . update --issue LW-1 --state "In Progress"',
@@ -160,7 +160,7 @@ def test_the_process_exits_two_with_why_and_zero_to_allow(ws, capsys):
 def test_the_guard_needs_nothing_but_the_standard_library():
     text = Path(bash_guard.__file__).read_text(encoding="utf-8")
     imports = {line.split()[1].split(".")[0] for line in text.splitlines() if line.startswith(("import ", "from "))}
-    assert imports <= {"__future__", "json", "pathlib", "re", "sys"}
+    assert imports <= {"__future__", "faulthandler", "json", "os", "pathlib", "re", "sys", "threading"}
 
 
 # ----- the command the routine's profile carries ---------------------------------------------------
@@ -217,3 +217,155 @@ def test_every_command_the_routine_prompts_name_fits_the_guard(tmp_path):
             filled = command.replace("<root>", ws.resolve().as_posix()).replace("<file>", "x.json").replace(
                 "<message id>", "m-1")
             assert passes(path, filled), (prompt.name, filled)
+
+
+# ----- the final review (Ruling R45): the agents a routine starts, the connector tools it calls, its own time --------
+GMAIL_READ, GMAIL_SEND = "mcp__claude_ai_Gmail__search_threads", "mcp__claude_ai_Gmail__send_message"
+LINEAR_WRITE, LINEAR_DELETE = "mcp__claude_ai_Linear__create_issue", "mcp__claude_ai_Linear__delete_issue"
+
+
+def agent(tool_input, tool="Agent") -> dict:
+    """What the hook receives for a Task call; the 2.1.303 stream names the tool `Agent` (dry run A)."""
+    return {"hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": tool_input}
+
+
+def test_a_routine_starts_only_the_general_purpose_agent_here():
+    """Minor 10: a Task call could name any agent the person or a plugin installed, run it elsewhere or in a
+    permission mode of its own; a routine's second agent is the general-purpose one, given a description and a prompt."""
+    for tool_input in ({"description": "check", "prompt": "Check these decisions."},
+                       {"description": "check", "prompt": "p", "subagent_type": "general-purpose"},
+                       {"description": "check", "prompt": "p", "subagent_type": "general-purpose", "model": "haiku"}):
+        for tool in ("Agent", "Task"):
+            assert bash_guard.task_check(agent(tool_input, tool)) is None, tool_input
+    for tool_input in ({"description": "c", "prompt": "p", "subagent_type": "Explore"},
+                       {"description": "c", "prompt": "p", "subagent_type": "my-installed-agent"},
+                       {"description": "c", "prompt": "p", "subagent_type": "General-Purpose"},
+                       {"description": "c", "prompt": "p", "subagent_type": ""},
+                       {"description": "c", "prompt": "p", "subagent_type": None},
+                       {"description": "c", "prompt": "p", "subagent_type": 7},
+                       {"description": "c", "prompt": "p", "isolation": "remote"},
+                       {"description": "c", "prompt": "p", "isolation": "worktree"},
+                       {"description": "c", "prompt": "p", "mode": "bypassPermissions"},
+                       {"description": "c", "prompt": "p", "team_name": "night"}):
+        assert bash_guard.task_check(agent(tool_input)), tool_input
+    for odd in (None, [], "x", {"tool_input": None}, {"tool_input": "x"}, {"tool_input": []}):
+        assert bash_guard.task_check(odd), odd
+
+
+def test_the_agent_guard_as_a_process_exits_two_with_a_plain_reason(capsys):
+    assert bash_guard.main(["--task"], json.dumps(agent({"description": "c", "prompt": "p"})).encode()) == 0
+    assert bash_guard.main(["--task"], json.dumps(agent({"description": "c", "prompt": "p",
+                                                          "subagent_type": "secret-agent"})).encode()) == 2
+    err = capsys.readouterr().err
+    assert "general-purpose" in err and "secret-agent" not in err
+    assert bash_guard.main(["--task"], b"not json") == 2
+
+
+def granted_profile(ws, tmp_path) -> Path:
+    path = tmp_path / "Zoë Müller & co" / "sweep-chain-ada.settings.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = routine.routine_settings(ws, "", [ws], ADA, [GMAIL_READ], [LINEAR_WRITE], [GMAIL_SEND], profile=path,
+                                    known_tools=[GMAIL_READ, GMAIL_SEND, LINEAR_WRITE, LINEAR_DELETE], shell="bash")
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
+def tool(name) -> dict:
+    return {"hook_event_name": "PreToolUse", "tool_name": name, "tool_input": {}}
+
+
+def test_a_routine_calls_only_the_connector_tools_its_grant_names(ws, tmp_path):
+    """Minor 11: a connector tool that appeared after the last probe is in no deny rule, so the person's own allows
+    would govern it for a run; the hook on every connector tool lets through only what the profile grants."""
+    path = granted_profile(ws, tmp_path)
+    for name in (GMAIL_READ, LINEAR_WRITE, GMAIL_SEND):
+        assert bash_guard.connector_check(path, tool(name)) is None, name
+    for name in (LINEAR_DELETE, "mcp__claude_ai_Gmail__delete_everything", "mcp__ccd_session__start_session",
+                 "mcp__claude_ai_Gmail__search_threads_", "mcp__*", "Bash(python _meta/tools/status.py *)", "", None, 7):
+        assert bash_guard.connector_check(path, tool(name)), name
+    assert bash_guard.connector_check(tmp_path / "gone.json", tool(GMAIL_READ))
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["permissions"]["deny"].append(GMAIL_READ)
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert bash_guard.connector_check(path, tool(GMAIL_READ))   # a deny rule wins here too
+
+
+def test_the_connector_guard_as_a_process_exits_two_with_a_plain_reason(ws, tmp_path, capsys):
+    path = granted_profile(ws, tmp_path)
+    assert bash_guard.main(["--connectors", str(path)], json.dumps(tool(GMAIL_READ)).encode()) == 0
+    assert bash_guard.main(["--connectors", str(path)], json.dumps(tool(LINEAR_DELETE)).encode()) == 2
+    err = capsys.readouterr().err
+    assert "granted" in err and "delete_issue" not in err
+    assert bash_guard.main(["--connectors"], json.dumps(tool(GMAIL_READ)).encode()) == 2
+
+
+def test_the_profile_guards_agents_and_connector_tools_with_hooks_that_have_their_own_time_limit(ws, tmp_path):
+    path = granted_profile(ws, tmp_path)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    entries = {e["matcher"]: e["hooks"] for e in data["hooks"]["PreToolUse"]}
+    assert list(entries) == ["Bash", GMAIL_SEND, routine.TASK_MATCHER, routine.CONNECTOR_MATCHER]
+    assert routine.TASK_MATCHER == "Task|Agent" and routine.CONNECTOR_MATCHER == "mcp__.*"
+    guard, python = (ws.resolve() / "_meta" / "tools" / "bash_guard.py").as_posix(), Path(sys.executable).as_posix()
+    assert entries[routine.TASK_MATCHER][0]["command"] == f'"{python}" -I "{guard}" --task || exit 2'
+    assert entries[routine.CONNECTOR_MATCHER][0]["command"] == f'"{python}" -I "{guard}" --connectors "{path.as_posix()}" || exit 2'
+    assert all(h["type"] == "command" and h["timeout"] == routine.GUARD_TIMEOUT for hooks in entries.values() for h in hooks)
+
+
+def test_the_agent_and_connector_hooks_run_through_the_shell_claude_code_uses(ws, tmp_path):
+    tools = ws / "_meta" / "tools"
+    tools.mkdir(parents=True, exist_ok=True)
+    shutil.copy(bash_guard.__file__, tools / "bash_guard.py")
+    path = granted_profile(ws, tmp_path)
+    entries = {e["matcher"]: e["hooks"][0]["command"] for e in json.loads(path.read_text(encoding="utf-8"))["hooks"]["PreToolUse"]}
+    shell = routine.hook_shell()
+    if shell is None:
+        pytest.skip("no Git Bash on this Windows")
+    run = lambda payload, cmd: subprocess.run([*shell, cmd], input=json.dumps(payload).encode(), capture_output=True).returncode
+    assert run(agent({"description": "c", "prompt": "p"}), entries[routine.TASK_MATCHER]) == 0
+    assert run(agent({"description": "c", "prompt": "p", "subagent_type": "x"}), entries[routine.TASK_MATCHER]) == 2
+    assert run(tool(GMAIL_READ), entries[routine.CONNECTOR_MATCHER]) == 0
+    assert run(tool(LINEAR_DELETE), entries[routine.CONNECTOR_MATCHER]) == 2
+
+
+def test_without_a_guard_command_a_routine_starts_no_agent_and_calls_no_connector_tool(ws, tmp_path):
+    """The guards' command cannot be written (a folder name it cannot quote): Task is denied outright and no connector
+    tool is granted, rather than either running unguarded."""
+    data = routine.routine_settings(ws, "", [ws], ADA, [GMAIL_READ], [LINEAR_WRITE], [GMAIL_SEND], shell="bash",
+                                    profile=tmp_path / "100%" / "x.settings.json", known_tools=[GMAIL_READ])
+    assert "Task" in data["permissions"]["deny"] and GMAIL_READ in data["permissions"]["deny"]
+    assert not [r for r in data["permissions"]["allow"] if r.startswith("mcp__")]
+    assert not data.get("hooks", {}).get("PreToolUse")
+
+
+def test_the_guard_gives_up_with_a_refusal_once_its_own_time_is_up(monkeypatch, capsys):
+    """Dry run A: a hook Claude Code cuts off at its timeout lets the call through, so the guard ends itself first."""
+    import threading
+    assert bash_guard.LIMIT_SECONDS == 10 and routine.GUARD_TIMEOUT >= 3 * bash_guard.LIMIT_SECONDS
+    exits, done = [], threading.Event()
+    monkeypatch.setattr(bash_guard.os, "_exit", lambda code: (exits.append(code), done.set()))
+    monkeypatch.setattr(bash_guard, "LIMIT_SECONDS", 0.05)
+    bash_guard.arm(bash_guard.WHY)
+    assert done.wait(10) and exits == [2] and "routines run only" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("argv", [["x.settings.json"], ["--task"], ["--connectors", "x.settings.json"]])
+def test_a_guard_process_that_hangs_exits_two_by_itself(argv):
+    tools = Path(bash_guard.__file__).parent
+    code = ("import sys, threading; sys.path.insert(0, sys.argv[1]); import bash_guard as g; g.LIMIT_SECONDS = 0.2; "
+            "g.main = lambda argv, raw: threading.Event().wait(); sys.argv = ['bash_guard.py', *sys.argv[2:]]; sys.exit(g.run())")
+    got = subprocess.run([sys.executable, "-I", "-c", code, str(tools), *argv], input=json.dumps(event("x")).encode(),
+                         capture_output=True, timeout=30)
+    assert got.returncode == 2 and b"took too long" in got.stderr
+
+
+def test_a_guard_held_inside_one_long_call_is_ended_all_the_same():
+    """NB-1: the timer cannot run while one call holds the interpreter; faulthandler ends the process with exit 1,
+    which the hook command's `|| exit 2` makes a block."""
+    tools = Path(bash_guard.__file__).parent
+    code = ("import re, sys; sys.path.insert(0, sys.argv[1]); import bash_guard as g; g.LIMIT_SECONDS = 0.2; "
+            "g.main = lambda argv, raw: re.match('(a+)+$', 'a' * 40 + '!'); sys.argv = ['bash_guard.py', sys.argv[2]]; "
+            "sys.exit(g.run())")
+    got = subprocess.run([sys.executable, "-I", "-c", code, str(tools), "x.settings.json"],
+                         input=json.dumps(event("x")).encode(), capture_output=True, timeout=60)
+    assert got.returncode == 1
+    assert routine.bash_guard_command("x.settings.json").endswith(" || exit 2")

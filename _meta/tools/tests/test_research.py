@@ -1091,3 +1091,30 @@ def test_the_build_says_what_it_did_with_the_research_not_what_it_hoped(phase, c
     assert "research: 4 already there, profile drafted" in capsys.readouterr().out   # the pages are there; the profile is new
     assert start.main(plain) == 0
     assert "research: 4 already there, profile drafted" in capsys.readouterr().out   # said again: nothing new, nothing claimed
+
+
+# ===== Fix wave F2 (Ruling R45) ===================================================================================
+def test_a_site_whose_reader_answered_nothing_is_unread_and_tried_again(phase, capsys, tmp_path):
+    """The site's reader fetched pages and kept nothing: the site is not done, it says why plainly, and the next run
+    reads it again (R45, Minor 14; dry run B M-3)."""
+    the_home(tmp_path)
+    the_apps()
+    Readers(phase, {"site": {"records": []}})
+    code, out = run(capsys)
+    assert code == 0 and journal()["unread"]["site"] == start.EMPTY_SITE_WHY and "site" not in journal()["sources_done"]
+    readers = Readers(phase)
+    run(capsys)
+    assert readers.asked("site") and "site" in journal()["sources_done"] and "site" not in (journal().get("unread") or {})
+
+
+def test_the_research_uses_the_probe_the_apps_phase_just_made(phase, capsys, tmp_path):
+    """One probe for both phases: the research reads the apps phase's own when it is fresh (R45; dry run B N-4)."""
+    probes = []
+    phase.setattr(routine, "probe_tools", lambda *a, **k: probes.append(1) or PROBE)
+    assert start.main(["apps", "--probe", "--json"]) == 0
+    capsys.readouterr()
+    the_apps()
+    readers = Readers(phase)
+    code, out = run(capsys)
+    assert code == 0 and len(probes) == 1 and readers.asked("site")
+    assert all(s.get("known_tools") == PROBE["tools"] for s in readers.seen if s["name"] != "files")

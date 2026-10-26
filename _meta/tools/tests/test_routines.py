@@ -1429,14 +1429,14 @@ def test_every_other_connector_tool_the_probe_knows_is_denied(tmp_path):
     assert set(GMAIL_OTHER + [MS_READ, MS_SEND, LINEAR_READ, LINEAR_DELETE]) <= set(deny)
     assert not {*GMAIL_READ, GMAIL_SEND, LINEAR_WRITE} & set(deny) and {*GMAIL_READ, GMAIL_SEND, LINEAR_WRITE} <= set(allow)
     assert "Read" not in allow and "Bash" not in deny   # built-in tools keep the rules they had
-    assert [h["matcher"] for h in s["hooks"]["PreToolUse"]] == ["Bash", GMAIL_SEND]
+    assert [h["matcher"] for h in s["hooks"]["PreToolUse"]] == ["Bash", GMAIL_SEND, routine.TASK_MATCHER, routine.CONNECTOR_MATCHER]
 
 
 @pytest.mark.parametrize("person", ["", "ada", "ada$HOME@lanternworks.example", f"{ADA}, ben@lanternworks.example"])
 def test_without_one_guardable_address_no_send_tool_is_allowed(tmp_path, person):
     s = routine.routine_settings(tmp_path, "", [tmp_path], person, GMAIL_READ, [], [GMAIL_SEND], known_tools=TOOLS)
     assert GMAIL_SEND not in s["permissions"]["allow"] and GMAIL_SEND in s["permissions"]["deny"]
-    assert [h["matcher"] for h in s["hooks"]["PreToolUse"]] == ["Bash"]
+    assert [h["matcher"] for h in s["hooks"]["PreToolUse"]] == ["Bash", routine.TASK_MATCHER, routine.CONNECTOR_MATCHER]
     assert set(GMAIL_READ) <= set(s["permissions"]["allow"])
 
 
@@ -1445,7 +1445,7 @@ def test_a_tool_that_is_not_a_read_is_never_allowed_as_one(tmp_path):
                                  [GMAIL_OTHER[0]], [GMAIL_OTHER[1]], known_tools=TOOLS)
     allow = s["permissions"]["allow"]
     assert not {GMAIL_OTHER[0], GMAIL_OTHER[1], GMAIL_OTHER[2], "mcp__*", "Bash"} & set(allow)
-    assert [h["matcher"] for h in s["hooks"]["PreToolUse"]] == ["Bash"]   # forward is no send tool: nothing to guard
+    assert [h["matcher"] for h in s["hooks"]["PreToolUse"]] == ["Bash", routine.TASK_MATCHER, routine.CONNECTOR_MATCHER]   # forward is no send tool
     assert GMAIL_OTHER[1] in s["permissions"]["deny"]
 
 
@@ -1475,7 +1475,7 @@ def test_a_routine_never_runs_in_bypass_and_never_inherits_an_api_key(tmp_path, 
     assert seen["timeout"] == 3600 and Path(seen["cwd"]) == ws.resolve() and not seen["input"].startswith("---")
     profile = json.loads(Path(seen["argv"][seen["argv"].index("--settings") + 1]).read_text(encoding="utf-8"))
     assert set(GMAIL_READ + [LINEAR_READ, LINEAR_WRITE, GMAIL_SEND]) <= set(profile["permissions"]["allow"])
-    assert [h["matcher"] for h in profile["hooks"]["PreToolUse"]] == ["Bash", GMAIL_SEND]
+    assert [h["matcher"] for h in profile["hooks"]["PreToolUse"]] == ["Bash", GMAIL_SEND, routine.TASK_MATCHER, routine.CONNECTOR_MATCHER]
 
 
 # ----- one run at a time per workspace ---------------------------------------------------------------
@@ -2145,7 +2145,8 @@ def test_build_says_done_only_after_the_second_probe_passes(tmp_path, monkeypatc
     given = online_build(tmp_path, monkeypatch, slim_template)
     seen = probing(monkeypatch, PASSED, SEND_FAILED)
     result = start.phase_build(given)
-    assert result["state"] == "failed" and "send" in result["why"]
+    assert result["state"] == "failed" and result["why"] == start.PROBE_FAILED   # plain; the check's words: the journal's
+    assert "send" in result["detail"]                                            # detail (R45, Minor 3)
     assert seen["events"] == ["register", "start", "start", "remove"]
     rows = [s for s in result["failed"] if "mail only to you" in s["name"]]
     assert len(rows) == 1 and "refuse a stranger" in rows[0]["result"]   # the failed check is one step that names it
@@ -2265,7 +2266,7 @@ def test_without_a_shell_to_run_the_guard_in_no_send_tool_is_allowed(tmp_path, m
     assert got["send"] == [] and got["notes"] == [routine.NO_SHELL] and "mcp__" not in got["notes"][0]
     s = routine.routine_settings(ws, "", [ws], ADA, GMAIL_READ, [], [GMAIL_SEND], known_tools=TOOLS)
     assert GMAIL_SEND in s["permissions"]["deny"] and GMAIL_SEND not in s["permissions"]["allow"]
-    assert [h["matcher"] for h in s["hooks"]["PreToolUse"]] == ["Bash"]
+    assert [h["matcher"] for h in s["hooks"]["PreToolUse"]] == ["Bash", routine.TASK_MATCHER, routine.CONNECTOR_MATCHER]
 
 
 def test_a_run_lets_go_only_of_its_own_lock(tmp_path, monkeypatch):
@@ -2415,7 +2416,8 @@ def test_without_a_proven_shell_there_is_no_send_and_one_plain_line_says_why(tmp
         assert "mcp__" not in got["notes"][0] and "_meta" not in got["notes"][0]
     ws = granted(tmp_path / "c", shell=None)
     profile = json.loads(routine.write_allowlist(ws)[0].read_text(encoding="utf-8"))
-    assert GMAIL_SEND in profile["permissions"]["deny"] and [h["matcher"] for h in profile["hooks"]["PreToolUse"]] == ["Bash"]
+    assert GMAIL_SEND in profile["permissions"]["deny"] and [h["matcher"] for h in profile["hooks"]["PreToolUse"]] == [
+        "Bash", routine.TASK_MATCHER, routine.CONNECTOR_MATCHER]
 
 
 def test_a_routine_has_only_the_built_in_tools_it_needs(tmp_path):
@@ -2929,3 +2931,175 @@ def test_a_pause_twice_beside_a_claim_twice_or_a_pause_that_is_no_moment_is_stil
                  CLAIM + EARLIER + 'paused_until: "soon"\n'):
         (ws / routine.HOST).write_text(text, encoding="utf-8")
         assert routine.host(ws) == {"unclear": True}
+
+
+def test_setup_and_reader_runs_drop_the_desktop_sessions_own_claude_variables():
+    """A run started from the desktop session gets none of that session's own settings (its effort, entry point,
+    child-session and SDK variables), so setup's runs are the runs the routines and cli-facts saw; Git Bash's path and
+    the person's configuration folder stay (R45, I-3; dry run B M-5). Every caller goes through `clean_env`."""
+    env = {"PATH": "/bin", "CLAUDECODE": "1", "CLAUDE_EFFORT": "xhigh", "CLAUDE_CODE_ENTRYPOINT": "claude-desktop",
+           "CLAUDE_CODE_CHILD_SESSION": "1", "claude_code_sse_port": "4000", "CLAUDE_AGENT_SDK_VERSION": "0.2",
+           "CLAUDE_CODE_GIT_BASH_PATH": "C:/Git/bin/bash.exe", "CLAUDE_CONFIG_DIR": "/home/ada/.claude",
+           "CLAUDE_CODE_OAUTH_TOKEN": "o", "CLAUDEX": "kept"}
+    assert set(routine.clean_env(env)) == {"PATH", "CLAUDE_CODE_GIT_BASH_PATH", "CLAUDE_CONFIG_DIR", "CLAUDEX"}
+    pinned = routine.routine_env(env, shell="C:/Program Files/Git/bin/bash.exe", windows=True)
+    assert pinned["CLAUDE_CODE_GIT_BASH_PATH"] == "C:/Program Files/Git/bin/bash.exe" and "CLAUDE_EFFORT" not in pinned
+
+
+def test_a_client_certificate_the_network_asks_for_stays_in_every_run():
+    """NB-4: dropping every CLAUDE_CODE_ name took the client certificate a company network may require (mTLS)
+    with it, and then no run reaches the API at all; those three names stay, beside Git Bash and the config."""
+    mtls = {"CLAUDE_CODE_CLIENT_CERT": "/etc/ada.pem", "CLAUDE_CODE_CLIENT_KEY": "/etc/ada.key",
+            "CLAUDE_CODE_CLIENT_KEY_PASSPHRASE": "p"}
+    assert routine.clean_env({"PATH": "/bin", "CLAUDE_CODE_ENTRYPOINT": "claude-desktop", **mtls}) == {"PATH": "/bin", **mtls}
+
+
+
+
+# ----- the final review (Ruling R45): guard hooks with a time limit, the lock's process, one machine id -------------
+def test_every_guard_hook_has_its_own_time_limit_well_above_the_guards(tmp_path):
+    """C-1: a hook Claude Code cuts off at its time limit lets the call through (dry run A); each guard hook says how
+    long it may take, and each guard ends itself, refusing, after a third of that."""
+    ws = granted(tmp_path)
+    paths = routine.write_allowlist(ws)
+    assert paths
+    for path in paths:
+        entries = json.loads(path.read_text(encoding="utf-8"))["hooks"]["PreToolUse"]
+        assert [e["matcher"] for e in entries] == ["Bash", GMAIL_SEND, routine.TASK_MATCHER, routine.CONNECTOR_MATCHER]
+        assert all(h["timeout"] == routine.GUARD_TIMEOUT for e in entries for h in e["hooks"])
+    assert routine.GUARD_TIMEOUT == 30
+
+
+def lock_of(ws, hours_ago: float, pid_started=None, pid=999_999) -> Path:
+    """A lock a run wrote `hours_ago`, with its process's start time when given (a lock written before R45 has none)."""
+    held = {"pid": pid, "routine": "sweep-chain",
+            "started": (dt.datetime.now().astimezone() - dt.timedelta(hours=hours_ago)).isoformat(timespec="seconds")}
+    path = routine.lock_path(ws)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump({**held, **({"pid_started": pid_started} if pid_started else {})}), encoding="utf-8")
+    return path
+
+
+def test_a_lock_keeps_its_processs_start_time_beside_its_pid(tmp_path, monkeypatch):
+    ws = workspace(tmp_path)
+    monkeypatch.setattr(routine, "process_started", lambda pid: "t-1" if pid == os.getpid() else None)
+    assert routine.take_lock(ws, "sweep-chain")
+    held = yaml.safe_load(routine.lock_path(ws).read_text(encoding="utf-8"))
+    assert held["pid"] == os.getpid() and held["pid_started"] == "t-1"
+    assert "pid_started" not in routine.locked(ws)   # what `--locked` prints stays as it was
+
+
+def test_a_run_whose_lid_was_closed_for_hours_keeps_its_lock(tmp_path, monkeypatch):
+    """I-8: the run's process still lives, started when it did, however old its lock: a catch-up run on waking
+    finds it held and leaves."""
+    ws = workspace(tmp_path)
+    monkeypatch.setattr(routine, "pid_alive", lambda pid: True)
+    monkeypatch.setattr(routine, "process_started", lambda pid: "t-1")
+    lock_of(ws, hours_ago=routine.LOCK_HOURS + 5, pid_started="t-1")
+    assert routine.locked(ws)["routine"] == "sweep-chain" and not routine.take_lock(ws, "daily-chain")
+    lock_of(ws, hours_ago=-1, pid_started="t-1")   # a clock set back while it ran: still that process
+    assert routine.locked(ws)["routine"] == "sweep-chain"
+
+
+def test_a_live_pid_that_started_at_another_time_is_a_reused_one(tmp_path, monkeypatch):
+    ws = workspace(tmp_path)
+    monkeypatch.setattr(routine, "pid_alive", lambda pid: True)
+    monkeypatch.setattr(routine, "process_started", lambda pid: "t-2" if pid == 999_999 else "t-self")
+    lock_of(ws, hours_ago=0.1, pid_started="t-1")   # fresh, but its number is another process's now
+    assert routine.locked(ws) is None and routine.take_lock(ws, "daily-chain")
+    assert routine.locked(ws)["routine"] == "daily-chain"
+
+
+def test_a_lock_whose_process_is_gone_is_dead_whatever_its_start_time(tmp_path, monkeypatch):
+    ws = workspace(tmp_path)
+    monkeypatch.setattr(routine, "pid_alive", lambda pid: pid == os.getpid())
+    monkeypatch.setattr(routine, "process_started", lambda pid: "t-1")
+    lock_of(ws, hours_ago=0.1, pid_started="t-1")
+    assert routine.locked(ws) is None and routine.take_lock(ws, "daily-chain")
+
+
+def test_without_a_start_time_to_compare_the_age_rule_decides(tmp_path, monkeypatch):
+    """A lock written before R45 has no start time, and a system may not say one: the two-hour rule stays."""
+    ws = workspace(tmp_path)
+    monkeypatch.setattr(routine, "pid_alive", lambda pid: True)
+    for written, now in (("t-1", None), (None, "t-1"), (None, None)):
+        monkeypatch.setattr(routine, "process_started", lambda pid, now=now: now)
+        lock_of(ws, hours_ago=routine.LOCK_HOURS - 0.5, pid_started=written)
+        assert routine.locked(ws)["routine"] == "sweep-chain", (written, now)
+        lock_of(ws, hours_ago=routine.LOCK_HOURS + 0.1, pid_started=written)
+        assert routine.locked(ws) is None, (written, now)
+
+
+def test_a_processs_start_time_is_read_from_the_system():
+    mine = routine.process_started(os.getpid())
+    assert isinstance(mine, str) and mine and routine.process_started(os.getpid()) == mine
+    child = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE)
+    try:
+        other = routine.process_started(child.pid)
+        assert isinstance(other, str) and other and other != mine
+    finally:
+        child.stdin.close()
+        child.wait(timeout=30)
+    for pid in (0, -4, 2 ** 40):
+        assert routine.process_started(pid) is None
+
+
+def test_this_computer_keeps_one_id_made_once_whatever_its_name_becomes(tmp_path, monkeypatch):
+    """Minor 6: a Mac whose name follows the network would stop matching its own host record. The id is made once,
+    from today's value (so every record already written still matches), and kept under ~/.spaces."""
+    import socket
+    import sync
+    monkeypatch.setattr(socket, "gethostname", lambda: "Adas-MacBook.local")
+    before = sync.hostname()
+    kept = Path.home() / ".spaces" / "machine-id"
+    assert not kept.exists()
+    assert routine.this_machine() == before and kept.read_text(encoding="utf-8").strip() == before
+    ws = workspace(tmp_path)
+    routine.claim_host(ws, "os", NOW)
+    monkeypatch.setattr(socket, "gethostname", lambda: "Adas-MacBook-2.home")   # the network renamed it
+    assert sync.hostname() != before and routine.this_machine() == before
+    assert routine.gate(ws, NOW) is None and routine.host(ws)["machine"] == before
+
+
+def test_a_machine_id_file_that_holds_no_id_is_made_again(tmp_path):
+    import sync
+    kept = Path.home() / ".spaces" / "machine-id"
+    kept.parent.mkdir(parents=True, exist_ok=True)
+    for text in ("", "not an id\n", "m-\n", "m-" + "x" * 80 + "\n", "m-ok\nm-two\n"):
+        kept.write_text(text, encoding="utf-8")
+        assert routine.this_machine() == sync.hostname() and kept.read_text(encoding="utf-8").strip() == sync.hostname()
+    kept.write_text("m-1a2b3c4d\n", encoding="utf-8")   # one made on this computer before: kept as it is
+    assert routine.this_machine() == "m-1a2b3c4d"
+
+
+def test_the_probe_sees_the_built_in_tools_a_routine_sees(tmp_path):
+    """F-8 (dry run A): without `--tools` the probe's init listed 32 built-ins, a routine has eight; it now asks with
+    the routine's own, so a version that drops or renames one shows in the probe."""
+    seen = {}
+    routine.probe_tools("claude", tmp_path, [tmp_path / "brain"], run=fake_run(seen, stdout=json.dumps(init_line()) + "\n"))
+    argv, count = seen["argv"], len(routine.ROUTINE_BUILTINS)
+    at = argv.index("--tools")
+    assert argv[at + 1:at + 1 + count] == list(routine.ROUTINE_BUILTINS) and argv[at + 1 + count].startswith("--")
+    assert argv[:at] == ["claude", "-p", *routine.REFUSE, *routine.JSON_OUT]
+
+
+def test_a_run_held_back_by_its_condition_or_a_pause_leaves_its_line_and_starts_no_claude(tmp_path, monkeypatch):
+    """F-11 (dry run A): a nightly run with nothing to read left no trace, and a paused workspace's history run
+    wrote no `paused`. Both are now said in the log first, the pause in the run's line too, and no claude starts."""
+    ws = granted(tmp_path)
+    prompt = ws / "_meta" / "state" / "routines" / "backfill-night.md"
+    prompt.write_text("---\nname: backfill-night\nonly_while: backfill\n---\nRead the next part.\n", encoding="utf-8")
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")
+    called = []
+    log = Path.home() / ".spaces" / "logs" / f"backfill-night-{routine.spaceyaml.load(ws).name}.log"
+    assert routine.main([str(prompt)], run=lambda *a, **k: called.append(a)) == 0 and called == []
+    assert "nothing to read" in log.read_text(encoding="utf-8") and runs_of(ws) == []
+    routine.claim_host(ws, "os", routine._now())
+    routine.set_pause(ws, routine._now() + dt.timedelta(hours=8))
+    assert routine.main([str(prompt)], run=lambda *a, **k: called.append(a)) == 0 and called == []
+    line, = runs_of(ws)
+    assert line["outcome"] == "paused" and line["routine"] == "backfill-night" and "paused until" in log.read_text(encoding="utf-8")
+    routine.set_pause(ws, None)
+    prompt.write_text("---\nname: odd\nonly_while: the moon is full\n---\nx\n", encoding="utf-8")
+    assert routine.main([str(prompt)], run=lambda *a, **k: called.append(a)) == 0 and called == []
+    assert log.read_text(encoding="utf-8").count("nothing to read") == 2 and not routine.lock_path(ws).exists()

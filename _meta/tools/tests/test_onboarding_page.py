@@ -59,7 +59,8 @@ def test_while_a_run_is_live_the_page_reloads_and_names_the_stage_running(tmp_pa
     report.add("doctor: python", True, "python --version", "3.12")
     html = out.read_text(encoding="utf-8")
     assert 'http-equiv="refresh"' in html and "Setup is running" in html
-    assert states(html)[0] == ("running", "Your machine") and "Now: doctor: python" in html
+    assert states(html)[0] == ("running", "Your machine") and "Now: checking this computer." in html
+    assert "doctor:" not in html   # a step's own name stays in the agent's terminal (R45, Minor 3)
     report.add("create ada", True, "test -f ada/space.yaml", "made")
     assert states(out.read_text(encoding="utf-8"))[:2] == [("done", "Your machine"), ("running", "Your spaces")]
     assert report.progress.finish(report) == out
@@ -78,7 +79,8 @@ def test_a_page_that_cannot_be_written_never_stops_a_setup(tmp_path):
 def test_a_failed_step_says_so_with_its_result():
     html = page.render([Step("create ada", False, "gh repo view x/ada", "refused: no right to create")])
     assert "A step did not work" in html and 'title="Did not work"' in html
-    assert '<p class="now failed">create ada: refused: no right to create</p>' in html
+    assert '<p class="now failed">Your spaces: a step did not work. Your agent has the details and says what to do.</p>' in html
+    assert "refused" not in html and "create ada" not in html   # its own words go to the journal, not the page (R45, Minor 3)
 
 
 def test_a_setup_names_the_company_the_person_and_the_briefing_time_from_the_spaces(tmp_path):
@@ -128,7 +130,8 @@ def test_a_briefing_says_tomorrow_only_once_setup_is_done(tmp_path):
 
 def test_the_page_is_self_contained_escaped_and_in_the_house_style():
     html = page.render([Step("create <b>", False, "x", "<script>alert(1)</script>")])
-    assert "<script" not in html and "&lt;script&gt;" in html and "<b>" not in html
+    assert "<script" not in html and "alert(1)" not in html and "<b>" not in html   # a step's own words stay off the page
+    # (R45, Minor 3); what the page does show from the journal and the files is escaped: the two tests below
     assert not re.search(r"https?:|<link|@import|src=", html)   # no server, no external anything
     assert "color-scheme: dark;" in html and ".wordmark::before" in html   # dark by default
     assert 'type="checkbox" id="light"' in html and ":root:has(#light:checked)" in html   # light, no script
@@ -993,3 +996,97 @@ def test_where_the_routines_run_that_cannot_be_read_is_a_plain_row(tmp_path, mon
     assert {"label": "Could not read", "text": "Where your routines run could not be read this time. It is tried again "
                                                "at the next sync."} in rows
 
+
+
+# ===== Fix wave F2 (Ruling R45) ===================================================================================
+import backfill   # noqa: E402
+
+
+def sync_line(ws, at, **notes):
+    """A run line as sync.py writes it (`record`): its notes, `conflict` among them when a merge stopped."""
+    path = ws / "_meta" / "state" / "runs.jsonl"
+    with path.open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps({"routine": "sync", "at": at, "space": "ada-okafor", "cost_tokens": 0, "notes": notes}) + "\n")
+
+
+def test_a_sync_that_could_not_take_in_the_other_computers_changes_is_a_waiting_row(tmp_path):
+    """The last sync's merge stopped (`notes.conflict`, as sync.py writes it): what this computer did is not shared,
+    and the page says so plainly (R45, I-1). An older stop, or a later sync that landed, is no row."""
+    rows = by_label(rows_of(tmp_path, "waiting", lambda ws, j: sync_line(ws, "2026-10-24T11:55:00Z", conflict=True)))
+    said = rows["Not saved"]
+    assert "other computer" in said and "merge" not in said and "conflict" not in said
+    old = by_label(rows_of(tmp_path / "old", "waiting", lambda ws, j: sync_line(ws, "2026-10-24T09:00:00Z", conflict=True)))
+    assert "Not saved" not in old
+
+    def landed(ws, journal):
+        sync_line(ws, "2026-10-24T11:40:00Z", conflict=True)
+        sync_line(ws, "2026-10-24T11:55:00Z", committed=2)
+    assert "Not saved" not in by_label(rows_of(tmp_path / "landed", "waiting", landed))
+
+
+def test_the_build_s_note_on_the_briefing_is_a_waiting_row(tmp_path):
+    """The routines cannot send the briefing (no mailbox, no Git Bash, the guard not proven): the build kept why, and
+    the page says it, so nobody waits for a briefing that does not come (R45, I-6)."""
+    def setup(ws, journal):
+        journal["build"]["routines_note"] = routine.NO_MAILBOX
+    rows = by_label(rows_of(tmp_path, "waiting", setup))
+    assert rows["Your briefing"] == routine.NO_MAILBOX
+    assert "Your briefing" not in by_label(rows_of(tmp_path / "none", "waiting"))
+
+
+def test_a_part_whose_run_read_nothing_says_so_and_after_three_such_runs_needs_a_look(tmp_path):
+    """An idle part has its own cause; three idle runs in a row are a Waiting line of their own (R45, Minor 1)."""
+    said = paused_text(tmp_path / "once", backfill.WHY["idle"])
+    assert "because its last run ended without reading it" in said and "It tries again at its next run." in said
+    rows = rows_of(tmp_path / "thrice", "waiting",
+                   lambda ws, j: set_part(ws, "p2", "paused", why=backfill.WHY["idle"], resets_at=None, idle=3))
+    found = by_label(rows)
+    assert "Paused" not in found and "Part 2 of your history was not read in its last 3 runs" in found["Needs a look"]
+
+
+def test_after_an_offline_build_the_page_promises_no_schedule(tmp_path):
+    """Offline, nothing was registered with the scheduler: the page says the routines start once setup runs online,
+    and names no time (R45, F-10)."""
+    def offline(ws, journal):
+        journal["history"]["state"] = "done"
+        write_yaml(ws / "_meta" / "state" / "onboard.yaml", {"case": "person", "offline": True})
+    rows = by_label(rows_of(tmp_path, "now", offline))
+    assert rows["Next"] == page.OFFLINE_NEXT and "19:00" not in rows["Next"]
+    assert "online" in page.OFFLINE_NEXT and page.rendered_routines(tmp_path / "ada-okafor-workspace") == []
+    briefing = page.stages([], workspace=tmp_path / "ada-okafor-workspace", now=NOW)[-1]
+    assert briefing["title"] == "Briefing" and briefing["sub"] == ""
+
+
+def test_apps_the_person_skipped_are_not_listed_as_read_wherever_the_page_reads_them(tmp_path):
+    """A skip saved while the apps phase wrote its card: the card and the verdicts still list the app, the person's
+    word (`person_skips`) leaves it out of what was read and of the months (R47, N3-2)."""
+    def skipped(ws, journal):
+        journal["apps"]["person_skips"] = ["Google Calendar"]
+    rows = by_label(rows_of(tmp_path, "found", skipped))
+    assert "Google Calendar" not in rows["Apps read"] and "Google Calendar by month" not in rows
+    assert page.apps_read({"apps": {"person_skips": ["Gmail"], "verdicts": [
+        {"app": "Gmail", "verdict": "work", "account": "a"}]}}) == []
+
+
+def test_a_lock_that_names_its_process_start_is_read_as_the_routines_and_start_read_it(tmp_path):
+    """A lid closed for hours: the lock is old, its pid runs, and that pid started when the lock says, so the run is
+    still the one that took it (Ruling R45, I-8), on the page as in routine._live and start.take_lock. Another start
+    time is another process with that number: no run, and no setup keeping the page."""
+    import routine
+    import start
+    mine = routine.process_started(os.getpid())
+    if not mine:
+        pytest.skip("this system does not say when a process started")
+    for name, mark, running in (("same process, old lock", mine, True), ("reused pid", "1999-01-01T00:00:00", False)):
+        def setup(ws, journal, mark=mark):
+            path = lock(ws, "backfill-night", "p2", started="2026-10-24T02:00:00+02:00")   # twelve hours before NOW
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+            path.write_text(yaml.safe_dump({**data, "pid_started": mark}), encoding="utf-8")
+        text = rows_of(tmp_path / name.replace(" ", "-").replace(",", ""), "now", setup)[0]["text"]
+        assert (text != "Nothing is running at this moment.") is running, name
+        set_lock(start.lock_path(), os.getpid(), start.PID_REUSE_HOURS + 1)
+        start.lock_path().write_text(f"{os.getpid()}\n{mark}\n", encoding="utf-8")
+        then = time.time() - (start.PID_REUSE_HOURS + 1) * 3600
+        os.utime(start.lock_path(), (then, then))
+        assert page.setup_running() is running, name
+    start.lock_path().unlink(missing_ok=True)

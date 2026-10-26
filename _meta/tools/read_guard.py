@@ -10,15 +10,23 @@ It runs as `python -I`, so it can import nothing but the standard library, and i
 it cannot read, a path it cannot resolve (one that is not there included), a folder that is not there, a
 link that leads out, or any fault of its own is a refusal. A path of another machine or a device (two
 separators first) is refused as spelt, without a file system call: resolving it would reach out over
-the network. It says why on stderr, without repeating the path.
+the network. It bounds its own time (Ruling R45): a hook Claude Code cuts off at its timeout lets the call
+through (dry run A), so after LIMIT_SECONDS the guard ends itself with exit 2, well inside the hook's timeout
+(`routine.GUARD_TIMEOUT`), and two seconds later faulthandler ends it even inside one long call (exit 1, which
+the hook command's `|| exit 2` turns into a refusal). It says why on stderr, without repeating the path.
 """
 from __future__ import annotations
 
+import faulthandler
 import json
+import os
 import sys
+import threading
 from pathlib import Path
 
 BLOCK = 2
+LIMIT_SECONDS = 10   # the guard's own time; the hook's timeout (routine.GUARD_TIMEOUT) is three times that
+MAX_RAW = 1024 * 1024   # the most of stdin read: a hook event past it is refused unread
 WHY = "the reader may only read the files in its own folder"
 
 
@@ -45,6 +53,8 @@ def check(folder, event) -> str | None:
 
 def main(argv: list, raw: bytes) -> int:
     try:
+        if len(raw) > MAX_RAW:
+            raise ValueError("a request larger than any Read")
         reason = check(argv[0], json.loads(raw.decode("utf-8")))
     except BaseException:   # noqa: BLE001 - whatever went wrong, the call does not go through
         reason = f"{WHY}: this request could not be read"
@@ -54,5 +64,33 @@ def main(argv: list, raw: bytes) -> int:
     return 0
 
 
+def arm(said: str) -> threading.Timer:
+    """The guard's own time limit: after LIMIT_SECONDS a daemon timer says why and ends the process with exit 2,
+    whatever it is doing (resolving a path on a disk that sleeps, say)."""
+    def expire() -> None:
+        try:
+            print(f"{said}: the check took too long, so the call is refused", file=sys.stderr, flush=True)
+        finally:
+            os._exit(BLOCK)
+    timer = threading.Timer(LIMIT_SECONDS, expire)
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
+def bound(seconds: float) -> None:
+    """The limit no call outlasts (NB-1): the timer cannot run while one long call holds the interpreter, so
+    faulthandler's own thread ends the process with exit 1 after `seconds`, and the hook command's `|| exit 2`
+    makes that a refusal (`reader.guard_command`)."""
+    faulthandler.dump_traceback_later(seconds, exit=True, file=sys.stderr)
+
+
+def run() -> int:
+    """The hook: the timer and the hard limit first, then stdin (at most MAX_RAW and one byte), then `main`."""
+    arm(WHY)
+    bound(LIMIT_SECONDS + 2)
+    return main(sys.argv[1:], sys.stdin.buffer.read(MAX_RAW + 1))
+
+
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:], sys.stdin.buffer.read()))
+    sys.exit(run())

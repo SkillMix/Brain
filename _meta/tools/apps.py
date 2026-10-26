@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import json
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -44,6 +45,8 @@ SEP = " · "
 ACCOUNT_MAX, WHY_MAX = 120, 200      # what a reader's words may take on the card
 NO_TOOLS = ("personal", "someone-else")   # their verdict keeps no tool that sends or writes
 UNEXPECTED = "Claude stopped unexpectedly while reading this app."   # never the fault's own text
+FINAL = ("work", "mixed", "personal", "someone-else")   # a verdict a run after a limit keeps (R45, I-2)
+PROBE_FRESH = dt.timedelta(minutes=30)                # the apps phase's probe the research may use as its own
 
 # An app is known by whole words of its name (lower case). An app with none of them, and no suite
 # word below, is not read: add its word to the kind it serves.
@@ -220,6 +223,8 @@ def reader_prompt(grouped: dict, person: dict, today: dt.date | None = None) -> 
         f"3. Count the items in each of the last 12 months, {first} to {last} (\"per_month\": keys like "
         f"\"{last}\", whole numbers). Use the app's own result counts or date filters where it has them; "
         "where it has none, estimate from what you saw.\n"
+        f"You have at most {reader.MAX_TURNS} turns: make several tool calls in one turn where you can, and answer "
+        "before the turns run out, with estimates where you had no time to count.\n"
         "4. Give the \"verdict\":\n"
         "- \"work\": the account is the person's own and holds the company's work.\n"
         "- \"mixed\": the person's own, with company work and private matters together.\n"
@@ -264,10 +269,12 @@ def _failed(grouped: dict, verdict: str, why: str) -> dict:
 
 def _one(grouped, person, cwd, read, stop, limits, known_tools, claude, today, skipped=None):
     """One app's verdict, or None when it was not started, the person skipped it before its reader
-    started (`skipped()`, asked right then), or it ran into the limit. A reader's error
-    is the app's verdict (a sign-in to give again: `reconnect`; anything else: `blocked`, with the
-    error's text), never a stop for the others. Any other fault in the run is that app's `blocked`
-    too, with a fixed sentence: its own text could repeat what the app held."""
+    started (`skipped()`, asked right then), it ran into the limit, or it was `slow` (out of turns
+    or time: the app stays unfinished and is read again, R45 I-3). An answer that came with extra
+    usage starting is its verdict all the same (R45, I-2). A reader's other error is the app's
+    verdict (a sign-in to give again: `reconnect`; anything else: `blocked`, with the error's text),
+    never a stop for the others. Any other fault in the run is that app's `blocked` too, with a
+    fixed sentence: its own text could repeat what the app held."""
     if stop.is_set() or (skipped is not None and grouped["app"] in skipped()):
         return None
     try:
@@ -278,6 +285,9 @@ def _one(grouped, person, cwd, read, stop, limits, known_tools, claude, today, s
         if exc.kind == "limit":
             limits.append(exc.text)
             stop.set()
+            answer = getattr(exc, "answer", None)
+            return _verdict(grouped, answer, today) if isinstance(answer, dict) else None
+        if exc.kind == "slow":
             return None
         return _failed(grouped, "reconnect" if exc.kind == "auth" else "blocked", exc.text)
     except Exception:
@@ -291,8 +301,10 @@ def analyse(groups: list, person: dict, cwd: Path, reader=reader.read, workers: 
     `person` is {"email", and optionally "emails", "name", "company", "domains"}: who the account
     is compared with, and what work is judged against. `known_tools` are the probe's tools: every
     connector tool a reader was not given is denied in its run. A reader's `auth` error is the
-    verdict `reconnect`, any other error `blocked`; none stops the other apps. The plan's limit
-    does: no new reader starts, and LimitReached carries the verdicts that finished. `today` is
+    verdict `reconnect`, a `slow` one no verdict (the app is read again next time), any other error
+    `blocked`; none stops the other apps. The plan's limit does: no new reader starts, and
+    LimitReached carries the verdicts that finished, an answer that came with extra usage starting
+    among them. `today` is
     the day the 12 months end with (default: today). `skipped` gives the apps the person skipped, and
     is asked again right before each reader starts: such an app is not read and has no verdict (R43)."""
     if not groups:
@@ -338,3 +350,45 @@ def scratch() -> Path:
     folder = Path.home() / ".spaces" / "readers" / "apps"
     folder.mkdir(parents=True, exist_ok=True)
     return folder
+
+
+def kept(record: dict, groups: list) -> list:
+    """The verdicts a run of the apps phase keeps from the one before (R45, I-2): a final one (FINAL) of an app the
+    probe still sees, its tools as the probe sees them now (none that sends or writes for an app that is not read). An
+    app to reconnect, a blocked one, an unfinished one and a new one are read again."""
+    now = {g["app"]: g for g in groups if isinstance(g, dict) and g.get("app")}
+    out = []
+    for v in (record or {}).get("verdicts") or []:
+        if isinstance(v, dict) and v.get("verdict") in FINAL and v.get("app") in now:
+            fresh = {**v, **{k: copy.deepcopy(now[v["app"]][k]) for k in ("kinds", "read", "write", "send") if k in now[v["app"]]}}
+            if fresh["verdict"] in NO_TOOLS:
+                fresh["send"], fresh["write"] = [], []
+            out.append(fresh)
+    return out
+
+
+def _probe_file() -> Path:
+    return scratch() / "probe.json"
+
+
+def keep_probe(probe: dict) -> None:
+    """The apps phase's probe, kept for the research that runs beside it, so it need not ask again (dry run B N-4)."""
+    try:
+        _probe_file().write_text(json.dumps({"at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+                                             "tools": list(probe.get("tools") or [])}), encoding="utf-8")
+    except OSError:
+        pass   # the research asks again
+
+
+def recent_probe(now: dt.datetime | None = None) -> list | None:
+    """The tools of the apps phase's probe when it is at most PROBE_FRESH old; None when there is none to use."""
+    try:
+        data = json.loads(_probe_file().read_text(encoding="utf-8"))
+        at = dt.datetime.fromisoformat(data["at"])
+        tools = data["tools"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    now = now or dt.datetime.now(dt.timezone.utc)
+    if not isinstance(tools, list) or at.tzinfo is None or not (now - PROBE_FRESH <= at <= now + dt.timedelta(minutes=5)):
+        return None
+    return [t for t in tools if isinstance(t, str)]

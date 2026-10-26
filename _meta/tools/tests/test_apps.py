@@ -516,3 +516,69 @@ def test_without_the_json_flag_the_phase_says_its_state_in_words(phase, capsys):
     assert start.main(["apps"]) == 0
     out = capsys.readouterr().out
     assert out.startswith("apps: done") and "yours: reconnect:" in out
+
+
+# ===== Fix wave F2 (Ruling R45): a slow reader is tried again, and what finished is kept ==========================
+def test_a_slow_reader_leaves_its_app_without_a_verdict_and_the_others_go_on(tmp_path):
+    """A reader that ran out of turns or time is `slow`: no verdict (so the app stays unfinished and is read again
+    next time), never `blocked` (R45, I-3)."""
+    def reader_(prompt, tools, *a, **k):
+        if "Slack" in tools[0]:
+            raise reader.ReaderError("slow", "it used up its 25 turns")
+        return answer()
+    got = apps.analyse(apps.group(TOOLS), {"email": ADA}, tmp_path, reader=reader_)
+    assert [v["app"] for v in got] == ["Gmail", "Microsoft 365"]
+
+
+def test_an_answer_that_came_with_extra_usage_is_kept_and_no_reader_starts_after(tmp_path):
+    """Extra usage starting stops the analysis, but the verdict that came with it stays (R45, I-2)."""
+    called = []
+
+    def reader_(prompt, tools, *a, **k):
+        called.append(tools[0])
+        raise reader.ReaderError("limit", "extra usage has started", answer=answer(verdict="mixed"))
+    with pytest.raises(apps.LimitReached) as stop:
+        apps.analyse(apps.group(TOOLS), {"email": ADA}, tmp_path, reader=reader_, workers=1)
+    assert [(v["app"], v["verdict"]) for v in stop.value.verdicts] == [("Gmail", "mixed")] and len(called) == 1
+    assert stop.value.text == "extra usage has started"
+
+
+def test_the_reader_prompt_keeps_within_the_readers_turns():
+    [group] = apps.group(TOOLS[:3])
+    prompt = apps.reader_prompt(group, {"email": ADA}, dt.date(2026, 10, 24))
+    assert f"{reader.MAX_TURNS} turns" in prompt and "several tool calls in one turn" in prompt
+
+
+def test_a_slow_app_is_unfinished_and_read_again_never_an_it_admin_need(phase, capsys):
+    seen = []
+    readers(phase, {"Gmail": answer(), "Slack": reader.ReaderError("slow", "stopped after 15 minutes")}, seen)
+    code, out = run(capsys)
+    assert code == 0 and out["state"] == "waiting" and out["needs"] == [] and out["unfinished"] == ["Slack"]
+    assert "Slack" in out["why"] and "again" in out["why"] and "15 minutes" not in out["why"] and "skip" in out["why"]
+    record = journal_apps()
+    assert [v["app"] for v in record["verdicts"]] == ["Gmail"] and record["unfinished"] == ["Slack"]
+    seen.clear()
+    readers(phase, {"Gmail": answer(), "Slack": answer()}, seen)
+    code, out = run(capsys)
+    assert out["state"] == "done" and [s["app"] for s in seen] == ["Slack"] and out["unfinished"] == []
+    assert [v["app"] for v in journal_apps()["verdicts"]] == ["Gmail", "Slack"]
+
+
+def test_after_a_limit_what_finished_is_kept_and_only_the_rest_and_new_apps_are_read(phase, capsys):
+    """The skill says "What finished is kept" (R45, I-2): the run after a limit keeps the verdicts the journal holds
+    and reads only the apps without one, and apps connected since; an app to reconnect is read again."""
+    seen = []
+    readers(phase, {"Gmail": answer(), "Slack": reader.ReaderError("limit", "the plan's limit is reached")}, seen)
+    phase.setattr(apps, "analyse", lambda groups, *a, **k: real_analyse(groups, *a, **{**k, "workers": 1}))
+    code, out = run(capsys)
+    assert out["state"] == "waiting" and out["unfinished"] == ["Slack"] and "1 of 2 apps" in out["why"]
+    seen.clear()
+    readers(phase, {"Gmail": AssertionError("Gmail was read again"), "Slack": answer(verdict="mixed")}, seen)
+    code, out = run(capsys)
+    assert out["state"] == "done" and [s["app"] for s in seen] == ["Slack"] and out["unfinished"] == []
+    record = journal_apps()
+    assert [(v["app"], v["verdict"]) for v in record["verdicts"]] == [("Gmail", "work"), ("Slack", "mixed")]
+    assert record["feeds"] == "mail: owner, chat: owner" and record["card"]["read"][0] == f"Gmail · {ADA} · work"
+
+
+real_analyse = apps.analyse

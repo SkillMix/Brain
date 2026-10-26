@@ -131,8 +131,6 @@ ROUTINE_TOOLS = ("brief.py", "chain.py", "check.py", "classify.py", "distill.py"
                  "librarian.py", "morning_view.py", "needs_you.py", "outbox_reconcile.py",
                  "owner_email.py", "registry.py", "release.py", "request.py", "route.py", "search.py",
                  "status.py", "sweep.py", "sync.py", "tests_run.py", "tracker.py")
-# Setup's history reading runs inside the sweep chain (step 0).
-ROUTINE_TOOLS += ("backfill.py",)
 # What no routine edits, in any space on this machine: the code that runs (tools, migrations,
 # tests and their configuration), the instructions every session loads, git, the rules, the
 # routine prompts and the apps' verdicts the grant is read from. A path rule for Edit covers Write
@@ -147,7 +145,12 @@ PROTECTED_EDITS += ("_meta/state/onboard.yaml",)   # the OS tasks onboard regist
 # Rooted at each space: a folder name a subject could also have.
 PROTECTED_IN_ROOT = ("identity/**",)
 PROTECTED_EDITS += ("_meta/state/routine-limits.jsonl",)   # each run's windows and tokens: written by this process alone
-READ_ONLY = ("Bash(gh pr view *)", "Bash(gh pr list *)", "Bash(git status *)", "Bash(git log *)",
+PROTECTED_EDITS += ("CLAUDE.local.md",)   # loaded beside CLAUDE.md at any depth, in a folder outside git too (dry run A)
+PROTECTED_EDITS += (".gitattributes",)   # the merge rules the sync script lands every record by
+PROTECTED_EDITS += (".gitignore",)   # what the sync script lands at all
+# Setup's history reading runs inside the sweep chain (step 0); its own line, away from the list above.
+ROUTINE_TOOLS += ("backfill.py",)
+READ_ONLY =("Bash(gh pr view *)", "Bash(gh pr list *)", "Bash(git status *)", "Bash(git log *)",
              "Bash(git diff *)", "Bash(git show *)")
 # The built-in tools a routine has (`--tools`, Ruling R30): the shell its tools run in, the files, and
 # ToolSearch, which loads a connector's tools. Web, PowerShell, agents and schedules are left out; the
@@ -165,9 +168,25 @@ STRIPPED_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL
 GIT_BASH = "CLAUDE_CODE_GIT_BASH_PATH"
 
 
+# The desktop session's own settings for the runs it starts (its effort, entry point, child-session, messaging and SDK
+# variables): a setup run, a reader, the probe or a routine run without them is the run cli-facts describes (R45, I-3).
+SESSION_ENV = ("CLAUDECODE", "CLAUDE_EFFORT")
+SESSION_PREFIXES = ("CLAUDE_CODE_", "CLAUDE_AGENT_SDK_")
+KEPT_ENV = (GIT_BASH, "CLAUDE_CONFIG_DIR")   # what every caller needs: the Git Bash Claude Code runs hooks in, the config
+# the client certificate a company network may require (mTLS): without it no run reaches the API at all (NB-4)
+KEPT_ENV += ("CLAUDE_CODE_CLIENT_CERT", "CLAUDE_CODE_CLIENT_KEY", "CLAUDE_CODE_CLIENT_KEY_PASSPHRASE")
+
+
 def clean_env(env: dict) -> dict:
-    """A copy of the environment as a routine sees it: without STRIPPED_ENV."""
-    return {key: value for key, value in env.items() if key.upper() not in STRIPPED_ENV}   # Windows ignores case
+    """A copy of the environment as a routine sees it: without STRIPPED_ENV (keys, tokens, another provider) and without
+    the session's own variables (SESSION_ENV, and every name starting with SESSION_PREFIXES), but with KEPT_ENV.
+    Every run setup and the routines start goes through it: readers, the probe, the sign-ins and `routine_env`."""
+    def dropped(key: str) -> bool:
+        name = key.upper()   # Windows ignores case
+        if name in KEPT_ENV:
+            return False
+        return name in STRIPPED_ENV or name in SESSION_ENV or name.startswith(SESSION_PREFIXES)
+    return {key: value for key, value in env.items() if not dropped(key)}
 
 
 def routine_env(env: dict, shell: str = "", windows: bool | None = None) -> dict:
@@ -203,7 +222,7 @@ def probe_tools(claude: str, cwd: Path, extra_dirs=(), run=subprocess.run) -> di
     (the probe's own: the cheap one) and `auth` (`apiKeySource`: "none" for a claude.ai sign-in,
     else what took over). `extra_dirs` are the folders a routine adds (`--add-dir`). Raises
     ProbeError when the run reports no init."""
-    argv = [claude, "-p", *REFUSE, *JSON_OUT]
+    argv = [claude, "-p", *REFUSE, *JSON_OUT, "--tools", *ROUTINE_BUILTINS]   # what a run has (F-8): its init lists those
     for folder in extra_dirs:
         argv += ["--add-dir", str(folder)]
     argv += ["--model", "haiku", "--max-turns", "1", "--no-session-persistence"]
@@ -276,6 +295,50 @@ def pid_alive(pid: int) -> bool:
     return True
 
 
+def process_started(pid: int) -> str | None:
+    """When the process with this id started, as this system says it (Windows: its creation time from
+    GetProcessTimes; Linux: field 22 of /proc/<pid>/stat; elsewhere `ps -o lstart=`, in UTC and the C locale so
+    every caller reads it alike), or None when no process has the id or the system does not say. A lock keeps it
+    beside the pid: the same id with another start time is another process (Ruling R45, I-8)."""
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return None
+    try:
+        if os.name == "nt":
+            return _started_windows(pid)
+        stat = Path(f"/proc/{pid}/stat")
+        if Path("/proc/self/stat").exists():
+            fields = stat.read_text(encoding="ascii", errors="replace")
+            return fields[fields.rindex(")") + 2:].split()[19] or None   # field 22; the name in brackets may hold spaces
+        said = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, timeout=5,
+                              env={**os.environ, "LC_ALL": "C", "TZ": "UTC0"})
+        return " ".join(said.stdout.split()) or None if said.returncode == 0 else None
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return None
+
+
+def _started_windows(pid: int) -> str | None:
+    import ctypes
+    from ctypes import wintypes
+    if pid > 0xFFFFFFFF:
+        return None
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel32.OpenProcess(0x1000, False, pid)   # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return None
+    try:
+        times = [wintypes.FILETIME() for _ in range(4)]
+        if not kernel32.GetProcessTimes(handle, *(ctypes.byref(t) for t in times)):
+            return None
+        created = (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+        return str(created) if created else None
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def rule_path(path) -> str:
     """A folder as Claude Code matches it: POSIX form, a Windows drive as `/c/...`."""
     posix = Path(path).resolve().as_posix()
@@ -324,7 +387,13 @@ def routine_settings(workspace, body: str, roots=None, person: str = "", read_to
     hold them to and a shell to run it with (`shell`, the one the probe proved; else `hook_shell`): a
     PreToolUse hook on each runs the workspace's `send_guard.py <person>` (`send_guard_command`).
     Every other connector tool it knows of (`known_tools`, else every one the probe has seen) is denied,
-    so a tool the person once chose "always allow" for in their own settings is refused here too."""
+    so a tool the person once chose "always allow" for in their own settings is refused here too.
+
+    Two more hooks run the same guard in a mode of its own (Ruling R45): on Task (`TASK_MATCHER`) only the
+    general-purpose agent starts (`--task`), and on every connector tool (`CONNECTOR_MATCHER`) only the tools this
+    profile allows by name go through (`--connectors <profile>`), so a tool that appeared after the last probe is
+    refused too. Without a command for them, Task is denied and no connector tool is granted. Every hook carries
+    its own `timeout` (`GUARD_TIMEOUT`), well above the time each guard gives itself."""
     import reader
     workspace = Path(workspace).resolve()
     tools_dir = workspace / "_meta" / "tools"
@@ -340,9 +409,10 @@ def routine_settings(workspace, body: str, roots=None, person: str = "", read_to
              if "/" in m and Path(m).is_absolute() and Path(m).resolve() in roots]
     places = list(dict.fromkeys([r.as_posix() for r in roots] + named))
     try:
-        bash = bash_guard_command(profile, script=tools_dir / "bash_guard.py")
-    except ValueError:   # a path the hook's command cannot carry: no Bash at all, rather than an unguarded one
-        bash = None
+        bash, task, connectors = (bash_guard_command(profile, script=tools_dir / "bash_guard.py", mode=mode)
+                                  for mode in (None, "--task", "--connectors"))
+    except ValueError:   # a path the hook's command cannot carry: no Bash, Task or connector at all, rather than unguarded
+        bash = task = connectors = None
     allow = [f"Bash({py} _meta/tools/{tool} *)" for py in pys for tool in ROUTINE_TOOLS] if bash else []
     allow += [f"Bash({py} {place}/_meta/tools/{tool} *)"
               for place in places for py in pys for tool in ROUTINE_TOOLS] if bash else []
@@ -356,7 +426,7 @@ def routine_settings(workspace, body: str, roots=None, person: str = "", read_to
     # `--output` lets a read-only git command write a file.
     deny += ["Bash(python -m *)", "Bash(python3 -m *)", "Bash(git *--output*)"]
     deny += [t for t in dict.fromkeys([*reader.DENIED, "WebFetch"])
-             if t not in ROUTINE_BUILTINS or (t == "Bash" and not bash)]
+             if t not in ROUTINE_BUILTINS or (t in ("Bash", "Task") and not bash)]
     read_tools, write_tools, send_tools = (_strings(list(x or [])) for x in (read_tools, write_tools, send_tools))
     given = [*read_tools, *write_tools, *send_tools]
     reads = [t for t in dict.fromkeys(read_tools) if reader.is_read_tool(t)]
@@ -366,14 +436,17 @@ def routine_settings(workspace, body: str, roots=None, person: str = "", read_to
         guard = send_guard_command(person, script=tools_dir / "send_guard.py") if sends and shell else None
     except ValueError:
         guard = None
-    sends = sends if guard else []
-    granted = list(dict.fromkeys(reads + writes + sends))
+    sends = sends if guard and connectors else []
+    granted = list(dict.fromkeys(reads + writes + sends)) if connectors else []
     deny += sorted({t for t in [*reader._known(known_tools), *given]
                     if reader.CONNECTOR_TOOL.fullmatch(t) and t not in granted})
     data = {"disableAllHooks": False,
             "permissions": {"allow": allow + (list(READ_ONLY) if bash else []) + granted, "deny": deny}}
-    hooks = [{"matcher": "Bash", "hooks": [{"type": "command", "command": bash}]}] if bash else []
-    hooks += [{"matcher": tool, "hooks": [{"type": "command", "command": guard}]} for tool in sends]
+    hook = lambda command: {"type": "command", "command": command, "timeout": GUARD_TIMEOUT}   # noqa: E731
+    hooks = [{"matcher": "Bash", "hooks": [hook(bash)]}] if bash else []
+    hooks += [{"matcher": tool, "hooks": [hook(guard)]} for tool in sends]
+    if bash:   # the agents a run starts and the connector tools it calls (Minor 10, 11)
+        hooks += [{"matcher": TASK_MATCHER, "hooks": [hook(task)]}, {"matcher": CONNECTOR_MATCHER, "hooks": [hook(connectors)]}]
     if hooks:
         data["hooks"] = {"PreToolUse": hooks}
     return data
@@ -456,6 +529,11 @@ SEND_GUARD = Path(__file__).resolve().with_name("send_guard.py")
 BASH_GUARD = Path(__file__).resolve().with_name("bash_guard.py")
 STRANGER = "not-you@example.invalid"   # the address the send check proves the guard refuses
 HOOK_SECONDS = 10                      # a guard answers within a second; one that hangs has failed
+# Each guard ends itself, refusing, after its own LIMIT_SECONDS (10): a hook Claude Code cuts off at its timeout lets
+# the call through (dry run A, docs/design/cli-facts.md), so the hook's timeout is well above the guard's own.
+GUARD_TIMEOUT = 30
+TASK_MATCHER = "Task|Agent"   # the 2.1.303 stream names the Task tool Agent (dry run A); a matcher is a pattern
+CONNECTOR_MATCHER = "mcp__.*"   # every connector tool, a tool that came after the last probe included
 
 
 def guardable(person) -> str | None:
@@ -478,12 +556,16 @@ def send_guard_command(person: str, python: str | None = None, script=None) -> s
     return f'{reader._quoted(python or sys.executable)} -I {reader._quoted(script or SEND_GUARD)} "{address}" || exit 2'
 
 
-def bash_guard_command(profile, python: str | None = None, script=None) -> str:
-    """`"<python>" -I "<bash_guard.py>" "<the routine's settings file>" || exit 2`. ValueError for a path the
-    command cannot quote."""
+def bash_guard_command(profile, python: str | None = None, script=None, mode: str | None = None) -> str:
+    """`"<python>" -I "<bash_guard.py>" "<the routine's settings file>" || exit 2`; with `mode` "--task" the hook
+    on Task (`... --task || exit 2`), with "--connectors" the one on every connector tool (`... --connectors
+    "<the routine's settings file>" || exit 2`). ValueError for a path the command cannot quote."""
     import reader
-    words = (python or sys.executable, script or BASH_GUARD, profile)
-    return f"{reader._quoted(words[0])} -I {reader._quoted(words[1])} {reader._quoted(words[2])} || exit 2"
+    head = f"{reader._quoted(python or sys.executable)} -I {reader._quoted(script or BASH_GUARD)}"
+    if mode == "--task":
+        return f"{head} --task || exit 2"
+    words = ["--connectors"] if mode == "--connectors" else []
+    return " ".join([head, *words, reader._quoted(profile), "|| exit 2"])
 
 
 def hook_shell(windows: bool | None = None) -> list | None:
@@ -714,7 +796,7 @@ def write_items(workspace, claude_signin: bool | None = None, reconnect: list | 
 
 
 # ----- one run at a time per workspace ---------------------------------------------------------
-LOCK_HOURS = 2   # Ruling R11: a run stops after an hour; a live pid on a lock older than this is a reused one
+LOCK_HOURS = 2   # Ruling R11: a lock without its process's start time, older than this with a live pid, is a reused pid's
 TAKEOVER_SECONDS = 10   # a takeover, or a lock being written, takes milliseconds: one older than this was left
 
 
@@ -739,19 +821,25 @@ def _lock_data(raw: bytes) -> dict | None:
             return None
     if not (isinstance(pid, int) and not isinstance(pid, bool) and pid > 0 and isinstance(started, dt.datetime)):
         return None
+    mark = data.get("pid_started")
     return {"pid": pid, "routine": str(data.get("routine") or ""),
-            "started": started if started.tzinfo else started.astimezone(), "part": str(data.get("part") or "")}
+            "started": started if started.tzinfo else started.astimezone(), "part": str(data.get("part") or ""),
+            "pid_started": str(mark) if isinstance(mark, (str, int)) and not isinstance(mark, bool) and str(mark) else ""}
 
 
 def _live(data: dict | None) -> bool:
-    """Whether a lock is a running run's: its process runs, and it is neither from the future nor older
-    than LOCK_HOURS (then the pid is another process's now)."""
-    if data is None:
+    """Whether a lock is a running run's: its process runs, and it is that process (Ruling R45, I-8): one that
+    started when the lock says, however old the lock (a lid closed for hours), and not one that started at another
+    time (the pid was given to another process). A lock without a start time, or a system that does not say one,
+    keeps the age rule: neither from the future nor older than LOCK_HOURS."""
+    if data is None or not pid_alive(data["pid"]):
         return False
+    then = data.get("pid_started") or ""
+    now = process_started(data["pid"]) if then else None
+    if then and now:
+        return then == now
     age = dt.datetime.now().astimezone() - data["started"]
-    if age < -dt.timedelta(minutes=5) or age >= dt.timedelta(hours=LOCK_HOURS):
-        return False
-    return pid_alive(data["pid"])
+    return -dt.timedelta(minutes=5) <= age < dt.timedelta(hours=LOCK_HOURS)
 
 
 def _link(source: Path, path: Path) -> bool:
@@ -858,15 +946,19 @@ def _being_written(path: Path, raw: bytes) -> bool:
 
 def take_lock(workspace, routine_name: str, part: str | None = None) -> bool:
     """The workspace's lock for this run: False while a live run holds it. A dead one is taken over: its
-    process is gone, it is older than LOCK_HOURS, or it cannot be read. Runs racing for it never both get
+    process is gone, its pid names a process that started at another time, it has no start time to compare and
+    is older than LOCK_HOURS, or it cannot be read (`_live`). Runs racing for it never both get
     it (Ruling R30): the lock is made whole in one exclusive step that fails when one is there, and a dead
-    one is moved out of the way by one run at a time (`_take_over`) before that step is tried again. `part` is
+    one is moved out of the way by one run at a time (`_take_over`) before that step is tried again. The lock keeps
+    the process's start time beside its pid (`process_started`), so `_live` tells a reused pid apart. `part` is
     the part of the history this run reads (`next_part`), kept in the lock for as long as the run lasts."""
     path = lock_path(workspace)
     path.parent.mkdir(parents=True, exist_ok=True)
     held = {"pid": os.getpid(), "routine": routine_name,
             "started": dt.datetime.now().astimezone().isoformat(timespec="seconds")}
-    mine = yaml.safe_dump({**held, **({"part": part} if part else {})}, sort_keys=False).encode("utf-8")
+    mark = process_started(os.getpid())
+    mine = yaml.safe_dump({**held, **({"pid_started": mark} if mark else {}), **({"part": part} if part else {})},
+                          sort_keys=False).encode("utf-8")
     for attempt in range(200):
         if _create(path, mine):
             return True
@@ -1416,9 +1508,25 @@ HARNESS = "they run as the app's scheduled tasks"
 
 
 def this_machine() -> str:
-    """This computer as the record names it: its part of the sync branch names (`sync.hostname`)."""
+    """This computer as the record names it: an id made once and kept in `~/.spaces/machine-id` (Minor 6), so a
+    computer whose name follows the network still matches its own record. Made from today's value, its part of the
+    sync branch names (`sync.hostname`), so every record written before still matches; a file that holds no id is
+    made again, and one that cannot be written leaves the id as it is made."""
     import sync
-    return sync.hostname()
+    kept = Path.home() / ".spaces" / "machine-id"
+    try:
+        said = kept.read_text(encoding="utf-8").strip()
+        if MACHINE.fullmatch(said):
+            return said
+    except (OSError, UnicodeDecodeError):
+        pass
+    made = sync.hostname()
+    try:
+        kept.parent.mkdir(parents=True, exist_ok=True)
+        kept.write_text(made + "\n", encoding="utf-8", newline="\n")
+    except OSError:
+        pass
+    return made
 
 
 def machine_name() -> str:
@@ -1596,6 +1704,13 @@ def wanted(workspace, meta: dict) -> bool:
         return False
 
 
+def _unwanted(meta: dict) -> str:
+    """Why `wanted` holds a run back, in plain words."""
+    if meta.get("only_while") == "backfill":
+        return "no reading of the history is going on"
+    return "it runs only while a condition this tool does not know holds"
+
+
 PART_ROUTINES = ("sweep-chain", "backfill-night")   # the routines whose prompts read a part of the history
 
 
@@ -1659,18 +1774,21 @@ def main(argv=None, run=subprocess.run) -> int:
     prompt = Path(argv[0]).resolve()
     workspace = prompt.parents[3]   # <workspace>/_meta/state/routines/<routine>.md
     meta, body = split_prompt(prompt.read_text(encoding="utf-8"))
-    if not wanted(workspace, meta):
-        return 0
     name = spaceyaml.load(workspace).name
     log = Path.home() / ".spaces" / "logs" / f"{prompt.stem}-{name}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     now = _now()
-    held = _held(workspace, now)   # before the lock and the history: one computer, one runner, and the pause
+    held = _held(workspace, now)   # first (F-11): one computer, one runner, and the pause, before the history is read
     if held:
         with log.open("a", encoding="utf-8") as fh:
             fh.write(f"{now.isoformat(timespec='seconds')} {prompt.stem} not run: {held[1]}\n")
         if held[0] == "paused":   # another computer's runs leave no line: that computer's own is the one that counts
             write_outcome(workspace, prompt.stem, {**_stopped(held[1]), "outcome": "paused"}, now)
+        return 0
+    if not wanted(workspace, meta):   # its condition does not hold: a line says so, and no claude starts
+        with log.open("a", encoding="utf-8") as fh:
+            fh.write(f"{now.isoformat(timespec='seconds')} {prompt.stem} not run: nothing to read: "
+                     f"{_unwanted(meta)}\n")
         return 0
     part, why = next_part(workspace, prompt.stem)
     if meta.get("only_while") == "backfill" and part is None:   # a run would spend its first tokens to find that out

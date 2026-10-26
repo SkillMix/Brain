@@ -72,7 +72,14 @@ def status(ws, which: str) -> str:
 def finish_all(ws) -> None:
     for p in parts_of(ws):
         if p["status"] != "done":
-            backfill.after_run(ws, p["id"], FINISHED)
+            read_through(ws, p["id"], FINISHED)
+
+
+def read_through(ws, which: str, outcome: dict, now=None) -> None:
+    """A run read part `which` to its end and said so (`read`), then ended with `outcome`: a part is done only on
+    `read` (R45, I-4)."""
+    backfill.range_read(ws, which)
+    backfill.after_run(ws, which, outcome, now=now)
 
 
 def planned(tmp_path, per_token_share=None, part_tokens=None, p1_tokens=500_000):
@@ -81,7 +88,7 @@ def planned(tmp_path, per_token_share=None, part_tokens=None, p1_tokens=500_000)
     ws = make_space(tmp_path / "ws")
     backfill.plan(ws, COUNTS, NOW)
     if per_token_share is not None:
-        backfill.after_run(ws, "p1", used(p1_tokens))
+        read_through(ws, "p1", used(p1_tokens))
         backfill.calibrate(ws, 0, per_token_share * p1_tokens, p1_tokens)
         if part_tokens is not None:
             state = backfill.load(ws)
@@ -230,7 +237,7 @@ def test_a_measured_weekly_share_replaces_the_guess_for_the_setup_day(tmp_path):
 def test_before_part_one_is_measured_only_part_one_is_due(tmp_path):
     ws = planned(tmp_path)
     assert backfill.due(ws, AT_01H)["id"] == "p1"
-    backfill.after_run(ws, "p1", used(500_000))
+    read_through(ws, "p1", used(500_000))
     assert backfill.due(ws, AT_01H) is None                                   # p2 waits for the measure
     state = backfill.load(ws)
     assert backfill.explain(ws, AT_01H)[1]
@@ -335,7 +342,7 @@ def test_finished_sets_done_adds_the_tokens_and_keeps_a_short_history(tmp_path):
     backfill.after_run(ws, "p1", {"outcome": "limit", "why": "", "resets_at": None,
                                   "usage": {"input_tokens": 100, "output_tokens": 20, "cache_read_tokens": 300,
                                             "cache_creation_tokens": 80}})
-    backfill.after_run(ws, "p1", used(1000), now=AT_01H)
+    read_through(ws, "p1", used(1000), now=AT_01H)
     p = part(ws, "p1")
     assert p["status"] == "done" and p["tokens"] == 1500 and p["finished_at"] == AT_01H.isoformat(timespec="seconds")
     assert [r["outcome"] for r in p["runs"]] == ["limit", "finished"]
@@ -357,7 +364,7 @@ def test_a_run_that_stopped_itself_after_its_time_leaves_the_part_to_the_next_ru
     p = part(ws, "p1")
     assert p["status"] == "paused" and p["resets_at"] is None and p["tokens"] == 700 and "unfinished" not in p
     assert backfill.due(ws, AT_19H)["id"] == "p1" and backfill.export_mark(ws, "mail") == "2026-08-02T10:00:00Z"
-    backfill.after_run(ws, "p1", used(100))
+    read_through(ws, "p1", used(100))
     assert status(ws, "p1") == "done"
 
 
@@ -382,7 +389,7 @@ def test_a_feed_without_a_checkpoint_starts_at_the_part_start_and_the_next_part_
     backfill.checkpoint(ws, "p1", "mail", "2026-08-02T10:00:00Z")
     backfill.checkpoint(ws, "p1", "mail", "2026-08-01T10:00:00Z")            # a checkpoint never goes back
     assert backfill.load(ws)["parts"][0]["checkpoints"]["mail"] == "2026-08-02T10:00:00Z"
-    backfill.after_run(ws, "p1", FINISHED)
+    read_through(ws, "p1", FINISHED)
     assert backfill.export_mark(ws, "mail") == part(ws, "p2")["from"]
     assert backfill.export_mark(make_space(tmp_path / "other"), "mail") is None
 
@@ -400,7 +407,7 @@ def test_calibration_measures_the_share_and_resplits_what_is_left_to_fit_the_nig
     ws = make_space(tmp_path / "ws")
     before = backfill.plan(ws, COUNTS, NOW)
     rest = sum(p["records"] for p in before["parts"][1:])
-    backfill.after_run(ws, "p1", used(9_000_000))
+    read_through(ws, "p1", used(9_000_000))
     share = backfill.calibrate(ws, 4, 94, 9_000_000)                      # 90 points of the window for part 1
     state = backfill.load(ws)
     assert share == pytest.approx(90 / 9_000_000) and state["per_token_share"] == share
@@ -417,7 +424,7 @@ def test_calibration_measures_the_share_and_resplits_what_is_left_to_fit_the_nig
 
 def test_calibration_never_splits_a_part_that_already_fits(tmp_path):
     ws = planned(tmp_path)
-    backfill.after_run(ws, "p1", used(500_000))
+    read_through(ws, "p1", used(500_000))
     backfill.calibrate(ws, 0, 10, 500_000)
     assert [p["id"] for p in parts_of(ws)] == ["p1", "p2", "p3"]
 
@@ -425,7 +432,7 @@ def test_calibration_never_splits_a_part_that_already_fits(tmp_path):
 def test_calibration_leaves_a_part_that_has_started_alone(tmp_path):
     ws = make_space(tmp_path / "ws")
     backfill.plan(ws, COUNTS, NOW)
-    backfill.after_run(ws, "p1", used(9_000_000))
+    read_through(ws, "p1", used(9_000_000))
     backfill.checkpoint(ws, "p2", "mail", "2026-09-01T00:00:00Z")
     before = part(ws, "p2")
     backfill.calibrate(ws, 4, 44, 9_000_000)
@@ -437,7 +444,7 @@ def test_a_slower_pace_moves_the_finish_not_the_window(tmp_path):
     for name, after in (("fast", 8), ("slow", 63)):
         ws = make_space(tmp_path / name)
         backfill.plan(ws, COUNTS, NOW)
-        backfill.after_run(ws, "p1", used(2_000_000), now=AT_19H)
+        read_through(ws, "p1", used(2_000_000), now=AT_19H)
         backfill.calibrate(ws, 5, after, 2_000_000)
         finish[name] = backfill.load(ws)
     assert finish["fast"]["window_days"] == finish["slow"]["window_days"] == 90
@@ -446,7 +453,7 @@ def test_a_slower_pace_moves_the_finish_not_the_window(tmp_path):
 
 def test_a_part_too_small_to_measure_leaves_the_guess_and_says_so(tmp_path):
     ws = planned(tmp_path)
-    backfill.after_run(ws, "p1", used(40_000))
+    read_through(ws, "p1", used(40_000))
     share = backfill.calibrate(ws, 10, 11, 40_000)
     state = backfill.load(ws)
     assert share == backfill.DEFAULT_PER_TOKEN_SHARE and state["calibration"] == "assumed"
@@ -488,7 +495,7 @@ def test_the_command_line_checkpoints_marks_and_records_readings(tmp_path):
 
 def test_the_command_line_calibrates_from_the_tokens_part_one_used(tmp_path):
     ws = planned(tmp_path)
-    backfill.after_run(ws, "p1", used(500_000))
+    read_through(ws, "p1", used(500_000))
     done = cli(ws, "calibrate", "--before", "3", "--after", "13", "--now=2026-10-25T01:00:00+02:00")
     assert done.returncode == 0 and backfill.load(ws)["per_token_share"] == pytest.approx(10 / 500_000)
     status_out = json.loads(cli(ws, "status", "--json").stdout)
@@ -794,7 +801,7 @@ LATER = AT_01H + dt.timedelta(minutes=50)
 def part_one_ran(ws, limits: dict | None, at: str = "2026-10-24T23:40:00Z", outcome: str = "finished") -> None:
     """Part 1 was read by a routine run whose outcome line holds the windows its own rate_limit_event gave."""
     backfill.checkpoint(ws, "p1", "mail", "2026-08-02T10:00:00Z")
-    backfill.after_run(ws, "p1", FINISHED, now=AT_01H + dt.timedelta(minutes=40))
+    read_through(ws, "p1", FINISHED, now=AT_01H + dt.timedelta(minutes=40))
     path = ws / "_meta" / "state" / "runs.jsonl"
     with path.open("a", encoding="utf-8", newline="\n") as fh:
         fh.write(json.dumps({"routine": "sweep-chain", "at": at, "space": "ada", "cost_tokens": 0, "outcome": outcome,
@@ -933,7 +940,7 @@ def test_a_plan_without_a_reading_is_sized_for_the_first_night(tmp_path):
 def test_the_twelve_hour_fallback_cuts_what_is_left_by_the_guess(tmp_path):
     ws = make_space(tmp_path / "ws")
     backfill.plan(ws, SPEC_COUNTS, AT_14H)
-    backfill.after_run(ws, "p1", used(2_000_000), now=AT_14H + dt.timedelta(minutes=50))
+    read_through(ws, "p1", used(2_000_000), now=AT_14H + dt.timedelta(minutes=50))
     assert backfill.due(ws, AT_01H) is None and backfill.load(ws)["per_token_share"] is None   # 10 hours: not yet
     for when in (SEVEN_AM, dt.datetime(2026, 10, 25, 19, 0, tzinfo=TZ)):
         named = backfill.due(ws, when)
@@ -1009,7 +1016,7 @@ def test_due_names_the_part_a_live_routine_lock_names(tmp_path):
 
 @pytest.mark.parametrize("evidence, done", [
     (lambda ws: None, False),
-    (lambda ws: backfill.checkpoint(ws, "p1", "mail", "2026-08-02T10:00:00Z"), True),
+    (lambda ws: backfill.checkpoint(ws, "p1", "mail", "2026-08-02T10:00:00Z"), False),   # not through: I-4
     (lambda ws: backfill.range_read(ws, "p1"), True),
     (lambda ws: (backfill.checkpoint(ws, "p1", "mail", "2026-08-02T10:00:00Z"), backfill.unfinished(ws, "p1")), False)])
 def test_a_run_that_read_nothing_does_not_finish_its_part(tmp_path, evidence, done):
@@ -1040,8 +1047,9 @@ def test_the_routine_tells_the_backfill_a_part_began(tmp_path, monkeypatch):
     assert run_prompt(ws, "sweep-chain", stream(RESULT)) == 0
     assert status(ws, "p1") == "paused" and "did not read" in part(ws, "p1")["why"]   # the agent never said it read anything
 
-    def reads(argv, **kw):                                                    # an agent that reads and checkpoints
+    def reads(argv, **kw):                                                    # an agent that reads, checkpoints and is through
         backfill.checkpoint(ws, "p1", "mail", "2026-08-02T10:00:00Z")
+        backfill.range_read(ws, "p1")                                         # it says so: a checkpoint alone is not (R45, I-4)
         return subprocess.CompletedProcess(argv, 0, stream(RESULT), "")
     assert routine.main([str(ws / "_meta" / "state" / "routines" / "sweep-chain.md")], run=reads) == 0
     assert status(ws, "p1") == "done"
@@ -1115,7 +1123,7 @@ def test_the_window_cut_at_plan_time_is_an_estimate_that_the_measurement_settles
         ws = make_space(tmp_path / name)
         p = backfill.plan(ws, COUNTS, AT_14H, reading=reading(five_hour_pct=5, week_pct=20))
         assert p["window_days"] < 90 and p["window_estimate"] is True and "estimate" in p["shortened_because"]
-        backfill.after_run(ws, "p1", used(tokens), now=AT_14H + dt.timedelta(minutes=50))
+        read_through(ws, "p1", used(tokens), now=AT_14H + dt.timedelta(minutes=50))
         backfill.calibrate(ws, 5, after, tokens, now=AT_14H + dt.timedelta(minutes=60))
         settled[name] = backfill.load(ws)
         assert "window_estimate" not in settled[name]
@@ -1270,6 +1278,7 @@ def test_a_fault_after_the_outcome_was_written_tells_the_part_once(tmp_path, mon
 
     def reads(argv, **kw):
         backfill.checkpoint(ws, "p1", "mail", "2026-08-02T10:00:00Z")
+        backfill.range_read(ws, "p1")
         return subprocess.CompletedProcess(argv, 0, stream(RESULT), "")
     assert routine.main([str(ws / "_meta" / "state" / "routines" / "sweep-chain.md")], run=reads) == 1
     assert status(ws, "p1") == "done" and [r["outcome"] for r in part(ws, "p1")["runs"]] == ["finished"]
@@ -1307,7 +1316,7 @@ def test_one_day_that_cannot_be_cut_is_not_read_while_extra_usage_is_on_or_unkno
 def test_with_extra_usage_on_a_part_that_takes_the_week_past_the_end_waits(tmp_path):            # N-2, probe5 B
     ws = make_space(tmp_path / "week")
     backfill.plan(ws, {"2026-09": 3000, "2026-10": 3000}, dt.datetime(2026, 10, 20, 14, 0, tzinfo=TZ))
-    backfill.after_run(ws, "p1", used(500_000), now=dt.datetime(2026, 10, 20, 15, 0, tzinfo=TZ))
+    read_through(ws, "p1", used(500_000), now=dt.datetime(2026, 10, 20, 15, 0, tzinfo=TZ))
     backfill.calibrate(ws, 0, 10, 500_000, now=dt.datetime(2026, 10, 20, 15, 5, tzinfo=TZ))
     week_resets = dt.datetime(2026, 10, 28, 6, 0, tzinfo=TZ)
 
@@ -1381,7 +1390,7 @@ def test_when_begin_fails_the_run_goes_on_without_its_part(tmp_path, monkeypatch
 def test_a_part_a_little_too_big_for_the_day_waits_for_the_night(tmp_path):                     # N-6, probe8
     ws = make_space(tmp_path / "ws")
     backfill.plan(ws, SPEC_COUNTS, AT_14H)
-    backfill.after_run(ws, "p1", used(4_500_000), now=AT_14H + dt.timedelta(minutes=50))
+    read_through(ws, "p1", used(4_500_000), now=AT_14H + dt.timedelta(minutes=50))
     backfill.due(ws, SEVEN_AM)                                                                    # the fallback cuts
     noon = dt.datetime(2026, 10, 25, 13, 0, tzinfo=TZ)
     backfill.record_reading(ws, reading(five_hour_pct=0, week_pct=10, at=noon - dt.timedelta(minutes=5)))
@@ -1396,7 +1405,7 @@ def test_the_fallback_settles_the_window_it_cut_on_a_guess(tmp_path):
     seen = reading(five_hour_pct=5, week_pct=26, at=AT_14H, five_hour_resets=AT_14H + dt.timedelta(hours=3))
     first = backfill.plan(ws, SPEC_COUNTS, AT_14H, reading=seen)
     assert first["window_estimate"] is True and "estimate" in first["shortened_because"]
-    backfill.after_run(ws, "p1", used(2_500_000), now=AT_14H + dt.timedelta(minutes=50))
+    read_through(ws, "p1", used(2_500_000), now=AT_14H + dt.timedelta(minutes=50))
     assert backfill.due(ws, dt.datetime(2026, 10, 25, 7, 0, tzinfo=TZ)) is not None               # the 12-hour fallback
     state = backfill.load(ws)
     assert state["calibration"] == "assumed" and "window_estimate" not in state
@@ -1405,7 +1414,7 @@ def test_the_fallback_settles_the_window_it_cut_on_a_guess(tmp_path):
     # a calibration that measured nothing is the same: the text does not say it was measured
     other = make_space(tmp_path / "other")
     backfill.plan(other, SPEC_COUNTS, AT_14H, reading=seen)
-    backfill.after_run(other, "p1", used(2_500_000), now=AT_14H + dt.timedelta(minutes=50))
+    read_through(other, "p1", used(2_500_000), now=AT_14H + dt.timedelta(minutes=50))
     backfill.calibrate(other, 5, 6, 2_500_000, now=AT_14H + dt.timedelta(minutes=55))
     text = backfill.load(other)["shortened_because"]
     assert "guess" in text and "Measured" not in text and "estimate" not in text
@@ -1527,7 +1536,7 @@ def test_calibrate_refuses_a_second_time_in_plain_words(tmp_path):
     assert res.returncode == 2 and "measured already" in res.stderr and "Traceback" not in res.stderr
     guessed = make_space(tmp_path / "guessed")
     backfill.plan(guessed, SPEC_COUNTS, AT_14H)
-    backfill.after_run(guessed, "p1", used(2_000_000), now=AT_14H + dt.timedelta(minutes=50))
+    read_through(guessed, "p1", used(2_000_000), now=AT_14H + dt.timedelta(minutes=50))
     backfill.due(guessed, SEVEN_AM)                                           # twelve hours on: the guess took over
     with pytest.raises(ValueError, match="measured already"):
         backfill.calibrate(guessed, 3, 13, 500_000)
@@ -1656,7 +1665,9 @@ def test_a_reading_dated_ahead_is_refused_and_one_kept_anyway_is_never_read(tmp_
     assert backfill.main([str(other), "plan", "--counts", "2026-10=1400", "--reading", f"{AHEAD},at=2099-01-01T00:00:00Z",
                           NIGHT]) == 2
     assert backfill.AHEAD_WHY in capsys.readouterr().err and not backfill.load(other).get("parts")
-    assert backfill.main([str(ws), "reading", AHEAD, "--now=2099-01-01T00:00:00Z"]) == 0          # its own clock: kept
+    assert backfill.main([str(ws), "reading", AHEAD, "--now=2099-01-01T00:00:00Z"]) == 2          # a clock of its own: refused (R47)
+    assert backfill.NOW_AHEAD_WHY in capsys.readouterr().err and backfill.load(ws)["reading"] == kept
+    backfill.record_reading(ws, backfill.parse_reading(AHEAD, dt.datetime(2099, 1, 1, tzinfo=dt.timezone.utc)))   # kept anyway
     assert backfill.load(ws)["reading"]["at"].startswith("2099")
     assert backfill.due(ws, AT_01H) is None                                                       # but never read
     assert backfill.explain(ws, AT_01H)[1].endswith("once a reading of your usage shows that extra usage is off.")
@@ -1719,3 +1730,191 @@ def test_a_stopped_line_an_agent_wrote_does_not_end_the_wait_for_part_one(tmp_pa
     monkeypatch.setattr(start, "_clock", lambda: 0.0)
     result = start.phase_history(history_args(tmp_path, ws, wait_part="p1"))
     assert looks == [30, 30, 30] and result["waited"]["status"] == "pending" and "stopped" in result["waited"]["why"]
+
+
+# ===== Fix wave F2 (Rulings R45 and R47) =========================================================================
+PHRASE = "five_hour=12,week=40,five_hour_resets=2026-10-24T22:30:00Z,week_resets=2026-10-27T11:00:00Z,extra=0"
+
+
+def test_a_run_that_checkpointed_but_never_said_read_pauses_its_part_and_the_next_goes_on(tmp_path):
+    """A checkpoint is not "through": the run that stopped after its first batch leaves the part paused, and the next
+    run goes on from the checkpoint and finishes it by saying `read` (R45, I-4)."""
+    ws = planned(tmp_path)
+    backfill.begin(ws, "p1")
+    backfill.checkpoint(ws, "p1", "mail", "2026-08-02T10:00:00Z")
+    backfill.after_run(ws, "p1", used(30_000))
+    p = part(ws, "p1")
+    assert p["status"] == "paused" and p["why"] == backfill.WHY["unfinished"] and "idle" not in p
+    assert backfill.due(ws, AT_19H)["id"] == "p1" and backfill.export_mark(ws, "mail") == "2026-08-02T10:00:00Z"
+    backfill.begin(ws, "p1")
+    backfill.checkpoint(ws, "p1", "mail", "2026-08-20T10:00:00Z")
+    backfill.range_read(ws, "p1")
+    backfill.after_run(ws, "p1", used(20_000))
+    assert status(ws, "p1") == "done" and "through" not in part(ws, "p1") and part(ws, "p1")["tokens"] == 50_000
+
+
+def test_a_read_said_in_one_run_does_not_finish_the_part_in_the_next(tmp_path):
+    ws = planned(tmp_path)
+    backfill.begin(ws, "p1")
+    backfill.range_read(ws, "p1")
+    backfill.unfinished(ws, "p1")                                             # it stopped short after all
+    backfill.after_run(ws, "p1", used(10_000))
+    backfill.begin(ws, "p1")                                                  # the next run reads nothing
+    backfill.after_run(ws, "p1", used(10_000))
+    assert status(ws, "p1") == "paused" and part(ws, "p1")["idle"] == 1
+
+
+def test_the_cost_of_a_record_is_taken_from_part_one_only_once_it_is_done(tmp_path):
+    """Part 1 measured while paused: the share per token is kept, the cost of a record stays the estimate until part 1
+    is done, and is then part 1's own (R45, I-5)."""
+    ws = make_space(tmp_path / "ws")
+    backfill.plan(ws, COUNTS, NOW)
+    records = part(ws, "p1")["records"]
+    backfill.begin(ws, "p1")
+    backfill.checkpoint(ws, "p1", "mail", "2026-08-02T10:00:00Z")
+    backfill.after_run(ws, "p1", used(2_000_000), now=AT_01H)                 # paused at its fifty minutes
+    backfill.calibrate(ws, 5, 45, 2_000_000, now=AT_01H)
+    state = backfill.load(ws)
+    assert state["calibration"] == "measured" and state["tokens_per_record"] == backfill.TOKENS_PER_RECORD
+    read_through(ws, "p1", used(4_000_000), now=AT_01H + dt.timedelta(hours=6))
+    assert backfill.load(ws)["tokens_per_record"] == round(6_000_000 / records)
+
+
+def test_a_part_already_begun_goes_on_at_night_however_big_and_an_untouched_one_does_not_start(tmp_path):
+    """The fifty-minute stop bounds every run, so a begun part is not refused for needing more than a night; by day it
+    still waits for the night (R45, I-5)."""
+    ws = planned(tmp_path, per_token_share=0.00002, part_tokens=9_000_000)    # part 2: 180 points
+    night = dt.datetime(2026, 10, 26, 1, 0, tzinfo=TZ)
+    backfill.record_reading(ws, reading(five_hour_pct=0, week_pct=10, at=night - dt.timedelta(minutes=10)))
+    assert backfill.due(ws, night) is None and "night allows" in backfill.explain(ws, night)[1]
+    backfill.begin(ws, "p2")
+    backfill.checkpoint(ws, "p2", "mail", "2026-08-30T10:00:00Z")
+    backfill.after_run(ws, "p2", used(1_000_000), now=night - dt.timedelta(minutes=5))
+    assert status(ws, "p2") == "paused" and backfill.due(ws, night)["id"] == "p2"
+    noon = dt.datetime(2026, 10, 26, 13, 0, tzinfo=TZ)
+    backfill.record_reading(ws, reading(five_hour_pct=0, week_pct=10, at=noon - dt.timedelta(minutes=5)))
+    assert backfill.due(ws, noon) is None and "waits for the night" in backfill.explain(ws, noon)[1]
+    later = night + dt.timedelta(days=1)
+    backfill.record_reading(ws, reading(five_hour_pct=0, week_pct=10, extra_usage=True, at=later - dt.timedelta(minutes=5)))
+    assert backfill.due(ws, later) is None
+    why = backfill.explain(ws, later)[1]
+    assert "not started" not in why and "extra usage" in why
+
+
+def hosted_elsewhere(ws, monkeypatch, here="m-laptop"):
+    """The routines run on ADA-DESKTOP; this computer is `here`."""
+    monkeypatch.setattr(routine, "this_machine", lambda: "m-desktop")
+    monkeypatch.setattr(routine, "machine_name", lambda: "ADA-DESKTOP")
+    routine.claim_host(ws, "os", AT_14H)
+    monkeypatch.setattr(routine, "this_machine", lambda: here)
+
+
+def test_readings_and_the_plan_are_kept_only_on_the_computer_that_runs_the_routines(tmp_path, monkeypatch, capsys):
+    """Two computers writing the history's notes stop the second one's sync: on a computer that does not run the
+    routines, the commands that write them refuse in plain words and write nothing (R45, I-1)."""
+    ws = planned(tmp_path)
+    hosted_elsewhere(ws, monkeypatch)
+    before = backfill.load(ws)
+    for words in (("reading", PHRASE), ("calibrate", "--before", "3", "--after", "13"), ("plan", "--counts", "2026-10=10"),
+                  ("start",)):
+        assert backfill.main([str(ws), *words, NIGHT]) == 2, words
+        err = capsys.readouterr().err
+        assert "ADA-DESKTOP" in err and "Traceback" not in err and err.startswith("backfill: Your routines run on"), err
+    assert backfill.load(ws) == before
+    monkeypatch.setattr(routine, "this_machine", lambda: "m-desktop")         # the computer that runs them
+    assert backfill.main([str(ws), "reading", PHRASE, NIGHT]) == 0 and backfill.load(ws)["reading"]["week_pct"] == 40
+
+
+def test_the_history_phase_on_a_computer_that_does_not_run_the_routines_writes_nothing(tmp_path, monkeypatch):
+    ws, started = history_world(tmp_path, monkeypatch)
+    hosted_elsewhere(ws, monkeypatch)
+    result = start.phase_history(history_args(tmp_path, ws, reading=READING_TEXT))
+    assert result["state"] == "done" and "ADA-DESKTOP" in result["why"] and started == []
+    assert not backfill.load(ws).get("parts") and not backfill.load(ws).get("reading")
+
+
+def test_a_routine_run_may_not_set_its_own_clock(tmp_path, monkeypatch, capsys):
+    """Probe R5: part 1 read and not measured, the run holds the lock with no part; its agent asks `due` with a clock
+    13 hours on. While the space the command is said from holds a live routine lock, no verb takes `--now`; nothing is
+    written, and the person's measurement still goes in (R47, O3-1)."""
+    ws = planned(tmp_path)
+    done = dt.datetime.now().astimezone() - dt.timedelta(hours=1)          # an hour ago: the guess is hours off yet
+    read_through(ws, "p1", used(500_000), now=done)
+    later = (done + dt.timedelta(hours=13)).isoformat(timespec="seconds")
+    assert routine.take_lock(ws, "sweep-chain")
+    try:
+        monkeypatch.chdir(ws)
+        for words in (("due", "--json"), ("status",), ("mark", "mail")):
+            assert backfill.main([str(ws), *words, f"--now={later}"]) == 2, words
+            err = capsys.readouterr().err
+            assert backfill.NOW_WHY in err and "--now" not in err and "Traceback" not in err
+        assert backfill.main([str(ws), "due", "--json"]) == 0                 # the computer's own clock is fine
+        capsys.readouterr()
+    finally:
+        routine.release_lock(ws)
+    assert not backfill.load(ws).get("calibration")
+    assert backfill.main([str(ws), "calibrate", "--before", "0", "--after", "20", "--tokens", "500000"]) == 0
+
+
+def test_no_command_takes_a_clock_ahead_of_this_computers(tmp_path, capsys):
+    ws = planned(tmp_path)
+    ahead = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=1)).isoformat(timespec="seconds")
+    for words in (("due",), ("status",), ("reading", PHRASE), ("plan", "--counts", "2026-10=10")):
+        assert backfill.main([str(ws), *words, f"--now={ahead}"]) == 2, words
+        assert backfill.NOW_AHEAD_WHY in capsys.readouterr().err
+    soon = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=1)).isoformat(timespec="seconds")
+    assert backfill.main([str(ws), "due", f"--now={soon}"]) == 0             # within the slack a clock may be off
+
+
+def test_a_reading_dated_ahead_of_the_real_clock_is_refused_whatever_the_now(tmp_path, capsys):
+    """N3-1: the commands check a reading's own time against this computer's clock too."""
+    ws = planned(tmp_path)
+    ahead = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=2)).isoformat(timespec="seconds")
+    assert backfill.main([str(ws), "reading", f"{PHRASE},at={ahead}"]) == 2
+    assert backfill.AHEAD_WHY in capsys.readouterr().err and "reading" not in backfill.load(ws)
+    other = make_space(tmp_path / "other")
+    assert backfill.main([str(other), "plan", "--counts", "2026-10=1400", "--reading", f"{PHRASE},at={ahead}"]) == 2
+    assert backfill.AHEAD_WHY in capsys.readouterr().err and not backfill.load(other).get("parts")
+
+
+def test_a_first_reading_dated_ahead_never_lifts_the_setup_days_cap(tmp_path):
+    """Probe R4: a reading saying 99% of the week is used holds part 1 on the setup night. Kept with a time ahead (by
+    a clock that was off), it is not read, and the setup day's cap holds all the same (R47, N3-1)."""
+    ws = make_space(tmp_path / "ws")
+    backfill.plan(ws, COUNTS, AT_19H, reading=reading(five_hour_pct=0, week_pct=99, at=AT_19H))
+    assert backfill.due(ws, AT_01H) is None and "first day" in backfill.explain(ws, AT_01H)[1]
+    state = backfill.load(ws)
+    state["setup_reading"]["at"] = state["reading"]["at"] = "2099-01-01T00:00:00Z"
+    backfill.save(ws, state)
+    assert backfill.due(ws, AT_01H) is None and "first day" in backfill.explain(ws, AT_01H)[1]
+
+
+def test_the_refusals_are_worded_for_whoever_said_the_command():
+    """A person's own session in a space a routine run holds reads OTHER_SPACE_WHY too: it does not call their command
+    a routine run (R47, N3-4)."""
+    for why in (backfill.OTHER_SPACE_WHY, backfill.NOW_WHY, backfill.NOW_AHEAD_WHY):
+        assert "routine run may not" not in why and "--" not in why and "backfill" not in why
+    assert "say it again when the run is over" in backfill.OTHER_SPACE_WHY
+
+
+def test_the_wait_for_part_one_names_the_pause_and_when_it_ends(tmp_path, monkeypatch):
+    """The routines are paused: the wait ends at once and says until when (R45, Minor 13)."""
+    ws, started = history_world(tmp_path, monkeypatch)
+    start.phase_history(history_args(tmp_path, ws, reading=READING_TEXT))
+    monkeypatch.setattr(routine, "this_machine", lambda: "m-desktop")
+    monkeypatch.setattr(routine, "machine_name", lambda: "ADA-DESKTOP")
+    routine.claim_host(ws, "os", AT_14H)
+    routine.set_pause(ws, "2026-10-25T06:00:00+02:00")
+    looks = []
+
+    def sleep(seconds):
+        looks.append(seconds)
+        assert len(looks) < 6, "it waits on, though the routines are paused"
+        if len(looks) == 1:
+            held = {**routine._stopped("paused until 2026-10-25T06:00:00+02:00"), "outcome": "paused"}
+            routine.write_outcome(ws, "sweep-chain", held, AT_01H + dt.timedelta(minutes=2))
+    monkeypatch.setattr(start, "_sleep", sleep)
+    monkeypatch.setattr(start, "_clock", lambda: 0.0)
+    result = start.phase_history(history_args(tmp_path, ws, wait_part="p1"))
+    why = result["waited"]["why"]
+    assert "paused until" in why and "06:00" in why and "stopped before it read" not in why

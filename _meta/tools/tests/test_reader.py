@@ -139,13 +139,14 @@ def test_which_connector_tools_read():
              "mcp__claude_ai_Google_Calendar__list_events", "mcp__claude_ai_Slack__slack_read_channel",
              "mcp__claude_ai_Notion__notion-fetch", "mcp__claude_ai_Notion__notion-query-data-sources",
              "mcp__claude_ai_Google_Drive__read_file_content", "mcp__claude_ai_Google_Drive__download_file_content",
-             "mcp__claude_ai_Notetaker__notetaker_get_transcript", "mcp__claude_ai_Microsoft_365__list_mail"]
+             "mcp__claude_ai_Notetaker__notetaker_get_transcript", "mcp__claude_ai_Microsoft_365__list_mail",
+             "mcp__claude_ai_Gmail__get_shared_files"]   # files shared with the person: a thing it lists, not an act
     acts = ["mcp__claude_ai_Gmail__send_message", "mcp__claude_ai_Gmail__reply", "mcp__claude_ai_Gmail__forward",
             "mcp__claude_ai_Gmail__trash_thread", "mcp__claude_ai_Gmail__create_draft", "mcp__claude_ai_Gmail__update_draft",
             "mcp__claude_ai_Slack__slack_send_message", "mcp__claude_ai_Gmail__label_message",
             "mcp__claude_ai_Gmail__unsubscribe_thread",   # `thread` holds the letters of `read`, but is not the word
             "mcp__claude_ai_Notion__notion-delete-pages", "mcp__claude_ai_Gmail__get_and_send",
-            "mcp__claude_ai_Gmail__search_then_move", "mcp__claude_ai_Gmail__get_shared_files"]
+            "mcp__claude_ai_Gmail__search_then_move", "mcp__claude_ai_Gmail__get_shared_link"]
     assert all(reader.is_read_tool(t) for t in reads)
     assert not any(reader.is_read_tool(t) for t in acts)
     for other in ("Read", "Bash", "WebFetch", PAGE, "mcp__claude_ai_Gmail", "mcp__claude_ai_Gmail__", "mcp__x__get_thread,Bash", "", None, 7):
@@ -157,11 +158,11 @@ def test_camel_case_connector_tools_read_by_their_words():
     are cut at a change from lower to upper case before they are lower-cased."""
     reads = ["mcp__claude_ai_Atlassian__getJiraIssue", "mcp__claude_ai_Atlassian__searchJiraIssuesUsingJql",
              "mcp__claude_ai_Atlassian__getConfluencePage", "mcp__claude_ai_Atlassian__search", "mcp__claude_ai_Atlassian__fetch",
-             "mcp__claude_ai_Gmail__searchThreads"]
+             "mcp__claude_ai_Gmail__searchThreads", "mcp__claude_ai_Gmail__getSharedFiles"]
     acts = ["mcp__claude_ai_Atlassian__createJiraIssue", "mcp__claude_ai_Atlassian__editJiraIssue",   # no read word
             "mcp__claude_ai_Gmail__sendMessage", "mcp__claude_ai_Gmail__getAndSendMail",
             "mcp__claude_ai_Gmail__unsubscribeThread",   # `Thread` is not the word `read`
-            "mcp__claude_ai_Gmail__getSharedFiles", "mcp__claude_ai_Atlassian__updateJiraIssue"]
+            "mcp__claude_ai_Google_Drive__getSharedLink", "mcp__claude_ai_Atlassian__updateJiraIssue"]
     assert all(reader.is_read_tool(t) for t in reads)
     assert not any(reader.is_read_tool(t) for t in acts)
     assert reader.name_words("getJiraIssue") == ["get", "jira", "issue"] and reader.name_words("slack_read-channel") == ["slack", "read", "channel"]
@@ -601,12 +602,13 @@ def test_a_command_that_will_not_start_is_a_cli_error(tmp_path):
     assert e.value.kind == "cli" and "did not start" in e.value.text
 
 
-def test_a_reader_that_runs_over_fifteen_minutes_is_a_cli_error(tmp_path):
+def test_a_reader_that_runs_over_fifteen_minutes_is_slow_not_a_fault(tmp_path):
+    """A reader stopped at its time is its own kind (`slow`): the app is tried again, never `blocked` (R45, I-3)."""
     def slow(argv, **kw):
         raise subprocess.TimeoutExpired(argv, kw["timeout"])
     with pytest.raises(reader.ReaderError) as e:
         reader.read("x", [GMAIL], SCHEMA, tmp_path, run=slow, claude="claude")
-    assert e.value.kind == "cli" and "15 minutes" in e.value.text
+    assert e.value.kind == "slow" and "15 minutes" in e.value.text
 
 
 def test_the_error_carries_its_kind_and_its_text():
@@ -692,7 +694,8 @@ def test_a_files_reader_carries_its_own_guard_a_hook_on_read_that_refuses_any_pa
     seen = {}
     reader.read_files("x {files}", local_files(tmp_path), RECORDS, run=files_run(seen), claude="claude")   # no connector known
     assert seen["rules"] == {"disableAllHooks": False,   # on, whatever the person's own settings say (Ruling R30)
-                             "hooks": {"PreToolUse": [{"matcher": "Read", "hooks": [{"type": "command", "command": seen["guard"]}]}]}}
+                             "hooks": {"PreToolUse": [{"matcher": "Read", "hooks": [{"type": "command", "command": seen["guard"],
+                                                                                 "timeout": routine.GUARD_TIMEOUT}]}]}}
     assert seen["guard"].startswith('"') and " -I " in seen["guard"] and "read_guard.py" in seen["guard"]
     assert seen["guard"].endswith(f'"{Path(seen["folder"]).resolve().as_posix()}" || exit 2')   # guarding the folder the run starts in; a guard that cannot start blocks
     argv = seen["argv"]
@@ -836,3 +839,93 @@ def test_the_folder_goes_when_the_run_fails_too(tmp_path):
     with pytest.raises(reader.ReaderError):
         reader.read_files("x {files}", local_files(tmp_path), SCHEMA, run=slow, claude="claude")
     assert not seen["folder"].exists()
+
+
+# ===== Fix wave F2 (Ruling R45): the real tool names, the tools never given, a turn cap, a slow reader ==========
+# The 50 tool parts of the Microsoft 365 connector as the desktop session lists them (dry run B), Gmail's, Drive's and
+# Linear's as a desktop session lists them, and the live names dry run B saw refused (the ledger's Task 10 finding).
+M365_READS = ["chat_message_search", "get_granted_scopes", "get_me", "outlook_calendar_search", "outlook_email_search",
+              "read_resource", "search_people", "teams_list_channel_messages", "teams_list_channels", "teams_list_chats",
+              "teams_list_teams", "sharepoint_search", "sharepoint_folder_search"]
+M365_OTHERS = ["find_meeting_availability", "outlook_batch_delete_messages", "outlook_batch_modify_labels",
+               "outlook_create_draft", "outlook_create_event", "outlook_create_filter", "outlook_create_label",
+               "outlook_create_reply_all_draft", "outlook_create_reply_draft", "outlook_delete_draft", "outlook_delete_event",
+               "outlook_delete_filter", "outlook_delete_label", "outlook_find_available_time", "outlook_forward_mail",
+               "outlook_modify_labels", "outlook_modify_thread_labels", "outlook_respond_to_event", "outlook_send_draft",
+               "outlook_send_mail", "outlook_set_vacation", "outlook_trash_thread", "outlook_untrash_thread",
+               "outlook_update_draft", "outlook_update_event", "outlook_update_label", "sharepoint_copy_item",
+               "sharepoint_create_folder", "sharepoint_delete_item", "sharepoint_move_item", "sharepoint_rename_item",
+               "sharepoint_update_file", "sharepoint_upload_file", "teams_create_chat", "teams_reply_channel_message",
+               "teams_send_channel_message", "teams_send_chat_message"]
+GMAIL_READS = ["get_draft", "get_message", "get_thread", "list_drafts", "list_labels", "search_threads"]
+GMAIL_OTHERS = ["apply_sensitive_message_label", "apply_sensitive_thread_label", "create_draft", "create_label",
+                "delete_draft", "delete_label", "forward", "label_message", "label_thread", "mark_message_spam",
+                "mark_thread_spam", "reply", "send_message", "trash_message", "trash_thread", "unlabel_message",
+                "unlabel_thread", "unmark_message_spam", "unmark_thread_spam", "untrash_message", "untrash_thread",
+                "update_draft", "update_label", "update_message_labels"]
+
+
+def test_the_real_tool_names_read_or_not_as_they_should():
+    """SharePoint is a place, labels and shared pages are things a reader lists: `share` and `label` inside those words
+    no longer refuse a read. A tool that makes a shared link, shares a file or labels a message still acts (R45,
+    Minor 4; dry run B M-4)."""
+    def named(server, tools):
+        return [f"mcp__{server}__{t}" for t in tools]
+    assert len(M365_READS) + len(M365_OTHERS) == 50
+    reads = (named("claude_ai_Microsoft_365", M365_READS) + named("claude_ai_Gmail", GMAIL_READS)
+             + named("claude_ai_Notion", ["notion-list-shared-pages", "notion-fetch", "notion-search"])
+             + named("claude_ai_Linear", ["list_issue_labels", "list_project_labels", "get_issue"])
+             + named("claude_ai_Google_Drive", ["search_files", "get_file_metadata", "read_file_content"]))
+    acts = (named("claude_ai_Microsoft_365", M365_OTHERS) + named("claude_ai_Gmail", GMAIL_OTHERS)
+            + named("claude_ai_Google_Drive", ["share_file", "trash_file", "update_file", "create_file", "getSharedLink",
+                                                "get_shared_link"])
+            + named("claude_ai_Linear", ["share_issue", "unshare_issue", "save_issue_label", "create_issue_label"])
+            + named("claude_ai_Notetaker", ["notetaker_share_meeting"])
+            + named("claude_ai_Notion", ["notion-create-pages", "notion-move-pages", "notion-update-page"]))
+    assert [t for t in reads if not reader.is_read_tool(t)] == []
+    assert [t for t in acts if reader.is_read_tool(t)] == []
+
+
+def test_a_reader_is_never_given_the_apps_artifacts_designs_or_resource_tools(tmp_path):
+    """The desktop session's own tools that publish, share or reach a server's resources are denied by name too
+    (R45, Minor 5)."""
+    seen = {}
+    reader.read("x", [GMAIL], SCHEMA, tmp_path, run=fake_run(seen, stdout=answered()), claude="claude")
+    denied = seen["argv"][seen["argv"].index("--disallowedTools") + 1:]
+    for name in ("Artifact", "ArtifactComments", "ArtifactData", "DesignSync", "ShareOnboardingGuide",
+                 "ListMcpResourcesTool", "ReadMcpResourceTool"):
+        assert name in reader.DENIED and name in denied, name
+
+
+def test_a_reader_runs_at_most_twenty_five_turns(tmp_path):
+    """A reader that searches on and on is stopped by its own turn cap, not after fifteen minutes (R45, I-3)."""
+    seen = {}
+    reader.read("x", [GMAIL], SCHEMA, tmp_path, run=fake_run(seen, stdout=answered()), claude="claude")
+    assert has(seen["argv"], ["--max-turns", str(reader.MAX_TURNS)]) and reader.MAX_TURNS == 25
+    files = []
+
+    def run(argv, **kw):
+        files.append(argv)
+        return subprocess.CompletedProcess(argv, 0, answered(), "")
+    doc = tmp_path / "plan.md"
+    doc.write_text("The plan.", encoding="utf-8")
+    reader.read_files("x", [doc], SCHEMA, run=run, claude="claude", known_tools=[])
+    assert has(files[0], ["--max-turns", "25"])
+
+
+def test_a_reader_that_used_up_its_turns_is_slow_not_a_fault():
+    got = kind_of(stdout=stream(init(), result("", error=True, subtype="error_max_turns")), code=1)
+    assert got.kind == "slow" and "turns" in got.text
+    other = kind_of(stdout=stream(init(), result("Request timed out", error=True, subtype="error_during_execution")), code=1)
+    assert other.kind == "cli"
+
+
+def test_an_answer_that_came_with_extra_usage_is_kept_on_the_limit_error():
+    """Extra usage starting stops the phase, but a verdict the reader already gave is not thrown away (R45, I-2):
+    the error carries it when it fits the schema, and nothing when it does not."""
+    event = {"type": "rate_limit_event", "rate_limit_info": {"status": "allowed", "isUsingOverage": True}}
+    got = kind_of(stdout=stream(init(), event, result(json.dumps(ANSWER))))
+    assert got.kind == "limit" and got.answer == ANSWER
+    bad = kind_of(stdout=stream(init(), event, result(json.dumps({"other": 1}))))
+    assert bad.kind == "limit" and bad.answer is None
+    assert reader.ReaderError("cli", "x").answer is None

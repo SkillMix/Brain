@@ -181,6 +181,12 @@ this computer's scheduler catches up after sleep (the skill says how to tell).
 >
 > Your briefing goes from your own mailbox to you alone: your routines can't mail anyone else.
 
+When `probe.notes` has a note (the routines cannot send the briefing yet: no mailbox connected, no
+Git Bash, the send guard not proven), the last line is instead that note, so nobody waits for a
+briefing that does not come:
+
+> {probe.notes[0]}
+
 When the answer has `routines_where` (another computer, or the app's own scheduled tasks, runs the
 routines, so nothing was tested here), the **Every day** line is instead:
 

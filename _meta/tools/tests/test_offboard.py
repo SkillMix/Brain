@@ -136,3 +136,28 @@ def test_a_probe_record_under_another_runs_prefix_is_not_this_runs_to_remove(tmp
     report = onboard.Report(case="check")
     offboard.remove_probe_task(report, ada)
     assert calls == [] and report.steps == []
+
+
+def test_without_a_recorded_sync_task_the_name_comes_from_the_prefix_in_force(tmp_path, monkeypatch):
+    """F-7: an isolated run (SPACES_TASK_PREFIX) removes its own sync task, never the person's `space-sync-<name>`;
+    a prefix that is not one names no task, so none is touched."""
+    import subprocess
+    ada = make_space(tmp_path / "ada", name="ada")
+    onboard.write_yaml(ada / "_meta" / "state" / "onboard.yaml", {"case": "person"})
+    monkeypatch.setattr(onboard, "SYSTEM", "Windows")
+    calls = []
+
+    def fake(argv, dry_run=False, cwd=None):
+        calls.append([str(a) for a in argv])
+        return subprocess.CompletedProcess(argv, 1, "", "")   # no task registered under that name
+    monkeypatch.setattr(offboard, "run_cmd", fake)
+    monkeypatch.setattr(onboard, "run_cmd", fake)
+    monkeypatch.setenv(onboard.TASK_PREFIX_ENV, "space-test-1a2b-")
+    offboard.run(ada, online=True)
+    named = {c[c.index("/TN") + 1] for c in calls if c[:1] == ["schtasks"]}
+    assert named == {"space-test-1a2b-sync-ada"}
+    calls.clear()
+    monkeypatch.setenv(onboard.TASK_PREFIX_ENV, "Space Sync")
+    report = offboard.run(ada, online=True)
+    assert not [c for c in calls if c[:1] == ["schtasks"]]
+    assert [s.done for s in report.steps if s.name == "sync task removed"] == [False]

@@ -957,3 +957,24 @@ def test_the_skill_turns_the_apps_tasks_off_by_a_path_in_any_slash_and_case():
     section = text[text.index('"Pause my routines", "resume my routines", "run my routines here"'):]
     section = section[:section.index("## ")]
     assert "slash" in section and "case" in section and "another computer" in section and "enabled" in section
+
+
+def test_copy_template_leaves_what_the_checkouts_git_ignores(tmp_path):
+    """A tool's scratch folder, a worktree, anything the template checkout's git ignores is not in a
+    fresh clone, so it never travels into a new space; files not committed yet still do."""
+    src = make_space(tmp_path / "tpl", profile="template")
+    for rel in ("_meta/tools/x.py", "_meta/tools/new_tool.py", ".superpowers/sdd/notes.md",
+                ".claude/worktrees/w1/README.md", "_meta/tools/cache.tmp"):
+        (src / rel).parent.mkdir(parents=True, exist_ok=True)
+        (src / rel).write_text("x\n", encoding="utf-8")
+    (src / ".superpowers" / "sdd" / ".gitignore").write_text("*\n", encoding="utf-8")
+    (src / ".gitignore").write_text("*.tmp\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(src)], check=True, capture_output=True)
+    (src / ".git" / "info").mkdir(parents=True, exist_ok=True)
+    (src / ".git" / "info" / "exclude").write_text(".claude/worktrees/\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(src), "add", "_meta/tools/x.py"], check=True, capture_output=True)
+    dst = tmp_path / "new"
+    assert onboard.copy_template(src, dst)
+    assert (dst / "_meta" / "tools" / "x.py").exists() and (dst / "_meta" / "tools" / "new_tool.py").exists()
+    assert not (dst / ".superpowers").exists() and not (dst / ".claude" / "worktrees").exists()
+    assert not (dst / "_meta" / "tools" / "cache.tmp").exists()

@@ -171,8 +171,52 @@ def test_a_name_the_command_cannot_quote_is_refused_not_guessed_at(tmp_path):
             reader.guard_command(tmp_path, python=f"/bin/{bad}")
 
 
+def test_the_files_readers_hook_has_its_own_time_limit_well_above_the_guards(tmp_path):
+    """C-1 and dry run A: a hook Claude Code cuts off lets the call through; the hook says how long it may take,
+    and the guard ends itself (exit 2) well before that."""
+    import routine
+    folder = a_folder(tmp_path)
+    data = json.loads(reader._files_settings(folder.parent, folder, []).read_text(encoding="utf-8"))
+    assert [h["timeout"] for e in data["hooks"]["PreToolUse"] for h in e["hooks"]] == [routine.GUARD_TIMEOUT]
+    assert read_guard.LIMIT_SECONDS == 10 and routine.GUARD_TIMEOUT >= 3 * read_guard.LIMIT_SECONDS
+
+
+def test_the_guard_gives_up_with_a_refusal_once_its_own_time_is_up(monkeypatch, capsys):
+    import threading
+    exits, done = [], threading.Event()
+    monkeypatch.setattr(read_guard.os, "_exit", lambda code: (exits.append(code), done.set()))
+    monkeypatch.setattr(read_guard, "LIMIT_SECONDS", 0.05)
+    read_guard.arm(read_guard.WHY)
+    assert done.wait(10) and exits == [2] and "its own folder" in capsys.readouterr().err
+
+
+def test_a_guard_process_that_hangs_exits_two_by_itself(tmp_path):
+    """A path whose resolving hangs (a sleeping disk, a scan of the file): the guard refuses at its own limit."""
+    folder = a_folder(tmp_path)
+    tools = Path(read_guard.__file__).parent
+    code = ("import sys, threading; sys.path.insert(0, sys.argv[1]); import read_guard as g; g.LIMIT_SECONDS = 0.2; "
+            "g.check = lambda folder, event: threading.Event().wait(); sys.argv = ['read_guard.py', sys.argv[2]]; sys.exit(g.run())")
+    got = subprocess.run([sys.executable, "-I", "-c", code, str(tools), str(folder)],
+                         input=json.dumps(event(folder / "01-brand.pdf")).encode("utf-8"), capture_output=True, timeout=30)
+    assert got.returncode == 2 and b"its own folder" in got.stderr and b"took too long" in got.stderr
+
+
+def test_a_guard_held_inside_one_long_call_is_ended_all_the_same(tmp_path):
+    """NB-1: the timer cannot run while one call holds the interpreter; faulthandler ends the process with exit 1,
+    which the hook command's `|| exit 2` makes a block."""
+    folder = a_folder(tmp_path)
+    tools = Path(read_guard.__file__).parent
+    code = ("import re, sys; sys.path.insert(0, sys.argv[1]); import read_guard as g; g.LIMIT_SECONDS = 0.2; "
+            "g.check = lambda folder, event: re.match('(a+)+$', 'a' * 40 + '!'); sys.argv = ['read_guard.py', sys.argv[2]]; "
+            "sys.exit(g.run())")
+    got = subprocess.run([sys.executable, "-I", "-c", code, str(tools), str(folder)],
+                         input=json.dumps(event(folder / "01-brand.pdf")).encode("utf-8"), capture_output=True, timeout=60)
+    assert got.returncode == 1
+    assert reader.guard_command(folder).endswith(" || exit 2")
+
+
 def test_the_guard_needs_nothing_but_the_standard_library():
     """It runs as `python -I`: no import path but the standard library's, so no module of the tools."""
     text = Path(read_guard.__file__).read_text(encoding="utf-8")
     imports = {line.split()[1].split(".")[0] for line in text.splitlines() if line.startswith(("import ", "from "))}
-    assert imports <= {"__future__", "json", "os", "sys", "pathlib"}
+    assert imports <= {"__future__", "faulthandler", "json", "os", "sys", "pathlib", "threading"}

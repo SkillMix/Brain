@@ -31,10 +31,12 @@ permission mode is asked again, through the app's card).
 In the Claude desktop app, while the person's history is being read
 (`{workspace_path}/_meta/state/backfill.yaml` lists a part not `done`) and `~/.spaces/setup.yaml`
 says `usage_account: same`, read the app's usage tool at the start of a session and record it,
-saying nothing in chat:
+saying nothing in chat, only on the computer that runs the routines
+(`{workspace_path}/_meta/state/routine-host.yaml` names this computer, or there is no such file):
 `{python} {workspace_path}/_meta/tools/backfill.py {workspace_path} reading five_hour=<pct>,week=<pct>,five_hour_resets=<iso>,week_resets=<iso>,extra=<0|1>`
 Skip it outside the desktop app, in a scheduled routine, when the tool's `plan.status` is
-`not_applicable` or `unavailable`, and when `usage_account` is not `same`.
+`not_applicable` or `unavailable`, and when `usage_account` is not `same`. When the command refuses,
+say nothing either.
 
 Agreed company work gets a tracker issue, queued, never created by the session: follow
 `{workspace_path}/.claude/skills/tracker/SKILL.md` (nothing confidential or personal, no issue for a
