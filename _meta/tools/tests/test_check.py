@@ -167,6 +167,32 @@ def test_named_number_across_subjects_routes_to_space_owner(tmp_path):
     assert hits[0].route == ["Ada Okafor"]
 
 
+def test_a_label_inside_a_prose_sentence_is_not_a_page_label(tmp_path):
+    root = make_space(tmp_path / "ada", owner="Ada Okafor", subjects=[
+        {"id": "harbor", "kind": "projects", "owner": "Ben Liu"},
+        {"id": "beacon", "kind": "projects", "owner": "Chloe Martin"}])
+    signed(root, "knowledge/projects/harbor/plan.md",
+           "# Plan\n\nThe pilot ran well and the next step was a follow up: 3 weeks later. [src: rec-1]\n")
+    signed(root, "knowledge/projects/beacon/plan.md",
+           "# Plan\n\n- After the kick-off came a follow up: 5 weeks on. [src: rec-2]\n")
+    witness(root, "rec-1", "harbor", "Note.\n", NOW - D)
+    witness(root, "rec-2", "beacon", "Note.\n", NOW - D)
+    report = check.run(root, now=NOW)
+    assert report.hits == [], "a label mid-sentence on a signed page is prose, not a value to compare"
+    assert report.labelled_pages == 0
+    runs = (root / "_meta" / "state" / "runs.jsonl").read_text(encoding="utf-8").splitlines()
+    assert json.loads(runs[-1])["notes"]["labelled_pages"] == 0
+
+
+def test_labelled_pages_counts_the_pages_the_value_checks_can_read(tmp_path):
+    root = make_space(tmp_path / "ada", owner="Ada Okafor", subjects=[
+        {"id": "harbor", "kind": "projects", "owner": "Ben Liu"}])
+    signed(root, "knowledge/projects/harbor/plan.md",
+           "# Plan\n\n- The go-live moves to 3 November (go-live date: 2026-11-03). [src: rec-1]\n")
+    witness(root, "rec-1", "harbor", "Note.\n", NOW - D)
+    assert check.run(root, now=NOW).labelled_pages == 1, "a label that opens a parenthesis is a label"
+
+
 def test_hit_rate_and_self_narrowing(tmp_path):
     root = make_space(tmp_path / "ada", mode="fixture", time_scale=24, subjects=[
         {"id": "harbor", "kind": "projects", "state": "active"}])

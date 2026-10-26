@@ -18,8 +18,11 @@ Deterministic from files: an adapter exports records to `_meta/state/feed/<sourc
    counterpart, not an outsider), a record attached by inference (domain or keywords only) or
    re-attached from an older page, and anything else -> held in doubt, where one yes from its
    person releases it (a standing choice {destination, kind} makes yes the recommendation, never
-   the answer). A content-free
-   signal goes to the subject's home for every attached record. A record matching several
+   the answer). The person's own journal note pointing into code linked to its subject
+   (link.journal_records) leaves after the window: at once only when the router judged it (D8).
+   A content-free
+   signal goes to the subject's home for every attached record queued for the window (one that
+   leaves at once arrives itself). A record matching several
    subjects with a home elsewhere is held in doubt and shown as a count;
 4. advances the watermark and appends one run line (cost = characters of records // 4).
 
@@ -153,9 +156,18 @@ def read_feed(root: Path) -> list:
 
 
 def declared_feed(root: Path, space: spaceyaml.Space) -> list:
-    """The feed records of the sources this space declared; the brain sweeps nothing of its own."""
+    """The feed records of the sources this space declared; the brain sweeps only its own
+    `repository` feed (a product company's repository), nothing else of its own.
+    A personal space always reads its `journal` feed (link.journal_records), and every space its
+    `repository` feed (the codebases link.check lists in `_meta/state/links.json`), declared or not."""
     declared = {str(s.get("name")) for s in space.sources if isinstance(s, dict) and s.get("name")}
-    feed = [] if space.profile == "brain" else read_feed(root)
+    if declared and space.profile == "personal":
+        declared.add("journal")
+    if declared:
+        declared.add("repository")
+    feed = read_feed(root)
+    if space.profile == "brain":
+        feed = [r for r in feed if r.get("_feed") == "repository"]
     return [r for r in feed if str(r.get("_feed")) in declared] if declared else feed
 
 
@@ -170,7 +182,7 @@ def attachments(root) -> list:
     have = {str(r["id"]) for r in feed}
     out = []
     for record in feed:
-        if record.get("kind") == "document":   # its attachment points at the file it already holds
+        if record.get("kind") in ("document", "change"):   # its attachment points at what it holds
             continue
         names = [str(a.get("name") or "") if isinstance(a, dict) else str(a)
                  for a in record.get("attachments") or []]
@@ -335,6 +347,10 @@ def classify(space: spaceyaml.Space, record: dict, subject: registry.Subject, de
     if inferred or record.get("_reattach"):
         how = "re-attached from an older page" if record.get("_reattach") else "attached by its domain or title"
         return Verdict(hold="doubt", why=f"widens who can read it; {how}, which nobody chose")
+    if record.get("source") == "journal":   # the person's own note with a pointer to linked code
+        path = f"journal:{destination}"   # at once only when the router judged it (D8, route.py)
+        return Verdict(cls="window", stage_after=now + space.window(), extra={"path": path},
+                       why="your own note with a pointer to linked code; it leaves after the window")
     paused_why = ""
     if covers(audience, subject, dest_space):
         path = f"audience:{record.get('source') or 'unknown'}"
@@ -529,7 +545,7 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
             if not dry_run:   # without the router: never in full
                 pages.write(root / release.QUEUE / f"{item['id']}.md", item, shallow(body))
             report.queued += 1
-        if blocked:   # nothing about it moves while the gate holds it, not even a signal
+        if blocked or verdict.cls == "at_once":   # gated: nothing moves; at once: the item itself arrives
             continue
         signal = signal_for(subject.id, home, now)   # content-free: that something moved
         report.plan.append(f"signal {record['id']} -> {home}")

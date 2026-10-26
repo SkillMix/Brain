@@ -1,6 +1,6 @@
 ---
 name: capture
-description: The personal instruction's behaviour - from any repository a session runs in, journal durable context into the person's own space's daily note, show Needs you once at session start, log answered questions, and never commit. Always on for a person with a personal space; never in a project space of its own.
+description: The personal instruction's behaviour - from any repository a session runs in, journal durable context into the person's own space's daily note, show Needs you in the first session of the day, log answered questions, and never commit. Always on for a person with a personal space; never in a project space of its own.
 ---
 
 # capture: follows the person, not the repository
@@ -18,8 +18,9 @@ journal.
 ## Run
 
 No tool. The instruction gives `<space root>`; then:
-1. Session start, once: `python _meta/tools/needs_you.py <space root>` and show the list in
-   your first reply ("three things need you: ..."). Answers go through the sign skill.
+1. Session start: `python _meta/tools/needs_you.py <space root> --once-a-day`; when it prints a
+   list, show it in your first reply ("three things need you: ..."). Later sessions that day
+   print nothing. Answers go through the sign skill.
 2. During the session, append to the daily note
    `<space root>/journal/<yyyy>/<mm>/<yyyy>-<mm>-<dd>.md` (today on the person's clock;
    when new, start it with a `# <yyyy>-<mm>-<dd>` heading): one dated line per durable
@@ -31,6 +32,14 @@ No tool. The instruction gives `<space root>`; then:
    `_meta/subjects.yaml`), end it with a line `subject: <id>`: distill attaches the entry to
    that subject and proposes it for signing. An entry that names a desk folder
    `work/<kind>/<id>/` attaches the same way; one without either stays a note.
+   In a linked codebase (the instruction's "Working in a codebase"), `subject:` comes from
+   `link.py resolve`, and a line `ref: <owner/repo>:<path>@<commit>`, `ref: <owner/repo>@<commit>`
+   (the commit worked on; `@HEAD` for a file not committed yet, so the link opens once it merges)
+   or `ref: <pull request URL>` points into the code: a location, never
+   its content. Writing a spec, plan or design file, or opening a pull request, in a linked
+   codebase always makes one entry: what it is, why, and the pointer. When another subject's
+   material helped (ring 3, read only because the person named it), the entry gains
+   `lesson: <the general point>` and `from: <that subject>` instead of any of its detail.
    Read the file first; append; never rewrite what is there.
 3. A question answered with more than one lookup: its answer and sources as one entry, plus
    the question log entry (the query skill).
@@ -65,8 +74,11 @@ it, by title only, as evidence on that subject's candidate.
 
 ## Judgment left to you
 
-What will still matter tomorrow. When unsure, one line costs nothing and never leaves the
-person's space on its own; a secret costs everything and never goes anywhere.
+What will still matter tomorrow. When unsure, one line costs nothing. An entry leaves only
+when it names a subject homed elsewhere and carries a `ref:` to a repository linked to that
+subject: after the window, listed in your morning view first so you can pull it (at once only
+when the router judged it, to a walled home whose crew includes you). Every other entry stays
+here as evidence. A secret costs everything and never goes anywhere.
 
 ## Never
 
@@ -90,3 +102,13 @@ the switch on, missed sessions become witness pages in this personal space only.
 `_meta/tools/tests/test_agents_md.py` (a `project` profile renders no capture rule) and
 `_meta/tools/tests/test_onboard.py` (the instruction block is installed and read back;
 `offboard` removes it).
+
+Codebase sessions (`docs/design/2026-10-22-codebase-link-design.md`, section 10), run as the
+fixture drill:
+- a brainstorm in a linked codebase runs `link.py resolve` and reads the status page; a bug fix
+  runs neither;
+- with `readers: wider`, a spec written in the codebase leaves out a planted price and another
+  client's name;
+- a brainstorm finds a brain lesson without being asked; another client's meeting is not read
+  unless named, and when named none of its detail reaches the spec or the home;
+- a spec written in the codebase makes one entry with `subject:` and `ref:`.

@@ -83,3 +83,8 @@ def test_help_prints_usage_and_writes_nothing(tmp_path, monkeypatch, capsys):
         raise AssertionError("--help must exit")
     assert "--check" in capsys.readouterr().out
     assert not (root / "AGENTS.md").exists()
+
+
+def test_session_start_shows_needs_you_once_a_day(tmp_path):
+    root = make_space(tmp_path / "ada")
+    assert "needs_you.py --once-a-day" in agents_md.render(root)

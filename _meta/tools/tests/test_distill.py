@@ -1,9 +1,18 @@
 import datetime as dt
 import json
+import re
 
-import pages
+import pytest
+
 import distill
-from conftest import NOW, make_space, write_page
+import link
+import pages
+import sign
+import sign_questions
+import sweep
+import yaml
+from conftest import NOW, make_space, mount_brain, write_page
+from test_link import ENTRY_A, journal_ws
 from test_sweep import walled
 
 H = dt.timedelta(hours=1)
@@ -421,6 +430,48 @@ def test_verify_flags_a_source_not_in_evidence(tmp_path):
     assert len(problems) == 1 and "rec-9" in problems[0]
 
 
+def test_verify_accepts_an_answered_question_of_the_subject(tmp_path):
+    root = make_space(tmp_path / "ada")
+    q = sign_questions.ask(root, "harbor", "p-00000101", "Has Harbor gone live?", "why", "rec", [],
+                           by="routine:distill", now=NOW)
+    path = candidate_file(root, f"- Harbor went live on 3 November. [src: {q.id}]\n", evidence=[])
+    assert any(p.endswith(f"source {q.id} is not in evidence") for p in distill.verify(root, path))
+    sign_questions.answer(root, q.id, by="Ada Okafor", text="yes, 3 November", now=NOW)
+    assert distill.verify(root, path) == []
+
+
+def test_verify_refuses_a_question_of_another_subject(tmp_path):
+    root = make_space(tmp_path / "ada")
+    q = sign_questions.ask(root, "beacon", "p-00000102", "Has Beacon gone live?", "why", "rec", [],
+                           by="routine:distill", now=NOW)
+    sign_questions.answer(root, q.id, by="Ada Okafor", text="yes, 3 November", now=NOW)
+    path = candidate_file(root, f"- Harbor went live on 3 November. [src: {q.id}]\n", evidence=[])
+    assert any("is not in evidence" in p for p in distill.verify(root, path))
+
+
+def test_verify_checks_a_write_up_against_the_candidate(tmp_path, capsys):
+    root = make_space(tmp_path / "ada")
+    candidate_file(root, "- Kept as it is. [src: m-1]\n", evidence=["m-1"])
+    file = tmp_path / "write-up.md"
+    file.write_text("- Line one. [src: m-1]\n- Line two.\n", encoding="utf-8")
+    assert distill.main([str(root), "verify", "harbor", "--body", str(file)]) == 1
+    assert "no source: - Line two." in capsys.readouterr().out
+    file.write_text("- Line one. [src: m-1]\n", encoding="utf-8")
+    assert distill.main([str(root), "verify", "harbor", "--body", str(file)]) == 0
+
+
+def test_verify_reads_a_write_up_saved_with_a_bom(tmp_path, capsys):   # final review, Minor 1
+    root = make_space(tmp_path / "ada")
+    candidate_file(root, "- Kept as it is. [src: m-1]\n", evidence=["m-1"])
+    q = sign_questions.ask(root, "harbor", "p-0000c0de", "Has Harbor gone live?", "why", "rec", [],
+                           by="routine:distill", now=NOW)
+    sign_questions.answer(root, q.id, by="Ada Okafor", text="yes, 3 November", now=NOW)
+    file = tmp_path / "write-up.md"
+    file.write_text(f"# Harbor\n\n- Harbor went live on 3 November. [src: {q.id}]\n", encoding="utf-8-sig")
+    assert distill.main([str(root), "verify", "harbor", "--body", str(file)]) == 0
+    assert capsys.readouterr().out.strip() == "clean"
+
+
 def test_verify_checks_facts_and_leaves_topics_to_the_page_check(tmp_path):
     """Never-leaves and left-out matter is the page check's judgement (a second agent reading
     the lists); a word in a line is no problem for verify."""
@@ -457,3 +508,200 @@ def test_checked_refuses_when_verify_finds_problems(tmp_path, capsys):
     assert distill.main([str(root), "checked", str(path), "--by", "Ben Liu"]) == 1
     assert path.read_text(encoding="utf-8") == before
     assert "source" in capsys.readouterr().out
+
+
+# ----- prepare: which pages need their questions prepared --------------------------------------
+def test_prepare_lists_subject_candidates_only(tmp_path, capsys):
+    root = make_space(tmp_path / "ada", subjects=[
+        {"id": "harbor", "kind": "projects", "title": "Harbor", "state": "active"}])
+    candidate_file(root, CLEAN)
+    old = pages.generated("test", NOW - 5 * D)   # none of these is evidence that arrived after a check
+    # each of these has a `subject` and still is not a subject candidate: a lesson (by its name), a
+    # decision, a review batch, a released record and a source
+    for name, extra in (("lesson-retry-webhooks", {}), ("2026-10-05-use-a-queue", {"type": "decision"}),
+                        ("review-2026-w41", {"review_batch": True}), ("m-released", {"released_from": "m-9"}),
+                        ("m-source", {"type": "source"})):
+        write_page(root, f"_inbound/candidates/{name}.md", "Text.\n", subject="harbor", generated=old, **extra)
+    rows = distill.to_prepare(root)
+    assert [row["candidate"] for row in rows] == ["harbor"]
+    assert rows[0] == {"candidate": "harbor", "subject": "harbor", "why": "never checked"}
+    sign_questions.mark_checked(root, "harbor", by="routine:distill", now=NOW)
+    assert distill.to_prepare(root) == []
+    assert distill.main([str(root), "prepare"]) == 0 and "nothing to prepare" in capsys.readouterr().out
+    witness(root, "m-3", "harbor", "Harbor went live.\n", NOW + H)
+    assert [(r["candidate"], r["why"]) for r in distill.to_prepare(root)] == [
+        ("harbor", "new records since the last check")]
+    assert distill.main([str(root), "prepare"]) == 0
+    assert capsys.readouterr().out.splitlines() == ["harbor\tharbor\tnew records since the last check"]
+
+
+def test_prepare_writes_nothing_and_takes_no_argument(tmp_path, capsys):
+    root = make_space(tmp_path / "ada", subjects=[
+        {"id": "harbor", "kind": "projects", "title": "Harbor", "state": "active"}])
+    path = candidate_file(root, CLEAN)
+    before = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    assert distill.main([str(root), "prepare"]) == 0
+    assert {p: p.read_bytes() for p in root.rglob("*") if p.is_file()} == before
+    capsys.readouterr()
+    # `prepare` takes no argument; `verify` and `checked` keep exactly one; `--body` stays verify's
+    assert distill.main([str(root), "prepare", "harbor"]) == 2
+    assert distill.main([str(root), "verify"]) == 2 and distill.main([str(root), "checked", "--by", "Ben Liu"]) == 2
+    assert distill.main([str(root), "prepare", "--body", str(path)]) == 2
+
+
+def candidate_text(root, name):
+    return (root / "_inbound" / "candidates" / f"{name}.md").read_text(encoding="utf-8")
+
+
+def evidence_ids(text):
+    """The record ids a candidate's evidence lines name."""
+    return re.findall(r"^- .*\((?:landed|journal|witness), ([^)]+)\)$", text, re.M)
+
+
+def test_distill_counts_a_journal_entry_once(tmp_path):
+    # entry A at 10:15 on the `now` day is journal evidence and, after the sweep, a witness page with the same record id
+    ws = journal_ws(tmp_path)
+    link.journal_records(ws)
+    sweep.run(ws, now=NOW)
+    distill.run(ws, now=NOW)
+    record = f"journal-{NOW:%Y%m%d}T1015"
+    assert evidence_ids(candidate_text(ws, "harbor-voice-agent")).count(record) == 1
+
+
+# ----- pointers and lessons (codebase links, Task 7) --------------------------------------------
+LESSON = "- lesson: retry webhooks with backoff\n- from: beacon-app\n"
+
+
+def add_entry(ws, day, hhmm, body):
+    """Append an entry at `hhmm` to ada's daily note for `day`."""
+    note = ws / "journal" / f"{day:%Y}" / f"{day:%m}" / f"{day:%Y-%m-%d}.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    text = note.read_text(encoding="utf-8") if note.exists() else f"# {day:%Y-%m-%d}\n"
+    note.write_text(f"{text}\n## {hhmm}Z: entry at {hhmm}\n\n{body}", encoding="utf-8")
+
+
+def lesson_ws(tmp_path, entry_a=ENTRY_A + LESSON):
+    """journal_ws with the brain (named `brain`) mounted."""
+    ws = journal_ws(tmp_path, entry_a=entry_a)
+    mount_brain(ws, make_space(tmp_path / "brain", profile="brain"))
+    return ws
+
+
+def lesson_candidates(root):
+    return sorted((root / "_inbound" / "candidates").glob("lesson-*.md"))
+
+
+def lesson_rows(root):
+    path = root / distill.LESSONS_PROPOSED
+    return [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
+
+
+def test_evidence_line_lists_refs(tmp_path):
+    ws = journal_ws(tmp_path)
+    distill.run(ws, now=NOW)
+    text = candidate_text(ws, "harbor-voice-agent")
+    assert f"call-flow spec written (refs: northwind/harbor-voice:docs/spec.md@abc) (journal, journal-{NOW:%Y%m%d}T1015)" in text
+    assert f"pilot scope (journal, journal-{NOW:%Y%m%d}T1100)" in text   # no ref: the title only
+    mail = distill.Evidence(record="m-1", rel="x.md", at=NOW, arrived=NOW, title="Invoice",
+                            body="Ref: INV-2026\n", subjects=["harbor"], landed=False)
+    assert distill.evidence_line(mail) == f"- {NOW:%Y-%m-%d}: Invoice (witness, m-1)"   # no pointer form
+
+
+def test_lesson_line_becomes_a_brain_candidate_without_the_client(tmp_path):
+    ws = lesson_ws(tmp_path)
+    distill.run(ws, now=NOW)
+    fm, body = pages.read(ws / "_inbound/candidates/lesson-retry-webhooks-with-backoff.md")
+    assert fm["destination"] == "brain" and fm["target"] == "knowledge/topics/lessons/retry-webhooks-with-backoff.md"
+    assert (fm["type"], fm["status"], fm["kind"], fm["title"]) == ("concept", "draft", "topics", "retry webhooks with backoff")
+    assert fm["evidence"] == [f"journal-{NOW:%Y%m%d}T1015"] and body.strip() == "retry webhooks with backoff"
+    assert "beacon" not in (yaml.safe_dump(fm) + body).lower() and "subject" not in fm
+    row, = lesson_rows(ws)
+    assert row == {"slug": "retry-webhooks-with-backoff", "from": "beacon-app", "candidate": fm["id"], "at": pages.iso(NOW)}
+    distill.run(ws, now=NOW + H)                                   # nothing new: no second row
+    assert len(lesson_rows(ws)) == 1 and len(lesson_candidates(ws)) == 1
+
+
+def test_same_lesson_from_two_subjects_merges(tmp_path):
+    ws = lesson_ws(tmp_path)
+    add_entry(ws, NOW, "13:00", "- lesson: Retry webhooks with backoff.\n- from: lighthouse-voice\n- subject: ada-notes\n")
+    distill.run(ws, now=NOW)
+    fm, _ = pages.read(lesson_candidates(ws)[0])
+    assert len(fm["evidence"]) == 2 and len(lesson_candidates(ws)) == 1
+
+
+def test_rejected_lesson_not_proposed_again_from_same_source(tmp_path):
+    ws = lesson_ws(tmp_path)
+    distill.run(ws, now=NOW)
+    fm, _ = pages.read(lesson_candidates(ws)[0])
+    sign.apply(ws, {fm["id"]: ("no", "")}, by="Ada Okafor", now=NOW + H)
+    later = NOW + D
+    add_entry(ws, later, "09:00", LESSON + "- subject: harbor-voice-agent\n")
+    distill.run(ws, now=later + H)
+    assert lesson_candidates(ws) == []
+    add_entry(ws, later, "10:00", "- lesson: retry webhooks with backoff\n- from: lighthouse-voice\n"
+                                  "- subject: harbor-voice-agent\n")
+    distill.run(ws, now=later + 2 * H)
+    path, = lesson_candidates(ws)
+    assert pages.read(path)[0]["evidence"] == [f"journal-{later:%Y%m%d}T1000"]
+
+
+def test_lesson_without_from(tmp_path):
+    ws = lesson_ws(tmp_path, entry_a=ENTRY_A + "- lesson: pin the model version\n")
+    add_entry(ws, NOW, "13:00", "- lesson: log every webhook\n- from: nobody-registered\n- subject: ada-notes\n")
+    distill.run(ws, now=NOW)
+    assert len(lesson_candidates(ws)) == 2
+    assert sorted(str(r["from"]) for r in lesson_rows(ws)) == ["None", "nobody-registered"]
+
+
+def test_a_lesson_is_proposed_once_per_source_whatever_the_answer(tmp_path):
+    # signed, or discarded by its file name: a later write to the day's note proposes nothing again
+    for verdict in ("yes", "no"):
+        ws = lesson_ws(tmp_path / verdict)
+        distill.run(ws, now=NOW)
+        path, = lesson_candidates(ws)
+        item = path.stem if verdict == "no" else pages.read(path)[0]["id"]
+        sign.apply(ws, {item: (verdict, "")}, by="Ada Okafor", now=NOW + H)
+        add_entry(ws, NOW, "15:00", "- a later note\n- subject: harbor-voice-agent\n")
+        distill.run(ws, now=NOW + 2 * H)
+        assert lesson_candidates(ws) == [], verdict
+
+
+def test_a_from_after_the_lesson_is_its_source_and_never_its_text(tmp_path):
+    ws = lesson_ws(tmp_path, entry_a=ENTRY_A + "- lesson: cap the transfer at thirty seconds; from: beacon-app\n")
+    distill.run(ws, now=NOW)
+    path, = lesson_candidates(ws)
+    fm, body = pages.read(path)
+    assert path.name == "lesson-cap-the-transfer-at-thirty-seconds.md"
+    assert "beacon" not in (yaml.safe_dump(fm) + body).lower() and lesson_rows(ws)[0]["from"] == "beacon-app"
+    assert link.FROM_LINE.findall("- from: beacon-app, lighthouse") == ["beacon-app"]
+
+
+def test_two_entries_of_one_minute_are_two_records(tmp_path):
+    # the spec entry at 10:15 and, in the same minute, the pull request opened for it
+    ws = journal_ws(tmp_path)
+    add_entry(ws, NOW, "10:15", "- The pull request for the spec.\n"
+                                "- ref: https://github.com/northwind/harbor-voice/pull/7\n- subject: harbor-voice-agent\n")
+    ids = [ev.record for ev in distill.journal_evidence(ws)]
+    assert f"journal-{NOW:%Y%m%d}T1015" in ids and f"journal-{NOW:%Y%m%d}T1015-2" in ids
+    assert link.journal_records(ws) == 2
+
+
+def test_a_heading_with_a_rough_time_keeps_its_time(tmp_path):
+    ws = make_space(tmp_path / "ada")
+    add_entry(ws, NOW, "~09:30", "- a note\n- subject: harbor-voice-agent\n")
+    (ev,) = distill.journal_evidence(ws)
+    assert ev.at.strftime("%H:%M") == "09:30" and ev.title == "entry at ~09:30"
+
+
+def test_a_journal_entry_sits_on_the_notes_own_day(tmp_path):
+    # the note is named for the person's own date; its heading is UTC and can fall on the next or last UTC day
+    offset = NOW.astimezone().utcoffset()
+    if abs(offset) < dt.timedelta(hours=2):
+        pytest.skip("this machine's clock is within two hours of UTC")
+    hhmm = "01:30" if offset < dt.timedelta(0) else "22:30"
+    ws = make_space(tmp_path / "ada")
+    add_entry(ws, NOW, hhmm, "- a late note\n- subject: harbor-voice-agent\n")
+    (ev,) = distill.journal_evidence(ws)
+    assert ev.at.astimezone().date() == NOW.date() and ev.at.strftime("%H:%M") == hhmm
+    # the record id comes from the note's date and heading, so another time zone never makes it a new record
+    assert ev.record == f"journal-{NOW:%Y%m%d}T{hhmm.replace(':', '')}"

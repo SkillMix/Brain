@@ -89,8 +89,10 @@ KINDS_INTRO = {
                "declared once in the brain, for the records that pass through:",
 }
 NEEDS_YOU_FALLBACK = (
-    "Before anything else, show Needs you: run `python _meta/tools/needs_you.py` and read its "
-    "lines to the person, each with its recommendation and its default; then do the work."
+    "Before anything else, show Needs you: run `python _meta/tools/needs_you.py --once-a-day` and "
+    "read its lines to the person, each with its recommendation and its default; then do the work. "
+    "It prints in the day's first session only; later sessions print nothing. A scheduled routine "
+    "skips this."
 )
 
 

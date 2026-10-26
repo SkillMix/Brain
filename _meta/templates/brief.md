@@ -40,7 +40,7 @@ Prices, terms, ownership and people's private situations: known here so nothing 
 
 ## Open questions
 
-What research could not answer, each with the searches tried and the best guess; a question to the owner only when a page cannot be written without it.
+What research could not answer, each with the searches tried and the best guess. A question to the person lives in `_meta/state/sign-questions.jsonl` (asked with `sign_questions.py ask`); here it keeps only its research notes, under its `q-` id.
 
 ## Research log
 

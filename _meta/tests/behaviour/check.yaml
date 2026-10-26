@@ -38,10 +38,10 @@ setup:
       signed_by: Ada Okafor
       signed_at: "2026-09-21T09:00:00Z"
       signed_in: ada
-      fingerprint: 8cd4750767a9cb5f5a9e6fe13446ba9de86338bc4b6c8bf685cc68ec738f1164
+      fingerprint: 921175c084b9021a072745123411c2c01d1b03712f02cda107f81c57c593e343
       subject: harbor
       ---
-      The extension carries a discount: 15% for the first year.
+      Discount: 15% for the first year of the extension.
     knowledge/sources/2026/10/m-scenario-3.md: |
       ---
       id: p-0000a003

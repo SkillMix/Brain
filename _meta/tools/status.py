@@ -456,12 +456,28 @@ def _render_status(space, subject, evs: list, now, template: str) -> str:
     for e in ahead:
         day = f"{e.at:%Y-%m-%d}"
         coming.setdefault((day, e.title), f"- {day}: {e.title} ({e.tier}, {e.scope}, {day})")
-    return template.format(
+    text = template.format(
         title=f"{subject.title}: status", subject=subject.id,
         open=_open_text(evs),
         closed=_lines(_newest(e for e in evs if e.section == "closed" and e.at >= cut)),
         timeline=_lines(_newest(e for e in evs if e.section == "timeline" and e not in ahead)[:TIMELINE_LINES]),
         coming="\n".join(coming[k] for k in sorted(coming)) or "- none")
+    found = pointers(evs)
+    if not found:
+        return text
+    import link
+    lines = "".join(f"- [{ref}]({link.ref_url(ref)})\n" for ref in found)
+    return text.rstrip("\n") + "\n\n## Pointers\n\n" + lines
+
+
+def pointers(evs: list, limit: int = 10) -> list:
+    """The `ref:` pointers into code that the subject's witness and landed pages under
+    knowledge/sources/ carry (landing files records there), newest first, each once. Only the
+    pointer forms count, so a mail's `Ref: <number>` line is no pointer."""
+    import link
+    found = [ref for e in _newest(e for e in evs if e.path.startswith("knowledge/sources/"))
+             for ref in link.refs_in(e.text) if link.ref_url(ref)]
+    return list(dict.fromkeys(found))[:limit]
 
 
 def _see_link(page: str, fresh: dict) -> str:
@@ -624,7 +640,8 @@ def _health_line(space, name: str, root, now) -> str:
     if rspace.profile == "personal":
         rate = capture_rate(root, space, now)
         extras.append(f"capture rate {rate[0]:.2f} ({rate[1]} sessions)" if rate else "capture rate n/a")
-    extras += [_requests_cell(root, space, now), _index_cell(root)]
+    import link  # the codebases linked to subjects homed here, from the last daily check
+    extras += [_requests_cell(root, space, now), _index_cell(root), link.health_cell(root)]
     stale_path = root / "_meta" / "state" / "stale.yaml"
     if stale_path.exists():
         import yaml
@@ -1302,12 +1319,17 @@ def run(root, now=None, check: bool = False) -> StatusReport:
 
 def _refresh_agents_md(root: Path, report) -> None:
     """The generated contract follows space.yaml and the template: rewrite it when stale (the
-    status routine is the one writer of structure)."""
+    status routine is the one writer of structure). So does the person's user-level instruction
+    block, the only text a codebase session reads, where onboarding installed it for this space."""
     try:
         import agents_md
         if (root / "space.yaml").exists() and not agents_md.check(root):
             agents_md.write(root)
             report.changed.append("AGENTS.md")
+        import onboard
+        ui = Path.home() / ".claude" / "CLAUDE.md"
+        if onboard.instruction_present(ui, root):
+            onboard.install_instruction(ui, root)
     except Exception:  # a broken template must not stop the status pass
         pass
 

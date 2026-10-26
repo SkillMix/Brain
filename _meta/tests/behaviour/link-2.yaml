@@ -1,0 +1,58 @@
+# A codebase with one clear match is linked at once in the registry that holds the subject;
+# the undo goes to the log and the repository is remembered.
+name: resolve links a clear match in the workspace's own registry
+command:
+- python
+- _meta/tools/link.py
+- '{root}'
+- resolve
+- --cwd
+- '{root}/code'
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1440
+      name: ada
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience:
+      - Ada Okafor
+      parent: brain
+      sources:
+      - name: mail
+        adapter: files
+        audience: owner
+    work/.gitkeep: ''
+    journal/.gitkeep: ''
+    outbox/.gitkeep: ''
+    code/.git/config: |
+      [remote "origin"]
+          url = https://github.com/northwind/harbor-voice.git
+    _meta/subjects.yaml:
+      subjects:
+      - id: harbor-voice-agent
+        kind: projects
+        title: Harbor voice agent
+        state: active
+        owner: Ada Okafor
+        home: ada
+      - id: ada
+        kind: people
+        title: Ada Okafor
+        state: active
+        match:
+          github: ada-gh
+env:
+  SPACE_NOW: '2026-10-05T09:00:00Z'
+expect:
+  exit: 0
+  writes_only_under:
+  - _meta/subjects.yaml
+  - _meta/state/links-seen.jsonl
+  - _meta/state/registry-notes.jsonl
+  - log.md
+  must_exist:
+  - _meta/state/links-seen.jsonl

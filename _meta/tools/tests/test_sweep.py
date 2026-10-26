@@ -4,11 +4,13 @@ import json
 
 import yaml
 
+import link
 import pages
 import release
 import spaceyaml
 import sweep
 from conftest import NOW, make_space, mount_brain
+from test_link import journal_ws
 
 def walled(home, crew):
     """A settled classification: the gate lets the project reach its own space."""
@@ -72,12 +74,23 @@ def held_items(root):
     return [pages.read(p) for p in sorted((root / "_outbound" / "held").glob("*.md"))]
 
 
-def test_a_record_its_destination_already_reads_queues_at_once_and_writes_signal(tmp_path):
+def only_queue_item(root):
+    """The frontmatter of the one queue item; fails when there are none or several."""
+    (fm, _), = queue_items(root)
+    return fm
+
+
+def held_in_doubt(root):
+    return sum(fm.get("reason") == "doubt" for fm, _ in held_items(root))
+
+
+def test_a_record_its_destination_already_reads_queues_at_once_and_writes_no_signal(tmp_path):
+    # the item itself arrives at once: no notice that its details follow after a window
     _, _, ada = build(tmp_path, sources=CREW_MAIL)
     write_feed(ada, [record()])
     report = sweep.run(ada, now=NOW)
     assert report.records_seen == 1 and report.witness_written == 1
-    assert report.attached == 1 and report.queued == 1 and report.signals == 1
+    assert report.attached == 1 and report.queued == 1 and report.signals == 0
     assert report.held_in_doubt == 0 and report.held_other == 0
     witness = ada / "knowledge" / "sources" / "2026" / "10" / "m-0001.md"
     fm, body = pages.read(witness)
@@ -93,11 +106,7 @@ def test_a_record_its_destination_already_reads_queues_at_once_and_writes_signal
     assert item_fm["kind"] == "mail" and item_fm["status"] == "draft"
     assert pages.parse_iso(item_fm["stage_after"]) == NOW
     assert "3 November" in item_body
-    signal_path, = sorted((ada / "_outbound" / "signals").glob("*.yaml"))
-    signal = yaml.safe_load(signal_path.read_text(encoding="utf-8"))
-    assert set(signal) == {"id", "subject", "destination", "at", "note"}
-    assert signal["subject"] == "harbor" and signal["destination"] == "harbor"
-    assert signal["note"] == "open item moved" and "November" not in signal_path.read_text()
+    assert not list((ada / "_outbound" / "signals").glob("*.yaml"))
     assert yaml.safe_load((ada / "_meta" / "state" / "sweep-watermark.yaml").read_text())["at"] \
         == "2026-10-12T08:14:00Z"
     runs = [json.loads(l) for l in (ada / "_meta" / "state" / "runs.jsonl").read_text().splitlines()]
@@ -112,6 +121,11 @@ def test_without_router_or_standing_choice_a_widening_record_waits_for_a_yes(tmp
     write_feed(ada, [record(text="Go-live moves to 3 November.\n" + "More words. " * 900)])
     report = sweep.run(ada, now=NOW)
     assert report.queued == 0 and report.held_in_doubt == 1 and report.signals == 1
+    signal_path, = sorted((ada / "_outbound" / "signals").glob("*.yaml"))   # content-free: that something moved
+    signal = yaml.safe_load(signal_path.read_text(encoding="utf-8"))
+    assert set(signal) == {"id", "subject", "destination", "at", "note"}
+    assert signal["subject"] == "harbor" and signal["destination"] == "harbor"
+    assert signal["note"] == "open item moved" and "November" not in signal_path.read_text()
     (fm, body), = held_items(ada)
     assert fm["reason"] == "doubt" and "no router" in fm["why"] and "high_stakes" not in fm
     assert len(body) <= sweep.CAP_WITHOUT_ROUTING + 10, "a yes releases it shallow, never in full"
@@ -159,7 +173,7 @@ def test_second_run_processes_nothing_new(tmp_path):
     assert second.records_seen == 0 and second.witness_written == 0 and second.queued == 0
     assert second.watermark == "2026-10-12T08:20:00Z"
     assert len(queue_items(ada)) == 2
-    assert len(list((ada / "_outbound" / "signals").glob("*.yaml"))) == 2
+    assert not list((ada / "_outbound" / "signals").glob("*.yaml"))   # at once: no signal
     runs = (ada / "_meta" / "state" / "runs.jsonl").read_text().splitlines()
     assert len(runs) == 2
 
@@ -506,7 +520,7 @@ def test_the_export_contract_is_lossless_and_keeps_private_records_out():
     import pytest
     root = Path(sweep.__file__).resolve().parents[2]
     paths = (root / ".claude" / "skills" / "sweep" / "SKILL.md", root / "_meta" / "templates" / "routines" / "sweep-chain.md")
-    if not all(p.exists() for p in paths):
+    if not all(p.exists() for p in paths) and not (root / ".github" / "template-marker").exists():
         pytest.skip("this repository does not carry the skills (a project may keep .claude/skills untracked)")
     for text in (p.read_text(encoding="utf-8") for p in paths):
         flat = " ".join(text.split())
@@ -762,3 +776,96 @@ def test_a_backfill_re_export_deepens_old_pages_behind_the_mark(tmp_path):
     sweep.run(ada, now=NOW + dt.timedelta(hours=1))
     page, = list((ada / "knowledge" / "sources").rglob("m-0500.md"))
     assert "The whole message." in pages.read(page)[1]
+
+
+# ----- notes from a codebase session (D8) ---------------------------------------------------------
+def test_without_the_router_a_journal_note_waits_the_window_even_to_its_crew(tmp_path):
+    # harbor-voice-agent classified walled, home harbor, crew ["ada"]; routing off; only mail declared:
+    # nothing read what the note says, so it waits where its person can pull it
+    ws = journal_ws(tmp_path, crew=["ada"])
+    link.journal_records(ws)
+    sweep.run(ws, now=NOW)
+    item = only_queue_item(ws)
+    assert item["class"] == "window" and item["destination"] == "harbor" and item["path"] == "journal:harbor"
+    assert pages.parse_iso(item["stage_after"]) == NOW + spaceyaml.load(ws).window()
+
+
+def test_other_home_gets_it_after_the_window(tmp_path):
+    # the same entry, crew ["ben"]
+    ws = journal_ws(tmp_path, crew=["ben"])
+    link.journal_records(ws)
+    sweep.run(ws, now=NOW)
+    item = only_queue_item(ws)
+    assert item["class"] == "window" and held_in_doubt(ws) == 0
+    assert pages.parse_iso(item["stage_after"]) == NOW + spaceyaml.load(ws).window()
+
+
+def test_a_journal_entry_headed_before_a_swept_one_still_travels(tmp_path):
+    # A (10:15) is swept at noon; then an entry headed 10:05 joins the same note (a late write,
+    # an evening entry in a UTC heading, or a link made after the entries)
+    ws = journal_ws(tmp_path, crew=["ada"])
+    noon, later = NOW.replace(hour=12), NOW.replace(hour=13)
+    link.journal_records(ws)
+    sweep.run(ws, now=noon)
+    note, = (ws / "journal").rglob("*.md")
+    with note.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write("\n## 10:05Z: flows reviewed\n\n- ref: northwind/harbor-voice:docs/flows.md@abd\n"
+                     "- subject: harbor-voice-agent\n")
+    link.journal_records(ws)
+    sweep.run(ws, now=later)
+    assert len(queue_items(ws)) == 2
+    sweep.run(ws, now=later)
+    assert len(queue_items(ws)) == 2   # a re-read finds the witness page and stops
+
+
+# ----- the repository feed in a brain (the product company) ----------------------------------------
+def test_brain_reads_its_repository_feed_only(tmp_path):
+    # a brain with sources [repository]; feed files repository.jsonl and mail.jsonl
+    brain = make_space(tmp_path / "brain", profile="brain", name="brain", subjects=[],
+                       sources=[{"name": "repository", "adapter": "files", "audience": "everyone",
+                                 "repos": ["lumen/app"]}])
+    write_feed(brain, [{"id": "lumen/app#7", "source": "repository", "kind": "document",
+                        "at": "2026-10-12T08:00:00Z", "subject": "Transfer spec",
+                        "text": "The spec.", "identifiers": {"repo": "lumen/app"}}], source="repository")
+    write_feed(brain, [record()])
+    assert {r["_feed"] for r in sweep.declared_feed(brain, spaceyaml.load(brain))} == {"repository"}
+
+
+def test_the_linked_repositories_feed_is_read_beside_the_declared_sources(tmp_path):
+    # harbor declares only mail; link.check lists its linked codebase in _meta/state/links.json, not space.yaml
+    harbor = make_space(tmp_path / "harbor", profile="project", name="harbor",
+                        sources=[{"name": "mail", "adapter": "gmail", "audience": "crew"}])
+    write_feed(harbor, [{"id": "northwind/harbor-voice#7", "source": "repository", "kind": "change",
+                         "at": "2026-10-12T08:00:00Z", "subject": "Add call transfer", "text": "Adds transfer.",
+                         "identifiers": {"repo": "northwind/harbor-voice"}}], source="repository")
+    assert {r["_feed"] for r in sweep.declared_feed(harbor, spaceyaml.load(harbor))} == {"repository"}
+
+
+def test_a_merged_pull_request_attaches_to_the_linked_subject_and_settles(tmp_path):
+    # harbor holds harbor (match.repo, as onboarding writes it) and its part harbor-voice-agent, linked
+    harbor = make_space(tmp_path / "harbor", profile="project", name="harbor", subjects=[
+        {"id": "harbor", "kind": "projects", "match": {"repo": "northwind/harbor-voice"}},
+        {"id": "harbor-voice-agent", "kind": "projects", "part_of": "harbor",
+         "repos": [{"repo": "northwind/harbor-voice", "linked": "2026-10-01"}]}])
+    write_feed(harbor, [{"id": "northwind/harbor-voice#7", "source": "repository", "kind": "change",
+                         "at": "2026-10-12T08:00:00Z", "subject": "Add call transfer", "text": "Adds transfer.",
+                         "identifiers": {"repo": "northwind/harbor-voice"}, "audience": "crew"}], source="repository")
+    seen = []
+    for hour in range(1, 3):
+        sweep.run(harbor, now=NOW + dt.timedelta(hours=hour))
+        (page,) = [p for p in (harbor / "knowledge" / "sources").rglob("*.md") if pages.is_page_path(p)]
+        fm, _ = pages.read(page)
+        seen.append((fm.get("subject"), fm["id"]))
+    assert seen[0][0] == "harbor-voice-agent" and seen[0] == seen[1]
+
+
+def test_a_pull_request_permalink_is_not_an_attachment_to_read(tmp_path):
+    # harbor holds harbor-voice-agent linked to northwind/harbor-voice; a merged pull request carries its url
+    harbor = make_space(tmp_path / "harbor", profile="project", name="harbor", subjects=[
+        {"id": "harbor-voice-agent", "kind": "projects", "title": "Harbor voice agent", "home": "harbor",
+         "repos": [{"repo": "northwind/harbor-voice"}]}])
+    write_feed(harbor, [{"id": "northwind/harbor-voice#7", "source": "repository", "kind": "change",
+                         "at": "2026-10-12T08:00:00Z", "subject": "Add call transfer", "text": "Adds transfer.",
+                         "identifiers": {"repo": "northwind/harbor-voice"},
+                         "attachments": ["https://github.com/northwind/harbor-voice/pull/7"]}], source="repository")
+    assert sweep.attachments(harbor) == []

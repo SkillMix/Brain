@@ -5,7 +5,97 @@ versioning](https://semver.org); while the version starts with 0, a minor releas
 the shape and ships its migration. Each choice behind a change has a line in
 `docs/decisions.md`.
 
-## [0.1.0] - 2026-10-23
+## [Unreleased]
+
+The sign sitting: a page's questions are ready before the person sits down, they are answered
+back to back, and nothing a record or the person settled is asked again.
+
+### Added
+
+- **The question ledger.** `_meta/state/sign-questions.jsonl` keeps every question the sign
+  flow puts to the person, one event per line, append-only and merged by union;
+  `sign_questions.py` is its only reader and writer. A question has an id (`q-` and 8 hex, kept
+  through a reword) and a state: open, settled by a record, answered by the person, parked
+  ("I don't know": never asked again, but every recheck still tries to settle it) or dropped.
+  It belongs to its subject and carries over to the subject's next candidate; a subject holds
+  at most four open questions. Only a named person answers, and answers again to correct it:
+  the later answer wins. A dropped question that matters again is reopened. A sensitive answer
+  is kept in a desk file in the answerer's own workspace, and the ledger holds only where it
+  is kept. `forget.py` lists a subject's ledger lines.
+- **Answers a page can cite.** A page line can cite an answered or settled question of its own
+  subject as `[src: q-...]`, and `verify` accepts it. `verify --body <file>` checks a write-up
+  against its candidate.
+- **`distill.py prepare`.** Lists each candidate whose questions need preparing: a subject
+  never checked, or with records since its last check. It writes nothing. Distill's new
+  Recheck step settles, rewords or drops open questions from the records that arrived, before
+  research; its Ask step puts what only the person can answer into the ledger with a
+  recommendation. The second agent's check reopens a settle its record does not support.
+- **The question count on Needs you.** A candidate's line ends with its subject's open
+  questions, "(2 questions)". The morning email stays counts-only.
+
+### Changed
+
+- **`sign.py apply` at the command line requires the pin.** A yes, edit or always on a page
+  names the `fingerprint` and `base` its read-back printed, and an edit names its write-up as
+  `body_file`. A signed page's release takes the same pin. A page whose text or draft changed
+  since the read-back, or that names no fingerprint, is refused, stays on Needs you and is read
+  back again; the other items go ahead. `no` and `later` need no pin. A weekly review batch
+  line that would sign a draft is refused: the draft is signed by its own id after its
+  read-back. A yes on a page from an emailed reply is bare, so it is refused too.
+  `read-back --body <id>=<file>` reads back a write-up. The Python API keeps
+  `require_pin=False` for the tools and tests that call it.
+- **The sign sitting.** The agent picks the order, shows what each page says, where it lands and
+  who reads it, then asks only what no source can answer, at most four questions per page.
+  Answers are recorded as they are given. A helper writes each answered page's edit to
+  `_scratch/sign/<page id>.md` and verifies it while the person answers the next page; the
+  read-back comes at the next break, and each takes its own word. `submit` signs every page
+  that has its word; "stop" waits for the running write-ups and reads them back.
+
+### Fixed
+
+- **A first-release line reads back.** `sign.py read-back` failed on a `first-<subject>` line,
+  and took every other item of the same call with it. It now lists the line's items and prints
+  no fingerprint: a bare verb answers it.
+
+**Migration.** After upgrading, run `python _meta/tools/distill.py <root> prepare` once and
+follow distill's Recheck and Ask steps for each page it lists.
+
+## [0.2.0] - 2026-10-24
+
+Codebase links: a session opened in a linked repository gets its project's context, and its
+notes about that work reach the project.
+
+### Added
+
+- **Codebase links.** `link.py resolve` tells a session in a codebase which subject the code
+  belongs to, from its git remote and the registries the workspace mounts, with no network. A
+  repository nothing links yet is linked at once on a clear match, asked about once on a tie,
+  and never asked twice. Onboarding and project creation scan the repositories the person can
+  reach. The daily check follows a renamed repository (its old names still resolve), marks a
+  lost one gone and brings it back when it is found again, and sets who reads it (a public
+  repository is always wider); the health line shows `links N, wider M, repaired K`.
+- **Four rules for working in a codebase**, in the personal instruction: context is pulled on
+  a trigger (a brainstorm, a spec, a call, a question about a client or a past decision), never
+  at session start; three rings (the subject and its parent, the company layer, and anything
+  else only when the person names it); what goes into a codebase read by people outside the
+  subject's audience passes the release scrub; entries carry `subject:` and a `ref:` pointer
+  into the code.
+- **Notes from linked codebases travel as records.** A journal entry about a subject homed
+  elsewhere, with a `ref:` into a codebase linked to that subject, goes to its home after the
+  window (at once when the router judged it, to a walled home whose crew includes the writer).
+  Every other entry stays home.
+- **Pointers on status pages.** Distill names an entry's pointers on its evidence lines, and a
+  subject's status page lists them under `## Pointers`.
+- **Lessons to the brain.** A `lesson:` line becomes a candidate for the brain carrying the
+  lesson alone, never the subject it came from; one the signer discarded is not proposed again
+  from the same subject.
+- **Spec-like files in the repository feed.** The sweep files the spec, design and decision
+  files a merged pull request adds or changes as records, each with a permalink at the merge
+  commit.
+- **Needs you once a day.** The personal instruction runs `needs_you.py --once-a-day`, which
+  shows the list in the day's first session only.
+
+## [0.1.0] - 2026-10-24
 
 The first public release.
 
@@ -154,3 +244,51 @@ Found during the private preview, before the first release.
   again after its repositories were deleted) was reused: releases and classification notes
   went nowhere while the run line said nothing failed. Such a clone is now moved to
   `.stale/` and the destination cloned fresh.
+
+Found in a drill that sets off each never-used part of the template in a throwaway fixture
+company, before the first release.
+
+- **A retraction withdraws the release where it landed.** A landed record is marked
+  `retracted` and no longer read as evidence; a release retracted before landing is not filed.
+- **Pulling a router item pauses the router for that destination.** The router's at-once items
+  carry the path `router:<destination>`, so a pull or a failed sample pauses them for 4 weeks.
+- **Dormancy reaches every subject at its home and wakes on new evidence.** The home judges
+  every subject homed there, also those the brain holds, and tells the holder with a state note.
+- **Offboard archives a subject homed here in the registry that holds it.** A leaving space
+  sends an archive note for each such subject, and no note moves a subject out of `archived`.
+- **The librarian splits a desk subject that another registry holds.** The split check walks
+  the subjects a space sees from the brain, not only its own registry.
+- **The librarian files a loose page that sits right under `knowledge/`.**
+- **A shape migration's commit carries only what the migration changed.** The person's
+  unrelated uncommitted work stays out of the structure commit.
+- **An answered checker hit no longer silences a later different value.** A hit's id includes
+  the value it is about.
+- **The checker reads a newly signed page without waiting for new evidence.**
+- **The weekly review batch keeps its weekly stamp.** The checker's run no longer drops
+  `review_at` from its watermark.
+- **Each sending space's conflict note has an id of its own.** Two spaces contesting one page
+  both reach its owner.
+- **The forget listing finds doubt items and signals about the subject.**
+
+Found while landing the drill fixes and preparing the first release.
+
+- **A later different value from the same space sends a conflict note of its own.** The note's
+  id includes the value, so a second value no longer overwrites the first.
+- **A spec page queued with a tracker request gets the issue key.** `tracker.py queue --spec`
+  names the page; once the issue is made, `tracker: <key>` is written into it and its state moves.
+- **A step that fails in the daily run shows on the same morning's briefing.** `stale.yaml`
+  moves as each step ends, and the morning view reads it directly.
+- **The sync script names a chain its scheduler never starts.** A chain whose last run is older
+  than twice its schedule's longest gap is labelled stale until it runs again.
+- **A failed shape migration is undone whole and tried again after a template update.** Every
+  path it changed is restored, and nothing asks a person.
+- **A green pull request is merged when the base moves under it.** The merge step retries after
+  a short wait and arms auto-merge with a method the repository allows.
+- **A token in a link is cut from the page and sends no security email.** Verification,
+  unsubscribe, invitation, signing and tracking links keep their host and path; only a key, a
+  private key or a labelled password still warns.
+- **The full template copy test runs in the template only, not in every space.**
+- **A link into a mount that is not on disk is a warning, not an error.** A space whose checks
+  cannot read one of its mounts still validates.
+- **The permission tests read the skills a space has.** A project space without the personal
+  skills no longer fails them; in the template every skill is still required.

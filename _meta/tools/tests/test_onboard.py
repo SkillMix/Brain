@@ -9,6 +9,7 @@ import subprocess
 
 import yaml
 
+import link
 import onboard
 import pages
 import registry
@@ -256,6 +257,7 @@ def test_instruction_block_is_idempotent(tmp_path):
     text = path.read_text(encoding="utf-8")
     assert text.count(onboard.MARK_OPEN) == 1 and onboard.instruction_present(path, other)
     assert not onboard.instruction_present(path, workspace)
+    assert not onboard.instruction_present(path, tmp_path / "be")   # a path that only starts the same is not it
     assert onboard.remove_block(text).strip() == ""
 
 
@@ -439,7 +441,7 @@ def test_an_invitation_carries_the_crew_projects_and_the_colleague_onboards_offl
     assert answers["name"] == "Ben Liu" and answers["brain"] == "https://github.com/lantern-org/brain"
     assert [p["name"] for p in answers["crew_projects"]] == ["harbor"]
     items = yaml.safe_load((brain / "_inbound" / "needs-you" / "invitations.yaml").read_text(encoding="utf-8"))["items"]
-    assert items[0]["id"] == "invite-ben" and items[0]["check"].startswith("gh repo view")
+    assert items[0]["id"] == "invite-ben" and "ben-workspace/contents/_meta/state/runs.jsonl" in items[0]["check"]
     # the one sentence the colleague says, in the invitation and on the owner's item
     assert answers["say"].startswith("Onboard me to Lantern: https://github.com/")   # the company, not the host owner
     assert answers["say"].endswith("with my invitation lantern-org/brain:ben")
@@ -533,6 +535,30 @@ def test_the_access_item_leaves_once_the_colleague_can_read_both(tmp_path, monke
     levels.update({"lantern-org/brain-template": "read", "lantern-org/brain": "write"})
     onboard.invite(brain, "ben")
     assert [i["id"] for i in yaml.safe_load(path.read_text(encoding="utf-8"))["items"]] == ["invite-ben"]
+
+
+def test_an_invitation_reads_back_done_only_once_the_workspace_has_synced(tmp_path, monkeypatch):
+    # a setup that stopped right after its first push: the workspace repository exists, but no
+    # sync ever landed a run line, so the invitation stays on the inviter's Needs you
+    landed = []
+    world = _access_world({"lantern-org/brain-template": "read", "lantern-org/brain": "read"}, [])
+
+    def fake(argv, dry_run=False, cwd=None):
+        line = " ".join(str(a) for a in argv)
+        if line.startswith("gh repo view lantern-org/ben-workspace"):
+            return subprocess.CompletedProcess(argv, 0, "name: lantern-org/ben-workspace\n", "")
+        if "repos/lantern-org/ben-workspace/contents/_meta/state/runs.jsonl" in line and landed:
+            return subprocess.CompletedProcess(argv, 0, "_meta/state/runs.jsonl\n", "")
+        return world(argv, dry_run, cwd)
+    monkeypatch.setattr(onboard, "run_cmd", fake)
+    brain = _invited_brain(tmp_path)
+    onboard.invite(brain, "ben")
+    items = yaml.safe_load((brain / "_inbound" / "needs-you" / "invitations.yaml").read_text(encoding="utf-8"))["items"]
+    check = next(i for i in items if i["id"] == "invite-ben")["check"]
+    assert "lantern-org/ben-workspace" in check
+    assert onboard.readback(check) is False   # the repository alone is not a working setup
+    landed.append(True)                       # the first sync landed its run line
+    assert onboard.readback(check) is True
 
 
 def test_an_offline_space_is_made_under_home_when_given(tmp_path):
@@ -978,3 +1004,50 @@ def test_copy_template_leaves_what_the_checkouts_git_ignores(tmp_path):
     assert (dst / "_meta" / "tools" / "x.py").exists() and (dst / "_meta" / "tools" / "new_tool.py").exists()
     assert not (dst / ".superpowers").exists() and not (dst / ".claude" / "worktrees").exists()
     assert not (dst / "_meta" / "tools" / "cache.tmp").exists()
+def test_instruction_carries_the_four_rules(tmp_path):
+    """Working in a codebase (docs/design/2026-10-22-codebase-link-design.md 4.3): triggers, three
+    rings, writing by readers, capture with a pointer; Needs you once a day."""
+    ws = make_space(tmp_path / "ada")
+    text = onboard.instruction_block(ws)
+    for needle in ("link.py", "resolve", "Three rings", "readers: wider", "ref: <owner/repo>", "--once-a-day"):
+        assert needle in text
+
+
+def step(report, name):
+    return next(s for s in report.steps if s.name == name)
+
+
+def _joining(tmp_path, subjects=None):
+    """A person joining offline: a template copy, their answers, the brain beside it."""
+    brain = make_space(tmp_path / "brain", profile="brain", name="lantern", subjects=subjects)
+    ws = tmp_path / "ada"
+    onboard.copy_template(onboard.TEMPLATE_ROOT, ws)
+    answers = onboard.interview({"name": "Ada Okafor"}, interactive=False, case="person")
+    return ws, answers, {"brain": str(brain), "home": tmp_path, "user_instructions": str(tmp_path / "CLAUDE.md")}
+
+
+def test_onboard_reports_the_scan(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "run_cmd", never)
+    monkeypatch.setattr(link, "scan", lambda root, now=None, **k: {"seen": 2, "linked": 1, "asked": 1, "skipped": ""})
+    ws, answers, kw = _joining(tmp_path)
+    row = step(onboard.run(ws, answers, offline=True, **kw), "codebases linked")
+    assert row.done and row.result == "1 linked, 1 asked" and not row.needs_owner
+
+
+def test_onboard_scan_failure_is_not_an_owner_step(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "run_cmd", never)
+    monkeypatch.setattr(link, "scan", lambda *a, **k: (_ for _ in ()).throw(OSError("no gh")))
+    ws, answers, kw = _joining(tmp_path)
+    report = onboard.run(ws, answers, offline=True, **kw)
+    row = step(report, "codebases linked")
+    assert row.done and row.result.startswith("skipped") and not row.needs_owner
+    assert not report.failed(), [s.row() for s in report.failed()]
+
+
+def test_onboard_offline_scan_asks_no_host(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "run_cmd", never)
+    monkeypatch.setattr(link, "_gh", lambda *a: pytest.fail("the host was asked offline"))
+    ws, answers, kw = _joining(tmp_path, subjects=[
+        {"id": "ada", "kind": "people", "title": "Ada Okafor", "match": {"github": "ada-gh"}}])
+    row = step(onboard.run(ws, answers, offline=True, **kw), "codebases linked")
+    assert row.done and row.result == "skipped: offline"

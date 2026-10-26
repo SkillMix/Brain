@@ -9,6 +9,12 @@ a `## New evidence` list, one line per evidence page. While that candidate is an
 unsigned draft the next run rewrites it in place with the merged evidence list, so
 the queue grows with subjects that moved, never with runs. A witness page whose
 text starts with `Decision:` becomes its own candidate under knowledge/decisions/.
+An evidence line names the record's `ref:` pointers into code after its title. A
+`lesson: <point>` line in a daily-note entry becomes a candidate for the brain,
+`lesson-<slug>.md` (target knowledge/topics/lessons/), merged by slug and carrying the
+lesson text alone: the entry's `from: <subject>` (its own line, or after the lesson) never goes
+into it. A lesson is proposed once per `from:` value (`_meta/state/lessons-proposed.jsonl`):
+answered or still open, the same entry never proposes it again.
 
 Evidence for a subject = witness pages under knowledge/sources/ carrying
 `subject: <id>` or `<id>` in `mentions`, landed records in _inbound/candidates/
@@ -25,12 +31,19 @@ list, only the candidate's id kept (with `--subject`, that one subject, whether 
 the watermark stays). `verify` lists what keeps a candidate from the signer (a line without
 `[src: ...]`, a source not in `evidence`, a never-leaves term, a left-out term of the
 destination, a bracketed placeholder); `checked` stamps `checked: {by, at}` once it is clean.
+A source also passes when it is the `q-` id of a question of the candidate's subject that was
+answered or settled (`sign_questions.py`). `verify --body <file>` checks that file's text, a
+write-up, against the candidate's frontmatter instead of the candidate's own body.
+`prepare` lists the subject candidates whose questions need preparing, one tab-separated line
+(candidate, subject, why) each: a subject never checked, or with records that arrived since its
+last check (`sign_questions.needs_recheck`). It only reads; it writes nothing.
 
 Nothing here writes `status: stable`, edits a page under knowledge/, or runs git.
 
     python distill.py [root] [--rebuild [--subject <id>]]
-    python distill.py [root] verify <candidate path or subject id>
+    python distill.py [root] verify <candidate path or subject id> [--body <file>]
     python distill.py [root] checked <candidate path or subject id> --by <name>
+    python distill.py [root] prepare
 """
 from __future__ import annotations
 
@@ -46,6 +59,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import classify as gating  # noqa: E402
+import link  # noqa: E402
 import pages  # noqa: E402
 import provenance  # noqa: E402
 import registry as registry_mod  # noqa: E402
@@ -60,7 +74,9 @@ SOURCES = Path("knowledge") / "sources"
 EVIDENCE_HEADING = "## New evidence"
 MENTION_BLIND_KINDS = ("people", "domains")
 DECISION_RE = re.compile(r"^\s*decision\s*:\s*(.*)$", re.I)
-COMMANDS = ("verify", "checked")
+COMMANDS = ("verify", "checked", "prepare")
+LESSON_LINE = re.compile(r"^\s*(?:[-*]\s*)?lesson:\s*(.+?)(?:[\s;,(]+from:.*)?\s*$", re.I | re.M)
+LESSONS_PROPOSED = STATE / "lessons-proposed.jsonl"   # {slug, from, candidate, at}
 
 
 # ----- shared helpers (check.py imports these) ---------------------------------
@@ -186,13 +202,14 @@ def gather_evidence(root, reader: Reader, space_name: str = "") -> list:
             item = _evidence(root, path, fm, body, landed=True, space_name=space_name)
             if item:
                 found.append(item)
-    found.extend(journal_evidence(root))
+    paged = {ev.record for ev in found if not ev.landed}   # a swept journal record: its page carries it
+    found.extend(ev for ev in journal_evidence(root) if ev.record not in paged)
     return found
 
 
 JOURNAL = Path("journal")
 JOURNAL_FILE = re.compile(r"(\d{4}-\d{2}-\d{2})\.md$")
-ENTRY_HEAD = re.compile(r"^##\s+(?:(\d{1,2}):(\d{2})Z?)?\s*[:\-–—]*\s*(.*)$")
+ENTRY_HEAD = re.compile(r"^##\s+~?(?:(\d{1,2}):(\d{2})Z?)?\s*[:\-–—]*\s*(.*)$")
 SUBJECT_LINE = re.compile(r"^\s*(?:[-*]\s*)?subject:\s*`?([a-z0-9][a-z0-9-]*)`?\s*$", re.I | re.M)
 DESK_PATH = re.compile(r"work/[a-z0-9-]+/([a-z0-9][a-z0-9-]*)/")
 
@@ -216,6 +233,7 @@ def journal_evidence(root) -> list:
         except OSError:
             continue
         rel = path.relative_to(root).as_posix()
+        seen: dict = {}   # a second entry of the same minute is its own record: `-2`, `-3`
         for chunk in re.split(r"(?m)^(?=## )", text):
             if not chunk.startswith("## "):
                 continue
@@ -226,10 +244,16 @@ def journal_evidence(root) -> list:
                 at = pages.parse_iso(f"{day.group(1)}T{int(hour or 12):02d}:{int(minute or 0):02d}:00Z")
             except (TypeError, ValueError):
                 continue
+            record = f"journal-{at:%Y%m%dT%H%M}"   # the note's date and heading: the same on every machine
+            if hour is not None:   # a UTC heading in a note named for the person's own date: the day either side
+                at = next((c for c in (at, at - dt.timedelta(days=1), at + dt.timedelta(days=1))
+                           if c.astimezone().date().isoformat() == day.group(1)), at)
+            seen[record] = seen.get(record, 0) + 1
+            record += f"-{seen[record]}" if seen[record] > 1 else ""
             subjects = list(dict.fromkeys(SUBJECT_LINE.findall(body) + DESK_PATH.findall(body)))
             if not subjects:
                 continue
-            found.append(Evidence(record=f"journal-{at:%Y%m%dT%H%M}", rel=rel, at=at,
+            found.append(Evidence(record=record, rel=rel, at=at,
                                   arrived=max(at, changed), title=title.strip() or f"journal {day.group(1)}",
                                   body=body, subjects=subjects, landed=False,
                                   fm={"source": "journal", "audience": "owner", "subject": subjects[0]}))
@@ -301,6 +325,10 @@ def evidence_line(ev: Evidence) -> str:
     # text can hold what that space's left-out list forbids. A record without a title is
     # named by its id; the signer opens it where it lives.
     text = " ".join(ev.title.split()) or f"record {ev.record}"
+    # a pointer is a location, not content, so it may travel; the release scrub still reads it.
+    # Only the pointer forms count: a mail's `Ref: <number>` line is body text.
+    refs = [r for r in dict.fromkeys(link.refs_in(ev.body)) if link.ref_repo(r)]
+    text += f" (refs: {', '.join(refs)})" if refs else ""
     kind = "landed" if ev.landed else ("journal" if ev.fm.get("source") == "journal" else "witness")
     return f"- {ev.at:%Y-%m-%d}: {text} ({kind}, {ev.record})"
 
@@ -323,6 +351,16 @@ def _with_evidence(base: str, lines: list) -> str:
 def archives_on(space) -> bool:
     """`routing.archives`: archive-derived pages count as evidence only when it is on."""
     return bool(getattr(space, "routing_archives", False))
+
+
+def evidence_by_subject(root) -> dict:
+    """Subject id -> the evidence that counts for it, as `run` reads it: archive-derived pages
+    are left out unless the space has `routing.archives` on."""
+    space = spaceyaml.load(root)
+    evidence = gather_evidence(root, Reader(), space.name)
+    if not archives_on(space):
+        evidence = [ev for ev in evidence if not provenance.is_archive_derived(ev.fm)]
+    return by_subject(evidence)
 
 
 def set_aside_of(fm: dict) -> list:
@@ -406,6 +444,35 @@ def write_decision(root: Path, space, reg, ev: Evidence, now: dt.datetime, reade
     fm["target"] = f"knowledge/decisions/{name}.md"
     fm["evidence"] = [ev.record]
     pages.write(path, fm, ev.body)
+    return "refreshed" if old_fm else "new"
+
+
+def write_lesson(root: Path, space, ev: Evidence, lesson: str, source: str | None, now: dt.datetime) -> str:
+    """A `lesson:` line as a company-grain candidate for the brain, one per slug: the lesson text
+    alone, never the `from:` subject it came from (ring 3). A slug is proposed once per `source`,
+    signed, discarded or still open; one from another source merges into the open draft of the
+    same slug, or is proposed again."""
+    slug = slugify(lesson)
+    if any(row.get("slug") == slug and row.get("from") == source
+           for row in registry_mod._jsonl(root / LESSONS_PROPOSED)):
+        return "skipped"
+    path = root / CANDIDATES / f"lesson-{slug}.md"
+    existing = _draft_or_none(path, Reader())
+    if existing is None or ev.record in [str(r) for r in existing[0].get("evidence") or []]:
+        return "skipped"
+    old_fm, old_body = existing
+    fm = {"id": old_fm.get("id") or pages.new_id(), "type": "concept", "title": old_fm.get("title") or lesson[:80],
+          "status": "draft", "generated": pages.generated(ROUTINE, now), "kind": "topics",
+          "target": f"knowledge/topics/lessons/{slug}.md"}
+    brain = gating.brain_space(space)
+    if brain is not None and brain.name != space.name:
+        fm["destination"] = brain.name
+    fm["evidence"] = [str(r) for r in old_fm.get("evidence") or []] + [ev.record]
+    pages.write(path, fm, old_body or f"{lesson}\n")
+    proposed = root / LESSONS_PROPOSED
+    proposed.parent.mkdir(parents=True, exist_ok=True)
+    with proposed.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps({"slug": slug, "from": source, "candidate": fm["id"], "at": pages.iso(now)}) + "\n")
     return "refreshed" if old_fm else "new"
 
 
@@ -496,6 +563,11 @@ def run(root, now: dt.datetime | None = None, rebuild: bool = False,
                     and not held(ev.subject):
                 said = dataclasses.replace(ev, body=f"Decision: {str(item['text']).strip()}\n\n{ev.body}")
                 count(write_decision(root, space, reg, said, now, reader), None)
+    # lessons are read from the daily note itself: a swept copy of an entry has lost its `from:` line
+    for ev in new_since(journal_evidence(root), since):
+        source = next((s for s in link.FROM_LINE.findall(ev.body) if s), None)
+        for lesson in LESSON_LINE.findall(ev.body):
+            count(write_lesson(root, space, ev, lesson, source, now), None)
     write_watermark(root, ROUTINE, {"at": pages.iso(now)})
     report.cost_tokens = reader.cost_tokens
     append_run(root, ROUTINE, space, now, report.cost_tokens, notes())
@@ -564,7 +636,17 @@ def verify(root, candidate) -> list:
     text = candidate_path(root, candidate).read_text(encoding="utf-8")
     fm, body = pages.split(text)
     offset = text[:len(text) - len(body)].count("\n")   # report lines of the file, not the body
+    return verify_body(root, fm, body, offset)
+
+
+def verify_body(root, fm: dict, body: str, offset: int = 0) -> list:
+    """The problems `verify` reports for `body` against the frontmatter `fm` of its candidate.
+    A source passes when it is in `evidence`, or is the `q-` id of a question of the candidate's
+    subject that was answered or settled. `offset` is the number of lines before `body`."""
+    import sign_questions   # here and not at the top: sign_questions imports distill
     evidence = {str(r) for r in fm.get("evidence") or []}
+    subject = str(fm.get("subject") or "")
+    answered = None   # the subject's citable questions, read from the ledger at the first `q-` source
     problems = []
     for number, heading, unit in body_units(body):
         where = f"line {number + offset}"
@@ -573,8 +655,15 @@ def verify(root, candidate) -> list:
             problems.append(f"{where}: no source: {short}")
         for marker in SRC_RE.findall(unit):
             for rid in (r.strip() for r in marker.split(",")):
-                if rid and rid not in evidence:
-                    problems.append(f"{where}: source {rid} is not in evidence")
+                if not rid or rid in evidence:
+                    continue
+                if rid.startswith("q-"):
+                    if answered is None:
+                        answered = {q.id for q in sign_questions.load(root).values()
+                                    if q.subject == subject and q.status in ("answered", "settled")}
+                    if rid in answered:
+                        continue
+                problems.append(f"{where}: source {rid} is not in evidence")
         mark = next((m for m in PLACEHOLDERS if m in unit.lower()), None)
         if mark:
             problems.append(f"{where}: placeholder `{mark}`")
@@ -594,6 +683,41 @@ def checked(root, candidate, by: str, now: dt.datetime | None = None) -> list:
     return []
 
 
+# ----- prepare: which pages need their questions prepared ------------------------------------------
+def is_subject_candidate(path: Path, fm: dict) -> bool:
+    """A candidate for a subject's own page: it names a subject, and is not a lesson, a decision,
+    a review batch, a released record or a source."""
+    return bool(fm.get("subject")) and not path.stem.startswith("lesson-") \
+        and fm.get("type") not in ("decision", "source") \
+        and not fm.get("review_batch") and not fm.get("released_from")
+
+
+def to_prepare(root) -> list:
+    """The subject candidates whose questions need preparing, by file name: {candidate (the file's
+    stem), subject, why}. A subject needs it when it was never checked or has a record that
+    arrived since its last check (`sign_questions.needs_recheck`). Reads only."""
+    import sign_questions   # here and not at the top: sign_questions imports distill
+    root = Path(root)
+    found = []
+    base = root / CANDIDATES
+    if base.is_dir():
+        for path in sorted(base.glob("*.md")):
+            try:
+                fm, _ = pages.read(path)
+            except Exception:
+                continue
+            if is_subject_candidate(path, fm):
+                found.append((path.stem, str(fm["subject"])))
+    grouped = evidence_by_subject(root) if found else {}   # the space read once, not once per candidate
+    rows = []
+    for stem, subject in found:
+        if sign_questions.needs_recheck(root, subject, grouped):
+            never = sign_questions.last_checked(root, subject) is None
+            rows.append({"candidate": stem, "subject": subject,
+                         "why": "never checked" if never else "new records since the last check"})
+    return rows
+
+
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     flags: dict = {}
@@ -602,18 +726,34 @@ def main(argv=None) -> int:
         arg = argv.pop(0)
         if arg == "--rebuild":
             flags["rebuild"] = True
-        elif arg in ("--subject", "--by") and argv:
+        elif arg in ("--subject", "--by", "--body") and argv:
             flags[arg[2:]] = argv.pop(0)
         else:
             positional.append(arg)
     root = Path(positional.pop(0)) if positional and positional[0] not in COMMANDS else Path(".")
+    if "body" in flags and positional[:1] != ["verify"]:   # --body belongs to verify alone
+        print(__doc__)
+        return 2
     if positional:
         command, args = positional[0], positional[1:]
-        if command not in COMMANDS or len(args) != 1 or (command == "checked" and not flags.get("by")):
+        if command not in COMMANDS or len(args) != (0 if command == "prepare" else 1) \
+                or (command == "checked" and not flags.get("by")):
             print(__doc__)
             return 2
+        if command == "prepare":
+            rows = to_prepare(root)
+            print("\n".join(f"{row['candidate']}\t{row['subject']}\t{row['why']}" for row in rows)
+                  or "nothing to prepare")
+            return 0
         try:
-            problems = verify(root, args[0]) if command == "verify" else checked(root, args[0], flags["by"])
+            if command == "checked":
+                problems = checked(root, args[0], flags["by"])
+            elif "body" in flags:   # a write-up, checked against the candidate's frontmatter
+                fm, _ = pages.split(candidate_path(root, args[0]).read_text(encoding="utf-8"))
+                # utf-8-sig, as sign.write_up: an editor may save the write-up with a BOM
+                problems = verify_body(root, fm, Path(flags["body"]).read_text(encoding="utf-8-sig"))
+            else:
+                problems = verify(root, args[0])
         except OSError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1

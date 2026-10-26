@@ -132,3 +132,13 @@ def test_duplicate_ids_fail(tmp_path):
 def test_template_flag_requires_template_profile(tmp_path):
     root = make_space(tmp_path / "ada")
     assert any("profile: template" in e for e in errors(root, template=True))
+
+
+def test_journal_with_ref_lines_validates(tmp_path):
+    root = make_space(tmp_path / "ada")
+    note = root / "journal" / "2026" / "10" / "2026-10-12.md"
+    note.parent.mkdir(parents=True)
+    note.write_text("# 2026-10-12\n\n## 10:15Z: call-flow spec written\n\n- ref: northwind/harbor-voice:docs/spec.md@abc\n"
+                    "- ref: https://github.com/northwind/harbor-voice/pull/7\n- lesson: retry webhooks with backoff\n"
+                    "- from: beacon-app\n- subject: harbor-voice-agent\n", encoding="utf-8")
+    assert errors(root) == []

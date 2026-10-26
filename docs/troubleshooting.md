@@ -245,3 +245,7 @@ app's account; the routines draw on the command line's sign-in. Setup compares t
 part 1: when the times your limits reset differ, the app's readings are no longer used, and the
 history paces itself from what the routines' own runs report, mostly at night. Nothing is lost
 and there is nothing to do; the history may be current later than first said.
+### Cloud sessions
+
+Plain coding works; brainstorm and write specs in a local session for now, because a cloud
+session has no workspace instruction and its notes would be lost.

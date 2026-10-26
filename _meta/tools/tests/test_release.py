@@ -111,11 +111,11 @@ def test_shadow_source_refuses_a_live_destination(tmp_path):
     write_feed(ada, [record()])
     sweep.run(ada, now=NOW)
     report = release.ship(ada, now=NOW, offline_roots={"harbor": harbor})
-    assert report.shipped == 0 and report.held == 2 and report.signals == 0
+    assert report.shipped == 0 and report.held == 1 and report.signals == 0
     assert landed(harbor) == [] and queue_paths(ada) == []
     assert not list((ada / "_outbound" / "signals").glob("*.yaml"))
     held = held_items(ada)
-    assert sorted(fm["class"] for fm, _ in held) == ["at_once", "signal"]
+    assert sorted(fm["class"] for fm, _ in held) == ["at_once"]
     for fm, _ in held:
         assert fm["reason"] == "mode" and "shadow" in fm["why"] and "live" in fm["why"]
     assert not (harbor / "_inbound" / "signals").exists() or \
@@ -242,10 +242,10 @@ def test_online_destination_goes_through_publish(tmp_path, monkeypatch):
     write_feed(ada, [record()])
     sweep.run(ada, now=NOW)
     report = release.ship(ada, now=NOW)
-    assert report.shipped == 1 and report.signals == 1
+    assert report.shipped == 1 and report.signals == 0   # at once: the item, no signal
     assert calls == [(checkout, "ada", "ada")]
     assert len(list((checkout / "_inbound" / "candidates").glob("*.md"))) == 1
-    assert len(list((checkout / "_inbound" / "signals").glob("*.yaml"))) == 1
+    assert not list((checkout / "_inbound" / "signals").glob("*.yaml"))
     assert queue_paths(ada) == []
 
 
@@ -431,8 +431,8 @@ def test_item_follows_its_subject_to_a_new_home(tmp_path):
     released.write_text(json.dumps({"id": "p-1", "at": pages.iso(NOW), "subject": "harbor"}) + "\n",
                         encoding="utf-8")
     report = release.ship(ada, now=NOW, offline_roots={"brain": brain})
-    # the item and the signal its record raised both follow the subject
-    assert report.rerouted == 2 and report.shipped == 1 and report.unreachable == 0
+    # the item follows the subject (queued at once, it raised no signal)
+    assert report.rerouted == 1 and report.shipped == 1 and report.unreachable == 0
     landed_pages = list((brain / "_inbound" / "candidates").glob("*.md"))
     assert len(landed_pages) == 1
     landed_fm, _ = pages.read(landed_pages[0])
@@ -499,6 +499,21 @@ def test_items_held_for_a_shadow_destination_return_to_the_queue(tmp_path):
     item.unlink()
     report = release.ship(ada, now=NOW, offline_roots={"harbor": harbor})
     assert report.requeued == 1 and report.shipped == 1 and held_items(ada) == []
+
+
+def test_a_doubt_page_held_before_recommendations_gets_one_on_the_next_release(tmp_path):
+    """A page held in doubt before holds carried a recommendation gets the hold's recommendation
+    and default written on it; a page with its own recommendation keeps it."""
+    _, harbor, ada = build(tmp_path)
+    held = ada / "_outbound" / "held"
+    pages.write(held / "old.md", {"id": "old", "reason": "doubt", "why": "privacy doubt"}, "old body\n")
+    pages.write(held / "own.md", {"id": "own", "reason": "doubt", "why": "privacy doubt",
+                                  "recommendation": "yes: send it", "default": "goes"}, "own body\n")
+    release.ship(ada, now=NOW, offline_roots={"harbor": harbor})
+    old, _ = pages.read(held / "old.md")
+    own, _ = pages.read(held / "own.md")
+    assert (old["recommendation"], old["default"]) == ("no: keep it home", "stays home")
+    assert (own["recommendation"], own["default"]) == ("yes: send it", "goes")
 
 
 def test_refresh_checkout_reads_the_destination_as_it_is_now(tmp_path):

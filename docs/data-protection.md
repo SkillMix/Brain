@@ -114,10 +114,11 @@ rights takes; agents never change access.
 
 `python _meta/tools/forget.py <space> list <subject id>` lists everything one space holds about
 a client or project: its registry entry, its folders and pages, status page, desk folders,
-witness pages and candidates, queued, held and landed items, question-log lines and raw feed
-lines carrying its identifiers. It changes nothing. Run it in every space that may hold the
-client (each workspace, the brain, the project spaces); a person then decides what to delete.
-There is no erasure tool yet, and a full erasure is the history rewrite described above.
+witness pages and candidates, queued, held and landed items, question-log lines, the lines of
+the sign-question ledger about it, and raw feed lines carrying its identifiers. It changes
+nothing. Run it in every space that may hold the client (each workspace, the brain, the
+project spaces); a person then decides what to delete. There is no erasure tool yet, and a
+full erasure is the history rewrite described above.
 
 To keep a client's material where it came in from the start, classify it `owner`.
 

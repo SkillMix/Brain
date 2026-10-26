@@ -6,10 +6,12 @@ Lists every file in this space that is about the subject: its registry entry, it
 signed pages (`knowledge/<kind>/<id>/`), its status page, its desk folders, the witness pages
 and candidates that carry it as their subject or mention it, the queued, held and landed
 items (a doubt item that names it as a candidate, a signal about it), the question-log
-lines, and the raw feed lines that carry one of its identifiers. It changes nothing. What happens to the listing is a person's decision: raw personal records
-live only in personal spaces and go at offboard (`offboard.py --forget-records`, the person's
-own command); shared spaces keep scrubbed, signed conclusions under a tombstone; git keeps
-history, so a true erasure is a history rewrite only the law demands.
+lines, the sign-question ledger's lines (its questions and every event on them), and the raw
+feed lines that carry one of its identifiers. It changes nothing. What happens to the listing
+is a person's decision: raw personal records live only in personal spaces and go at offboard
+(`offboard.py --forget-records`, the person's own command); shared spaces keep scrubbed, signed
+conclusions under a tombstone; git keeps history, so a true erasure is a history rewrite only
+the law demands.
 """
 from __future__ import annotations
 
@@ -74,6 +76,22 @@ def listing(root, sid: str) -> dict:
                     out["questions"].append(f"_meta/questions.log:{n}")
             except ValueError:
                 continue
+    ledger = root / "_meta" / "state" / "sign-questions.jsonl"   # sign_questions.LEDGER
+    if ledger.exists():
+        rows = []
+        # split on "\n" only, as sign_questions reads it: a JSON string may hold U+2028
+        for n, line in enumerate(ledger.read_text(encoding="utf-8", errors="replace").split("\n"), 1):
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict):
+                rows.append((n, row))
+        # a question's later events name it by id; its `asked` line (and a `checked` one) the subject
+        asked = {str(row.get("id")) for _, row in rows if row.get("event") == "asked" and row.get("subject") == sid}
+        for n, row in rows:
+            if row.get("subject") == sid or str(row.get("id") or "") in asked:
+                out["questions"].append(f"_meta/state/sign-questions.jsonl:{n}")
     needles = []
     if subject is not None:
         match = subject.match if isinstance(subject.match, dict) else {}

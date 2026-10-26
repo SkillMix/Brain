@@ -28,11 +28,17 @@ subject's owner, the domain owner, the space owner, as names). It read the verdi
 `_meta/state/check-verdicts.jsonl` for its hit rate and narrowed itself when the rate is
 low. One run line.
 
+The three value checks (`disagree`, `newer_evidence`, `named_number`) read a signed page's
+labels only where a `Label: value` starts a line or a bullet, or opens a parenthesis; a
+label inside a sentence is prose. The run line's `labelled_pages` counts the pages they could read: 0 means they had
+nothing to compare, not that everything agrees. Evidence is read whole.
+
 Once a scaled week, instead of one item per page past its window, it wrote one weekly
 review batch `_inbound/candidates/review-<date>.md`: every signed page past its window in an
 active subject, every draft older than its window and every page another space contested,
 one numbered line each with the evidence since it was last verified and a recommendation
-(answered per line: `review-<date>#3: yes`, `[edit, "<text>"]` or `no` to retire). Newer
+(answered per line: `review-<date>#3: yes`, `[edit, "<text>"]` or `no` to retire; a line that
+names a draft candidate is signed by the candidate's own id after its read-back). Newer
 evidence against a page that a mounted space owns became a conflict note queued to that
 space (window class, scrubbed on the way out); there its librarian marks the page
 `contested` and the note joins the owner's next batch.

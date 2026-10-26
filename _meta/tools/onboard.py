@@ -724,7 +724,8 @@ def instruction_present(path, workspace) -> bool:
     if not path.exists():
         return False
     text = path.read_text(encoding="utf-8")
-    return MARK_OPEN in text and Path(workspace).resolve().as_posix() in text
+    ws = re.escape(Path(workspace).resolve().as_posix())   # the path itself, not a longer one it starts
+    return MARK_OPEN in text and re.search(ws + r"(?![\w.-])", text) is not None
 
 
 def connect(root, feed: str, audience: str = "owner", scope: dict | None = None) -> bool:
@@ -1919,6 +1920,19 @@ def resolve_brain(root, brain, offline):
     return mount.get("repo"), mount.get("path") or "brain"
 
 
+def scan_codebases(report, root, now, offline) -> None:
+    """The codebases the person can reach are linked to their subjects (link.py scan). Offline
+    asks no host. Never an owner step: a session's first `resolve` places what a scan missed."""
+    try:
+        import link
+        out = link.scan(root, now=now, list_fn=(lambda owner: None) if offline else None)
+        result = (f"{out['linked']} linked, {out['asked']} asked" if not out.get("skipped")
+                  else "skipped: offline" if offline else f"skipped: {out['skipped']}")
+    except Exception as exc:
+        result = f"skipped: {str(exc)[:200]}"
+    report.add("codebases linked", True, "python _meta/tools/link.py . resolve --cwd <a codebase>", result)
+
+
 def run(root, answers, offline=False, org=None, dry_run=False, home=None, user_instructions=None,
         brain=None, everyone=False, with_projects=False, progress=None, connected=()) -> Report:
     task_prefix()   # a name that is not ours stops the run here, before it creates a space it would then register
@@ -2044,6 +2058,7 @@ def run(root, answers, offline=False, org=None, dry_run=False, home=None, user_i
                 run_cmd(["git", "submodule", "add", "-b", "main", mount["repo"], mount["path"]], dry_run, cwd=root)
             report.add(f"mount {mount['name']}", offline or (root / mount["path"] / "space.yaml").exists() or dry_run,
                        f"test -f {root / mount['path'] / 'space.yaml'}", "crew project mounted read-only")
+        scan_codebases(report, root, now, offline)
         report.spaces[name] = root
     ui = Path(user_instructions) if user_instructions else default_user_instructions(root, offline, home)
     report.user_instructions = ui
@@ -2152,7 +2167,8 @@ def invite(root, slug: str, org: str | None = None, workspace_org: str | None = 
            name: str | None = None, email: str | None = None) -> Path:
     """Write `_meta/state/invitations/<slug>.yaml` (the colleague's answers: name, parent, the
     brain, the projects they are crew on, their host login when the registry has it) and one
-    Needs-you item for the owner with its read-back. The sentence works only once the colleague
+    Needs-you item for the owner with its read-back (their workspace's first synced run line).
+    The sentence works only once the colleague
     can read the template and the brain: when the host does not confirm both (or no login is
     known), a second item recommends the access and who grants it (`grant_advice`: a team, a
     collaborator on a personal account, or the owner of a repository this person cannot
@@ -2219,7 +2235,10 @@ def invite(root, slug: str, org: str | None = None, workspace_org: str | None = 
                            f"{target.relative_to(root).as_posix()}. The sentence works once they can "
                            f"read {readable}"),
                   "recommendation": "yes, on their first day", "default": "they work without a workspace for now "
-                  "(rules.md section 10)", "depends": 1, "check": f"gh repo view {workspace}"})
+                  "(rules.md section 10)", "depends": 1,
+                  # done once their first sync landed a run line, not when the repository exists: a
+                  # setup can stop right after its first push, with no sync task to land anything
+                  "check": f"gh api repos/{workspace}/contents/_meta/state/runs.jsonl -q .path"})
     blocked = [r for r in both if not login or r.startswith("<") or not can_read(r, login)]
     if blocked:
         text = (f"{person.title} cannot read {' and '.join(blocked)} yet (checked as {login}), so the "

@@ -23,6 +23,8 @@ GITHUB = j("ghp_", "a" * 36)
 SLACK = j("xoxb-", "123456789012-abcdefghij")
 SK = j("sk-", "abcdefghijklmnopqrstuvwxyz")
 JWT = j("eyJ", "a" * 12, ".", "b" * 12, ".", "c" * 12)
+GITHUB_PAT = j("github_", "pat_", "A1" * 15)
+GITLAB = j("gl", "pat-", "x" * 20)
 PW_LINE = j("pass", "word: hunter2secret")
 IBAN = j("GB82", "WEST", "12345698765432")
 SECRET_VALUES = ("ABCDEFGHIJKLMNOP", "a" * 36, "123456789012", "abcdefghijklmnopqrstuvwxyz",
@@ -32,6 +34,7 @@ CASES = [
     ("private_key", PRIVATE_KEY),
     ("aws_key", AWS),
     ("github_token", GITHUB),
+    ("gitlab_token", GITLAB),
     ("slack_token", SLACK),
     ("api_key_sk", SK),
     ("jwt", JWT),
@@ -257,3 +260,10 @@ def test_real_secrets_are_still_found_inside_and_outside_links():
     assert [f.kind for f in scan.scan_text("https://reset.example/?pass" + "word=hunter2tall", "x")] == ["password"]
     jwt = "eyJ" + "hbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dQw4w9WgXcQabcdefghij"
     assert [f.kind for f in scan.scan_text(f"https://api.example.com/cb#id_token={jwt}", "x")] == ["jwt"]
+
+
+def test_platform_tokens_in_a_pasted_remote_are_found_and_alarm():
+    # a remote URL pasted into a note, its user info carrying a token
+    for token, kind in ((GITHUB_PAT, "github_token"), (GITLAB, "gitlab_token")):
+        text = f"cloned from https://oauth2:{token}@gitlab.example/northwind/voice.git"
+        assert [f.kind for f in scan.scan_text(text, "x")] == [kind] and kind in scan.alarms(text)
