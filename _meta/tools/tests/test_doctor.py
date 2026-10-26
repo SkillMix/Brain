@@ -287,14 +287,15 @@ def test_start_doctor_only_checks_and_fixes_then_stops(tmp_path, monkeypatch, ca
 
 
 def test_a_second_sentence_waits_for_the_first(tmp_path, monkeypatch):
+    import routine
     start, tpl, brain, seen = _start_world(tmp_path, monkeypatch, [])
     (tmp_path / "start.lock").write_text("123\n")
+    monkeypatch.setattr(routine, "pid_alive", lambda pid: True)   # the first start runs
     report = start.start(tpl, invitation=f"{brain.as_posix()}:ada", offline=True, home=tmp_path / "home",
                          user_instructions=tmp_path / "CLAUDE.md")
     assert [s.name for s in report.failed()] == ["one start at a time"] and not seen
     assert (tmp_path / "start.lock").exists()   # the running start keeps its lock
-    old = (tmp_path / "start.lock").stat().st_mtime - 2 * 3600
-    os.utime(tmp_path / "start.lock", (old, old))   # a crashed run's lock is taken over
+    monkeypatch.setattr(routine, "pid_alive", lambda pid: False)   # a crashed run's lock is taken over
     report = start.start(tpl, invitation=f"{brain.as_posix()}:ada", offline=True, home=tmp_path / "home",
                          user_instructions=tmp_path / "CLAUDE.md")
     assert "one start at a time" not in [s.name for s in report.steps] and not report.failed()

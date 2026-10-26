@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -64,6 +65,40 @@ def find_claude() -> str | None:
             if (folder / name).exists():
                 return str(folder / name)
     return None
+
+
+def pid_alive(pid: int) -> bool:
+    """Whether a process with this id is running now: a lock whose process is gone is a crashed
+    run's, a closed session's. Windows asks for the exit code (a finished process whose handle
+    someone still holds is still openable); elsewhere a null signal tells."""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+        if pid > 0xFFFFFFFF:   # a process id is a 32-bit number there; ctypes would cut this one
+            return False
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = kernel32.OpenProcess(0x1000, False, pid)   # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ctypes.get_last_error() == 5   # access denied: it runs, as another user's
+        try:
+            code = wintypes.DWORD()
+            asked = kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+            return bool(asked) and code.value == 259   # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, OverflowError):
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def rule_path(path) -> str:

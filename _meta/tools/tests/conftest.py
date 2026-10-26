@@ -22,7 +22,9 @@ NOW = dt.datetime(2026, 10, 12, 9, 0, tzinfo=dt.timezone.utc)
 def _machine_home(tmp_path, monkeypatch):
     """No test touches the real `~/.spaces/` (the machine's list of spaces, logs, tools): the
     home folder is a temporary one; git keeps the real global config for its identity. The start
-    lock lives in the test's folder too, so a killed run never blocks a real start."""
+    lock lives in the test's folder too, so a killed run never blocks a real start, and so does
+    the setup journal, so no test can write the person's real one (a command a test starts
+    inherits both)."""
     import os
     real = Path.home()
     gitconfig = os.environ.get("GIT_CONFIG_GLOBAL") or str(real / ".gitconfig")
@@ -31,6 +33,7 @@ def _machine_home(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake))
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", gitconfig)
     monkeypatch.setenv("SPACES_START_LOCK", str(fake / "spaces-start.lock"))
+    monkeypatch.setenv("SPACES_SETUP_JOURNAL", str(fake / ".spaces" / "setup.yaml"))
 
 
 def write_page(root: Path, rel: str, body: str = "Body.\n", **fm) -> Path:

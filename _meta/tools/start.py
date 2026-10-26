@@ -24,9 +24,19 @@ are taken and return on their Needs-you list. Run again, it changes nothing that
 `--dry-run` prints the plan and stops before onboard; offline, a space is copied under
 `--home` when given, else beside this copy.
 
-    python start.py [--invitation <brain repo>:<slug> | --brain <brain repo>] [--company NAME]
+The setup is five phases, in order: signins, apps, research, build, history. Each writes its
+state to the setup journal (`~/.spaces/setup.yaml`, `setup_journal.py`), so a session that
+closes, or a run the next day, continues at the first phase that is not done: `resume` says which
+(`resume --json` prints the next phase, what waits for the person and every phase's record). The
+build is everything described above; the flags below are its own, and without a phase word they
+run it (`start.py --company X` is `start.py build --company X`). `--wait` is for a phase that
+waits on the person: it stays until what they must do is done. `--json` prints the phase's
+result, with the open needs, as one object.
+
+    python start.py [signins|apps|research|build|history|resume] [--wait] [--json]
+                    [--invitation <brain repo>:<slug> | --brain <brain repo>] [--company NAME]
                     [--name NAME] [--email EMAIL] [--feeds mail,calendar,chat,calls,tracker]
-                    [--org ORG] [--home DIR] [--template REPO] [--offline] [--dry-run] [--json]
+                    [--org ORG] [--home DIR] [--template REPO] [--offline] [--dry-run]
 """
 from __future__ import annotations
 
@@ -110,13 +120,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import doctor  # noqa: E402
 import onboard  # noqa: E402
 import onboarding_page  # noqa: E402
+import routine  # noqa: E402
+import setup_journal  # noqa: E402
 import spaceyaml  # noqa: E402
 
 HERE = Path(__file__).resolve().parents[2]
-# One start at a time on this machine; a lock older than LOCK_HOURS is a crashed run's. The lock
-# lives in the machine's temporary folder; SPACES_START_LOCK moves it (the tests use their own).
+# One start at a time on this machine. The lock holds its process id: one whose process is gone is
+# a crashed run's (or a closed session's) and is taken over at once; a lock with no readable id
+# waits out LOCK_HOURS. The lock lives in the machine's temporary folder; SPACES_START_LOCK moves
+# it (the tests use their own).
 LOCK = None
 LOCK_HOURS = 1
+# A start never runs this long (a routine is stopped after one hour), so a live process id on an
+# older lock is a stranger's: Windows hands a finished process's number to the next one.
+PID_REUSE_HOURS = 3
 ROUTINES = HERE / "_meta" / "templates" / "routines"
 INVITATIONS = "_meta/state/invitations"
 GITHUB = "https://github.com/"
@@ -282,11 +299,27 @@ def lock_path() -> Path:
     return Path(LOCK or os.environ.get("SPACES_START_LOCK") or Path(tempfile.gettempdir()) / "spaces-start.lock")
 
 
+def _lock_pid(path) -> int | None:
+    """The process id on the lock's first line; None when there is none to read."""
+    try:
+        return int(Path(path).read_text(encoding="utf-8").splitlines()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
 def take_lock(path=None) -> Path | None:
-    """The sentence said twice: the second start waits for the first instead of racing it."""
+    """The sentence said twice: the second start waits for the first instead of racing it, for as
+    long as the first runs. A lock whose process is gone is taken over at once, and so is one
+    older than PID_REUSE_HOURS whose process id is running again as another process."""
     path = Path(path or lock_path())
     try:
-        if time.time() - path.stat().st_mtime < LOCK_HOURS * 3600:
+        age = time.time() - path.stat().st_mtime
+        held = _lock_pid(path)
+        if held is None:
+            stale = age >= LOCK_HOURS * 3600
+        else:
+            stale = age >= PID_REUSE_HOURS * 3600 or not routine.pid_alive(held)
+        if not stale:
             return None
         path.unlink()
     except FileNotFoundError:
@@ -449,37 +482,36 @@ def summary(report: onboard.Report) -> dict:
             "done": sum(1 for s in report.steps if s.done), "failed": failed, "yours": owner}
 
 
-def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--invitation", help="<brain repo>:<slug>, from the invitation sentence")
-    ap.add_argument("--brain", help="the company's brain repository (owner/name, a URL or a local path)")
-    ap.add_argument("--company", help="no brain yet: the company's name (default: the organization's)")
-    ap.add_argument("--name")
-    ap.add_argument("--email")
-    ap.add_argument("--feeds", help="the connectors this session has: mail, calendar, chat, calls, tracker")
-    ap.add_argument("--org")
-    ap.add_argument("--home", help="where the spaces are cloned (default ~/spaces)")
-    ap.add_argument("--template", help="the template repository (default: where this copy came from)")
-    ap.add_argument("--user-instructions", help="the user-level instruction file (default ~/.claude/CLAUDE.md)")
-    ap.add_argument("--offline", action="store_true")
-    ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--doctor", action="store_true", help="only check this machine and fix what needs no password")
-    ap.add_argument("--json", action="store_true", help="print the summary as JSON")
-    args = ap.parse_args(argv)
-    if args.doctor:
-        report = onboard.Report(case="doctor")
-        target = parse_invitation(args.invitation)[0] if args.invitation else args.brain
-        ok = checkup(report, target, args.template or onboard.git_remote(HERE), args.offline, True,
-                     Path(args.home) if args.home else Path.home() / "spaces")
-        onboard.print_steps(report.steps)
-        return 0 if ok else 1
+# ----- the phases ----------------------------------------------------------------------
+PHASES = setup_journal.PHASES
+
+
+def _pending(phase: str) -> dict:
+    return {"phase": phase, "state": "pending"}
+
+
+def phase_signins(args) -> dict:
+    return _pending("signins")
+
+
+def phase_apps(args) -> dict:
+    return _pending("apps")
+
+
+def phase_research(args) -> dict:
+    return _pending("research")
+
+
+def phase_build(args) -> dict:
+    """Everything start did before there were phases: the spaces, the personal instruction, the
+    routines. Its state is `failed` when a step did not work (a dry run included), `pending` for
+    a dry run that did (nothing was created), `waiting` when it stopped for the person or left
+    rows only they can do (say the sentence again after), else `done`."""
     report = start(HERE, invitation=args.invitation, brain=args.brain, company=args.company, name=args.name,
                    email=args.email, feeds=args.feeds, org=args.org, home=args.home, template=args.template,
                    offline=args.offline, dry_run=args.dry_run, user_instructions=args.user_instructions)
     result = summary(report)
-    if args.json:
-        print(json.dumps(result, indent=2))
-    else:
+    if not args.json:
         onboard.print_steps(report.steps)
         if result["workspace"]:
             print(f"\nworkspace: {result['workspace']}")
@@ -493,7 +525,105 @@ def main(argv=None) -> int:
             print(f"yours: {row.get('name')}: {row.get('result')} (check: {row.get('check')})")
         if result["failed"] or result["yours"]:
             print("then say the sentence again: every step already done is kept")
-    return 1 if result["failed"] or result["stopped"] else 0
+    state = ("failed" if result["failed"] else "pending" if args.dry_run
+             else "waiting" if result["stopped"] or result["yours"] else "done")
+    return {"phase": "build", "state": state, **result}
+
+
+def phase_history(args) -> dict:
+    return _pending("history")
+
+
+def run_phase(args) -> dict:
+    """One phase, journaled: `running` while it works, then the state it returns (when it names
+    none: `waiting` while the person is still needed, else `done`). One that raises is left
+    `failed`, not `running`. A dry run changes nothing, the journal included."""
+    name, journal = args.phase, not args.dry_run
+    if journal:
+        setup_journal.set_phase(name, "running")
+    try:
+        result = globals()[f"phase_{name}"](args)   # looked up now, so a test can stand in for one
+    except Exception:
+        if journal:
+            setup_journal.set_phase(name, "failed")
+        raise
+    result.setdefault("phase", name)
+    if "state" not in result:
+        result["state"] = "waiting" if setup_journal.open_needs(setup_journal.load()) else "done"
+    if journal:
+        setup_journal.set_phase(name, result["state"])
+    return result
+
+
+def say_needs(needs: list) -> None:
+    """What only the person can do, a line each, with the check that proves it."""
+    for n in needs:
+        more = ", ".join(f"{k} {n[k]}" for k in ("code", "link") if n.get(k))
+        print(f"yours: {n.get('kind')}: {n.get('text')}" + (f" ({more})" if more else "")
+              + f" (check: {n.get('check')})")
+
+
+def resume(args) -> int:
+    """Where the setup stands after a closed session or a day: the first phase that is not done,
+    what waits for the person, every phase's record. It runs nothing; the agent runs the phase."""
+    data = setup_journal.load()
+    result = {"next": setup_journal.next_phase(data), "needs": setup_journal.open_needs(data),
+              "phases": {p: data.get(p) or {"state": "pending"} for p in PHASES}}
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return 0
+    for phase, record in result["phases"].items():
+        print(f"{phase}: {record.get('state', 'pending')}")
+    print(f"next: {result['next']}" if result["next"] else "every phase is done")
+    say_needs(result["needs"])
+    return 0
+
+
+def parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("phase", choices=[*PHASES, "resume"],
+                    help="the phase to run, or resume to see where the setup stands (without one: build)")
+    ap.add_argument("--invitation", help="<brain repo>:<slug>, from the invitation sentence")
+    ap.add_argument("--brain", help="the company's brain repository (owner/name, a URL or a local path)")
+    ap.add_argument("--company", help="no brain yet: the company's name (default: the organization's)")
+    ap.add_argument("--name")
+    ap.add_argument("--email")
+    ap.add_argument("--feeds", help="the connectors this session has: mail, calendar, chat, calls, tracker")
+    ap.add_argument("--org")
+    ap.add_argument("--home", help="where the spaces are cloned (default ~/spaces)")
+    ap.add_argument("--template", help="the template repository (default: where this copy came from)")
+    ap.add_argument("--user-instructions", help="the user-level instruction file (default ~/.claude/CLAUDE.md)")
+    ap.add_argument("--offline", action="store_true")
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--doctor", action="store_true", help="only check this machine and fix what needs no password")
+    ap.add_argument("--wait", action="store_true",
+                    help="a phase that waits on the person stays until what they must do is done")
+    ap.add_argument("--json", action="store_true", help="print the result as JSON")
+    return ap
+
+
+def main(argv=None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv or argv[0].startswith("-"):
+        argv.insert(0, "build")   # before the phases the flags stood alone: start.py --company X
+    args = parser().parse_args(argv)
+    if args.doctor:
+        report = onboard.Report(case="doctor")
+        target = parse_invitation(args.invitation)[0] if args.invitation else args.brain
+        ok = checkup(report, target, args.template or onboard.git_remote(HERE), args.offline, True,
+                     Path(args.home) if args.home else Path.home() / "spaces")
+        onboard.print_steps(report.steps)
+        return 0 if ok else 1
+    if args.phase == "resume":
+        return resume(args)
+    result = run_phase(args)
+    needs = setup_journal.open_needs(setup_journal.load())
+    if args.json:
+        print(json.dumps({**result, "needs": needs}, indent=2))
+    elif args.phase != "build":   # the build printed its steps itself, as it always did
+        print(f"{result['phase']}: {result['state']}")
+        say_needs(needs)
+    return 1 if result["state"] == "failed" or result.get("stopped") else 0
 
 
 if __name__ == "__main__":
