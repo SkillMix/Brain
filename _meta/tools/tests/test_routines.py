@@ -2,15 +2,17 @@
 times, which runs the prompt through `claude -p`. Done only once the schedule reads back."""
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 import offboard
 import onboard
+import pytest
 import routine
 import start
-from conftest import make_space
+from conftest import fake_run, make_space
 from test_sync_task import world
 
 
@@ -205,3 +207,136 @@ def test_a_persistent_harness_task_counts_once_its_read_back_passes(tmp_path, mo
     assert [s.done for s in onboard.routine_schedule(ws)] == [True, True]
     tasks[0].unlink()   # the harness lost a task: the check says so
     assert [s.done for s in onboard.routine_schedule(ws)] == [False, True]
+
+
+# ----- what the command line itself sees ------------------------------------------------------------
+def init_line(**more) -> dict:
+    init = {"type": "system", "subtype": "init", "cwd": "C:\\ws", "model": "claude-haiku-5-5", "apiKeySource": "none",
+            "tools": ["Read", "mcp__claude_ai_Gmail__search_threads"],
+            "mcp_servers": [{"name": "claude.ai Gmail", "status": "connected", "source": "claudeai"}]}
+    return {**init, **more}
+
+
+def test_the_probe_lists_the_tools_the_command_line_sees(tmp_path):
+    init = {"type": "system", "subtype": "init", "tools": ["Read", "mcp__claude_ai_Gmail__search_threads"], "mcp_servers": [{"name": "claude.ai Gmail", "status": "connected"}], "cwd": str(tmp_path), "model": "claude-opus-5-5"}
+    got = routine.probe_tools("claude", tmp_path, run=fake_run(stdout=json.dumps(init) + "\n"))
+    assert "mcp__claude_ai_Gmail__search_threads" in got["tools"]
+
+
+def test_the_probe_finds_init_after_the_hook_lines_and_reads_what_it_says(tmp_path):
+    """The person's plugins print hook events first; init is found by what it is, not where."""
+    lines = [{"type": "system", "subtype": "hook_started", "hook_name": "SessionStart"},
+             {"type": "system", "subtype": "hook_response", "output": "x"},
+             init_line(cwd=str(tmp_path), mcp_servers=[
+                 {"name": "claude.ai Gmail", "status": "connected", "source": "claudeai"},
+                 {"name": "claude.ai Microsoft 365", "status": "needs-auth", "source": "claudeai"}]),
+             {"type": "assistant", "message": {"content": [{"type": "text", "text": "OK."}]}},
+             {"type": "result", "is_error": False, "result": "OK."}]
+    got = routine.probe_tools("claude", tmp_path, run=fake_run(stdout="".join(json.dumps(x) + "\n" for x in lines)))
+    assert got == {"tools": ["Read", "mcp__claude_ai_Gmail__search_threads"], "cwd": str(tmp_path),
+                   "model": "claude-haiku-5-5", "auth": "none",
+                   "mcp_servers": [{"name": "claude.ai Gmail", "status": "connected"},
+                                   {"name": "claude.ai Microsoft 365", "status": "needs-auth"}]}
+
+
+def test_the_probe_names_an_api_key_that_took_over(tmp_path):
+    out = json.dumps(init_line(apiKeySource="ANTHROPIC_API_KEY")) + "\n"
+    assert routine.probe_tools("claude", tmp_path, run=fake_run(stdout=out))["auth"] == "ANTHROPIC_API_KEY"
+
+
+def test_the_probe_is_one_cheap_turn_as_a_routine_starts_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "secret")
+    seen = {}
+    folders = [tmp_path / "ada", tmp_path / "brain"]
+    routine.probe_tools("claude", tmp_path, folders, run=fake_run(seen, stdout=json.dumps(init_line()) + "\n"))
+    argv = seen["argv"]
+    assert argv[:2] == ["claude", "-p"] and argv[2:2 + len(routine.REFUSE)] == routine.REFUSE
+    assert " ".join(routine.JSON_OUT) in " ".join(argv)
+    assert [argv[i + 1] for i, a in enumerate(argv) if a == "--add-dir"] == [str(f) for f in folders]
+    assert argv[argv.index("--max-turns") + 1] == "1" and "--no-session-persistence" in argv
+    assert seen["input"] == "Reply OK." and "Reply OK." not in argv   # on stdin: a flag with several values would swallow it
+    assert seen["cwd"] == str(tmp_path) and seen["timeout"] <= 300
+    assert "ANTHROPIC_API_KEY" not in seen["env"] and "CLAUDE_CODE_OAUTH_TOKEN" not in seen["env"]
+    seen.clear()
+    routine.probe_tools("claude", tmp_path, run=fake_run(seen, stdout=json.dumps(init_line()) + "\n"))
+    assert "--add-dir" not in seen["argv"]
+
+
+def test_a_probe_that_saw_no_init_raises_instead_of_reporting_no_tools(tmp_path):
+    """No tools would read as 'no apps connected'; the person would be told to connect them."""
+    for out in ("", "Not logged in \u00b7 Please run /login\n", json.dumps({"type": "result", "result": "OK."}) + "\n"):
+        with pytest.raises(routine.ProbeError):
+            routine.probe_tools("claude", tmp_path, run=fake_run(stdout=out, code=1))
+
+
+def test_a_probe_that_runs_out_of_time_raises(tmp_path):
+    def slow(argv, **kw):
+        raise subprocess.TimeoutExpired(argv, kw["timeout"])
+    with pytest.raises(routine.ProbeError):
+        routine.probe_tools("claude", tmp_path, run=slow)
+
+
+def test_a_probe_whose_command_will_not_start_raises_the_same_error(tmp_path):
+    def missing(argv, **kw):
+        raise FileNotFoundError(2, "No such file or directory", argv[0])
+    with pytest.raises(routine.ProbeError):
+        routine.probe_tools("claude", tmp_path, run=missing)
+
+
+def test_the_probe_is_written_where_the_machine_keeps_it(tmp_path):
+    assert routine.probe_path() == tmp_path / "_home" / ".spaces" / "probe.json"   # through Path.home()
+
+
+# ----- the command-line facts the routines and readers share ---------------------------------------
+def test_the_flags_are_the_ones_the_command_line_was_checked_with():
+    assert routine.REFUSE == ["--permission-mode", "acceptEdits", "--permission-prompts", "none"]
+    assert routine.JSON_OUT == ["--output-format", "stream-json", "--verbose"]
+    assert not hasattr(routine, "CLAUDE")   # `-p` is added where the command is built, with REFUSE
+
+
+def first(patterns, text):
+    return next((m for m in (re.search(p, text) for p in patterns) if m), None)
+
+
+def test_the_limit_texts_the_command_line_prints_match_with_their_reset_when_there_is_one():
+    m = first(routine.LIMIT_PATTERNS, "You\u2019ve hit your session limit \u00b7 resets 11:20pm (America/New_York)")
+    assert m.group("limit") == "session" and m.group("resets") == "11:20pm" and m.group("tz") == "America/New_York"
+    m = first(routine.LIMIT_PATTERNS, "You've hit your weekly limit \u00b7 resets Oct 27, 1pm (America/New_York)")
+    assert m.group("limit") == "weekly" and m.group("resets") == "Oct 27, 1pm"
+    m = first(routine.LIMIT_PATTERNS, "You've hit your session limit")
+    assert m.groupdict().get("resets") is None and m.group("limit") == "session"
+    assert first(routine.LIMIT_PATTERNS, "You've hit your usage limit \u00b7 contact your admin to increase it").group("limit") == "usage"
+    assert first(routine.LIMIT_PATTERNS, "A limit is a limit") is None
+
+
+@pytest.mark.parametrize("text", ["You're now using usage credits", "You\u2019re now using your usage allocation",
+                                  "Now using extra usage", "You're out of usage credits \u00b7 resets 3pm (America/New_York)",
+                                  "Your org is out of usage \u00b7 add funds to continue",
+                                  "You've hit your monthly spend limit \u00b7 raise it at https://x.example",
+                                  "You've hit your team\u2019s shared budget \u00b7 ask your admin",
+                                  "You've reached your Fable limit.        Fable 5 requires usage credits."])
+def test_the_extra_usage_texts_match(text):
+    assert first(routine.OVERAGE_PATTERNS, text)
+
+
+@pytest.mark.parametrize("text", ["Not logged in \u00b7 Please run /login", "Not logged in \u00b7 Run /login",
+                                  "OAuth token revoked \u00b7 Please run /login",
+                                  "Login expired \u00b7 Run /login to sign in again, or re-authenticate your Anthropic profile",
+                                  "Authentication required \u00b7 Sign in again to continue",
+                                  "Invalid API key \u00b7 Fix external API key", "Invalid auth token \u00b7 Fix external auth token",
+                                  "Your organization has disabled API key authentication \u00b7 Unset ANTHROPIC_API_KEY",
+                                  "Your organization has disabled Claude subscription access for Claude Code \u00b7 Use an Anthropic API key",
+                                  "Session expired. Please run /login to sign in again.",
+                                  "Your session has expired. Please run /login to sign in again."])
+def test_the_sign_in_texts_match(text):
+    assert first(routine.AUTH_PATTERNS, text)
+
+
+def test_the_connector_texts_name_the_server_and_the_structured_kinds_map_to_the_two_kinds():
+    for text in ('MCP server "claude.ai Gmail" needs you to sign in again (run /mcp to re-authenticate)',
+                 'MCP server "claude.ai Gmail" needs to be connected in claude.ai (run /mcp to connect it)',
+                 'MCP server "claude.ai Gmail" needs additional permissions (scope: "mail.read") - run /mcp',
+                 'The MCP server "claude.ai Gmail" needs you to sign in; run /mcp to authenticate.'):
+        assert first(routine.CONNECTOR_PATTERNS, text).group("server") == "claude.ai Gmail"
+    assert routine.ERROR_KINDS["authentication_failed"] == "auth" and routine.ERROR_KINDS["rate_limit"] == "limit"

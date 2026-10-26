@@ -18,7 +18,7 @@ How it was checked:
 - What cannot be triggered on purpose (a usage limit, extra usage, an expired connector) was read
   from the CLI's own bundled source in the 2.1.303 binary. Those texts are quoted and marked
   UNVERIFIED-live; the patterns match the quoted text.
-- Eight `claude -p` runs reached the API, each one tiny. The report of this task lists them.
+- Eight `claude -p` runs reached the API, each one tiny. The report of this task lists them. (Task 5 added three more init probes, each one turn on haiku: section 2.)
 
 ## 1. Refusing instead of prompting
 
@@ -142,6 +142,68 @@ Facts the later tasks need:
 - **A routine run loads the person's own setup:** their global instructions file, user settings,
   plugins and their hooks. In runs 3 and 6 the model tried to run a command from the person's
   global instructions file; it was refused.
+- **`--setting-sources project,local` isolates from that setup, and no connector shows up in the
+  run, so no run that needs them uses it** (Task 5, one run, 2026-10-24). `claude --help` lists
+  `--setting-sources <sources>` ("Comma-separated list of setting sources to load (user, project,
+  local)"). The run, in the way of section 1 (every `CLAUDE*` and `ANTHROPIC*` variable removed,
+  cwd a folder inside the template's checkout):
+
+  ```
+  echo "Reply OK." | claude -p --permission-mode acceptEdits --permission-prompts none \
+    --output-format stream-json --verbose --setting-sources project,local \
+    --model haiku --max-turns 1 --no-session-persistence
+  ```
+
+  Five lines: `init`, `commands_changed`, one `assistant` ("OK"), `rate_limit_event`, `result`
+  (`success`, 1 turn). No `hook_started` or `hook_response` line, no tool call attempted (run 3
+  tried the global instructions' command). The init event, trimmed:
+
+  ```json
+  {"type": "system", "subtype": "init", "model": "claude-haiku-5-5", "permissionMode": "acceptEdits",
+   "apiKeySource": "none", "claude_code_version": "2.1.303", "mcp_servers": [],
+   "tools": ["Task", "Bash", "CronCreate", "CronDelete", "CronList", "Edit", "EnterWorktree",
+             "ExitWorktree", "Glob", "Grep", "ListAgents", "Monitor", "NotebookEdit", "PowerShell",
+             "PublishPlugin", "PushNotification", "Read", "ReportFindings", "ScheduleWakeup",
+             "SendMessage", "Skill", "TaskStop", "ToolSearch", "WebSearch", "Workflow", "Write"],
+   "plugins": ["cc-plugin-sec-default@builtin", "cc-plugin-agents-md@builtin",
+               "cc-plugin-telemetry@builtin", "cc-plugin-plugin-authoring@builtin"], "...": "..."}
+  ```
+
+  Against section 2's run 3 (28 claude.ai entries, 18 plugin entries, 450 tools, eight hook
+  lines): the person's plugins, their hooks and the global instructions' command are gone, and
+  the init event lists no claude.ai connector (`mcp_servers` empty, no `mcp__` tool); no
+  connector showed up later in the stream either (unlike the `--restricted` run below). So a
+  reader or the probe cannot use it. Why was not established. Two more flags in `claude --help`,
+  **not run**: `--safe-mode` (disables "MCP servers" among everything else, so probably the
+  connectors too) and `--bare` (never reads the claude.ai sign-in).
+- **`--restricted` keeps the connectors, but its init event does not list them** (Task 5, one
+  run, 2026-10-24: the command above with `--restricted` in place of `--setting-sources
+  project,local`). The help text: "ignores user, project and local settings files (managed
+  settings and --settings still apply; add --strict-mcp-config to skip MCP servers too)",
+  removes the built-in tools that run commands or code and WebFetch unless `--tools` names
+  them, "confines the file tools to the working directories (--add-dir included)", and refuses
+  `bypassPermissions`. Six lines: `init`, two `commands_changed`, one `assistant` ("OK"),
+  `rate_limit_event`, `result` (`success`). No hook line; `mcp_servers: []`; 23 tools, none
+  `mcp__`; Bash, PowerShell, Monitor, Workflow and CronCreate absent, Read, Write, Edit, Glob and
+  Grep still there; `plugins` only the four built-in ones; only the 19 built-in skills; empty
+  `memory_paths`; no command attempted. The second `commands_changed`, after init, added
+  `claude.ai Notion:make-this-a-notion-page (MCP)` and `...-database (MCP)`: the claude.ai
+  connectors do load under `--restricted`, a moment after init. Two consequences. The person's
+  setup is gone and `--settings` still applies, so `--restricted` isolates a reader. But under
+  `--restricted` init is printed before the connectors connect: a probe that reads init alone
+  sees no app with it.
+- **Without `--restricted`, init lists the connectors, plugin hooks or not** (Task 5, the
+  control, one run, 2026-10-24: section 1's command with `--settings <file>` holding
+  `{"disableAllHooks": true}`, nothing else changed). Seven lines: `init`, two
+  `thinking_tokens`, two `assistant`, `rate_limit_event`, `result` (`success`); no hook line, no
+  `commands_changed` after init. Init: 46 `mcp_servers`, of them 28 `claudeai` (12 `connected`,
+  16 `needs-auth`; none `pending` or `failed`) and 18 `plugin` (9 `needs-auth`, 7 `failed`, 2
+  `pending`); 376 tools, 33 built-in and 343 `mcp__claude_ai_*`, none from a plugin server. Every
+  `connected` claude.ai connector has tools in the list and no `needs-auth` one has any. So the
+  init event of the default probe is complete when it is printed (the connection attempts have
+  ended; `pending` shows only on plugin servers that were still starting), the hook lines are not
+  what gives the connectors time, and `probe_tools` needs nothing but the init event. The
+  `--restricted` run is the one whose init came early.
 
 ## 3. Usage, limits and extra usage
 
@@ -772,6 +834,12 @@ Each item names the command or check that settles it, for the owner.
   instance "Max" and `max`). Section 8 has a pair from two different accounts only.
 - **A reader with only `ToolSearch` built in.** `claude -p` with `REFUSE`, `--tools ToolSearch`
   and `--allowedTools` one connector read tool calls that tool (run 8 used the default tools).
+- **A restricted reader reaching a connector.** `--restricted` printed init before the connectors
+  connected (section 2), though they loaded a moment later. Whether they reach the first turn is
+  not known: run `--restricted --tools ToolSearch --allowedTools
+  mcp__claude_ai_Gmail__search_threads --max-turns 4` with a prompt asking for one Gmail search
+  that matches nothing, and see whether the tool is called. If it is, readers can add
+  `--restricted` (one line in `reader._command`; the probe stays as it is, without it).
 - **The doctor's own copy of `claude` and auto-update.** Whether a binary run from
   `~/.spaces/tools/claude/` updates itself, and where to: run it once with
   `DISABLE_AUTOUPDATER` unset and look at `claude doctor`'s install and auto-update lines.

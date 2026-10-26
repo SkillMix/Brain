@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import subprocess
 import sys
 from pathlib import Path
 
@@ -86,6 +87,17 @@ def make_space(root: Path, profile: str = "personal", mode: str = "live",
     if profile == "brain":
         write_page(root, "identity/charter.md", type="policy", title="Charter")
     return root
+
+
+def fake_run(seen: dict | None = None, stdout: str = "", stderr: str = "", code: int = 0):
+    """A `subprocess.run` stand-in for a test: records what it was called with (`argv`, and the
+    keywords: `env`, `cwd`, `input`, `timeout`) in `seen`, then returns a finished process with
+    this output. No test starts the real claude."""
+    def run(argv, **kw):
+        if seen is not None:
+            seen.update(argv=list(argv), **kw)
+        return subprocess.CompletedProcess(argv, code, stdout, stderr)
+    return run
 
 
 def mount_brain(space_root: Path, brain_root: Path) -> None:
