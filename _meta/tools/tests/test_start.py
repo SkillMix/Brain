@@ -1,5 +1,4 @@
 """Start: one sentence in an agent session sets a person or a company up, offline here."""
-import argparse
 import json
 import os
 import shutil
@@ -20,7 +19,7 @@ import setup_journal
 import spaceyaml
 import start
 import validate
-from conftest import make_space
+from conftest import args, last_report, make_space
 from test_sync_task import world
 
 TEMPLATE = Path(__file__).resolve().parents[3]
@@ -386,45 +385,10 @@ def test_the_tests_take_the_start_lock_in_their_own_folder(tmp_path, monkeypatch
 
 
 # ----- the build takes what the earlier phases found, and schedules the routines itself --------
-SLIM = None   # set by _slim_template for the module
-
-
-@pytest.fixture(autouse=True)
-def _here_is_restored(monkeypatch):
-    """`args` points start.HERE at the module's template copy; the end of the test puts it back."""
-    monkeypatch.setattr(start, "HERE", start.HERE)
-
-
 @pytest.fixture(scope="module", autouse=True)
-def _slim_template(tmp_path_factory):
-    """One template copy for every build in this module, without what only a working copy has (the
-    session's notes under .superpowers, the tool tests): a build copies from it twice (the brain and the
-    workspace) and never writes into it. A copy per test cost most of the suite's time."""
-    global SLIM
-    tpl = tmp_path_factory.mktemp("template") / "tpl"
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(onboard, "SKIP_DIRS", onboard.SKIP_DIRS | {".superpowers"})
-        mp.setattr(onboard, "SKIP_PATHS", onboard.SKIP_PATHS + ("_meta/tools/tests",))
-        onboard.copy_template(TEMPLATE, tpl)
-    SLIM = tpl
-    yield
-
-
-def args(tmp_path, **more) -> argparse.Namespace:
-    """The build's arguments as the command line gives them, offline: the spaces go under
-    `tmp_path/spaces`, made from the module's template copy that start.HERE is pointed at."""
-    start.HERE = SLIM
-    given = start.parser().parse_args(["build", "--offline", "--home", str(tmp_path / "spaces"), "--template", str(SLIM),
-                                       "--name", "Ada Okafor", "--user-instructions", str(tmp_path / "CLAUDE.md"),
-                                       "--json"])
-    for key, value in more.items():
-        setattr(given, key, value)
-    return given
-
-
-def last_report() -> onboard.Report:
-    """The report the build kept on start.LAST_REPORT."""
-    return start.LAST_REPORT
+def _slim_template(slim_template):
+    """The session's template copy (conftest's `slim_template`), made before any build of this module."""
+    yield slim_template
 
 
 GMAIL = {"app": "Gmail", "kinds": ["mail"], "read": ["mcp__claude_ai_Gmail__search_threads"], "write": [],
@@ -460,7 +424,7 @@ def no_outside(monkeypatch, git_email="ada.private@example.org"):
 
 
 @pytest.fixture(scope="module")
-def built(tmp_path_factory, _slim_template):
+def built(tmp_path_factory, slim_template):
     """One offline build over a finished setup, for the tests that only read what it left: a fake
     home of its own (undone before the tests run), the creation of each space recorded. Building once
     instead of in each of them."""

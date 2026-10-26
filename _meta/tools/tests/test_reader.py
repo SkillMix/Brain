@@ -683,7 +683,7 @@ def test_a_files_reader_denies_every_connector_tool_the_probe_knows(tmp_path):
     seen = {}
     reader.read_files("x {files}", local_files(tmp_path), RECORDS, run=files_run(seen), claude="claude", known_tools=KNOWN)
     assert seen["rules"]["permissions"] == {"deny": sorted(t for t in KNOWN if t.startswith("mcp__"))}   # none is given
-    assert set(seen["rules"]) == {"permissions", "hooks"}
+    assert set(seen["rules"]) == {"disableAllHooks", "permissions", "hooks"}
 
 
 def test_a_files_reader_carries_its_own_guard_a_hook_on_read_that_refuses_any_path_outside_its_folder(tmp_path):
@@ -691,7 +691,8 @@ def test_a_files_reader_carries_its_own_guard_a_hook_on_read_that_refuses_any_pa
     a PreToolUse hook on Read, and under --restricted the person's settings are not loaded at all."""
     seen = {}
     reader.read_files("x {files}", local_files(tmp_path), RECORDS, run=files_run(seen), claude="claude")   # no connector known
-    assert seen["rules"] == {"hooks": {"PreToolUse": [{"matcher": "Read", "hooks": [{"type": "command", "command": seen["guard"]}]}]}}
+    assert seen["rules"] == {"disableAllHooks": False,   # on, whatever the person's own settings say (Ruling R30)
+                             "hooks": {"PreToolUse": [{"matcher": "Read", "hooks": [{"type": "command", "command": seen["guard"]}]}]}}
     assert seen["guard"].startswith('"') and " -I " in seen["guard"] and "read_guard.py" in seen["guard"]
     assert seen["guard"].endswith(f'"{Path(seen["folder"]).resolve().as_posix()}" || exit 2')   # guarding the folder the run starts in; a guard that cannot start blocks
     argv = seen["argv"]

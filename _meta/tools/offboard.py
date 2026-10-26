@@ -32,6 +32,27 @@ def run_cmd(argv, dry_run=False, cwd=None):
     return onboard.run_cmd(argv, dry_run=dry_run, cwd=cwd)
 
 
+def remove_probe_task(report, root, state=None, dry_run=False) -> None:
+    """The routines' probe task a build recorded (`probe_task` in onboard.yaml, written before the task was
+    registered) and did not remove, because it was stopped first: removed through `remove_sync_task`, and
+    forgotten once it is gone. The record is read from a file a merge can change, so only this space's own
+    probe task (`<prefix>probe-<name>`) is ever removed by it; nothing else is touched."""
+    root = Path(root)
+    state = state if state is not None else onboard.read_yaml(root / "_meta" / "state" / "onboard.yaml", {}) or {}
+    record = state.get("probe_task")
+    name = record.get("name") if isinstance(record, dict) else None
+    try:
+        own = isinstance(name, str) and re.fullmatch(r"space-[a-z0-9-]*probe-" + re.escape(spaceyaml.load(root).name),
+                                                     name) is not None
+    except Exception:
+        own = False
+    if not own:
+        return
+    remove_sync_task(report, root, {"routine_tasks": [record]}, name, dry_run, label=f"routine probe task {name} removed")
+    if not dry_run and report.steps and report.steps[-1].done:
+        onboard.forget_probe_task(root)
+
+
 def remove_sync_task(report, root, state, task_name, dry_run, label="sync task removed") -> None:
     """Remove one OS task onboard registered: the sync task, or a routine's (`label` names it)."""
     if not dry_run and label == "sync task removed":
@@ -129,6 +150,7 @@ def run(root, online, dry_run=False, forget_records: bool = False,
         remove_sync_task(report, root, state, task_name, dry_run)
         for routine in state.get("routine_tasks") or []:   # routines the OS ran, without a harness scheduler
             remove_sync_task(report, root, state, routine["name"], dry_run, label=f"routine task {routine['name']} removed")
+        remove_probe_task(report, root, state, dry_run)   # a build stopped before it removed its probe task
     else:
         report.add("sync task removed", True, f"schtasks /Query /TN {task_name}",
                    "offline: nothing was registered")

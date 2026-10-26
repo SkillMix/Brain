@@ -1601,14 +1601,35 @@ def own_rows(report, dst, repo) -> list:
 
 
 def write_state(dst, case, offline, ui, workspace, task, repo, report, full=True) -> None:
-    """The onboarding root records the whole report; every other space only its own part."""
+    """The onboarding root records the whole report; every other space only its own part. A probe task a
+    build recorded and has not removed yet (`probe_task`) stays recorded, so the next build finds it."""
     dst = Path(dst)
     spaces = {k: str(v) for k, v in report.spaces.items() if full or Path(v) == dst}
     steps = [s.row() for s in report.steps] if full else own_rows(report, dst, repo)
-    write_yaml(dst / "_meta" / "state" / "onboard.yaml",
+    path = dst / "_meta" / "state" / "onboard.yaml"
+    stray = (read_yaml(path, {}) or {}).get("probe_task") if path.exists() else None
+    write_yaml(path,
                {"case": case, "at": pages.iso(spaceyaml.load(dst).now()), "offline": offline, "repo": repo,
                 "workspace": str(workspace) if workspace else None, "user_instructions": str(ui),
-                "sync_task": task, "spaces": spaces, "steps": steps})
+                "sync_task": task, "spaces": spaces, "steps": steps, **({"probe_task": stray} if stray else {})})
+
+
+def record_probe_task(root, record: dict) -> None:
+    """The routines' probe task in onboard.yaml (`probe_task`), written before the task is registered: a build
+    stopped before it removed the task leaves the record the next build, `--check` and offboard remove it by
+    (`offboard.remove_probe_task`)."""
+    path = Path(root) / "_meta" / "state" / "onboard.yaml"
+    state = read_yaml(path, {}) or {}
+    state["probe_task"] = dict(record)
+    write_yaml(path, state)
+
+
+def forget_probe_task(root) -> None:
+    """The probe task is gone: its record goes too."""
+    path = Path(root) / "_meta" / "state" / "onboard.yaml"
+    state = read_yaml(path, {}) or {}
+    if state.pop("probe_task", None) is not None:
+        write_yaml(path, state)
 
 
 # ----- detect, interview, run ------------------------------------------------------
@@ -2044,11 +2065,17 @@ def prune_offboarded(root) -> list:
 
 def check(root) -> list:
     """Re-run only the read-back checks, the doctor's included (read only); print nothing here.
-    The one write: an onboarding root forgets spaces that were offboarded (`prune_offboarded`)."""
+    Two writes: an onboarding root forgets spaces that were offboarded (`prune_offboarded`), and a probe
+    task a build left behind is removed (`offboard.remove_probe_task`), with its step."""
     root = Path(root).resolve()
     prune_offboarded(root)
     state = read_yaml(root / "_meta" / "state" / "onboard.yaml", {}) or {}
     steps = []
+    if state.get("probe_task"):
+        import offboard
+        removed = Report(case="check")
+        offboard.remove_probe_task(removed, root, state)
+        steps.extend(removed.steps)
     errs = [e for e in validate.validate(root) if not e.startswith("warning:")]
     steps.append(Step("space.yaml validates", not errs, f"python _meta/tools/validate.py {root}",
                       "; ".join(errs)[:200] or "clean"))

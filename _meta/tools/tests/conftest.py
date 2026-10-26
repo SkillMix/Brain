@@ -119,3 +119,52 @@ def space_factory(tmp_path):
     def _make(name="ada", **kwargs):
         return make_space(tmp_path / name, **kwargs)
     return _make
+
+
+# ----- the build's arguments, shared by the tests of start.py and of the routines (Task 8, moved here) ---
+TEMPLATE = Path(__file__).resolve().parents[3]
+SLIM = None   # set by the slim_template fixture, once a session
+
+
+@pytest.fixture(scope="session")
+def slim_template(tmp_path_factory):
+    """One template copy for every build of the session, without what only a working copy has (the
+    session's notes under .superpowers, the tool tests): a build copies from it twice (the brain and the
+    workspace) and never writes into it. A copy per test cost most of the suite's time."""
+    global SLIM
+    import onboard
+    tpl = tmp_path_factory.mktemp("template") / "tpl"
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(onboard, "SKIP_DIRS", onboard.SKIP_DIRS | {".superpowers"})
+        mp.setattr(onboard, "SKIP_PATHS", onboard.SKIP_PATHS + ("_meta/tools/tests",))
+        onboard.copy_template(TEMPLATE, tpl)
+    SLIM = tpl
+    yield tpl
+
+
+@pytest.fixture(autouse=True)
+def _here_is_restored(monkeypatch):
+    """`args` points start.HERE at the session's template copy; the end of the test puts it back."""
+    import start
+    monkeypatch.setattr(start, "HERE", start.HERE)
+
+
+def args(tmp_path, **more):
+    """The build's arguments as the command line gives them, offline: the spaces go under
+    `tmp_path/spaces`, made from the session's template copy that start.HERE is pointed at (a test
+    that calls this asks for the `slim_template` fixture)."""
+    import start
+    assert SLIM is not None, "ask for the slim_template fixture"
+    start.HERE = SLIM
+    given = start.parser().parse_args(["build", "--offline", "--home", str(tmp_path / "spaces"), "--template", str(SLIM),
+                                       "--name", "Ada Okafor", "--user-instructions", str(tmp_path / "CLAUDE.md"),
+                                       "--json"])
+    for key, value in more.items():
+        setattr(given, key, value)
+    return given
+
+
+def last_report():
+    """The report the build kept on start.LAST_REPORT."""
+    import start
+    return start.LAST_REPORT

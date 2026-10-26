@@ -166,14 +166,17 @@ def _prompt(prompt: str, schema: dict) -> str:
 
 
 def _known(known_tools: list | None) -> list:
-    """The tools the probe saw (the caller's list, else `routine.probe_path()` when it exists)."""
+    """The tools the probe saw (the caller's list, else `routine.probe_path()` when it exists): the ones it
+    lists now and every connector tool it has ever seen (`seen`, Ruling R30), so a tool that went away is
+    still denied when it comes back."""
     if known_tools is not None:
         return list(known_tools)
     try:
-        found = json.loads(routine.probe_path().read_text(encoding="utf-8")).get("tools")
-    except (OSError, ValueError, AttributeError):
+        data = json.loads(routine.probe_path().read_text(encoding="utf-8"))
+        found = [*(data.get("tools") or []), *(data.get("seen") or [])]
+    except (OSError, ValueError, AttributeError, TypeError):
         return []
-    return [t for t in found if isinstance(t, str)] if isinstance(found, list) else []
+    return list(dict.fromkeys(t for t in found if isinstance(t, str)))
 
 
 def _denied(tools: list, known: list) -> list:
@@ -223,8 +226,10 @@ def guard_command(folder, python: str | None = None) -> str:
 def _files_settings(folder: Path, cwd: Path, known: list) -> Path:
     """The files reader's own settings file: a PreToolUse hook on Read that refuses every path not
     inside the folder the run starts in (`read_guard.py`, whatever the person's own settings allow),
-    and the denial of every connector tool the probe knows. Beside the folder, not in it."""
-    data = {"hooks": {"PreToolUse": [{"matcher": "Read", "hooks": [{"type": "command", "command": guard_command(cwd)}]}]}}
+    kept on when the person switched every hook off (`"disableAllHooks": false`, Ruling R30), and the
+    denial of every connector tool the probe knows. Beside the folder, not in it."""
+    data = {"disableAllHooks": False,
+            "hooks": {"PreToolUse": [{"matcher": "Read", "hooks": [{"type": "command", "command": guard_command(cwd)}]}]}}
     deny = _denied([], known)
     if deny:
         data["permissions"] = {"deny": deny}

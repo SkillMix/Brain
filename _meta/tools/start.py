@@ -69,7 +69,10 @@ on the command line wins, and the journal's build record says where the address 
 writes the apps' verdicts, without their counts, to the workspace's private zone, where the
 routines read their grant, and schedules the routines (`finish_workspace`). The workspace goes in the brain's account; when that is an
 organisation whose members can read each other's repositories, one item on Needs you gives the
-click path to change it, which only the person can do.
+click path to change it, which only the person can do. Online, the build is done only once the
+routines proved they run on their own (`prove_routines`): a one-shot task the scheduler starts runs
+`routine.py --probe` twice, the routines' allowlist written between the two, and every check of the
+second must pass; the task is removed after.
 
     python start.py [signins|apps|research|build|history|resume] [--wait] [--json] [--probe]
                     [--invitation <brain repo>:<slug> | --brain <brain repo>] [--company NAME]
@@ -158,6 +161,7 @@ import yaml  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import apps  # noqa: E402
 import doctor  # noqa: E402
+import offboard  # noqa: E402
 import onboard  # noqa: E402
 import onboarding_page  # noqa: E402
 import reader  # noqa: E402
@@ -842,8 +846,9 @@ def phase_apps(args) -> dict:
 
 
 HEAD_START_LOOK = 60   # seconds between looks at the clock while a phase waits for the app card's ten minutes
-_now = lambda: dt.datetime.now().astimezone()   # noqa: E731  the tests stand in for it, and for the next
+_now = lambda: dt.datetime.now().astimezone()   # noqa: E731  the tests stand in for it, and for the next two
 _sleep = time.sleep
+_clock = time.monotonic
 LIMIT_WHY = ("Your Claude limit was reached while the company was being researched{text}. Say the sentence again "
              "once it resets: what was read is kept, and only the rest is read then.")
 HEAD_START_WHY = ("Your documents are read after {when}, ten minutes after you were shown which apps are read. Say "
@@ -1257,6 +1262,107 @@ def keep_findings(report, journal: dict, briefing=("", "asked")) -> None:
         setup_journal.set_phase("build", "running", owner_email=actual, owner_email_source=real)
 
 
+# ----- the routines prove they run on their own --------------------------------------------
+PROBE_WAIT = routine.PROBE_SECONDS + 60   # seconds the build waits for each probe's result: longer than its own claude may take
+PROBE_LOOK = 5                       # seconds between looks at the probe's file
+PROBE_TIME = (3, 33)                 # the one-shot task's time of day: it is started at once and removed after
+PROBE_STEP = "routines run on their own"   # begins "routine": the progress page files it under Routines
+PROBE_REFUSED = ("The computer's scheduler would not start the check that proves your routines run on their own. "
+                 "Say the sentence again; if it happens again, restart the computer first.")
+PROBE_SILENT = ("The check that proves your routines run on their own did not report back within {minutes} minutes. "
+                "Say the sentence again.")
+PROBE_ERROR = ("Claude's command line could not be asked what your routines may use, so they were not proved to "
+               "run on their own. Say the sentence again once Claude works in a terminal.")
+PROBE_BUSY = ("A routine was running, so the check that proves your routines run on their own could not start. "
+              "Say the sentence again once it is done; a routine runs an hour at most.")
+
+
+def _probe_result(started: float) -> dict | None:
+    """The probe's result when one was written since `started` (its checks, or why it could not run)."""
+    data = routine.read_probe()
+    stamp = data.get("stamp")
+    if not (isinstance(stamp, (int, float)) and stamp >= started and ("checks" in data or data.get("error"))):
+        return None
+    checks = [c for c in data.get("checks") or [] if isinstance(c, dict)]
+    return {"ok": data.get("ok") is True and not data.get("error") and all(c.get("ok") is True for c in checks),
+            "checks": checks, "notes": [str(n) for n in data.get("notes") or []], "error": data.get("error"),
+            "busy": data.get("busy") is True}
+
+
+def _probe_once(record: dict) -> dict:
+    """Start the probe task at once and wait for its result, up to PROBE_WAIT; a result with `why` when the
+    scheduler would not start it or it never reported."""
+    started = time.time()
+    if not onboard.run_now(record):
+        return {"ok": False, "checks": [], "notes": [], "why": PROBE_REFUSED}
+    deadline = _clock() + PROBE_WAIT
+    while True:
+        seen = _probe_result(started)
+        if seen is not None:
+            return seen
+        if _clock() >= deadline:
+            return {"ok": False, "checks": [], "notes": [], "why": PROBE_SILENT.format(minutes=PROBE_WAIT // 60)}
+        _sleep(PROBE_LOOK)
+
+
+def prove_routines(report, workspace) -> dict:
+    """That the routines run on their own, as the scheduler starts them: a one-shot task
+    (`<prefix>probe-<name>`) runs `routine.py --probe`, which looks at what such a run sees and checks it
+    (`routine.probe`). The first probe gives the tools the allowlist is written from (`write_allowlist`);
+    the second must pass every check with that allowlist in place (the first may have read an older
+    one). When the first did not report, or could not ask Claude, there is no second. The task is
+    removed whatever happened, and it is recorded in onboard.yaml before it is registered
+    (`onboard.record_probe_task`): a build stopped before it removed the task leaves the record, by which the
+    next build (first thing here), `onboard --check` and offboard remove it (`offboard.remove_probe_task`).
+    Each failed check is one step that names it; the result is {"ok", "checks", "notes", "why"}."""
+    workspace = Path(workspace).resolve()
+    name = spaceyaml.load(workspace).name
+    task = f"{onboard.task_prefix()}probe-{name}"
+    hour, minute = PROBE_TIME
+    check = f'{onboard.python_cmd()} "{workspace.as_posix()}/_meta/tools/routine.py" --probe "{workspace.as_posix()}"'
+    offboard.remove_probe_task(report, workspace)   # one an earlier build was stopped before it removed
+    record = {"name": task}
+    onboard.record_probe_task(workspace, record)
+    try:
+        record = onboard.register_task(report, f"routine probe task {task}", task, workspace,
+                                       [workspace / "_meta" / "tools" / "routine.py", "--probe", workspace],
+                                       times=[PROBE_TIME], cron=f"{minute} {hour} * * *")
+        onboard.record_probe_task(workspace, record)   # how this scheduler names it, for a later removal
+        if not report.steps or not report.steps[-1].done:
+            why = "The check that proves your routines run on their own could not be scheduled on this computer."
+            return {"ok": False, "checks": [], "notes": [], "why": why}
+        seen = _probe_once(record)
+        if not (seen.get("why") or seen.get("error")):
+            routine.write_allowlist(workspace)
+            seen = _probe_once(record)
+    finally:
+        offboard.remove_sync_task(report, workspace, {"routine_tasks": [record]}, task, False,
+                                  label=f"routine probe task {task} removed")
+        if report.steps and report.steps[-1].done:
+            onboard.forget_probe_task(workspace)
+    if seen.get("busy"):
+        seen["why"] = PROBE_BUSY
+        report.add(PROBE_STEP, False, check, PROBE_BUSY)
+    elif seen.get("error"):
+        seen["why"] = PROBE_ERROR
+        report.add(PROBE_STEP, False, check, PROBE_ERROR)
+    elif seen.get("why"):
+        report.add(PROBE_STEP, False, check, seen["why"])
+    else:
+        failed = [c for c in seen["checks"] if c.get("ok") is not True]
+        for c in failed:
+            report.add(f"routine check: {c.get('name')}", False, check, str(c.get("why") or "it did not pass"))
+        if not failed and not seen["checks"]:
+            report.add(PROBE_STEP, False, check, "the check reported nothing")
+            seen["why"] = "The check that proves your routines run on their own reported nothing."
+        elif failed:
+            seen["why"] = " ".join(f"{c.get('name')}: {c.get('why')}." for c in failed)
+        else:
+            report.add(PROBE_STEP, True, check, "proved twice, as the scheduler starts them")
+    seen["ok"] = bool(seen.get("ok")) and not seen.get("why")
+    return {k: seen.get(k) for k in ("ok", "checks", "notes", "why")}
+
+
 def phase_build(args) -> dict:
     """Everything start did before there were phases: the spaces, the personal instruction, the
     routines. It builds from what the earlier phases left in the journal (`found_by_setup`) and
@@ -1301,9 +1407,16 @@ def phase_build(args) -> dict:
     LAST_REPORT = report
     if args.email and getattr(report, "workspace", None):   # what they typed is their choice: it replaces an address worked out before
         fill_address(report, spaceyaml.load(report.workspace).owner, address_in(args.email), replace=True)
-    result = summary(report)
     if not args.dry_run:
         keep_findings(report, journal, (found["email"] or "", found["email_source"]))
+    probe = None
+    if not (args.offline or args.dry_run or report.failed()) and getattr(report, "workspace", None):
+        probe = prove_routines(report, report.workspace)   # after keep_findings: the grant is read from the verdicts
+        notes = probe.get("notes") or []
+        if notes or (setup_journal.load().get("build") or {}).get("routines_note"):
+            setup_journal.set_phase("build", "running", routines_note=notes[0] if notes else None)
+    result = summary(report)
+    result["probe"] = probe
     if new_company and not args.dry_run:   # the research of phase 3 goes into the brain just made
         try:
             landed = _land_research(report)
@@ -1328,10 +1441,14 @@ def phase_build(args) -> dict:
             print(f"page: {result['page']}")
         for row in result["yours"]:
             print(f"yours: {row.get('name')}: {row.get('result')} (check: {row.get('check')})")
+        for note in (probe or {}).get("notes") or []:
+            print(f"routines: {note}")
         if result["failed"] or result["yours"]:
             print("then say the sentence again: every step already done is kept")
     state = ("failed" if result["failed"] else "pending" if args.dry_run
              else "waiting" if result["stopped"] or result["yours"] else "done")
+    if probe and probe.get("why"):
+        result["why"] = probe["why"]
     return {"phase": "build", "state": state, **result}
 
 

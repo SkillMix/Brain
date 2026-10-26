@@ -5,8 +5,11 @@ routines outlive the session that set them up. The OS scheduler starts it at the
 The prompt is the rendered routine file without its frontmatter. Claude runs in the workspace
 with its permission profile plus the routine profile this tool writes for each run
 (`--settings`, see `routine_settings`); nobody is there to answer a permission prompt, so anything
-that would ask is refused and the routine goes on without it. Output and the exit code go to
-`~/.spaces/logs/<routine>-<space>.log`.
+that would ask is refused and the routine goes on without it. One run at a time per workspace
+(`take_lock`): a second one writes `stopped` and leaves. Each run appends its own outcome line, with
+the tokens it really used, to `_meta/state/runs.jsonl` (`outcome`, read from what the command line
+said, never from its exit code), and a summary to `~/.spaces/logs/<routine>-<space>.log`. A run
+that found Claude signed out, or an app that needs a new sign-in, leaves one item on Needs you.
 
 `probe_tools` asks the command line itself what it would let a run call (its `init` event), since
 the tool names a headless run sees are not the ones the app that set it up sees; `reader.py` runs
@@ -14,10 +17,19 @@ the read-only runs that open the content a routine did not write.
 
 A routine reads swept mail, chat and transcripts, which anyone can write. The routine profile
 keeps such a record from turning into code on this machine: no edit to the machinery, the
-instructions or git (`PROTECTED_EDITS`), and only the tools the routines run (`ROUTINE_TOOLS`), by
-their exact paths; every other tool script in a space is refused by name.
+instructions or git (`PROTECTED_EDITS`), only the built-in tools a routine needs (`ROUTINE_BUILTINS`,
+`--tools`), and only the tools the routines run (`ROUTINE_TOOLS`), by their exact paths, behind
+`bash_guard.py`, which lets one plain command of those shapes through and nothing the person's own
+settings allow besides; every other tool script in a space is refused by name. Of the connectors it
+may call only what the grant names (`grant`): the read tools of the apps read as work, a tracker's
+writes, and the send tools of the person's own mailbox behind `send_guard.py`, which lets mail go to
+the person alone, once the probe proved it in the shell Claude Code will run it with. Every other
+connector tool the probe has ever seen is denied. The profile keeps every hook on
+(`"disableAllHooks": false`).
 
     python routine.py <workspace>/_meta/state/routines/<routine>.md
+    python routine.py --probe <workspace>    # what a scheduled run sees, and three checks: ~/.spaces/probe.json
+    python routine.py --locked <workspace>   # the run that holds the workspace's lock, or nothing
 """
 from __future__ import annotations
 
@@ -28,7 +40,12 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import threading
+import time
 from pathlib import Path
+
+import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import doctor  # noqa: E402
@@ -62,6 +79,9 @@ OVERAGE_PATTERNS = (
     r"You[\u2019']ve hit your (?:monthly spend limit|(?:channel|org)[\u2019']s monthly (?:spend|usage) limit"
     r"|individual (?:spend|usage) limit|team[\u2019']s shared budget|usage credit limit)",
     r"You[\u2019']ve reached your Fable limit|requires usage credits",
+    # Ruling R8: extra usage that ran out, or a seat without any, stops a run as overage too
+    r"You[\u2019']re out of extra usage",
+    r"Your seat type doesn[\u2019']t include extra usage",
 )
 AUTH_PATTERNS = (
     # "Not logged in \u00b7 Please run /login" (observed), "Not logged in \u00b7 Run /login"
@@ -109,29 +129,48 @@ ROUTINE_TOOLS = ("brief.py", "chain.py", "check.py", "classify.py", "distill.py"
                  "owner_email.py", "registry.py", "release.py", "request.py", "route.py", "search.py",
                  "status.py", "sweep.py", "sync.py", "tests_run.py", "tracker.py")
 # What no routine edits, in any space on this machine: the code that runs (tools, migrations,
-# tests and their configuration), the instructions every session loads, git, the rules and the
-# routine prompts. A path rule for Edit covers Write and NotebookEdit too; Claude Code reads no
-# path rule written for Write.
+# tests and their configuration), the instructions every session loads, git, the rules, the
+# routine prompts and the apps' verdicts the grant is read from. A path rule for Edit covers Write
+# and NotebookEdit too; Claude Code reads no path rule written for Write.
 PROTECTED_EDITS = ("_meta/tools/**", "_meta/migrations/**", "_meta/tests/**", "_meta/templates/**",
-                   "_meta/state/routines/**", ".claude/**", ".github/**", ".git/**", ".gitmodules",
-                   ".mcp.json", "rules.md", "space.yaml", "CLAUDE.md", "AGENTS.md", "conftest.py",
-                   "pytest.ini", "pyproject.toml", "setup.cfg", "tox.ini")
+                   "_meta/state/routines/**", "_meta/state/private/apps.yaml", ".claude/**", ".github/**",
+                   ".git/**", ".gitmodules", ".mcp.json", "rules.md", "space.yaml", "CLAUDE.md", "AGENTS.md",
+                   "conftest.py", "pytest.ini", "pyproject.toml", "setup.cfg", "tox.ini")
 # Rooted at each space: a folder name a subject could also have.
 PROTECTED_IN_ROOT = ("identity/**",)
 READ_ONLY = ("Bash(gh pr view *)", "Bash(gh pr list *)", "Bash(git status *)", "Bash(git log *)",
              "Bash(git diff *)", "Bash(git show *)")
+# The built-in tools a routine has (`--tools`, Ruling R30): the shell its tools run in, the files, and
+# ToolSearch, which loads a connector's tools. Web, PowerShell, agents and schedules are left out; the
+# profile denies them by name too (`reader.DENIED`), so one a later version adds under such a name stays out.
+# `Task` is there for the second agent that checks route and distill decisions; a subagent runs under
+# the same profile and hooks.
+ROUTINE_BUILTINS = ("Bash", "Read", "Edit", "Write", "Glob", "Grep", "ToolSearch", "Task")
 
 
 # What a routine does not inherit from the session that set it up: another provider, another
 # endpoint, an API key or token. A routine bills the person's claude.ai sign-in, so the sign-in
 # that is checked, and the one that is started, is the one it will find without these.
 STRIPPED_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK",
-                "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_OAUTH_TOKEN")
+                "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_OAUTH_TOKEN")
+GIT_BASH = "CLAUDE_CODE_GIT_BASH_PATH"
 
 
 def clean_env(env: dict) -> dict:
     """A copy of the environment as a routine sees it: without STRIPPED_ENV."""
     return {key: value for key, value in env.items() if key.upper() not in STRIPPED_ENV}   # Windows ignores case
+
+
+def routine_env(env: dict, shell: str = "", windows: bool | None = None) -> dict:
+    """The environment a routine's claude runs in: `clean_env`, and on Windows `CLAUDE_CODE_GIT_BASH_PATH` set to
+    `shell`, the Git Bash the probe proved the send guard in (`grant`'s `shell`), so Claude Code runs the hooks
+    in that one and no other."""
+    env = clean_env(env)
+    windows = os.name == "nt" if windows is None else windows
+    if windows and shell:
+        env = {key: value for key, value in env.items() if key.upper() != GIT_BASH}
+        env[GIT_BASH] = shell
+    return env
 
 
 class ProbeError(RuntimeError):
@@ -258,20 +297,46 @@ def roots_of(workspace: Path) -> list:
         return [Path(workspace)]
 
 
-def routine_settings(workspace, body: str, roots=None) -> dict:
-    """The profile one routine run adds to the space's own (`claude --settings`). Deny rules win
-    over every allow rule in every scope, so the space's own profile cannot widen these."""
+def routine_settings(workspace, body: str, roots=None, person: str = "", read_tools=(), write_tools=(),
+                     send_tools=(), known_tools=None, profile=None, shell: str | None = None) -> dict:
+    """The profile one routine run adds to the space's own (`claude --settings`, written to `profile`). Deny
+    rules win over every allow rule in every scope, so the space's own profile cannot widen these, and
+    `"disableAllHooks": false` keeps its hooks on whatever the person's own settings say.
+
+    Bash runs only the routine tools and the read-only gh and git commands: a PreToolUse hook on Bash
+    (`bash_guard.py <profile>`, the workspace's own) lets through one plain command of a shape this profile
+    allows, so a Bash allow in the person's own settings never widens a routine. When that hook's command
+    cannot be written, Bash is denied outright. The other built-in tools a routine could reach out with are
+    denied by name (`ROUTINE_BUILTINS` are the ones it has).
+
+    Of the connectors it allows the grant's tools by their exact names, each checked again here:
+    `read_tools` that only read (`reader.is_read_tool`), `write_tools` that create, update or save and
+    do nothing else, and `send_tools` whose name says send, only with a `person` the send guard can
+    hold them to and a shell to run it with (`shell`, the one the probe proved; else `hook_shell`): a
+    PreToolUse hook on each runs the workspace's `send_guard.py <person>` (`send_guard_command`).
+    Every other connector tool it knows of (`known_tools`, else every one the probe has seen) is denied,
+    so a tool the person once chose "always allow" for in their own settings is refused here too."""
+    import reader
     workspace = Path(workspace).resolve()
+    tools_dir = workspace / "_meta" / "tools"
     roots = [Path(r).resolve() for r in (roots or [workspace])]
+    profile = Path(profile) if profile else settings_path(Path("routine"), "unwritten")
+    if shell is None:
+        found = hook_shell()
+        shell = found[0] if found else ""
     pys = interpreters(body, roots)
     # Each root as it resolves and as the prompt spells it (a rule matches the text as written),
     # only when the spelling is one of the roots.
     named = [m for m in re.findall(r'([^\s`"<>]+)/_meta/tools/[a-z_]+\.py', body)
              if "/" in m and Path(m).is_absolute() and Path(m).resolve() in roots]
     places = list(dict.fromkeys([r.as_posix() for r in roots] + named))
-    allow = [f"Bash({py} _meta/tools/{tool} *)" for py in pys for tool in ROUTINE_TOOLS]
+    try:
+        bash = bash_guard_command(profile, script=tools_dir / "bash_guard.py")
+    except ValueError:   # a path the hook's command cannot carry: no Bash at all, rather than an unguarded one
+        bash = None
+    allow = [f"Bash({py} _meta/tools/{tool} *)" for py in pys for tool in ROUTINE_TOOLS] if bash else []
     allow += [f"Bash({py} {place}/_meta/tools/{tool} *)"
-              for place in places for py in pys for tool in ROUTINE_TOOLS]
+              for place in places for py in pys for tool in ROUTINE_TOOLS] if bash else []
     others = sorted({p.name for root in [workspace, *roots] for p in (root / "_meta" / "tools").glob("*.py")}
                     - set(ROUTINE_TOOLS))
     deny = [f"Edit(//**/{pattern})" for pattern in PROTECTED_EDITS]
@@ -281,24 +346,1058 @@ def routine_settings(workspace, body: str, roots=None) -> dict:
     # `-m` puts the working folder first on the import path, so a planted module would run;
     # `--output` lets a read-only git command write a file.
     deny += ["Bash(python -m *)", "Bash(python3 -m *)", "Bash(git *--output*)"]
-    return {"permissions": {"allow": allow + list(READ_ONLY), "deny": deny}}
+    deny += [t for t in dict.fromkeys([*reader.DENIED, "WebFetch"])
+             if t not in ROUTINE_BUILTINS or (t == "Bash" and not bash)]
+    read_tools, write_tools, send_tools = (_strings(list(x or [])) for x in (read_tools, write_tools, send_tools))
+    given = [*read_tools, *write_tools, *send_tools]
+    reads = [t for t in dict.fromkeys(read_tools) if reader.is_read_tool(t)]
+    writes = [t for t in dict.fromkeys(write_tools) if _writes(t)]
+    sends = [t for t in dict.fromkeys(send_tools) if _sends(t)]
+    try:   # without a shell that runs the hook (Git Bash on Windows) it would not block: no send at all
+        guard = send_guard_command(person, script=tools_dir / "send_guard.py") if sends and shell else None
+    except ValueError:
+        guard = None
+    sends = sends if guard else []
+    granted = list(dict.fromkeys(reads + writes + sends))
+    deny += sorted({t for t in [*reader._known(known_tools), *given]
+                    if reader.CONNECTOR_TOOL.fullmatch(t) and t not in granted})
+    data = {"disableAllHooks": False,
+            "permissions": {"allow": allow + (list(READ_ONLY) if bash else []) + granted, "deny": deny}}
+    hooks = [{"matcher": "Bash", "hooks": [{"type": "command", "command": bash}]}] if bash else []
+    hooks += [{"matcher": tool, "hooks": [{"type": "command", "command": guard}]} for tool in sends]
+    if hooks:
+        data["hooks"] = {"PreToolUse": hooks}
+    return data
 
 
-def write_settings(workspace, prompt: Path, body: str, name: str) -> Path:
-    """The routine profile for this run, written again every run, outside every space."""
-    path = Path.home() / ".spaces" / "routines" / f"{prompt.stem}-{name}.settings.json"
+def _connector_part(tool) -> str | None:
+    import reader
+    found = reader.CONNECTOR_TOOL.fullmatch(tool) if isinstance(tool, str) else None
+    return found.group("tool") if found else None
+
+
+def _writes(tool) -> bool:
+    """A tracker's write: its name creates, updates or saves, and says no other act (delete, move,
+    assign, ...)."""
+    import apps
+    import reader
+    part = _connector_part(tool)
+    if part is None:
+        return False
+    low, words = part.lower(), reader.name_words(part)
+    return (any(w in low for w in apps.WRITE_WORDS)
+            and not any(w in low for w in reader.ACT_WORDS if w not in apps.WRITE_WORDS)
+            and not any(w in words for w in reader.ACT_VERBS))
+
+
+def _sends(tool) -> bool:
+    import apps
+    part = _connector_part(tool)
+    return part is not None and apps.SEND_WORD in part.lower()
+
+
+def settings_path(prompt: Path, name: str) -> Path:
+    """Where one routine's profile is written: outside every space."""
+    return Path.home() / ".spaces" / "routines" / f"{Path(prompt).stem}-{name}.settings.json"
+
+
+def write_settings(workspace, prompt: Path, body: str, name: str, got: dict | None = None, roots=None) -> Path:
+    """The routine profile for this run, written again every run, outside every space, from the
+    grant (`got`, else read now)."""
+    path = settings_path(prompt, name)
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = routine_settings(workspace, body, roots_of(Path(workspace)))
+    got = got if got is not None else grant(workspace)
+    data = routine_settings(workspace, body, roots or roots_of(Path(workspace)), got["person"], got["read"],
+                            got["write"], got["send"], profile=path, shell=got["shell"])
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8", newline="\n")
     return path
 
 
+def _prompts(workspace) -> list:
+    return sorted((Path(workspace) / "_meta" / "state" / "routines").glob("*.md"))
+
+
+def split_prompt(text: str) -> tuple:
+    """(the frontmatter as a mapping, the prompt without it)."""
+    parts = text.split("---", 2) if text.startswith("---") else []
+    if len(parts) < 3:
+        return {}, text
+    try:
+        meta = yaml.safe_load(parts[1]) or {}
+    except yaml.YAMLError:
+        meta = {}
+    return (meta if isinstance(meta, dict) else {}), parts[2].lstrip()
+
+
+def write_allowlist(workspace) -> list:
+    """Every rendered routine's profile, written from the grant as it stands: the build writes them
+    between its two probes, and each run writes its own again."""
+    workspace = Path(workspace).resolve()
+    name = spaceyaml.load(workspace).name
+    got, roots = grant(workspace), roots_of(workspace)
+    return [write_settings(workspace, prompt, split_prompt(prompt.read_text(encoding="utf-8"))[1], name, got, roots)
+            for prompt in _prompts(workspace)]
+
+
+# ----- the guards' commands -------------------------------------------------------------------
+# The hook commands are written as the read guard's is (`reader.guard_command`): each word between
+# double quotes with forward slashes, and `|| exit 2`, so a guard that cannot start blocks the call. A
+# profile names the workspace's own guards (`routine_settings`), the ones its runs use.
+SEND_GUARD = Path(__file__).resolve().with_name("send_guard.py")
+BASH_GUARD = Path(__file__).resolve().with_name("bash_guard.py")
+STRANGER = "not-you@example.invalid"   # the address the send check proves the guard refuses
+HOOK_SECONDS = 10                      # a guard answers within a second; one that hangs has failed
+
+
+def guardable(person) -> str | None:
+    """The person's one address as the send guard holds a send to it, or None: no address, more than
+    one, or one the hook's command cannot carry between double quotes."""
+    import reader
+    import send_guard
+    address = send_guard.address_of(person)
+    return address if address and not any(c in address for c in reader.UNQUOTABLE) else None
+
+
+def send_guard_command(person: str, python: str | None = None, script=None) -> str:
+    """`"<python>" -I "<send_guard.py>" "<address>" || exit 2`: only exit code 2 blocks a call, so a guard
+    that cannot start (a missing interpreter or script, a crash) ends in a 2 too. ValueError for a
+    person that is not one address the command can carry, or a path it cannot quote."""
+    import reader
+    address = guardable(person)
+    if address is None:
+        raise ValueError("an address the send guard's command cannot carry")
+    return f'{reader._quoted(python or sys.executable)} -I {reader._quoted(script or SEND_GUARD)} "{address}" || exit 2'
+
+
+def bash_guard_command(profile, python: str | None = None, script=None) -> str:
+    """`"<python>" -I "<bash_guard.py>" "<the routine's settings file>" || exit 2`. ValueError for a path the
+    command cannot quote."""
+    import reader
+    words = (python or sys.executable, script or BASH_GUARD, profile)
+    return f"{reader._quoted(words[0])} -I {reader._quoted(words[1])} {reader._quoted(words[2])} || exit 2"
+
+
+def hook_shell(windows: bool | None = None) -> list | None:
+    """The shell Claude Code runs a hook command with: Git Bash on Windows (the one `CLAUDE_CODE_GIT_BASH_PATH`
+    names, else the one beside `git`; never a `bash` found on PATH, which can be WSL's and cannot start a
+    Windows program by its path), else `sh`. None on a Windows without Git Bash."""
+    windows = os.name == "nt" if windows is None else windows
+    if not windows:
+        return ["/bin/sh", "-c"]
+    given = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH")
+    if given and Path(given).is_file():
+        return [given, "-c"]
+    git = shutil.which("git")
+    if git:
+        for up in Path(git).parents[1:3]:   # <Git>/cmd/git.exe, <Git>/mingw64/bin/git.exe
+            bash = up / "bin" / "bash.exe"
+            if bash.is_file():
+                return [str(bash), "-c"]
+    return None
+
+
+def run_hook(command: str, payload: bytes, shell: list | None = None) -> int | None:
+    """Run a hook command as Claude Code would, in `shell` (else `hook_shell`), with `payload` on stdin: its exit
+    code, or None when there is no shell to run it with or it did not finish."""
+    shell = shell or hook_shell()
+    if shell is None:
+        return None
+    try:
+        return subprocess.run([*shell, command], input=payload, capture_output=True, timeout=HOOK_SECONDS).returncode
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+# ----- the grant: what the routines may call ---------------------------------------------------
+APPS_FILE = Path("_meta") / "state" / "private" / "apps.yaml"
+NO_MAILBOX = "No mailbox of yours is connected, so the routines send no mail."
+NO_ADDRESS = "Your morning briefing has no address the routines can hold their mail to, so they send no mail."
+MAILBOX_SIGNED_OUT = "Your mailbox in {app} needs a new sign-in, so the routines send no mail until it is connected again."
+NO_SHELL = ("This computer has no Git for Windows, which the check on the routines' mail runs in, so the routines "
+            "send no mail until it is installed.")
+NOT_PROVEN = ("The check that keeps the routines' mail to you alone has not passed on this computer yet, so the "
+              "routines send no mail until it does.")
+
+
+def read_probe() -> dict:
+    """What probe.json holds, or {} when there is none or it cannot be read."""
+    try:
+        data = json.loads(probe_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_probe(data: dict) -> Path:
+    """probe.json written whole or not at all: a reader never sees half of it."""
+    path = probe_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix="probe.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps(data, indent=2) + "\n")
+        for attempt in range(20):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:   # Windows: someone is reading it this instant
+                if attempt == 19:
+                    raise
+                time.sleep(0.05)
+    finally:
+        Path(tmp).unlink(missing_ok=True)
+    return path
+
+
+def _strings(value) -> list:
+    return [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
+
+
+def _connector_tools(tools) -> list:
+    import reader
+    return [t for t in _strings(tools) if reader.CONNECTOR_TOOL.fullmatch(t)]
+
+
+def ever_seen(old: dict, now: dict) -> list:
+    """Every connector tool the probe or a run has ever listed (probe.json's `seen`): what the profile denies
+    unless the grant names it, so a tool that went away and came back is never let through by being forgotten."""
+    return list(dict.fromkeys(_strings(old.get("seen")) + _connector_tools(old.get("tools"))
+                              + _connector_tools(now.get("tools"))))
+
+
+def merged(old: dict, seen: dict) -> dict:
+    """A routine run's own init joined to probe.json (`refresh_probe`): its tools added to the probe's (the
+    run's init leaves out what its profile denies, so it cannot say a tool is gone; only `--probe`, which
+    replaces the list, can), each server's status the newest one seen, and `seen` kept whole."""
+    tools = list(dict.fromkeys(_strings(old.get("tools")) + _strings(seen.get("tools"))))
+    servers: dict = {}
+    for server in [*(old.get("mcp_servers") or []), *(seen.get("mcp_servers") or [])]:
+        if isinstance(server, dict) and isinstance(server.get("name"), str):
+            servers[server["name"]] = {"name": server["name"], "status": str(server.get("status") or "")}
+    return {"tools": tools, "mcp_servers": list(servers.values()), "seen": ever_seen(old, seen)}
+
+
+def _verdicts(workspace) -> list:
+    """The apps' verdicts the build kept (`start.keep_findings`); [] when there are none or the file
+    cannot be read: a grant from a broken file is empty, never wide."""
+    try:
+        data = yaml.safe_load((Path(workspace) / APPS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError, yaml.YAMLError):
+        return []
+    rows = data.get("apps") if isinstance(data, dict) else None
+    return [r for r in rows if isinstance(r, dict) and isinstance(r.get("app"), str)] if isinstance(rows, list) else []
+
+
+def grant(workspace, probe: dict | None = None, shell: str | None = None) -> dict:
+    """What the routines may call, from the apps' verdicts and what the latest probe sees (`probe`, else
+    probe.json): {"read", "write", "send", "reconnect", "notes", "person", "shell"}.
+
+    - An app read as work or mixed gives the read tools its verdict names that the probe lists and that
+      only read, and, for a tracker, the tools that create, update or save (apps.group decides both).
+    - The mail app whose account is the person's own (`owner_email`, `Name <address>` read, without
+      regard to case) gives the send tools the probe lists for it, whatever its verdict but
+      someone-else's (Ruling R19): the briefing goes from the person's own mailbox to the person.
+    - An app read as work or mixed that the probe lists as needing a new sign-in gives nothing and is
+      named in `reconnect` (Ruling R17); no other app stands in for it.
+    - A send tool needs the shell the send guard was proven in (`shell`, else the probe's `hook_shell`):
+      `shell` in the result, which a run pins (`routine_env`). Without a mailbox to send from, without a
+      proven shell, or on a Windows without the Git Bash the guard's hook runs in (where Claude Code would
+      run it with PowerShell, which does not block), there is no send tool, and one plain line in `notes`
+      says so."""
+    import apps
+    import send_guard
+    probe = read_probe() if probe is None else probe
+    proven = probe.get("hook_shell") if shell is None else shell
+    proven = proven if isinstance(proven, str) and proven and Path(proven).is_file() else ""
+    servers = [s for s in probe.get("mcp_servers") or [] if isinstance(s, dict)]
+    groups = {g["app"]: g for g in apps.group(_strings(probe.get("tools")), servers)}
+    signed_out = set(apps.not_signed_in(servers))
+    try:
+        person = guardable(spaceyaml.load(workspace).owner_email)
+    except Exception:
+        person = None
+    read, write, send, reconnect, mailbox_out = [], [], [], [], []
+    for verdict in _verdicts(workspace):
+        app, kind = verdict["app"], verdict.get("verdict")
+        group = None if app in signed_out else groups.get(app)
+        if kind in apps.READ:
+            if app in signed_out:
+                reconnect.append(app)
+            elif group:
+                read += [t for t in _strings(verdict.get("read")) if t in group["read"]]
+                write += [t for t in _strings(verdict.get("write")) if t in group["write"]]
+        owner = send_guard.address_of(verdict.get("account"))
+        if kind != "someone-else" and person and owner and owner.lower() == person.lower():
+            if app in signed_out:
+                mailbox_out.append(app)
+            elif group:
+                send += group["send"]
+    send = list(dict.fromkeys(send))
+    notes = []
+    if send and not proven:
+        send = []
+        notes.append(NO_SHELL if hook_shell() is None else NOT_PROVEN)
+    elif not send:
+        notes.append(NO_ADDRESS if not person else MAILBOX_SIGNED_OUT.format(app=mailbox_out[0]) if mailbox_out
+                     else NO_MAILBOX)
+    return {"read": list(dict.fromkeys(read)), "write": list(dict.fromkeys(write)), "send": send,
+            "reconnect": list(dict.fromkeys(reconnect)), "notes": notes, "person": person or "", "shell": proven}
+
+
+def read_grant(workspace) -> tuple:
+    """(read tools, write tools, send tools) of the grant."""
+    got = grant(workspace)
+    return got["read"], got["write"], got["send"]
+
+
+# ----- what only the person can do: Needs you ----------------------------------------------
+ITEMS = Path("_inbound") / "needs-you" / "routine.yaml"
+SIGNIN_ID = "routine-claude-signin"
+RECONNECT_PREFIX = "routine-reconnect-"
+
+
+def _signin_item() -> dict:
+    import signin
+    return {"id": SIGNIN_ID, "kind": "request",
+            "text": "Sign in to Claude's command line again: your routines stopped because its sign-in ran out.",
+            "recommendation": "sign in once in the browser window the sign-in opens, then say yes",
+            "default": "your routines stay stopped until you sign in", "deadline": None, "depends": 1,
+            "payload": ITEMS.as_posix(), "fingerprint": "", "check": " ".join(signin.CLAUDE_LOGIN)}
+
+
+def _reconnect_id(app: str) -> str:
+    return RECONNECT_PREFIX + (re.sub(r"[^a-z0-9]+", "-", app.lower()).strip("-") or "app")
+
+
+def _reconnect_item(app: str) -> dict:
+    return {"id": _reconnect_id(app), "kind": "reconnect",
+            "text": (f"Reconnect {app}: its sign-in ran out, so your routines leave it out until you sign in to "
+                     f"{app} again in Claude's connector settings."),
+            "recommendation": "sign in again in your connector settings, then say yes",
+            "default": f"{app} stays out of your routines until it is connected again", "deadline": None,
+            "depends": 1, "payload": ITEMS.as_posix(), "fingerprint": "",
+            "check": f"the next routine run finds {app} connected"}
+
+
+def write_items(workspace, claude_signin: bool | None = None, reconnect: list | None = None) -> None:
+    """The routines' own items, without the model: Claude's sign-in (True asks, False withdraws, None
+    leaves it as it is) and one reconnect item per app in `reconnect` (None leaves them)."""
+    path = Path(workspace) / ITEMS
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, yaml.YAMLError):
+        data = {}
+    rows = data.get("items") if isinstance(data, dict) else None
+    before = [i for i in rows if isinstance(i, dict)] if isinstance(rows, list) else []
+    items = list(before)
+    if claude_signin and not any(i.get("id") == SIGNIN_ID for i in items):
+        items.insert(0, _signin_item())
+    elif claude_signin is False:
+        items = [i for i in items if i.get("id") != SIGNIN_ID]
+    if reconnect is not None:
+        old = {i.get("id"): i for i in items if str(i.get("id", "")).startswith(RECONNECT_PREFIX)}
+        items = [i for i in items if i.get("id") not in old] + [old.get(_reconnect_id(a)) or _reconnect_item(a)
+                                                                for a in dict.fromkeys(reconnect)]
+    if items != before or (not path.exists() and items):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(yaml.safe_dump({"items": items}, sort_keys=False, allow_unicode=True, width=100),
+                        encoding="utf-8", newline="\n")
+
+
+# ----- one run at a time per workspace ---------------------------------------------------------
+LOCK_HOURS = 2   # Ruling R11: a run stops after an hour; a live pid on a lock older than this is a reused one
+TAKEOVER_SECONDS = 10   # a takeover, or a lock being written, takes milliseconds: one older than this was left
+
+
+def lock_path(workspace) -> Path:
+    """The workspace's lock, with the machine, outside every space: {pid, routine, started}."""
+    return Path.home() / ".spaces" / "locks" / f"{spaceyaml.load(workspace).name}.lock"
+
+
+def _lock_data(raw: bytes) -> dict | None:
+    """A lock as a run writes it, the time as a moment; None for anything else: a corrupt lock is a dead one."""
+    try:
+        data = yaml.safe_load(raw.decode("utf-8"))
+    except (UnicodeDecodeError, yaml.YAMLError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    pid, started = data.get("pid"), data.get("started")
+    if isinstance(started, str):
+        try:
+            started = dt.datetime.fromisoformat(started)
+        except ValueError:
+            return None
+    if not (isinstance(pid, int) and not isinstance(pid, bool) and pid > 0 and isinstance(started, dt.datetime)):
+        return None
+    return {"pid": pid, "routine": str(data.get("routine") or ""),
+            "started": started if started.tzinfo else started.astimezone()}
+
+
+def _live(data: dict | None) -> bool:
+    """Whether a lock is a running run's: its process runs, and it is neither from the future nor older
+    than LOCK_HOURS (then the pid is another process's now)."""
+    if data is None:
+        return False
+    age = dt.datetime.now().astimezone() - data["started"]
+    if age < -dt.timedelta(minutes=5) or age >= dt.timedelta(hours=LOCK_HOURS):
+        return False
+    return pid_alive(data["pid"])
+
+
+def _link(source: Path, path: Path) -> bool:
+    """Give `source`'s file the name `path` only when no file has it: a hard link, or a rename on a
+    Windows file system without links (a rename never replaces a file there). False when one is there."""
+    try:
+        os.link(source, path)
+        return True
+    except FileExistsError:
+        return False
+    except OSError:
+        if os.name != "nt":
+            raise
+    try:
+        os.rename(source, path)
+        return True
+    except FileExistsError:
+        return False
+
+
+def _create(path: Path, content: bytes) -> bool:
+    """Make the lock with its content in one step, or not at all when there is one."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".new")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(content)
+        try:
+            return _link(Path(tmp), path)
+        except OSError:   # a file system without links: an exclusive create, its content right after
+            try:
+                fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                return False
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(content)
+            return True
+    finally:
+        Path(tmp).unlink(missing_ok=True)
+
+
+def _unique(path: Path) -> Path:
+    return path.with_name(f"{path.name}.{os.getpid()}-{threading.get_ident()}-{time.monotonic_ns()}.old")
+
+
+def _age(path: Path) -> float:
+    try:
+        return time.time() - path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _remove(path: Path, raw: bytes | None = None) -> bool:
+    """Take `path` away in one step that only one run can make: renamed to a name of its own, then removed.
+    With `raw`, only while it still holds those bytes (else it is put back where it was). False when it was
+    gone already."""
+    aside = _unique(path)
+    try:
+        os.rename(path, aside)
+    except FileNotFoundError:
+        return False
+    try:
+        if raw is not None and aside.read_bytes() != raw:
+            _link(aside, path)   # not the file that was read: it goes back; nothing else takes the name meanwhile
+            return False
+        return True
+    finally:
+        aside.unlink(missing_ok=True)
+
+
+def _take_over(path: Path, raw: bytes) -> None:
+    """Move a dead lock out of the way, one run at a time: only the run that made the takeover's own file
+    (`<lock>.takeover`, an exclusive create) may move a lock, and only once it has read the lock again and
+    found the same dead one, so a run that read it before another run took it over never moves the new
+    lock. A takeover file a crashed run left behind (older than TAKEOVER_SECONDS) is taken away first."""
+    baton = path.with_name(path.name + ".takeover")
+    mine = f"{os.getpid()}-{threading.get_ident()}-{time.monotonic_ns()}\n".encode("ascii")
+    if not _create(baton, mine):
+        try:
+            if _age(baton) > TAKEOVER_SECONDS:
+                _remove(baton, baton.read_bytes())
+        except OSError:
+            pass
+        return
+    try:
+        try:
+            again = path.read_bytes()
+        except FileNotFoundError:
+            return
+        if again == raw and not _being_written(path, again) and not _live(_lock_data(again)):
+            _remove(path, again)
+    finally:
+        try:
+            if baton.read_bytes() == mine:
+                baton.unlink()
+        except OSError:
+            pass
+
+
+def _being_written(path: Path, raw: bytes) -> bool:
+    """An empty lock made a moment ago: on a file system without links the lock is created first and written
+    right after (`_create`), so it is a run's, not a dead one."""
+    return not raw and _age(path) <= TAKEOVER_SECONDS
+
+
+def take_lock(workspace, routine_name: str) -> bool:
+    """The workspace's lock for this run: False while a live run holds it. A dead one is taken over: its
+    process is gone, it is older than LOCK_HOURS, or it cannot be read. Runs racing for it never both get
+    it (Ruling R30): the lock is made whole in one exclusive step that fails when one is there, and a dead
+    one is moved out of the way by one run at a time (`_take_over`) before that step is tried again."""
+    path = lock_path(workspace)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mine = yaml.safe_dump({"pid": os.getpid(), "routine": routine_name,
+                           "started": dt.datetime.now().astimezone().isoformat(timespec="seconds")},
+                          sort_keys=False).encode("utf-8")
+    for attempt in range(200):
+        if _create(path, mine):
+            return True
+        try:
+            raw = path.read_bytes()
+            if _being_written(path, raw) or _live(_lock_data(raw)):
+                return False
+            _take_over(path, raw)
+        except FileNotFoundError:
+            continue   # let go of between the two: try again
+        except PermissionError:   # Windows: another run has it open this instant
+            pass
+        time.sleep(0.002 * (attempt % 5))
+    return False
+
+
+def locked(workspace) -> dict | None:
+    """The live run that holds the workspace's lock ({pid, routine, started}), or None."""
+    try:
+        data = _lock_data(lock_path(workspace).read_bytes())
+    except OSError:
+        return None
+    if not _live(data):
+        return None
+    return {"pid": data["pid"], "routine": data["routine"], "started": data["started"].isoformat(timespec="seconds")}
+
+
+def release_lock(workspace, routine_name: str | None = None) -> None:
+    """Let go of the lock this process holds (for `routine_name`, when given); someone else's stays."""
+    path = lock_path(workspace)
+    try:
+        data = _lock_data(path.read_bytes())
+    except OSError:
+        return
+    if data and data["pid"] == os.getpid() and routine_name in (None, data["routine"]):
+        path.unlink(missing_ok=True)
+
+
+# ----- what a run came to ---------------------------------------------------------------------
+USAGE_KEYS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens")
+USAGE_FIELDS = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+MODEL_USAGE_FIELDS = ("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens")
+MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+RESET = re.compile(r"(?:(?P<month>[A-Z][a-z]{2}) (?P<day>\d{1,2}), (?:(?P<year>\d{4}), )?)?"
+                   r"(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?(?P<half>[ap]m)?")
+RESETS_SAID = re.compile(r"resets (?P<resets>(?:[A-Z][a-z]{2} \d{1,2}, (?:\d{4}, )?)?\d{1,2}(?::\d{2})?(?:[ap]m)?)")
+LAST_RESET = 4102444800   # 2100-01-01: a reset time past it is no time
+
+
+def _local(now) -> dt.datetime:
+    """The machine's local clock, without a zone."""
+    if now is None:
+        return dt.datetime.now()
+    return now.astimezone().replace(tzinfo=None) if now.tzinfo else now
+
+
+def parse_reset(text, now=None) -> str | None:
+    """A reset time as the command line prints it (`11:20pm`, `23:20`, `Oct 27, 1pm`, `Jan 2, 2027,
+    1:30pm`) as the machine's local time, ISO without a zone; a time of day already past is tomorrow's,
+    a date without a year more than a day past is next year's. None for anything that is not a time:
+    a reset is never invented. The command line prints the reset in this machine's own time zone."""
+    found = RESET.fullmatch(text.strip()) if isinstance(text, str) else None
+    if not found:
+        return None
+    now = _local(now)
+    hour, minute, half = int(found["hour"]), int(found["minute"] or 0), found["half"]
+    if half:
+        if not 1 <= hour <= 12:
+            return None
+        hour = hour % 12 + (12 if half == "pm" else 0)
+    elif hour > 23:
+        return None
+    if minute > 59:
+        return None
+    if found["month"]:
+        if found["month"] not in MONTHS:
+            return None
+        year = int(found["year"]) if found["year"] else now.year
+        try:
+            at = dt.datetime(year, MONTHS.index(found["month"]) + 1, int(found["day"]), hour, minute)
+            if not found["year"] and at < now - dt.timedelta(days=1):
+                at = at.replace(year=year + 1)
+        except ValueError:
+            return None
+    else:
+        at = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if at <= now:
+            at += dt.timedelta(days=1)
+    return at.isoformat(timespec="seconds")
+
+
+def _count(value) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+def usage_of(result) -> dict:
+    """The tokens a run used, from its result event: summed over every model it used (`modelUsage`),
+    else its `usage`; zero for what it does not say."""
+    total = dict.fromkeys(USAGE_KEYS, 0)
+    if not isinstance(result, dict):
+        return total
+    models = result.get("modelUsage")
+    if isinstance(models, dict) and any(isinstance(m, dict) for m in models.values()):
+        for model in models.values():
+            if isinstance(model, dict):
+                for key, field in zip(USAGE_KEYS, MODEL_USAGE_FIELDS):
+                    total[key] += _count(model.get(field))
+        return total
+    usage = result.get("usage")
+    if isinstance(usage, dict):
+        for key, field in zip(USAGE_KEYS, USAGE_FIELDS):
+            total[key] += _count(usage.get(field))
+    return total
+
+
+def events_of(stdout) -> tuple:
+    """(the JSON events a run printed, the lines that are not one)."""
+    events, plain = [], []
+    for line in (stdout or "").splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            event = None
+        if isinstance(event, dict):
+            events.append(event)
+        else:
+            plain.append(line)
+    return events, plain
+
+
+def _first(patterns, text: str):
+    return next((m for m in (re.search(p, text) for p in patterns) if m), None)
+
+
+def _said(found) -> str:
+    return " ".join(found.group(0).split())[:200]
+
+
+def _structured_reset(infos: list) -> str | None:
+    for info in infos:
+        value = info.get("resetsAt")
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and 0 < value < LAST_RESET:
+            return dt.datetime.fromtimestamp(value).isoformat(timespec="seconds")
+    return None
+
+
+def _reset_near(text: str, found, now) -> str | None:
+    near = RESETS_SAID.search(text, found.start(), found.end() + 120)
+    return parse_reset(near["resets"], now) if near else None
+
+
+def outcome(res, timed_out: bool, now=None) -> dict:
+    """What a run came to, from what the command line said, never from its exit code (it differs by
+    system): {"outcome", "why", "resets_at", "usage"}. In this order:
+    - `overage`: the run started to draw on extra usage (its rate_limit_event), or an extra-usage text;
+    - `finished`: the result event says success. Its text is the model's own words, which may repeat
+      what a record said, so it is never read for a limit or a sign-in;
+    - `limit`: the structured error or rate_limit_event, else a limit text, with the reset time the
+      event or the text gives (`resets_at`, local time; None when neither says one);
+    - `auth`: the structured sign-in error, else a sign-in text;
+    - `timeout` after an hour; `stopped` for anything else (no result at all, an error result, a
+      command that did not start).
+    The texts are read from the error result, stderr and any line on stdout that is not JSON."""
+    zero = dict.fromkeys(USAGE_KEYS, 0)
+    if timed_out:
+        return {"outcome": "timeout", "why": "stopped after an hour", "resets_at": None, "usage": zero}
+    if res is None:
+        return {"outcome": "stopped", "why": "Claude's command line did not start", "resets_at": None, "usage": zero}
+    now = _local(now)
+    events, plain = events_of(res.stdout)
+    results = [e for e in events if e.get("type") == "result"]
+    result = results[-1] if results else None
+    usage = usage_of(result)
+    infos = [e["rate_limit_info"] for e in events
+             if e.get("type") == "rate_limit_event" and isinstance(e.get("rate_limit_info"), dict)]
+    kinds = {ERROR_KINDS[e["error"]] for e in events
+             if e.get("type") == "assistant" and isinstance(e.get("error"), str) and e["error"] in ERROR_KINDS}
+    finished = result is not None and not result.get("is_error") and result.get("subtype", "success") == "success"
+    told = result.get("result") if result is not None and isinstance(result.get("result"), str) else ""
+    said = (res.stderr or "") if finished else "\n".join([told, res.stderr or "", *plain])
+
+    def line(kind, why, resets=None) -> dict:
+        return {"outcome": kind, "why": why, "resets_at": resets, "usage": usage}
+    if any(info.get("isUsingOverage") is True for info in infos):
+        return line("overage", "the run started to draw on extra usage",
+                    _structured_reset([i for i in infos if i.get("isUsingOverage") is True]))
+    found = _first(OVERAGE_PATTERNS, said)
+    if found:
+        return line("overage", _said(found), _reset_near(said, found, now))
+    if finished:
+        return line("finished", "")
+    limit = _first(LIMIT_PATTERNS, said)
+    rejected = [i for i in infos if i.get("status") == "rejected"]
+    if "limit" in kinds or rejected or limit:
+        resets = _structured_reset(rejected) or (parse_reset(limit.groupdict().get("resets"), now) if limit else None)
+        return line("limit", _said(limit) if limit else "the plan's usage limit was reached", resets)
+    auth = _first(AUTH_PATTERNS, said)
+    if "auth" in kinds or auth:
+        return line("auth", _said(auth) if auth else "Claude's sign-in was refused")
+    if result is not None:
+        return line("stopped", f"claude stopped: {result.get('subtype') or 'error'}")
+    return line("stopped", f"claude ended without a result (exit {res.returncode})")
+
+
+def _utc(moment: dt.datetime) -> str:
+    return moment.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def write_outcome(workspace, routine_name: str, line: dict, now=None) -> None:
+    """The run's own line in `_meta/state/runs.jsonl`, with the tokens it really used: `cost_tokens` is
+    their sum, cache reads and writes included."""
+    now = now or dt.datetime.now().astimezone()
+    given = line.get("usage") if isinstance(line.get("usage"), dict) else {}
+    usage = {key: _count(given.get(key)) for key in USAGE_KEYS}
+    row = {"routine": routine_name, "at": _utc(now), "space": spaceyaml.load(workspace).name,
+           "cost_tokens": sum(usage.values()), "outcome": line.get("outcome"), "why": line.get("why") or "",
+           "resets_at": line.get("resets_at"), "usage": usage, "notes": {"step": "routine"}}
+    path = Path(workspace) / "_meta" / "state" / "runs.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def _one_line(text, limit: int, tail: bool = False) -> str:
+    text = " ".join(str(text or "").split())
+    return (text[-limit:] if tail else text[:limit]) if len(text) > limit else text
+
+
+def log_summary(res) -> str:
+    """What the log keeps of a run: the model, the connectors and their states, the rate-limit readings,
+    each refused call, the result and what was printed besides the events; never the messages."""
+    if res is None:
+        return ""
+    events, plain = events_of(res.stdout)
+    lines = []
+    for event in events:
+        kind, sub = event.get("type"), event.get("subtype")
+        if kind == "system" and sub == "init":
+            tools = event.get("tools") if isinstance(event.get("tools"), list) else []
+            servers = [s for s in event.get("mcp_servers") or [] if isinstance(s, dict)]
+            lines.append(f"model {event.get('model') or 'unknown'}, {len(tools)} tools, connectors: "
+                         + (", ".join(f"{s.get('name')} {s.get('status')}" for s in servers) or "none"))
+        elif kind == "rate_limit_event" and isinstance(event.get("rate_limit_info"), dict):
+            info = event["rate_limit_info"]
+            lines.append("rate limit: " + ", ".join(f"{k} {info[k]}" for k in
+                                                    ("status", "rateLimitType", "isUsingOverage", "resetsAt") if k in info))
+        elif kind == "system" and sub == "permission_denied":
+            lines.append(f"refused: {event.get('tool_name')}")
+    result = next((e for e in reversed(events) if e.get("type") == "result"), None)
+    if result is not None:
+        lines.append(f"result ({result.get('subtype')}, {result.get('num_turns')} turns): "
+                     + _one_line(result.get("result"), 500))
+    if plain:
+        lines.append("printed: " + _one_line(" ".join(plain), 1000, tail=True))
+    if (res.stderr or "").strip():
+        lines.append("stderr: " + _one_line(res.stderr, 1000, tail=True))
+    return "".join(line + "\n" for line in lines)
+
+
+def init_of(res) -> dict | None:
+    """The tools and servers a run's own init event lists, or None."""
+    events, _ = events_of(res.stdout if res is not None else "")
+    init = next((e for e in events if e.get("type") == "system" and e.get("subtype") == "init"), None)
+    if init is None:
+        return None
+    return {"tools": _strings(init.get("tools")),
+            "mcp_servers": [{"name": s.get("name", ""), "status": s.get("status", "")}
+                            for s in init.get("mcp_servers") or [] if isinstance(s, dict)]}
+
+
+def refresh_probe(seen: dict) -> None:
+    """A run's own init joined to probe.json (`merged`): a connector signed in again, or signed out,
+    counts from the next run on. The probe's checks, stamp and proven shell stay as they were."""
+    old = read_probe()
+    write_probe({**old, **merged(old, seen)})
+
+
+# ----- the probe: what a scheduled run sees, and three checks --------------------------------
+def _check(name: str, ok: bool, why: str) -> dict:
+    return {"name": name, "ok": bool(ok), "why": why}
+
+
+def _profiles(workspace, got: dict, roots, known) -> list:
+    """(routine, its profile) for each rendered routine: the file written for it when there is one (None
+    when it cannot be read), else the one that would be written now."""
+    found = []
+    name = spaceyaml.load(workspace).name
+    for prompt in _prompts(workspace) or [None]:
+        path = settings_path(prompt or Path("routines"), name)
+        if prompt is not None and path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                data = None
+            found.append((prompt.stem, data if isinstance(data, dict) else None))
+            continue
+        body = split_prompt(prompt.read_text(encoding="utf-8"))[1] if prompt else ""
+        found.append((prompt.stem if prompt else "routines",
+                      routine_settings(workspace, body, roots, got["person"], got["read"], got["write"], got["send"],
+                                       known_tools=known, profile=path, shell=got["shell"])))
+    return found
+
+
+def _rules(data) -> tuple:
+    """(allow, deny, PreToolUse entries) of a profile, empty where it holds something else."""
+    perms = data.get("permissions") if isinstance(data, dict) and isinstance(data.get("permissions"), dict) else {}
+    hooks = data.get("hooks") if isinstance(data, dict) and isinstance(data.get("hooks"), dict) else {}
+    entries = hooks.get("PreToolUse") if isinstance(hooks.get("PreToolUse"), list) else []
+    return _strings(perms.get("allow")), _strings(perms.get("deny")), [e for e in entries if isinstance(e, dict)]
+
+
+def read_checks(workspace, got: dict, profiles: list) -> list:
+    """One check per app the routines read: its read tools are there, it needs no new sign-in, and every
+    routine's profile allows them. No model reads anything here: the content of an app is copied only
+    after the app card has been shown."""
+    import apps
+    checks, seen = [], set()
+    for verdict in _verdicts(workspace):
+        app = verdict["app"]
+        if verdict.get("verdict") not in apps.READ or app in seen:
+            continue
+        seen.add(app)
+        name = f"reads {app}"
+        tools = [t for t in got["read"] if t in _strings(verdict.get("read"))]
+        if app in got["reconnect"]:
+            checks.append(_check(name, False, f"{app} needs a new sign-in: sign in to {app} again in Claude's "
+                                              "connector settings, and the routines read it again"))
+        elif not tools:
+            checks.append(_check(name, False, f"{app} is not connected for the routines: connect it again in "
+                                              "Claude's connector settings"))
+        elif any(data is None or not all(t in _rules(data)[0] and t not in _rules(data)[1] for t in tools)
+                 for _, data in profiles):
+            checks.append(_check(name, False, f"the routines may not use what reads {app}"))
+        else:
+            checks.append(_check(name, True, f"{app} can be read"))
+    return checks
+
+
+def folder_check(root) -> dict:
+    """A space the routines walk: its settings read, a file written, read back and removed in its
+    private zone, by this process, which the scheduler started as it starts a routine."""
+    root = Path(root)
+    try:
+        name = spaceyaml.load(root).name
+    except Exception:
+        return _check(f"folder {root.name}", False, f"the routines cannot read the settings of {root.name}")
+    private = root / "_meta" / "state" / "private"
+    trial = private / f".probe-{os.getpid()}-{threading.get_ident()}"
+    try:
+        private.mkdir(parents=True, exist_ok=True)
+        content = f"probe {time.time()}\n".encode("utf-8")
+        trial.write_bytes(content)
+        if trial.read_bytes() != content:
+            raise OSError("what was written did not read back")
+    except OSError:
+        return _check(f"folder {name}", False, f"the routines cannot write in the folder of {name}")
+    finally:
+        try:
+            trial.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return _check(f"folder {name}", True, f"{name} can be read and written")
+
+
+def _hook_payload(tool: str, address: str) -> bytes:
+    return json.dumps({"hook_event_name": "PreToolUse", "tool_name": tool,
+                       "tool_input": {"to": [address], "subject": "probe", "body": "probe"}}).encode("utf-8")
+
+
+GUARD_WORDS = "the guard that lets routines send mail only to you"
+
+
+def _guard_holds(command: str, tool: str, person: str, shell: list) -> str | None:
+    """None when the guard's `command`, run in `shell` as Claude Code runs a hook, refuses a stranger and lets
+    mail to `person` through; else why not, in plain words."""
+    stranger = STRANGER if STRANGER != person.lower() else "also-" + STRANGER
+    refused = run_hook(command, _hook_payload(tool, stranger), shell)
+    let = run_hook(command, _hook_payload(tool, person), shell)
+    if refused is None or let is None:
+        return f"{GUARD_WORDS} could not be run on this computer, so the routines may not send mail"
+    if refused != 2:
+        return f"{GUARD_WORDS} did not refuse a stranger"
+    if let != 0:
+        return f"{GUARD_WORDS} refused your own address"
+    return None
+
+
+def proven_shell(workspace, got: dict) -> str | None:
+    """The shell the send guard holds in (`got`'s `shell`), proved with the command a run's profile carries
+    (`send_guard_command` with the workspace's guard, as `routine_settings` writes it each run), or None: no
+    send tool to guard, or the guard did not hold. Profiles on disk play no part: each run writes its own."""
+    if not got["send"] or not got.get("shell"):
+        return None
+    try:
+        command = send_guard_command(got["person"], script=Path(workspace) / "_meta" / "tools" / "send_guard.py")
+    except ValueError:
+        return None
+    held = _guard_holds(command, got["send"][0], got["person"], [got["shell"], "-c"]) is None
+    return got["shell"] if held else None
+
+
+def send_check(got: dict, profiles: list) -> dict:
+    """Mail only to you: every routine profile keeps its hooks on and guards each send tool with the send
+    guard, and the guard, run with the profile's own command in the shell Claude Code will run it in (`got`'s
+    `shell`, which a run pins), refuses a stranger and lets mail to the person through. Without a mailbox to
+    send from it passes and says why."""
+    name = "mail only to you"
+    if not got["send"]:
+        return _check(name, True, " ".join(got["notes"]) or NO_MAILBOX)
+    guard = GUARD_WORDS
+    commands = []
+    for _, data in profiles:
+        if data is None:
+            return _check(name, False, "a routine's profile cannot be read, so whether it may send mail to "
+                                       "anyone else is not known")
+        if data.get("disableAllHooks") is not False:
+            return _check(name, False, f"a routine's profile lets {guard} be switched off")
+        allow, deny, entries = _rules(data)
+        for tool in got["send"]:
+            if tool not in allow or tool in deny:
+                return _check(name, False, "a routine may not send your morning briefing")
+            found = [h.get("command") for e in entries if e.get("matcher") == tool for h in e.get("hooks") or []
+                     if isinstance(h, dict) and h.get("type") == "command" and isinstance(h.get("command"), str)]
+            if not found:
+                return _check(name, False, f"a routine may send mail without {guard}")
+            commands += [(tool, c) for c in found]
+    shell = [got["shell"], "-c"] if got.get("shell") else None
+    if shell is None:
+        return _check(name, False, f"{guard} could not be run on this computer, so the routines may not send mail")
+    for tool, command in dict.fromkeys(commands):
+        why = _guard_holds(command, tool, got["person"], shell)
+        if why:
+            return _check(name, False, why)
+    return _check(name, True, "the guard refuses a stranger and lets mail to you through")
+
+
+PROBE_NAME = "probe"   # the probe holds the workspace's lock under this name
+
+
+def probe(workspace, run=subprocess.run) -> int:
+    """`--probe`, under the workspace's lock (`take_lock`; while a run holds it, `error` says so and `busy` is
+    true): what a run the scheduler starts sees (`probe_tools`, as a routine starts: in the workspace, every
+    other root added, without a key or token). Its tools and servers replace the ones probe.json held, so an
+    app that went away is granted no more (Ruling R30); `seen` keeps every connector tool ever listed, for the
+    deny side (`ever_seen`). Then three checks: each app the routines read (`read_checks`), each folder they
+    walk (`folder_check`) and mail only to the person (`send_check`, in the shell `hook_shell` finds). That
+    shell is written as `hook_shell` once the guard a run carries held in it (`proven_shell`): the one a run
+    pins and the grant's send tools need. Written to probe.json with the grant's notes, `ok` and `stamp`; an
+    app that needs a new sign-in leaves its item on Needs you. When claude cannot be asked, the tools it knew
+    stay and `error` says why. 0 when every check passes."""
+    workspace = Path(workspace).resolve()
+    if not take_lock(workspace, PROBE_NAME):
+        held = locked(workspace) or {}
+        write_probe({**read_probe(), "error": f"{BUSY}: {held.get('routine') or 'a routine'}", "busy": True,
+                     "checks": [], "notes": [], "ok": False, "stamp": time.time(), "workspace": str(workspace)})
+        return 1
+    try:
+        return _probe(workspace, run)
+    finally:
+        release_lock(workspace, PROBE_NAME)
+
+
+def _probe(workspace: Path, run) -> int:
+    roots = roots_of(workspace)
+    old = read_probe()
+    doctor.use_tools()
+    claude = find_claude()
+    try:
+        if claude is None:
+            raise ProbeError("Claude Code's command line is not installed on this machine")
+        now = probe_tools(claude, workspace, roots[1:], run=run)
+    except ProbeError as exc:
+        write_probe({**old, "seen": ever_seen(old, {}), "error": str(exc), "busy": False, "checks": [], "notes": [],
+                     "ok": False, "stamp": time.time(), "workspace": str(workspace)})
+        return 1
+    view = {**now, "seen": ever_seen(old, now)}
+    candidate = hook_shell()
+    got = grant(workspace, view, shell=candidate[0] if candidate else "")
+    write_items(workspace, reconnect=got["reconnect"])
+    profiles = _profiles(workspace, got, roots, view["seen"] + [t for t in view["tools"] if t not in view["seen"]])
+    checks = [*read_checks(workspace, got, profiles), *[folder_check(r) for r in roots], send_check(got, profiles)]
+    ok = all(c["ok"] for c in checks)
+    write_probe({**view, "checks": checks, "notes": got["notes"], "ok": ok, "stamp": time.time(),
+                 "workspace": str(workspace), "hook_shell": proven_shell(workspace, got)})
+    return 0 if ok else 1
+
+
+# ----- one routine run --------------------------------------------------------------------------
+NO_CLAUDE = "Claude Code's command line is not installed on this machine"
+BUSY = "another run is busy"
+
+
+def command(claude: str, settings: Path, roots: list, model: str | None = None) -> list:
+    """A routine's command line; its prompt goes on stdin. Only the built-in tools a routine needs
+    (`ROUTINE_BUILTINS`; the connectors stay, the profile says which it may call). Every root but the
+    workspace (the first) is added as a folder of its own, as given: no shell reads it."""
+    argv = [claude, "-p", *REFUSE, *JSON_OUT, "--tools", *ROUTINE_BUILTINS, "--settings", str(settings)]
+    first = Path(roots[0]).resolve() if roots else None
+    for root in dict.fromkeys(roots[1:] if roots else []):
+        if Path(root).resolve() != first:
+            argv += ["--add-dir", str(root)]
+    if model:
+        argv += ["--model", model]
+    return argv
+
+
+def wanted(workspace, meta: dict) -> bool:
+    """Whether a routine runs now: one whose frontmatter says `only_while: backfill` runs only while a
+    backfill is active (`backfill.active`), one with a condition this tool does not know never runs."""
+    condition = meta.get("only_while")
+    if condition is None:
+        return True
+    if condition != "backfill":
+        return False
+    try:
+        import backfill
+        return bool(backfill.active(Path(workspace)))
+    except Exception:
+        return False
+
+
+def _stopped(why: str) -> dict:
+    return {"outcome": "stopped", "why": why, "resets_at": None, "usage": dict.fromkeys(USAGE_KEYS, 0)}
+
+
 def main(argv=None, run=subprocess.run) -> int:
     argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["--locked"]:
+        held = locked(Path(argv[1]))
+        if held:
+            print(yaml.safe_dump(held, sort_keys=False), end="")
+        return 0
+    if argv[:1] == ["--probe"]:
+        return probe(Path(argv[1]), run=run)
     prompt = Path(argv[0]).resolve()
     workspace = prompt.parents[3]   # <workspace>/_meta/state/routines/<routine>.md
-    text = prompt.read_text(encoding="utf-8")
-    body = text.split("---", 2)[2].lstrip() if text.startswith("---") else text
+    meta, body = split_prompt(prompt.read_text(encoding="utf-8"))
+    if not wanted(workspace, meta):
+        return 0
     name = spaceyaml.load(workspace).name
     log = Path.home() / ".spaces" / "logs" / f"{prompt.stem}-{name}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
@@ -307,18 +1406,62 @@ def main(argv=None, run=subprocess.run) -> int:
     with log.open("a", encoding="utf-8") as fh:
         fh.write(f"\n== {dt.datetime.now().isoformat(timespec='seconds')} {prompt.stem}\n")
         if claude is None:
+            write_outcome(workspace, prompt.stem, _stopped(NO_CLAUDE))
             fh.write("claude is not installed or not on PATH: install Claude Code, then run onboard "
                      "--os-routines again\nexit 127\n")
             return 127
-        settings = write_settings(workspace, prompt, body, name)
+        if not take_lock(workspace, prompt.stem):
+            held = locked(workspace) or {}
+            write_outcome(workspace, prompt.stem, _stopped(BUSY))
+            fh.write(f"{BUSY}: {held.get('routine', 'a routine')} since {held.get('started', 'a moment ago')}\n"
+                     f"outcome stopped: {BUSY}\nexit 0\n")
+            return 0
         try:
-            res = run([claude, "-p", *REFUSE, "--settings", str(settings)], input=body, cwd=str(workspace),
-                      capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3600)
+            return _run(workspace, prompt, body, name, claude, fh, run)
+        finally:
+            release_lock(workspace, prompt.stem)
+
+
+def _run(workspace: Path, prompt: Path, body: str, name: str, claude: str, fh, run) -> int:
+    """One run under the lock: the grant's items, the profile, claude (in `routine_env`), then what it came to.
+    A fault of its own still ends in an outcome line (`stopped`, why in plain words) and an exit line."""
+    told = False
+    try:
+        roots = roots_of(workspace)
+        got = grant(workspace)
+        write_items(workspace, reconnect=got["reconnect"])
+        settings = write_settings(workspace, prompt, body, name, got, roots)
+        res, timed_out = None, False
+        try:
+            res = run(command(claude, settings, roots), input=body, cwd=str(workspace),
+                      env=routine_env(os.environ, got["shell"]), capture_output=True, text=True, encoding="utf-8",
+                      errors="replace", timeout=3600)
         except subprocess.TimeoutExpired:
-            fh.write("stopped after an hour\nexit 124\n")
-            return 124
-        fh.write((res.stdout or "") + (res.stderr or "") + f"\nexit {res.returncode}\n")
-    return res.returncode
+            timed_out = True
+        except OSError as exc:
+            fh.write(f"claude did not start: {exc.strerror or exc}\n")
+        now = dt.datetime.now().astimezone()
+        line = outcome(res, timed_out, now=now)
+        seen = init_of(res)
+        if seen is not None:
+            refresh_probe(seen)
+            got = grant(workspace)
+        write_items(workspace, claude_signin={"auth": True, "finished": False}.get(line["outcome"]),
+                    reconnect=got["reconnect"])
+        write_outcome(workspace, prompt.stem, line, now)
+        told = True
+        code = (0 if line["outcome"] == "finished" else 124 if timed_out else 127 if res is None
+                else res.returncode or 1)
+        resets = f" (resets {line['resets_at']})" if line["resets_at"] else ""
+        fh.write(log_summary(res) + f"outcome {line['outcome']}" + (f": {line['why']}" if line["why"] else "")
+                 + f"{resets}\nexit {code}\n")
+        return code
+    except Exception as exc:   # noqa: BLE001 - the run's own line says it stopped, whatever stopped it
+        why = f"the routine stopped on a fault of its own ({type(exc).__name__})"
+        if not told:
+            write_outcome(workspace, prompt.stem, _stopped(why))
+        fh.write(f"outcome stopped: {why}\nexit 1\n")
+        return 1
 
 
 if __name__ == "__main__":

@@ -32,12 +32,13 @@ def test_a_routine_runs_its_prompt_through_claude_headless(tmp_path, monkeypatch
 
     def run(argv, **kw):
         seen.update(argv=argv, **kw)
-        return subprocess.CompletedProcess(argv, 0, "chain done\n", "")
+        return subprocess.CompletedProcess(argv, 0, stream(result_event("chain done")), "")
     prompt = ws / "_meta" / "state" / "routines" / "daily-chain.md"
     assert routine.main([str(prompt)], run=run) == 0
     assert seen["argv"][:6] == ["claude", "-p", "--permission-mode", "acceptEdits", "--permission-prompts", "none"]
-    assert seen["argv"][6] == "--settings" and len(seen["argv"]) == 8
-    profile = Path(seen["argv"][7])   # the routine profile, written outside every space
+    assert seen["argv"][6:9] == routine.JSON_OUT and seen["argv"][9:18] == ["--tools", *routine.ROUTINE_BUILTINS]
+    assert seen["argv"][18] == "--settings" and len(seen["argv"]) == 20
+    profile = Path(seen["argv"][19])   # the routine profile, written outside every space
     assert profile.parent == tmp_path / "home" / ".spaces" / "routines" and not profile.is_relative_to(ws)
     assert "Edit(//**/_meta/tools/**)" in json.loads(profile.read_text(encoding="utf-8"))["permissions"]["deny"]
     assert Path(seen["cwd"]) == ws and not seen["input"].startswith("---") and "daily chain" in seen["input"]
@@ -1033,11 +1034,11 @@ def test_claude_is_found_where_the_doctor_installed_it(tmp_path, monkeypatch):
 
 def test_a_routine_does_not_inherit_the_sessions_keys_tokens_or_provider():
     env = {"PATH": "/bin", "ANTHROPIC_API_KEY": "k", "ANTHROPIC_AUTH_TOKEN": "t", "ANTHROPIC_BASE_URL": "https://gateway.example",
-           "CLAUDE_CODE_USE_BEDROCK": "1", "CLAUDE_CODE_USE_VERTEX": "1", "CLAUDE_CODE_OAUTH_TOKEN": "o",
-           "CLAUDE_CONFIG_DIR": "/home/ada/.claude", "anthropic_api_key": "lower"}
+           "CLAUDE_CODE_USE_BEDROCK": "1", "CLAUDE_CODE_USE_VERTEX": "1", "CLAUDE_CODE_USE_FOUNDRY": "1",
+           "CLAUDE_CODE_OAUTH_TOKEN": "o", "CLAUDE_CONFIG_DIR": "/home/ada/.claude", "anthropic_api_key": "lower"}
     clean = routine.clean_env(env)
     assert set(clean) == {"PATH", "CLAUDE_CONFIG_DIR"}   # the person's own configuration stays; Windows ignores case
-    assert len(env) == 9 and env["ANTHROPIC_API_KEY"] == "k"   # a copy: the caller's environment is not touched
+    assert len(env) == 10 and env["ANTHROPIC_API_KEY"] == "k"   # a copy: the caller's environment is not touched
 
 
 # ----- done only once the schedule reads back ------------------------------------------------------
@@ -1324,3 +1325,1252 @@ def test_mint_refuses_a_prefix_that_is_not_ours_before_it_makes_the_space(tmp_pa
                       "--home", str(tmp_path / "made")]) == 1
     assert "SPACES_TASK_PREFIX must start with space-" in capsys.readouterr().out
     assert not (tmp_path / "made").exists()
+
+
+# ----- Task 10: routines that run unattended, on a probe-built allowlist, and report on themselves -------
+import datetime as dt   # noqa: E402
+import shutil   # noqa: E402
+import threading   # noqa: E402
+import time   # noqa: E402
+
+import yaml   # noqa: E402
+
+ADA = "ada@lanternworks.example"
+GMAIL_READ = ["mcp__claude_ai_Gmail__search_threads", "mcp__claude_ai_Gmail__get_thread"]
+GMAIL_SEND = "mcp__claude_ai_Gmail__send_message"
+GMAIL_OTHER = ["mcp__claude_ai_Gmail__reply", "mcp__claude_ai_Gmail__forward", "mcp__claude_ai_Gmail__trash_thread"]
+MS_READ, MS_SEND = "mcp__claude_ai_Microsoft_365__search_mail", "mcp__claude_ai_Microsoft_365__send_mail"
+LINEAR_READ, LINEAR_WRITE = "mcp__claude_ai_Linear__list_issues", "mcp__claude_ai_Linear__create_issue"
+LINEAR_DELETE = "mcp__claude_ai_Linear__delete_issue"
+TOOLS = ["Read", "Bash", *GMAIL_READ, GMAIL_SEND, *GMAIL_OTHER, MS_READ, MS_SEND, LINEAR_READ, LINEAR_WRITE, LINEAR_DELETE]
+SERVERS = [{"name": f"claude.ai {app}", "status": "connected"} for app in ("Gmail", "Microsoft 365", "Linear")]
+GMAIL = {"app": "Gmail", "kinds": ["mail"], "read": GMAIL_READ, "write": [], "send": [GMAIL_SEND], "account": ADA,
+         "verdict": "work", "why": "Lantern Works mail."}
+OUTLOOK = {"app": "Microsoft 365", "kinds": ["mail"], "read": [MS_READ], "write": [], "send": [],
+           "account": "ada.private@example.org", "verdict": "personal", "why": "Private matters only."}
+LINEAR = {"app": "Linear", "kinds": ["tracker"], "read": [LINEAR_READ], "write": [LINEAR_WRITE], "send": [], "account": ADA,
+          "verdict": "work", "why": "The team's issues."}
+
+
+PROVEN = object()   # the shell the probe proved the send guard in: this machine's own
+
+
+def proven_shell() -> str:
+    found = routine.hook_shell()
+    return found[0] if found else sys.executable
+
+
+def granted(tmp_path, verdicts=(GMAIL, OUTLOOK, LINEAR), tools=TOOLS, servers=SERVERS, owner_email=ADA,
+            shell=PROVEN) -> Path:
+    """Ada's workspace after a build: her routines rendered, her space's guards in its tools, the apps'
+    verdicts in the private zone, and the probe's view of the tools on this machine, with the shell it
+    proved the send guard in."""
+    ws = make_space(tmp_path / "ada", owner_email=owner_email)
+    start.render_routines(ws, "Ada Okafor")
+    (ws / "_meta" / "tools").mkdir(parents=True, exist_ok=True)
+    for guard in (routine.SEND_GUARD, routine.BASH_GUARD):
+        shutil.copy(guard, ws / "_meta" / "tools" / guard.name)
+    onboard.write_yaml(ws / "_meta" / "state" / "private" / "apps.yaml", {"apps": [dict(v) for v in verdicts]})
+    routine.write_probe({"tools": list(tools), "mcp_servers": [dict(s) for s in servers], "stamp": time.time(),
+                         "hook_shell": proven_shell() if shell is PROVEN else shell})
+    return ws
+
+
+def stream(*events) -> str:
+    return "".join(json.dumps(e) + "\n" for e in events)
+
+
+def result_event(text="done", is_error=False, subtype="success", usage=None, model_usage=None) -> dict:
+    event = {"type": "result", "subtype": subtype, "is_error": is_error, "num_turns": 3, "result": text,
+             "usage": usage or {"input_tokens": 0, "output_tokens": 0}}
+    if model_usage is not None:
+        event["modelUsage"] = model_usage
+    return event
+
+
+def runs_of(ws) -> list:
+    path = ws / "_meta" / "state" / "runs.jsonl"
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
+
+
+def run_routine(ws, monkeypatch, stdout="", stderr="", code=0, name="sweep-chain", raises=None) -> tuple:
+    """routine.main on one of Ada's prompts with a fake claude: (exit code, what claude was called with)."""
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")
+    seen = {}
+
+    def run(argv, **kw):
+        seen.update(argv=list(argv), **kw)
+        if raises:
+            raise raises
+        return subprocess.CompletedProcess(argv, code, stdout, stderr)
+    return routine.main([str(ws / "_meta" / "state" / "routines" / f"{name}.md")], run=run), seen
+
+
+def test_the_allowlist_holds_read_tools_of_read_apps_and_the_guarded_send(tmp_path):
+    s = routine.routine_settings(tmp_path, "", [tmp_path], "ada@lanternworks.example",
+                                 ["mcp__claude_ai_Gmail__search_threads"], [], ["mcp__claude_ai_Gmail__send_message"])
+    assert "mcp__claude_ai_Gmail__search_threads" in s["permissions"]["allow"]
+    assert "mcp__claude_ai_Gmail__trash_thread" not in s["permissions"]["allow"]
+    hook = s["hooks"]["PreToolUse"][1]   # after the Bash guard
+    assert hook["matcher"] == "mcp__claude_ai_Gmail__send_message" and "send_guard.py" in hook["hooks"][0]["command"]
+    assert hook["hooks"][0]["command"].endswith(f'"{ADA}" || exit 2') and hook["hooks"][0]["type"] == "command"
+    guard = (tmp_path.resolve() / "_meta" / "tools" / "send_guard.py").as_posix()
+    assert f'"{guard}"' in hook["hooks"][0]["command"]   # the workspace's own guard, the one its runs use (m-7)
+
+
+def test_every_other_connector_tool_the_probe_knows_is_denied(tmp_path):
+    """A tool the person once chose "always allow" for in their own settings would otherwise stay callable."""
+    s = routine.routine_settings(tmp_path, "", [tmp_path], ADA, GMAIL_READ, [LINEAR_WRITE], [GMAIL_SEND], known_tools=TOOLS)
+    deny, allow = s["permissions"]["deny"], s["permissions"]["allow"]
+    assert set(GMAIL_OTHER + [MS_READ, MS_SEND, LINEAR_READ, LINEAR_DELETE]) <= set(deny)
+    assert not {*GMAIL_READ, GMAIL_SEND, LINEAR_WRITE} & set(deny) and {*GMAIL_READ, GMAIL_SEND, LINEAR_WRITE} <= set(allow)
+    assert "Read" not in allow and "Bash" not in deny   # built-in tools keep the rules they had
+    assert [h["matcher"] for h in s["hooks"]["PreToolUse"]] == ["Bash", GMAIL_SEND]
+
+
+@pytest.mark.parametrize("person", ["", "ada", "ada$HOME@lanternworks.example", f"{ADA}, ben@lanternworks.example"])
+def test_without_one_guardable_address_no_send_tool_is_allowed(tmp_path, person):
+    s = routine.routine_settings(tmp_path, "", [tmp_path], person, GMAIL_READ, [], [GMAIL_SEND], known_tools=TOOLS)
+    assert GMAIL_SEND not in s["permissions"]["allow"] and GMAIL_SEND in s["permissions"]["deny"]
+    assert [h["matcher"] for h in s["hooks"]["PreToolUse"]] == ["Bash"]
+    assert set(GMAIL_READ) <= set(s["permissions"]["allow"])
+
+
+def test_a_tool_that_is_not_a_read_is_never_allowed_as_one(tmp_path):
+    s = routine.routine_settings(tmp_path, "", [tmp_path], ADA, [*GMAIL_READ, GMAIL_OTHER[2], "mcp__*", "Bash"],
+                                 [GMAIL_OTHER[0]], [GMAIL_OTHER[1]], known_tools=TOOLS)
+    allow = s["permissions"]["allow"]
+    assert not {GMAIL_OTHER[0], GMAIL_OTHER[1], GMAIL_OTHER[2], "mcp__*", "Bash"} & set(allow)
+    assert [h["matcher"] for h in s["hooks"]["PreToolUse"]] == ["Bash"]   # forward is no send tool: nothing to guard
+    assert GMAIL_OTHER[1] in s["permissions"]["deny"]
+
+
+def test_add_dir_quotes_roots_with_spaces(tmp_path):
+    brain = tmp_path / "Ada Okafor" / "lantern-works-brain"
+    argv = routine.command("claude", tmp_path / "s.json", [tmp_path / "ws", brain])
+    assert argv[argv.index("--add-dir") + 1] == str(brain)
+
+
+def test_the_command_is_the_checked_one_with_a_root_per_folder_and_a_model_only_when_given(tmp_path):
+    roots = [tmp_path / "ws", tmp_path / "José Pérez" / "brain", tmp_path / "Ada & Co's 100% $HOME" / "project"]
+    argv = routine.command("claude", tmp_path / "s.json", roots)
+    assert argv == ["claude", "-p", *routine.REFUSE, *routine.JSON_OUT, "--tools", *routine.ROUTINE_BUILTINS,
+                    "--settings", str(tmp_path / "s.json"), "--add-dir", str(roots[1]), "--add-dir", str(roots[2])]
+    assert routine.command("claude", tmp_path / "s.json", roots[:1], model="haiku")[-2:] == ["--model", "haiku"]
+
+
+def test_a_routine_never_runs_in_bypass_and_never_inherits_an_api_key(tmp_path, monkeypatch):
+    ws = granted(tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "secret")
+    code, seen = run_routine(ws, monkeypatch, stdout=stream(result_event()))
+    assert code == 0
+    assert "bypassPermissions" not in seen["argv"] and "ANTHROPIC_API_KEY" not in seen["env"]
+    assert "--dangerously-skip-permissions" not in seen["argv"] and "CLAUDE_CODE_OAUTH_TOKEN" not in seen["env"]
+    assert seen["argv"][seen["argv"].index("--permission-mode") + 1] == "acceptEdits"
+    assert seen["timeout"] == 3600 and Path(seen["cwd"]) == ws.resolve() and not seen["input"].startswith("---")
+    profile = json.loads(Path(seen["argv"][seen["argv"].index("--settings") + 1]).read_text(encoding="utf-8"))
+    assert set(GMAIL_READ + [LINEAR_READ, LINEAR_WRITE, GMAIL_SEND]) <= set(profile["permissions"]["allow"])
+    assert [h["matcher"] for h in profile["hooks"]["PreToolUse"]] == ["Bash", GMAIL_SEND]
+
+
+# ----- one run at a time per workspace ---------------------------------------------------------------
+def test_a_second_run_exits_on_a_live_lock_and_takes_over_a_dead_one(tmp_path, monkeypatch):
+    ws = workspace(tmp_path)
+    assert routine.take_lock(ws, "sweep-chain")
+    monkeypatch.setattr(routine, "pid_alive", lambda pid: True)
+    assert not routine.take_lock(ws, "daily-chain")
+    monkeypatch.setattr(routine, "pid_alive", lambda pid: False)
+    assert routine.take_lock(ws, "daily-chain")
+
+
+def test_the_lock_lives_with_the_machine_and_says_who_holds_it(tmp_path):
+    ws = workspace(tmp_path)
+    assert routine.lock_path(ws) == tmp_path / "_home" / ".spaces" / "locks" / "ada.lock"
+    assert routine.locked(ws) is None
+    assert routine.take_lock(ws, "sweep-chain")
+    held = yaml.safe_load(routine.lock_path(ws).read_text(encoding="utf-8"))
+    assert held["pid"] == os.getpid() and held["routine"] == "sweep-chain"
+    assert dt.datetime.fromisoformat(held["started"]).tzinfo is not None
+    assert routine.locked(ws)["routine"] == "sweep-chain"
+    routine.release_lock(ws)
+    assert not routine.lock_path(ws).exists() and routine.locked(ws) is None
+
+
+def stale_lock(ws, pid=999_999, started=None, text=None) -> Path:
+    path = routine.lock_path(ws)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    started = started or dt.datetime.now().astimezone()
+    path.write_text(text if text is not None else yaml.safe_dump(
+        {"pid": pid, "routine": "sweep-chain", "started": started.isoformat(timespec="seconds")}), encoding="utf-8")
+    return path
+
+
+def test_a_live_pid_past_the_age_cap_is_a_reused_one_and_is_taken_over(tmp_path, monkeypatch):
+    ws = workspace(tmp_path)
+    monkeypatch.setattr(routine, "pid_alive", lambda pid: True)
+    hours = routine.LOCK_HOURS
+    assert hours >= 2   # a run stops after one hour: the cap leaves it a margin
+    stale_lock(ws, started=dt.datetime.now().astimezone() - dt.timedelta(hours=hours - 0.5))
+    assert not routine.take_lock(ws, "daily-chain") and routine.locked(ws)["routine"] == "sweep-chain"
+    stale_lock(ws, started=dt.datetime.now().astimezone() - dt.timedelta(hours=hours + 0.1))
+    assert routine.locked(ws) is None and routine.take_lock(ws, "daily-chain")
+    assert routine.locked(ws)["routine"] == "daily-chain"
+
+
+@pytest.mark.parametrize("text", ["not: [yaml", "just text", "- a list\n", "pid: x\nstarted: now\n",
+                                  "pid: 4\n", "pid: true\nstarted: 2026-10-25T10:00:00+02:00\n",
+                                  "started: 2026-10-25T10:00:00+02:00\n", "pid: 4\nstarted: 3026-10-25T10:00:00+02:00\n"])
+def test_a_corrupt_lock_is_taken_as_dead(tmp_path, monkeypatch, text):
+    ws = workspace(tmp_path)
+    monkeypatch.setattr(routine, "pid_alive", lambda pid: True)
+    stale_lock(ws, text=text)
+    assert routine.locked(ws) is None and routine.take_lock(ws, "daily-chain")
+
+
+def test_two_runs_racing_for_a_dead_lock_never_both_get_it(tmp_path, monkeypatch):
+    ws = workspace(tmp_path)
+    monkeypatch.setattr(routine, "pid_alive", lambda pid: pid == os.getpid())   # the dead one is the stale pid
+    for attempt in range(15):
+        routine.lock_path(ws).unlink(missing_ok=True)
+        stale_lock(ws)
+        gate, won = threading.Barrier(8), []
+
+        def race(n):
+            gate.wait()
+            if routine.take_lock(ws, f"r{n}"):
+                won.append(n)
+        threads = [threading.Thread(target=race, args=(n,)) for n in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert len(won) == 1, (attempt, won)
+        assert routine.locked(ws)["routine"] == f"r{won[0]}"
+        assert sorted(p.name for p in routine.lock_path(ws).parent.iterdir()) == ["ada.lock"]   # nothing left aside
+
+
+def test_three_runs_racing_for_a_dead_lock_never_both_get_it(tmp_path, monkeypatch):
+    """Ruling R30 (m-1): the reviewer's three-way race. Three runs find the same dead lock in the same
+    instant, many times over; exactly one holds it each time, and nothing is left aside."""
+    ws = workspace(tmp_path)
+    monkeypatch.setattr(routine, "pid_alive", lambda pid: pid == os.getpid())
+    for attempt in range(60):
+        routine.lock_path(ws).unlink(missing_ok=True)
+        stale_lock(ws)
+        gate, won = threading.Barrier(3), []
+
+        def race(n):
+            gate.wait()
+            if routine.take_lock(ws, f"r{n}"):
+                won.append(n)
+        threads = [threading.Thread(target=race, args=(n,)) for n in range(3)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert len(won) == 1, (attempt, won)
+        assert routine.locked(ws)["routine"] == f"r{won[0]}"
+        assert sorted(p.name for p in routine.lock_path(ws).parent.iterdir()) == ["ada.lock"]
+
+
+def test_a_run_that_read_the_dead_lock_too_late_never_moves_the_new_one(tmp_path, monkeypatch):
+    """The reviewer's replay: X read the dead lock; Y took it over and holds it now; X must leave Y's lock
+    where it is, and a third run that comes after finds it held."""
+    ws = workspace(tmp_path)
+    monkeypatch.setattr(routine, "pid_alive", lambda pid: pid == os.getpid())
+    dead = stale_lock(ws).read_bytes()
+    assert routine.take_lock(ws, "y")                      # Y takes it over
+    routine._take_over(routine.lock_path(ws), dead)        # X acts on what it read before
+    assert routine.locked(ws)["routine"] == "y"
+    assert not routine.take_lock(ws, "z") and routine.locked(ws)["routine"] == "y"
+    assert sorted(p.name for p in routine.lock_path(ws).parent.iterdir()) == ["ada.lock"]
+
+
+def test_a_takeover_left_half_done_by_a_crash_does_not_stop_the_next(tmp_path, monkeypatch):
+    ws = workspace(tmp_path)
+    monkeypatch.setattr(routine, "pid_alive", lambda pid: pid == os.getpid())
+    stale_lock(ws)
+    baton = routine.lock_path(ws).with_name("ada.lock.takeover")
+    baton.write_text("pid: 999999\n", encoding="utf-8")
+    old = time.time() - routine.TAKEOVER_SECONDS - 5
+    os.utime(baton, (old, old))
+    assert routine.take_lock(ws, "daily-chain") and routine.locked(ws)["routine"] == "daily-chain"
+    assert sorted(p.name for p in routine.lock_path(ws).parent.iterdir()) == ["ada.lock"]
+
+
+def test_a_lock_still_being_written_is_not_taken_for_a_dead_one(tmp_path, monkeypatch):
+    """Where the file system has no links, the lock is created first and written right after: a racer that
+    reads it empty in between must not take it over."""
+    ws = workspace(tmp_path)
+    stale_lock(ws, text="")
+    assert not routine.take_lock(ws, "daily-chain")
+    old = time.time() - routine.TAKEOVER_SECONDS - 5
+    os.utime(routine.lock_path(ws), (old, old))
+    assert routine.take_lock(ws, "daily-chain")
+
+
+def test_a_second_run_on_a_live_lock_writes_stopped_and_never_runs_claude(tmp_path, monkeypatch):
+    ws = granted(tmp_path)
+    assert routine.take_lock(ws, "daily-chain")   # a daily chain is running
+    code, seen = run_routine(ws, monkeypatch, stdout=stream(result_event()))
+    assert code == 0 and seen == {}
+    line = runs_of(ws)[-1]
+    assert line["outcome"] == "stopped" and line["why"] == "another run is busy" and line["routine"] == "sweep-chain"
+    assert line["cost_tokens"] == 0 and line["notes"] == {"step": "routine"}
+    assert routine.locked(ws)["routine"] == "daily-chain"   # the running one keeps its lock
+
+
+def test_a_run_lets_go_of_its_lock_when_claude_finishes_fails_or_runs_out_of_time(tmp_path, monkeypatch):
+    ws = granted(tmp_path)
+    for kw in ({"stdout": stream(result_event())}, {"raises": subprocess.TimeoutExpired("claude", 3600)},
+               {"raises": FileNotFoundError(2, "No such file", "claude")}):
+        run_routine(ws, monkeypatch, **kw)
+        assert routine.locked(ws) is None and not routine.lock_path(ws).exists(), kw
+    assert [line["outcome"] for line in runs_of(ws)] == ["finished", "timeout", "stopped"]
+
+
+def test_locked_prints_the_lock_or_nothing(tmp_path, capsys):
+    ws = workspace(tmp_path)
+    assert routine.main(["--locked", str(ws)]) == 0 and capsys.readouterr().out == ""
+    routine.take_lock(ws, "sweep-chain")
+    assert routine.main(["--locked", str(ws)]) == 0
+    assert yaml.safe_load(capsys.readouterr().out)["routine"] == "sweep-chain"
+
+
+# ----- each run writes its own outcome, from what the command line said ---------------------------
+def test_each_run_writes_its_own_outcome_with_real_usage(tmp_path, monkeypatch):
+    ws = granted(tmp_path)
+    usage = {"input_tokens": 1200, "output_tokens": 300, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+    code, _ = run_routine(ws, monkeypatch, stdout=stream(result_event(usage=usage)))
+    line = json.loads((ws / "_meta" / "state" / "runs.jsonl").read_text().splitlines()[-1])
+    assert line["outcome"] == "finished" and line["cost_tokens"] == 1500 and line["notes"]["step"] == "routine"
+    assert code == 0 and line["space"] == "ada" and line["routine"] == "sweep-chain" and line["resets_at"] is None
+    assert line["usage"] == {"input_tokens": 1200, "output_tokens": 300, "cache_read_tokens": 0, "cache_creation_tokens": 0}
+    assert dt.datetime.fromisoformat(line["at"].replace("Z", "+00:00"))
+
+
+def test_usage_sums_every_model_the_run_used():
+    models = {"claude-opus-5-5": {"inputTokens": 10, "outputTokens": 20, "cacheReadInputTokens": 30000, "cacheCreationInputTokens": 400},
+              "claude-haiku-5-5": {"inputTokens": 1, "outputTokens": 2, "cacheReadInputTokens": 3, "cacheCreationInputTokens": 4}}
+    res = subprocess.CompletedProcess([], 0, stream(result_event(usage={"input_tokens": 999}, model_usage=models)), "")
+    got = routine.outcome(res, False)
+    assert got["usage"] == {"input_tokens": 11, "output_tokens": 22, "cache_read_tokens": 30003, "cache_creation_tokens": 404}
+    assert got["outcome"] == "finished"
+
+
+def test_a_limit_stop_is_an_outcome_with_its_reset_time(tmp_path, monkeypatch):
+    ws = granted(tmp_path)
+    run_routine(ws, monkeypatch, stderr="You've hit your session limit \u00b7 resets 23:20", code=1)
+    line = runs_of(ws)[-1]
+    assert line["outcome"] == "limit" and line["resets_at"].endswith("23:20:00")
+
+
+AT_14 = dt.datetime(2026, 10, 25, 14, 5)
+
+
+@pytest.mark.parametrize("text, at", [
+    ("11:20pm", "2026-10-25T23:20:00"), ("23:20", "2026-10-25T23:20:00"), ("11pm", "2026-10-25T23:00:00"),
+    ("1pm", "2026-10-26T13:00:00"),                  # earlier today: tomorrow
+    ("12am", "2026-10-26T00:00:00"), ("12:30pm", "2026-10-26T12:30:00"),
+    ("Oct 27, 1pm", "2026-10-27T13:00:00"), ("Jan 2, 2027, 1:30pm", "2027-01-02T13:30:00"),
+    ("25:00", None), ("13pm", None), ("0am", None), ("11:61pm", None), ("Feb 30, 1pm", None), ("Foo 3, 1pm", None), ("", None)])
+def test_a_reset_time_is_read_as_the_machines_local_clock_and_never_invented(text, at):
+    assert routine.parse_reset(text, AT_14) == at
+
+
+def outcome_of(stdout="", stderr="", code=1, now=AT_14) -> dict:
+    return routine.outcome(subprocess.CompletedProcess(["claude"], code, stdout, stderr), False, now=now)
+
+
+def test_the_limit_text_in_the_result_on_stdout_counts_and_its_reset_too():
+    said = "You\u2019ve hit your session limit \u00b7 resets 11:20pm (America/New_York)"
+    got = outcome_of(stream({"type": "assistant", "error": "rate_limit", "is_api_error_message": True},
+                            result_event(said, is_error=True, subtype="error_during_execution")))
+    assert got["outcome"] == "limit" and got["resets_at"] == "2026-10-25T23:20:00" and "session limit" in got["why"]
+
+
+def test_a_limit_without_a_reset_time_crashes_nothing_and_invents_none():
+    for said in ("You've hit your session limit", "You've hit your usage limit \u00b7 contact your admin to increase it"):
+        got = outcome_of(stderr=said)
+        assert got["outcome"] == "limit" and got["resets_at"] is None
+    got = outcome_of(stream({"type": "assistant", "error": "rate_limit"}, result_event("rate limited", is_error=True)))
+    assert got["outcome"] == "limit" and got["resets_at"] is None
+    for odd in ("x", None, -5, 10**20, True):   # a structured reset that is no time is no reset
+        got = outcome_of(stream({"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "resetsAt": odd}},
+                                result_event("API Error", is_error=True)))
+        assert got["outcome"] == "limit" and got["resets_at"] is None, odd
+
+
+def test_the_structured_limit_reading_gives_the_reset_when_the_text_has_none():
+    resets = int(dt.datetime(2026, 10, 25, 23, 0).timestamp())
+    got = outcome_of(stream({"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "resetsAt": resets}},
+                            result_event("API Error", is_error=True)))
+    assert got["outcome"] == "limit" and got["resets_at"] == "2026-10-25T23:00:00"
+
+
+@pytest.mark.parametrize("said", ["You're out of usage credits \u00b7 resets 3pm (America/New_York)",
+                                  "You\u2019re out of extra usage \u00b7 resets 3pm", "Your seat type doesn't include extra usage",
+                                  "You've hit your monthly spend limit \u00b7 raise it at https://x.example"])
+def test_extra_usage_texts_are_overage_before_they_are_a_limit(said):
+    assert routine.OVERAGE_PATTERNS and outcome_of(stderr=said)["outcome"] == "overage"
+
+
+def test_extra_usage_starting_is_overage_even_when_the_run_finished():
+    got = outcome_of(stream({"type": "rate_limit_event", "rate_limit_info": {"status": "allowed_warning", "isUsingOverage": True}},
+                            result_event("done")), code=0)
+    assert got["outcome"] == "overage" and "extra usage" in got["why"]
+
+
+def test_a_record_that_quotes_a_limit_text_does_not_stop_a_run_that_finished():
+    """The result of a finished run is the model's own words, which may repeat what a mail said."""
+    got = outcome_of(stream(result_event("Swept 3 mails; one said: You've hit your session limit \u00b7 resets 11pm. "
+                                         "Not logged in \u00b7 Please run /login")), code=1)
+    assert got["outcome"] == "finished"
+
+
+def test_the_exit_code_decides_nothing():
+    assert outcome_of(stream(result_event("ok")), code=1)["outcome"] == "finished"
+    assert outcome_of("", code=0)["outcome"] == "stopped"   # no result at all is not a finished run
+    got = outcome_of(stream(result_event("Reached maximum number of turns", is_error=True, subtype="error_max_turns")), code=0)
+    assert got["outcome"] == "stopped" and "error_max_turns" in got["why"]
+
+
+def test_a_run_that_ran_out_of_time_or_did_not_start_is_said_so():
+    assert routine.outcome(None, True)["outcome"] == "timeout"
+    assert routine.outcome(None, False)["outcome"] == "stopped"
+    assert routine.outcome(None, True)["usage"] == {k: 0 for k in routine.USAGE_KEYS}
+
+
+def test_an_expired_claude_sign_in_is_a_needs_you_item_without_the_model(tmp_path, monkeypatch):
+    ws = granted(tmp_path)
+    run_routine(ws, monkeypatch, stderr="Not logged in \u00b7 Please run /login", code=1)
+    assert runs_of(ws)[-1]["outcome"] == "auth"
+    items = yaml.safe_load((ws / "_inbound/needs-you/routine.yaml").read_text())["items"]
+    assert items[0]["id"] == "routine-claude-signin"
+    assert items[0]["text"].startswith("Sign in to Claude's command line again") and items[0]["check"] == "claude auth login --claudeai"
+    run_routine(ws, monkeypatch, stderr="Not logged in \u00b7 Please run /login", code=1)
+    assert len(yaml.safe_load((ws / "_inbound/needs-you/routine.yaml").read_text())["items"]) == 1   # one item, not one a run
+    run_routine(ws, monkeypatch, stdout=stream(result_event()))
+    assert [i["id"] for i in yaml.safe_load((ws / "_inbound/needs-you/routine.yaml").read_text())["items"]] == []
+
+
+def test_the_structured_sign_in_error_counts_as_auth():
+    got = outcome_of(stream({"type": "assistant", "error": "authentication_failed"}, result_event("Invalid", is_error=True)))
+    assert got["outcome"] == "auth"
+
+
+def test_the_log_keeps_a_summary_not_every_message(tmp_path, monkeypatch):
+    ws = granted(tmp_path)
+    init = {"type": "system", "subtype": "init", "model": "claude-opus-5-5", "tools": TOOLS, "mcp_servers": SERVERS}
+    chatter = [{"type": "assistant", "message": {"content": [{"type": "text", "text": f"private line {n}"}]}} for n in range(50)]
+    run_routine(ws, monkeypatch, stdout=stream(init, *chatter, {"type": "rate_limit_event", "rate_limit_info": {"status": "allowed"}},
+                                               result_event("swept 12 records")))
+    log = (tmp_path / "_home" / ".spaces" / "logs" / "sweep-chain-ada.log").read_text(encoding="utf-8")
+    assert "private line" not in log and "claude-opus-5-5" in log and "swept 12 records" in log and "allowed" in log
+    assert "outcome finished" in log and log.rstrip().endswith("exit 0")
+
+
+def test_check_reads_a_routine_that_stopped_at_a_limit_as_a_failed_run(tmp_path, monkeypatch):
+    ws = granted(tmp_path)
+    run_routine(ws, monkeypatch, stderr="You've hit your session limit \u00b7 resets 11:20pm", code=1)
+    step = onboard.routine_run_step("space-sweep-chain-ada", "sweep-chain-ada")
+    assert not step.done and "limit" in step.result
+
+
+# ----- the grant: what the routines may call, from the apps' verdicts and what the probe still sees ----
+def test_the_grant_drops_a_skipped_app_and_a_tool_the_probe_no_longer_sees(tmp_path, monkeypatch):
+    ws = granted(tmp_path, tools=[t for t in TOOLS if t != "mcp__claude_ai_Gmail__get_thread"])
+    read, write, send = routine.read_grant(ws)
+    assert not any("Microsoft_365" in t for t in read) and "mcp__claude_ai_Gmail__get_thread" not in read
+    assert read == ["mcp__claude_ai_Gmail__search_threads", LINEAR_READ] and write == [LINEAR_WRITE] and send == [GMAIL_SEND]
+
+
+def test_only_a_tracker_writes_and_nothing_acts_that_the_verdicts_did_not_name(tmp_path):
+    widened = dict(GMAIL, read=[*GMAIL_READ, *GMAIL_OTHER], write=[GMAIL_OTHER[2]], send=[GMAIL_SEND, GMAIL_OTHER[1]])
+    tracker = dict(LINEAR, write=[LINEAR_WRITE, LINEAR_DELETE])
+    ws = granted(tmp_path, verdicts=[widened, tracker])
+    read, write, send = routine.read_grant(ws)
+    assert read == [*GMAIL_READ, LINEAR_READ] and write == [LINEAR_WRITE] and send == [GMAIL_SEND]
+
+
+def test_the_mailbox_that_sends_is_the_persons_own_whatever_it_holds(tmp_path):
+    """Ruling R19: the briefing goes from the person's own mailbox, a personal one included, never
+    from someone else's; reading still comes from work and mixed apps only."""
+    own = dict(OUTLOOK, account="Ada Okafor <Ada@LanternWorks.example>")
+    ws = granted(tmp_path, verdicts=[dict(GMAIL, account="ada.private@example.org"), own])
+    read, _, send = routine.read_grant(ws)
+    assert send == [MS_SEND] and MS_READ not in read
+    ws = granted(tmp_path / "b", verdicts=[dict(GMAIL, verdict="someone-else", account=ADA)])
+    assert routine.read_grant(ws)[2] == []
+
+
+def test_without_a_mailbox_of_the_persons_there_is_no_send_and_one_plain_line_says_so(tmp_path):
+    ws = granted(tmp_path, verdicts=[dict(GMAIL, account="ben@lanternworks.example"), LINEAR])
+    got = routine.grant(ws)
+    assert got["send"] == [] and len(got["notes"]) == 1 and "mail" in got["notes"][0]
+    assert "mcp__" not in got["notes"][0] and "_meta" not in got["notes"][0]
+    assert routine.grant(granted(tmp_path / "b", owner_email=""))["send"] == []
+
+
+def test_an_app_that_needs_a_new_sign_in_is_left_out_and_one_item_asks_never_another_app(tmp_path, monkeypatch):
+    """Ruling R17: an app read as work that the probe lists as needing a sign-in has no tools; the grant
+    leaves it out and does not fall back to another app."""
+    servers = [{"name": "claude.ai Gmail", "status": "needs-auth"}, *SERVERS[1:]]
+    ws = granted(tmp_path, tools=[t for t in TOOLS if "Gmail" not in t], servers=servers)
+    got = routine.grant(ws)
+    assert got["reconnect"] == ["Gmail"] and got["read"] == [LINEAR_READ] and got["send"] == []
+    run_routine(ws, monkeypatch, stdout=stream(result_event()))
+    items = yaml.safe_load((ws / "_inbound/needs-you/routine.yaml").read_text())["items"]
+    assert [i["id"] for i in items] == ["routine-reconnect-gmail"] and "Gmail" in items[0]["text"]
+    assert items[0]["kind"] == "reconnect" and "mcp__" not in items[0]["text"]
+
+
+def test_a_routine_that_finds_the_app_connected_again_lets_the_item_go(tmp_path, monkeypatch):
+    servers = [{"name": "claude.ai Gmail", "status": "needs-auth"}, *SERVERS[1:]]
+    ws = granted(tmp_path, tools=[t for t in TOOLS if "Gmail" not in t], servers=servers)
+    run_routine(ws, monkeypatch, stdout=stream(result_event()))
+    init = {"type": "system", "subtype": "init", "tools": TOOLS, "mcp_servers": SERVERS}
+    run_routine(ws, monkeypatch, stdout=stream(init, result_event()))
+    assert yaml.safe_load((ws / "_inbound/needs-you/routine.yaml").read_text())["items"] == []
+    assert set(GMAIL_READ) <= set(routine.read_grant(ws)[0])   # the next run reads it again
+
+
+def test_a_routine_that_finds_an_app_signed_out_asks_for_it_at_once(tmp_path, monkeypatch):
+    ws = granted(tmp_path)
+    init = {"type": "system", "subtype": "init", "tools": [t for t in TOOLS if "Gmail" not in t],
+            "mcp_servers": [{"name": "claude.ai Gmail", "status": "needs-auth"}, *SERVERS[1:]]}
+    run_routine(ws, monkeypatch, stdout=stream(init, result_event()))
+    items = yaml.safe_load((ws / "_inbound/needs-you/routine.yaml").read_text())["items"]
+    assert [i["id"] for i in items] == ["routine-reconnect-gmail"]
+    assert routine.grant(ws)["reconnect"] == ["Gmail"] and not set(GMAIL_READ) & set(routine.read_grant(ws)[0])
+
+
+def test_a_grant_from_a_broken_or_missing_file_is_empty_not_wide(tmp_path):
+    ws = granted(tmp_path)
+    (ws / "_meta" / "state" / "private" / "apps.yaml").write_text("apps: [unclosed", encoding="utf-8")
+    assert routine.read_grant(ws) == ([], [], [])
+    (ws / "_meta" / "state" / "private" / "apps.yaml").unlink()
+    assert routine.read_grant(ws) == ([], [], [])
+    ws = granted(tmp_path / "b")
+    routine.probe_path().unlink()
+    assert routine.read_grant(ws) == ([], [], [])
+
+
+def test_no_routine_may_edit_the_grant_it_runs_under(tmp_path):
+    s = routine.routine_settings(tmp_path, "", [tmp_path])
+    assert "Edit(//**/_meta/state/private/apps.yaml)" in s["permissions"]["deny"]
+    assert "Edit(~/.spaces/**)" in s["permissions"]["deny"]   # the probe and the settings themselves
+
+
+# ----- a prompt that only runs while something is true ------------------------------------------
+def test_a_backfill_prompt_costs_nothing_without_a_backfill(tmp_path, monkeypatch):
+    ws = granted(tmp_path)
+    prompt = ws / "_meta" / "state" / "routines" / "backfill-night.md"
+    prompt.write_text("---\nname: backfill-night\nschedule: \"0 1 * * *\"\nonly_while: backfill\n---\nRead the next part.\n",
+                      encoding="utf-8")
+    called = []
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")
+    assert routine.main([str(prompt)], run=lambda *a, **k: called.append(a)) == 0 and called == []
+    assert not routine.lock_path(ws).exists()
+    prompt.write_text("---\nname: odd\nonly_while: the moon is full\n---\nx\n", encoding="utf-8")
+    assert routine.main([str(prompt)], run=lambda *a, **k: called.append(a)) == 0 and called == []
+
+
+# ----- the probe: what the scheduler's own run sees, and three checks ------------------------------
+def probe_run(tools=TOOLS, servers=SERVERS):
+    init = {"type": "system", "subtype": "init", "cwd": "x", "model": "claude-haiku-5-5", "apiKeySource": "none",
+            "tools": list(tools), "mcp_servers": [dict(s) for s in servers]}
+    return fake_run(stdout=stream(init, result_event("OK.")))
+
+
+def test_the_probe_writes_what_it_saw_and_its_three_checks(tmp_path, monkeypatch):
+    ws = granted(tmp_path)
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")
+    before = time.time()
+    assert routine.main(["--probe", str(ws)], run=probe_run()) == 0
+    seen = json.loads(routine.probe_path().read_text(encoding="utf-8"))
+    assert seen["tools"] == TOOLS and seen["ok"] is True and seen["stamp"] >= before and seen["workspace"] == str(ws.resolve())
+    names = [c["name"] for c in seen["checks"]]
+    assert names == ["reads Gmail", "reads Linear", "folder ada", "mail only to you"], names
+    assert all(c["ok"] for c in seen["checks"]) and seen["notes"] == []
+
+
+def test_the_send_check_proves_the_guard_refuses_a_stranger_and_lets_the_person_through(tmp_path, monkeypatch):
+    ws = granted(tmp_path)
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")
+    asked = []
+
+    def hook(command, payload, shell=None):
+        to = json.loads(payload)["tool_input"]["to"]
+        asked.append((to, shell))
+        return 0 if to == [ADA] else 2
+    monkeypatch.setattr(routine, "run_hook", hook)
+    assert routine.main(["--probe", str(ws)], run=probe_run()) == 0
+    assert ([ADA], [proven_shell(), "-c"]) in asked and any(to != [ADA] for to, _ in asked)
+    for broken in (lambda c, p, shell=None: 2, lambda c, p, shell=None: 0, lambda c, p, shell=None: 1,
+                   lambda c, p, shell=None: None):   # blocks all, lets all through, crashes, no shell
+        monkeypatch.setattr(routine, "run_hook", broken)
+        assert routine.main(["--probe", str(ws)], run=probe_run()) == 1
+        check = next(c for c in json.loads(routine.probe_path().read_text())["checks"] if c["name"] == "mail only to you")
+        assert not check["ok"] and "send" in check["why"]
+
+
+def test_without_a_mailbox_to_send_from_the_send_check_passes_and_says_why(tmp_path, monkeypatch):
+    ws = granted(tmp_path, verdicts=[dict(GMAIL, account="ben@lanternworks.example"), LINEAR])
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")
+    assert routine.main(["--probe", str(ws)], run=probe_run()) == 0
+    seen = json.loads(routine.probe_path().read_text(encoding="utf-8"))
+    check = next(c for c in seen["checks"] if c["name"] == "mail only to you")
+    assert check["ok"] and len(seen["notes"]) == 1 and seen["notes"][0] in check["why"]
+
+
+def test_a_routine_settings_file_without_the_guard_fails_the_send_check(tmp_path, monkeypatch):
+    ws = granted(tmp_path)
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")
+    paths = routine.write_allowlist(ws)
+    assert paths and all(p.is_file() for p in paths)
+    data = json.loads(paths[0].read_text(encoding="utf-8"))
+    data.pop("hooks")
+    paths[0].write_text(json.dumps(data), encoding="utf-8")
+    assert routine.main(["--probe", str(ws)], run=probe_run()) == 1
+    check = next(c for c in json.loads(routine.probe_path().read_text())["checks"] if c["name"] == "mail only to you")
+    assert not check["ok"]
+
+
+def test_an_allowlist_that_lacks_an_apps_reads_fails_its_check(tmp_path, monkeypatch):
+    ws = granted(tmp_path)
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")
+    path = routine.write_allowlist(ws)[0]
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["permissions"]["deny"].append(GMAIL_READ[0])
+    data["permissions"]["deny"].append(GMAIL_READ[1])
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert routine.main(["--probe", str(ws)], run=probe_run()) == 1
+    check = next(c for c in json.loads(routine.probe_path().read_text())["checks"] if c["name"] == "reads Gmail")
+    assert not check["ok"]
+
+
+def test_an_app_the_routines_cannot_read_fails_its_check_in_plain_words(tmp_path, monkeypatch):
+    servers = [{"name": "claude.ai Gmail", "status": "needs-auth"}, *SERVERS[1:]]
+    ws = granted(tmp_path)
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")
+    assert routine.main(["--probe", str(ws)], run=probe_run([t for t in TOOLS if "Gmail" not in t], servers)) == 1
+    seen = json.loads(routine.probe_path().read_text(encoding="utf-8"))
+    check = next(c for c in seen["checks"] if c["name"] == "reads Gmail")
+    assert not check["ok"] and "Gmail" in check["why"] and "mcp__" not in check["why"]
+    items = yaml.safe_load((ws / "_inbound/needs-you/routine.yaml").read_text())["items"]
+    assert [i["id"] for i in items] == ["routine-reconnect-gmail"]
+
+
+def test_a_folder_the_routines_cannot_write_in_fails_its_check(tmp_path, monkeypatch):
+    ws = granted(tmp_path)
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")
+    real = Path.write_bytes
+
+    def refuse(self, data):
+        if self.name.startswith(".probe-"):
+            raise PermissionError(13, "Permission denied")
+        return real(self, data)
+    monkeypatch.setattr(Path, "write_bytes", refuse)
+    assert routine.main(["--probe", str(ws)], run=probe_run()) == 1
+    check = next(c for c in json.loads(routine.probe_path().read_text())["checks"] if c["name"] == "folder ada")
+    assert not check["ok"] and "write" in check["why"]
+    assert not [p for p in (ws / "_meta" / "state" / "private").iterdir() if p.name.startswith(".probe-")]
+
+
+def test_a_probe_that_cannot_run_says_why_and_keeps_the_tools_it_knew(tmp_path, monkeypatch):
+    ws = granted(tmp_path)
+    monkeypatch.setattr(routine, "find_claude", lambda: None)
+    assert routine.main(["--probe", str(ws)]) == 1
+    seen = json.loads(routine.probe_path().read_text(encoding="utf-8"))
+    assert seen["ok"] is False and seen["error"] and seen["tools"] == TOOLS and seen["checks"] == []
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")
+    assert routine.main(["--probe", str(ws)], run=fake_run(stdout="Not logged in \u00b7 Please run /login\n", code=1)) == 1
+    assert "init" in json.loads(routine.probe_path().read_text(encoding="utf-8"))["error"]
+
+
+def test_the_probe_runs_as_a_routine_starts_with_every_root_added(tmp_path, monkeypatch):
+    ws = granted(tmp_path)
+    brain = make_space(tmp_path / "José Pérez" / "lantern-works-brain", profile="brain", owner="Ada Okafor")
+    onboard.remember_space(brain)
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")
+    seen = {}
+    init = {"type": "system", "subtype": "init", "tools": TOOLS, "mcp_servers": SERVERS}
+    assert routine.main(["--probe", str(ws)], run=fake_run(seen, stdout=stream(init))) == 0
+    assert seen["argv"][seen["argv"].index("--add-dir") + 1] == str(brain.resolve()) and Path(seen["cwd"]) == ws.resolve()
+    assert "ANTHROPIC_API_KEY" not in seen["env"]
+    names = [c["name"] for c in json.loads(routine.probe_path().read_text(encoding="utf-8"))["checks"]]
+    assert "folder lantern-works-brain" in names
+
+
+def test_the_hook_shell_on_windows_is_git_bash_never_another_bash(tmp_path, monkeypatch):
+    """Claude Code runs hooks with Git Bash on Windows; `bash` on the PATH there can be WSL's, which cannot
+    start a Windows program by its path."""
+    git = tmp_path / "Program Files" / "Git"
+    (git / "cmd").mkdir(parents=True)
+    (git / "bin").mkdir()
+    (git / "cmd" / "git.exe").write_bytes(b"")
+    (git / "bin" / "bash.exe").write_bytes(b"")
+    monkeypatch.delenv("CLAUDE_CODE_GIT_BASH_PATH", raising=False)
+    monkeypatch.setattr(routine.shutil, "which", lambda name: str(git / "cmd" / "git.exe") if name == "git" else
+                        "C:/Windows/System32/bash.exe")
+    assert routine.hook_shell(windows=True) == [str(git / "bin" / "bash.exe"), "-c"]
+    monkeypatch.setenv("CLAUDE_CODE_GIT_BASH_PATH", str(git / "bin" / "bash.exe"))
+    monkeypatch.setattr(routine.shutil, "which", lambda name: None)
+    assert routine.hook_shell(windows=True) == [str(git / "bin" / "bash.exe"), "-c"]
+    monkeypatch.delenv("CLAUDE_CODE_GIT_BASH_PATH")
+    assert routine.hook_shell(windows=True) is None   # no Git Bash: the guard cannot be proved, so the check fails
+    assert routine.hook_shell(windows=False) == ["/bin/sh", "-c"]
+
+
+# ----- the build says done only after the routines proved, twice, that they run on their own -------
+from conftest import args   # noqa: E402
+from test_start import finished_setup, no_outside   # noqa: E402
+
+PASSED = [{"name": "reads Gmail", "ok": True, "why": "Gmail can be read"},
+          {"name": "folder ada-okafor", "ok": True, "why": "read and written"},
+          {"name": "mail only to you", "ok": True, "why": "the guard refuses a stranger"}]
+SEND_FAILED = PASSED[:2] + [{"name": "mail only to you", "ok": False,
+                             "why": "the guard that lets routines send mail only to you did not refuse a stranger"}]
+
+
+def probing(monkeypatch, *runs) -> dict:
+    """The one-shot probe task as the scheduler would run it: registered, started at once (each start
+    writes the next of `runs` to the probe file, as `routine.py --probe` does; None writes nothing, and
+    False is a scheduler that says no), and removed. Returns what happened, in order."""
+    seen = {"events": [], "registered": [], "allowlist_before_second": None}
+    runs = list(runs)
+
+    def register(report, label, task, root, argv, **kw):
+        seen["events"].append("register")
+        seen["registered"].append((task, [str(a) for a in argv], kw))
+        report.add(label, True, f"schtasks /Query /TN {task}", task)
+        return {"name": task, "kind": "schtasks", "check": ["schtasks", "/Query", "/TN", task], "root": str(root)}
+
+    def run_now(record, dry_run=False):
+        seen["events"].append("start")
+        if seen["events"].count("start") == 2:
+            seen["allowlist_before_second"] = sorted(p.name for p in (Path.home() / ".spaces" / "routines").glob("*.json"))
+        checks = runs.pop(0)
+        if checks is False:
+            return False
+        if checks is not None:
+            routine.write_probe({"tools": [], "mcp_servers": [], "checks": checks, "notes": [],
+                                 "ok": all(c["ok"] for c in checks), "stamp": time.time()})
+        return True
+
+    def remove(report, root, state, task, dry_run, label="sync task removed"):
+        seen["events"].append("remove")
+        report.add(label, True, f"schtasks /Query /TN {task}", "removed")
+
+    monkeypatch.setattr(onboard, "register_task", register)
+    monkeypatch.setattr(onboard, "run_now", run_now)
+    monkeypatch.setattr(offboard, "remove_sync_task", remove)
+    monkeypatch.setattr(start, "_sleep", lambda seconds: None)
+    return seen
+
+
+def online_build(tmp_path, monkeypatch, slim_template):
+    """A build that takes the online path to its end, while the spaces themselves are made offline (no
+    host, no scheduler): only the routines' proof is online."""
+    no_outside(monkeypatch)
+    finished_setup()
+    real = start.start
+    monkeypatch.setattr(start, "start", lambda *a, **k: real(*a, **{**k, "offline": True}))
+    return args(tmp_path, offline=False)
+
+
+def test_build_says_done_only_after_the_second_probe_passes(tmp_path, monkeypatch, slim_template):
+    given = online_build(tmp_path, monkeypatch, slim_template)
+    seen = probing(monkeypatch, PASSED, SEND_FAILED)
+    result = start.phase_build(given)
+    assert result["state"] == "failed" and "send" in result["why"]
+    assert seen["events"] == ["register", "start", "start", "remove"]
+    rows = [s for s in result["failed"] if "mail only to you" in s["name"]]
+    assert len(rows) == 1 and "refuse a stranger" in rows[0]["result"]   # the failed check is one step that names it
+    assert result["probe"]["ok"] is False
+
+
+def test_build_is_done_when_both_probes_pass_and_the_allowlist_was_written_between_them(tmp_path, monkeypatch, slim_template):
+    given = online_build(tmp_path, monkeypatch, slim_template)
+    seen = probing(monkeypatch, PASSED, PASSED)
+    result = start.phase_build(given)
+    assert result["state"] == "done", result
+    assert result["probe"]["ok"] is True and [c["name"] for c in result["probe"]["checks"]] == [c["name"] for c in PASSED]
+    (task, argv, when), = seen["registered"]
+    workspace = Path(result["workspace"])
+    assert task == "space-probe-ada-okafor" and argv == [str(workspace / "_meta" / "tools" / "routine.py"), "--probe", str(workspace)]
+    assert when.get("times") and when.get("cron")
+    assert seen["allowlist_before_second"] == ["daily-chain-ada-okafor.settings.json", "sweep-chain-ada-okafor.settings.json"]
+    assert seen["events"][-1] == "remove"
+
+
+def test_the_probe_task_takes_the_isolated_runs_prefix(tmp_path, monkeypatch, slim_template):
+    monkeypatch.setenv("SPACES_TASK_PREFIX", "space-test-1a2b-")
+    given = online_build(tmp_path, monkeypatch, slim_template)
+    seen = probing(monkeypatch, PASSED, PASSED)
+    start.phase_build(given)
+    assert seen["registered"][0][0] == "space-test-1a2b-probe-ada-okafor"
+
+
+def test_a_scheduler_that_will_not_start_the_probe_is_one_plain_line_and_the_task_still_goes(tmp_path, monkeypatch, slim_template):
+    given = online_build(tmp_path, monkeypatch, slim_template)
+    seen = probing(monkeypatch, False)
+    result = start.phase_build(given)
+    assert result["state"] == "failed" and "scheduler" in result["why"] and "schtasks" not in result["why"]
+    assert seen["events"] == ["register", "start", "remove"]
+
+
+def test_a_probe_that_never_reports_fails_after_the_wait_and_the_task_still_goes(tmp_path, monkeypatch, slim_template):
+    given = online_build(tmp_path, monkeypatch, slim_template)
+    seen = probing(monkeypatch, None)
+    clock = [0.0]
+    monkeypatch.setattr(start, "_clock", lambda: clock[0])
+    monkeypatch.setattr(start, "_sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    result = start.phase_build(given)
+    minutes = start.PROBE_WAIT // 60
+    assert result["state"] == "failed" and f"{minutes} minutes" in result["why"]
+    assert start.PROBE_WAIT <= clock[0] <= start.PROBE_WAIT + 20 and seen["events"] == ["register", "start", "remove"]
+
+
+def test_an_old_probe_file_is_not_taken_for_this_runs(tmp_path, monkeypatch, slim_template):
+    given = online_build(tmp_path, monkeypatch, slim_template)
+    routine.write_probe({"tools": [], "checks": PASSED, "ok": True, "stamp": time.time() - 60})
+    probing(monkeypatch, None)
+    clock = [0.0]
+    monkeypatch.setattr(start, "_clock", lambda: clock[0])
+    monkeypatch.setattr(start, "_sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    assert start.phase_build(given)["state"] == "failed"
+
+
+def test_a_probe_that_could_not_run_claude_fails_the_build_with_its_reason(tmp_path, monkeypatch, slim_template):
+    given = online_build(tmp_path, monkeypatch, slim_template)
+    probing(monkeypatch, PASSED)
+    real = onboard.run_now
+
+    def errored(record, dry_run=False):
+        real(record)
+        routine.write_probe({"tools": [], "error": "claude printed no init event", "checks": [], "ok": False,
+                             "stamp": time.time()})
+        return True
+    monkeypatch.setattr(onboard, "run_now", errored)
+    result = start.phase_build(given)
+    assert result["state"] == "failed" and "Claude" in result["why"]
+
+
+def test_an_offline_build_proves_nothing_and_registers_no_probe(tmp_path, monkeypatch, slim_template):
+    no_outside(monkeypatch)
+    finished_setup()
+    seen = probing(monkeypatch)
+    result = start.phase_build(args(tmp_path))
+    assert result["state"] == "done" and seen["events"] == [] and result["probe"] is None
+
+
+def test_the_journal_says_in_one_plain_line_when_no_mailbox_can_send(tmp_path, monkeypatch, slim_template):
+    import setup_journal
+    given = online_build(tmp_path, monkeypatch, slim_template)
+    note = "No mailbox of yours is connected, so the routines send no mail."
+    checks = PASSED[:2] + [{"name": "mail only to you", "ok": True, "why": note}]
+    seen = probing(monkeypatch, checks, checks)
+    real = onboard.run_now
+
+    def with_note(record, dry_run=False):
+        real(record)
+        data = json.loads(routine.probe_path().read_text(encoding="utf-8"))
+        routine.write_probe({**data, "notes": [note]})
+        return True
+    monkeypatch.setattr(onboard, "run_now", with_note)
+    result = start.phase_build(given)
+    assert result["state"] == "done" and result["probe"]["notes"] == [note]
+    assert setup_journal.load()["build"]["routines_note"] == note and seen["events"][-1] == "remove"
+
+
+def test_a_first_probe_that_fails_a_check_still_gets_the_allowlist_and_the_second_decides(tmp_path, monkeypatch, slim_template):
+    """The first probe may have read an allowlist an earlier build wrote: the one written between the two counts."""
+    given = online_build(tmp_path, monkeypatch, slim_template)
+    seen = probing(monkeypatch, SEND_FAILED, PASSED)
+    result = start.phase_build(given)
+    assert result["state"] == "done" and seen["events"] == ["register", "start", "start", "remove"]
+    assert seen["allowlist_before_second"]
+
+
+def test_without_a_shell_to_run_the_guard_in_no_send_tool_is_allowed(tmp_path, monkeypatch):
+    """On a Windows without Git Bash, Claude Code runs a hook with PowerShell, where the guard's line does not
+    parse and the call is not blocked: no send tool then, and one plain line says why."""
+    ws = granted(tmp_path, shell=None)
+    monkeypatch.setattr(routine, "hook_shell", lambda windows=None: None)
+    got = routine.grant(ws)
+    assert got["send"] == [] and got["notes"] == [routine.NO_SHELL] and "mcp__" not in got["notes"][0]
+    s = routine.routine_settings(ws, "", [ws], ADA, GMAIL_READ, [], [GMAIL_SEND], known_tools=TOOLS)
+    assert GMAIL_SEND in s["permissions"]["deny"] and GMAIL_SEND not in s["permissions"]["allow"]
+    assert [h["matcher"] for h in s["hooks"]["PreToolUse"]] == ["Bash"]
+
+
+def test_a_run_lets_go_only_of_its_own_lock(tmp_path, monkeypatch):
+    ws = workspace(tmp_path)
+    monkeypatch.setattr(routine, "pid_alive", lambda pid: True)
+    stale_lock(ws, pid=999_999)
+    routine.release_lock(ws)
+    assert routine.locked(ws)["pid"] == 999_999   # another run's lock stays
+    assert routine.main(["--locked", str(ws)]) == 0
+
+
+def test_a_run_whose_routine_cannot_start_claude_writes_its_outcome_and_holds_no_lock(tmp_path, monkeypatch):
+    ws = granted(tmp_path)
+    monkeypatch.setattr(routine, "find_claude", lambda: None)
+    assert routine.main([str(ws / "_meta" / "state" / "routines" / "sweep-chain.md")]) == 127
+    line = runs_of(ws)[-1]
+    assert line["outcome"] == "stopped" and "not installed" in line["why"] and not routine.lock_path(ws).exists()
+
+
+# ----- fix round 1 (Ruling R30) ---------------------------------------------------------------------
+def test_a_probe_that_no_longer_sees_an_app_grants_none_of_its_tools(tmp_path, monkeypatch):
+    """I-1: Ada removes Gmail from Claude. The next real `--probe` lists neither its server nor its tools:
+    no Gmail read or send tool is granted any more, the check says Gmail is not connected, and every Gmail
+    tool stays denied (`seen`), so it is never let through by being forgotten."""
+    ws = granted(tmp_path, shell=None)
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")
+    assert routine.main(["--probe", str(ws)], run=probe_run()) == 0
+    read, _, send = routine.read_grant(ws)
+    assert set(GMAIL_READ) <= set(read) and send == [GMAIL_SEND]
+    gone = [t for t in TOOLS if "Gmail" not in t]
+    assert routine.main(["--probe", str(ws)], run=probe_run(gone, SERVERS[1:])) == 1
+    read, write, send = routine.read_grant(ws)
+    assert not [t for t in read + write + send if "Gmail" in t] and read == [LINEAR_READ]
+    data = json.loads(routine.probe_path().read_text(encoding="utf-8"))
+    assert data["tools"] == gone and [s["name"] for s in data["mcp_servers"]] == ["claude.ai Microsoft 365", "claude.ai Linear"]
+    assert set(GMAIL_READ + [GMAIL_SEND] + GMAIL_OTHER) <= set(data["seen"]) and "Read" not in data["seen"]
+    check = next(c for c in data["checks"] if c["name"] == "reads Gmail")
+    assert not check["ok"] and "not connected" in check["why"]
+    for path in routine.write_allowlist(ws):
+        profile = json.loads(path.read_text(encoding="utf-8"))
+        assert set(GMAIL_READ + [GMAIL_SEND] + GMAIL_OTHER) <= set(profile["permissions"]["deny"])
+        assert not [t for t in profile["permissions"]["allow"] if "Gmail" in t]
+
+
+def test_a_tool_the_connector_stopped_offering_leaves_the_grant_at_the_next_probe(tmp_path, monkeypatch):
+    ws = granted(tmp_path, shell=None)
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")
+    routine.main(["--probe", str(ws)], run=probe_run([t for t in TOOLS if t != GMAIL_READ[1]]))
+    assert routine.read_grant(ws)[0] == [GMAIL_READ[0], LINEAR_READ]
+    assert GMAIL_READ[1] in json.loads(routine.write_allowlist(ws)[0].read_text(encoding="utf-8"))["permissions"]["deny"]
+
+
+def test_a_runs_own_init_adds_what_it_saw_and_forgets_nothing(tmp_path, monkeypatch):
+    """A run's init leaves out what its profile denies, so it cannot say a tool is gone: it only adds, and its
+    servers' states count. Only `--probe` replaces the list."""
+    ws = granted(tmp_path)
+    new = "mcp__claude_ai_Linear__get_issue"
+    init = {"type": "system", "subtype": "init", "tools": ["Read", LINEAR_READ, new], "mcp_servers": SERVERS}
+    run_routine(ws, monkeypatch, stdout=stream(init, result_event()))
+    data = json.loads(routine.probe_path().read_text(encoding="utf-8"))
+    assert set(TOOLS) | {new} == set(data["tools"]) and new in data["seen"] and data["hook_shell"] == proven_shell()
+
+
+def test_every_routine_profile_and_the_files_readers_keep_hooks_on(tmp_path):
+    """I-2: a person who switched every hook off in their own settings would run a routine without its guards;
+    the profile's own `"disableAllHooks": false` (command-line settings outrank theirs) keeps them on."""
+    import reader
+    ws = granted(tmp_path)
+    paths = routine.write_allowlist(ws)
+    assert paths and all(json.loads(p.read_text(encoding="utf-8"))["disableAllHooks"] is False for p in paths)
+    folder = tmp_path / "reader"
+    folder.mkdir()
+    data = json.loads(reader._files_settings(folder, folder, []).read_text(encoding="utf-8"))
+    assert data["disableAllHooks"] is False and data["hooks"]["PreToolUse"][0]["matcher"] == "Read"
+
+
+@pytest.mark.parametrize("hooks_off", [True, None])
+def test_a_profile_that_lets_hooks_be_switched_off_fails_the_send_check(tmp_path, monkeypatch, hooks_off):
+    ws = granted(tmp_path)
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")
+    path = routine.write_allowlist(ws)[0]
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if hooks_off is None:
+        data.pop("disableAllHooks")
+    else:
+        data["disableAllHooks"] = hooks_off
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert routine.main(["--probe", str(ws)], run=probe_run()) == 1
+    seen = json.loads(routine.probe_path().read_text(encoding="utf-8"))
+    check = next(c for c in seen["checks"] if c["name"] == "mail only to you")
+    assert not check["ok"] and "switched off" in check["why"]
+
+
+def test_a_stale_profile_fails_the_first_probe_but_the_allowlist_written_after_it_passes_the_second(tmp_path, monkeypatch):
+    """What the build does: an older profile on disk fails the first probe's send check, but the guard a run
+    will carry, in the shell Claude Code will use, is proven all the same; the allowlist written between the
+    two probes then sends, and the second probe passes."""
+    ws = granted(tmp_path, shell=None)
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")
+    stale = json.loads(routine.write_allowlist(ws)[0].read_text(encoding="utf-8"))
+    assert GMAIL_SEND in stale["permissions"]["deny"]   # written before any probe proved the shell
+    assert routine.main(["--probe", str(ws)], run=probe_run()) == 1
+    assert json.loads(routine.probe_path().read_text(encoding="utf-8"))["hook_shell"] == proven_shell()
+    routine.write_allowlist(ws)
+    assert routine.main(["--probe", str(ws)], run=probe_run()) == 0
+
+
+def test_a_guard_that_does_not_hold_in_the_shell_proves_nothing(tmp_path, monkeypatch):
+    ws = granted(tmp_path, shell=None)
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")
+    monkeypatch.setattr(routine, "run_hook", lambda command, payload, shell=None: 0)   # lets a stranger through
+    assert routine.main(["--probe", str(ws)], run=probe_run()) == 1
+    assert json.loads(routine.probe_path().read_text(encoding="utf-8"))["hook_shell"] is None
+    assert routine.grant(ws)["send"] == [] and routine.grant(ws)["notes"] == [routine.NOT_PROVEN]
+
+
+def test_the_probe_writes_the_shell_it_proved_the_guard_in_and_a_run_pins_it(tmp_path, monkeypatch):
+    """I-2: the send check runs the profile's own command in the shell `hook_shell` finds; once it passed,
+    that shell is written down and each run's claude gets CLAUDE_CODE_GIT_BASH_PATH set to it on Windows."""
+    ws = granted(tmp_path, shell=None)
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")
+    assert routine.main(["--probe", str(ws)], run=probe_run()) == 0
+    shell = json.loads(routine.probe_path().read_text(encoding="utf-8"))["hook_shell"]
+    assert shell == routine.hook_shell()[0] and routine.grant(ws)["shell"] == shell
+    monkeypatch.setenv("claude_code_git_bash_path", "C:/Other/bin/bash.exe")
+    code, seen = run_routine(ws, monkeypatch, stdout=stream(result_event()))
+    pinned = {k: v for k, v in seen["env"].items() if k.upper() == "CLAUDE_CODE_GIT_BASH_PATH"}
+    if os.name == "nt":
+        assert pinned == {"CLAUDE_CODE_GIT_BASH_PATH": shell}
+    else:
+        assert "CLAUDE_CODE_GIT_BASH_PATH" not in pinned
+
+
+def test_routine_env_pins_the_proven_bash_on_windows_only():
+    env = {"PATH": "/bin", "Claude_Code_Git_Bash_Path": "C:/Other/bash.exe", "ANTHROPIC_API_KEY": "k"}
+    assert routine.routine_env(env, "C:/Git/bin/bash.exe", windows=True) == {"PATH": "/bin",
+                                                                         "CLAUDE_CODE_GIT_BASH_PATH": "C:/Git/bin/bash.exe"}
+    assert routine.routine_env(env, "/bin/sh", windows=False) == {"PATH": "/bin", "Claude_Code_Git_Bash_Path": "C:/Other/bash.exe"}
+    assert routine.routine_env(env, "", windows=True) == {"PATH": "/bin", "Claude_Code_Git_Bash_Path": "C:/Other/bash.exe"}
+
+
+def test_without_a_proven_shell_there_is_no_send_and_one_plain_line_says_why(tmp_path, monkeypatch):
+    monkeypatch.setattr(routine, "hook_shell", lambda windows=None: [sys.executable, "-c"])
+    for shell in (None, str(tmp_path / "gone" / "bash.exe")):
+        got = routine.grant(granted(tmp_path / str(bool(shell)), shell=shell))
+        assert got["send"] == [] and got["notes"] == [routine.NOT_PROVEN] and got["shell"] == ""
+        assert "mcp__" not in got["notes"][0] and "_meta" not in got["notes"][0]
+    ws = granted(tmp_path / "c", shell=None)
+    profile = json.loads(routine.write_allowlist(ws)[0].read_text(encoding="utf-8"))
+    assert GMAIL_SEND in profile["permissions"]["deny"] and [h["matcher"] for h in profile["hooks"]["PreToolUse"]] == ["Bash"]
+
+
+def test_a_routine_has_only_the_built_in_tools_it_needs(tmp_path):
+    """I-5: `--tools` names them; the profile denies the rest by name, so the person's own allows for web,
+    PowerShell or agents never reach a routine."""
+    s = routine.routine_settings(tmp_path, "", [tmp_path], ADA, known_tools=TOOLS)
+    for name in ("WebFetch", "WebSearch", "PowerShell", "NotebookEdit", "Monitor", "CronCreate", "Skill"):
+        assert name in s["permissions"]["deny"], name
+    assert not set(routine.ROUTINE_BUILTINS) & set(s["permissions"]["deny"])
+    assert routine.ROUTINE_BUILTINS == ("Bash", "Read", "Edit", "Write", "Glob", "Grep", "ToolSearch", "Task")
+    assert "Task" not in s["permissions"]["deny"]   # the second agent that checks route and distill decisions
+
+
+def test_a_fault_inside_a_run_still_writes_its_outcome_and_exit_line(tmp_path, monkeypatch):
+    """m-5: whatever goes wrong inside a run, its own line says it stopped, in plain words, and the log ends
+    with the exit line; the lock goes."""
+    ws = granted(tmp_path)
+    real = routine.write_settings
+
+    def broken(*a, **k):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(routine, "write_settings", broken)
+    code, seen = run_routine(ws, monkeypatch, stdout=stream(result_event()))
+    assert code == 1 and seen == {}
+    line = runs_of(ws)[-1]
+    assert line["outcome"] == "stopped" and "fault of its own" in line["why"] and "OSError" in line["why"]
+    log = (Path.home() / ".spaces" / "logs" / "sweep-chain-ada.log").read_text(encoding="utf-8")
+    assert log.rstrip().endswith("exit 1") and "outcome stopped" in log and not routine.lock_path(ws).exists()
+    monkeypatch.setattr(routine, "write_settings", real)
+    ws = granted(tmp_path / "b")
+    monkeypatch.setattr(routine, "log_summary", lambda res: 1 / 0)   # after the outcome was written: written once
+    code, _ = run_routine(ws, monkeypatch, stdout=stream(result_event()))
+    assert code == 1 and [r["outcome"] for r in runs_of(ws)] == ["finished"]
+
+
+def test_the_probe_runs_under_the_workspaces_lock(tmp_path, monkeypatch):
+    """m-8: the probe writes probe.json and Needs you under the lock a run takes; while a run holds it, the
+    probe asks nothing and says so."""
+    ws = granted(tmp_path)
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")
+    held = {}
+    inner = probe_run()
+
+    def run(argv, **kw):
+        held.update(routine.locked(ws) or {})
+        return inner(argv, **kw)
+    assert routine.main(["--probe", str(ws)], run=run) == 0
+    assert held["routine"] == "probe" and not routine.lock_path(ws).exists()
+    assert routine.take_lock(ws, "daily-chain")
+    called = []
+    assert routine.main(["--probe", str(ws)], run=lambda *a, **k: called.append(a)) == 1 and called == []
+    data = json.loads(routine.probe_path().read_text(encoding="utf-8"))
+    assert data["busy"] is True and "busy" in data["error"] and data["tools"] == TOOLS
+    assert routine.locked(ws)["routine"] == "daily-chain"   # the run keeps its lock
+    routine.release_lock(ws)
+    assert routine.main(["--probe", str(ws)], run=probe_run()) == 0
+    assert "busy" not in json.loads(routine.probe_path().read_text(encoding="utf-8"))
+
+
+# ----- I-3: the probe task is recorded before it exists, so a stray one is always found again ------------
+class Killed(BaseException):
+    """The build's process ended here: nothing after it runs, not even a `finally`."""
+
+
+def scheduler(monkeypatch, kill=False, tasks=()) -> dict:
+    """A scheduler that keeps its tasks: register adds, remove takes away. With `kill`, the build dies right
+    after its probe task was started, before it removed it."""
+    state = {"tasks": set(tasks), "events": [], "recorded_at_register": None}
+
+    def register(report, label, task, root, argv, **kw):
+        found = onboard.read_yaml(Path(root) / "_meta" / "state" / "onboard.yaml", {}) or {}
+        state["recorded_at_register"] = found.get("probe_task")
+        state["tasks"].add(task)
+        state["events"].append(("register", task))
+        report.add(label, True, f"schtasks /Query /TN {task}", task)
+        return {"name": task, "kind": "schtasks", "check": ["schtasks", "/Query", "/TN", task], "root": str(root)}
+
+    def run_now(record, dry_run=False):
+        state["events"].append(("start", record["name"]))
+        if kill:
+            raise Killed()
+        routine.write_probe({"tools": [], "mcp_servers": [], "checks": PASSED, "notes": [], "ok": True,
+                             "stamp": time.time()})
+        return True
+
+    def remove(report, root, recorded, task, dry_run, label="sync task removed"):
+        if kill:
+            raise Killed()
+        state["events"].append(("remove", task))
+        state["tasks"].discard(task)
+        report.add(label, True, f"schtasks /Query /TN {task}", "removed")
+
+    monkeypatch.setattr(onboard, "register_task", register)
+    monkeypatch.setattr(onboard, "run_now", run_now)
+    monkeypatch.setattr(offboard, "remove_sync_task", remove)
+    monkeypatch.setattr(start, "_sleep", lambda seconds: None)
+    return state
+
+
+def probe_record(ws):
+    return (onboard.read_yaml(Path(ws) / "_meta" / "state" / "onboard.yaml", {}) or {}).get("probe_task")
+
+
+def test_the_probe_task_is_recorded_before_it_is_registered_and_forgotten_once_removed(tmp_path, monkeypatch, slim_template):
+    given = online_build(tmp_path, monkeypatch, slim_template)
+    state = scheduler(monkeypatch)
+    result = start.phase_build(given)
+    assert result["state"] == "done", result
+    assert state["recorded_at_register"] == {"name": "space-probe-ada-okafor"}
+    assert state["tasks"] == set() and probe_record(result["workspace"]) is None
+
+
+def test_a_build_killed_between_register_and_removal_is_cleaned_up_by_the_next_build(tmp_path, monkeypatch, slim_template):
+    given = online_build(tmp_path, monkeypatch, slim_template)
+    killed = scheduler(monkeypatch, kill=True)
+    with pytest.raises(Killed):
+        start.phase_build(given)
+    assert killed["tasks"] == {"space-probe-ada-okafor"}   # the stray task: registered, never removed
+    state = scheduler(monkeypatch, tasks=killed["tasks"])
+    result = start.phase_build(given)
+    assert result["state"] == "done", result
+    assert state["events"][0] == ("remove", "space-probe-ada-okafor")   # the stray goes before a new one is made
+    assert state["events"][1][0] == "register" and state["events"][-1] == ("remove", "space-probe-ada-okafor")
+    assert state["tasks"] == set() and probe_record(result["workspace"]) is None
+
+
+def stray(tmp_path, name="space-probe-ada") -> Path:
+    root = make_space(tmp_path / "ada")
+    onboard.write_yaml(root / "_meta" / "state" / "onboard.yaml", {
+        "case": "person", "sync_task": {"name": "space-sync-ada"}, "routine_tasks": [{"name": "space-daily-chain-ada"}],
+        "probe_task": {"name": name, "kind": "schtasks"}})
+    return root
+
+
+def windows_scheduler(monkeypatch, present) -> list:
+    """schtasks as offboard and --check meet it: the `present` tasks answer /Query until they are deleted."""
+    monkeypatch.setattr(onboard, "SYSTEM", "Windows")
+    deleted = []
+
+    def fake(argv, dry_run=False, cwd=None):
+        argv = [str(a) for a in argv]
+        if argv[:2] == ["schtasks", "/Delete"]:
+            deleted.append(argv[-1])
+        name = argv[argv.index("/TN") + 1] if "/TN" in argv else ""
+        gone = argv[:2] == ["schtasks", "/Query"] and (name in deleted or name not in present)
+        return subprocess.CompletedProcess(argv, 1 if gone else 0, "", "")
+    monkeypatch.setattr(offboard, "run_cmd", fake)
+    monkeypatch.setattr(onboard, "run_cmd", fake)
+    return deleted
+
+
+def test_offboard_removes_a_stray_probe_task_too(tmp_path, monkeypatch):
+    root = stray(tmp_path)
+    deleted = windows_scheduler(monkeypatch, {"space-sync-ada", "space-daily-chain-ada", "space-probe-ada"})
+    report = offboard.run(root, online=True, dry_run=False)
+    assert deleted == ["space-sync-ada", "space-daily-chain-ada", "space-probe-ada"]
+    row = next(s for s in report.steps if s.name == "routine probe task space-probe-ada removed")
+    assert row.done and probe_record(root) is None
+
+
+def test_check_removes_a_stray_probe_task(tmp_path, monkeypatch):
+    root = stray(tmp_path)
+    deleted = windows_scheduler(monkeypatch, {"space-probe-ada"})
+    monkeypatch.setattr(onboard.doctor, "diagnose", lambda *a, **k: [])
+    rows = [s for s in onboard.check(root) if "probe" in s.name]
+    assert deleted == ["space-probe-ada"]
+    assert [(s.name, s.done) for s in rows] == [("routine probe task space-probe-ada removed", True)]
+    assert probe_record(root) is None
+    assert not [s for s in onboard.check(root) if "probe" in s.name]   # once gone, nothing more to say
+
+
+@pytest.mark.parametrize("name", ["spaces--sync-ada", "space-sync-ada", "space-probe-someone-else", "OneDrive Update", ""])
+def test_a_probe_record_that_is_not_this_spaces_probe_task_removes_nothing(tmp_path, monkeypatch, name):
+    """onboard.yaml is a file a merge can change: only `<prefix>probe-<this space>` is ever removed by it."""
+    root = stray(tmp_path, name=name)
+    deleted = windows_scheduler(monkeypatch, {name})
+    report = onboard.Report(case="check")
+    offboard.remove_probe_task(report, root)
+    assert deleted == [] and report.steps == []
+
+
+def test_the_build_waits_longer_than_the_probe_may_take():
+    """m-2: the probe's own claude may take PROBE_SECONDS; the build gives it more before it says it never reported."""
+    assert start.PROBE_WAIT >= routine.PROBE_SECONDS + 60
+
+
+def test_a_probe_error_is_a_plain_step_and_its_check_quotes_the_paths(tmp_path, monkeypatch, slim_template):
+    """m-6: the step says what happened in plain words, never what claude printed; the check command can be
+    pasted into a shell for a folder whose name has a space."""
+    given = online_build(tmp_path, monkeypatch, slim_template)
+    probing(monkeypatch, PASSED)
+    real = onboard.run_now
+
+    def errored(record, dry_run=False):
+        real(record)
+        routine.write_probe({"tools": [], "error": "claude printed no init event (exit 1): Traceback ...", "checks": [],
+                             "ok": False, "stamp": time.time()})
+        return True
+    monkeypatch.setattr(onboard, "run_now", errored)
+    result = start.phase_build(given)
+    row = next(s for s in result["failed"] if s["name"] == start.PROBE_STEP)
+    assert row["result"] == start.PROBE_ERROR and "init" not in row["result"] and "exit" not in row["result"]
+    ws = Path(result["workspace"]).as_posix()
+    assert f'"{ws}/_meta/tools/routine.py" --probe "{ws}"' in row["check"]
+
+
+def test_a_probe_that_found_a_routine_running_says_so_in_plain_words(tmp_path, monkeypatch, slim_template):
+    given = online_build(tmp_path, monkeypatch, slim_template)
+    probing(monkeypatch, PASSED)
+    real = onboard.run_now
+
+    def busy(record, dry_run=False):
+        real(record)
+        routine.write_probe({"tools": [], "error": "another run is busy: sweep-chain", "busy": True, "checks": [],
+                             "ok": False, "stamp": time.time()})
+        return True
+    monkeypatch.setattr(onboard, "run_now", busy)
+    result = start.phase_build(given)
+    assert result["state"] == "failed" and result["why"] == start.PROBE_BUSY
