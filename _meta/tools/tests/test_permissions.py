@@ -24,6 +24,10 @@ def profile() -> dict:
     return json.loads(PROFILE.read_text(encoding="utf-8"))["permissions"]
 
 
+# The sweep skill has a session check the lock with `routine.py --locked`; a routine holds it and never runs it.
+NOT_FOR_ROUTINES["routine.py"] = "a session checks the lock; a routine holds it"
+
+
 def named_tools(*paths) -> set:
     """Every tool script the given files name, as long as it exists in `_meta/tools/`."""
     text = "\n".join(Path(p).read_text(encoding="utf-8") for p in paths)

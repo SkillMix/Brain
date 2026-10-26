@@ -211,6 +211,19 @@ def test_a_limit_stops_new_readers_and_keeps_what_finished(tmp_path):
     assert stop.value.text == "the plan's limit is reached"
 
 
+def test_an_app_skipped_before_its_reader_starts_is_never_read_and_has_no_verdict(tmp_path):
+    """The person's skips are asked again right before each reader starts (R43, N2-3): one said while the first
+    readers run keeps an app still queued behind them from being read at all."""
+    called, skips = [], set()
+
+    def reader_(prompt, tools, *a, **k):
+        called.append(tools[0])
+        skips.add("Slack")                                                    # said while Gmail is read
+        return answer()
+    v = apps.analyse(apps.group(TOOLS), {"email": ADA}, tmp_path, reader=reader_, workers=1, skipped=lambda: skips)
+    assert [x["app"] for x in v] == ["Gmail", "Microsoft 365"] and not any("Slack" in t for t in called)
+
+
 def test_someone_elses_mailbox_never_sends_and_the_group_is_left_as_it_was(tmp_path):
     [group] = apps.group(TOOLS[:3])
     [v] = apps.analyse([group], {"email": ADA}, tmp_path, reader=lambda *a, **k: answer(verdict="someone-else", account="office@lanternworks.example"))

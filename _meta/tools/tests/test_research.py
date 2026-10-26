@@ -706,6 +706,119 @@ def test_the_documents_wait_until_the_card_has_been_shown_for_ten_minutes(phase,
     assert "documents_after" not in journal() or journal()["documents_after"] is None
 
 
+def test_the_documents_wait_for_the_apps_verdicts_when_the_probe_found_a_documents_app(phase, capsys):
+    """Research runs beside the apps phase. While the probe has seen a documents app that has no verdict yet, the
+    documents step waits for it (Ruling R38, I-11); the rest is read, and the phase run again reads the documents."""
+    drive = {"app": "Google Drive", "kinds": ["documents"], "read": DRIVE, "write": [], "send": []}
+    setup_journal.set_phase("apps", "running", groups=[drive], not_signed_in=[])
+    readers = Readers(phase)
+    code, out = run(capsys)
+    assert code == 0 and out["state"] == "waiting" and readers.asked("documents") == []
+    assert "apps" in out["why"] and "mcp__" not in out["why"] and readers.asked("site")
+    assert "documents:Google Drive" not in journal()["sources_done"]
+    the_apps()                                                                # the apps phase is through
+    readers = Readers(phase)
+    code, out = run(capsys)
+    assert out["state"] == "done" and [s["name"] for s in readers.seen] == ["documents", "merge"]
+
+
+def test_a_probe_without_a_documents_app_does_not_hold_the_research(phase, capsys):
+    mail = {"app": "Gmail", "kinds": ["mail"], "read": ["mcp__claude_ai_Gmail__search_threads"], "write": [], "send": []}
+    setup_journal.set_phase("apps", "pending", groups=[mail], not_signed_in=[])
+    Readers(phase)
+    code, out = run(capsys)
+    assert code == 0 and out["state"] == "done"
+
+
+
+# ----- Task 13 fix round 2 (Ruling R40): a skip is never outrun, and an unfinished documents app is waited for -----
+NOTION = ["mcp__claude_ai_Notion__search", "mcp__claude_ai_Notion__fetch"]
+
+
+def say_skip(app: str) -> None:
+    got = start.skip_apps(types.SimpleNamespace(skip=[app], workspace=None))
+    assert got["skipped"] == [app], got
+
+
+def test_a_skip_said_while_research_waits_for_the_card_is_kept_and_the_app_is_never_read(phase, capsys):
+    """The person says "skip Google Drive" in the ten minutes `--wait` stays for: the documents step looks at the
+    verdicts again after its wait, so the app is not read and nothing of it reaches the brain (I-5 a, probe P3)."""
+    soon = dt.datetime.now().astimezone() + dt.timedelta(minutes=7)
+    the_apps(starts_after=soon)
+    clock = {"now": dt.datetime.now().astimezone(), "said": False}
+
+    def sleep(seconds):
+        if not clock["said"]:
+            say_skip("Google Drive")
+            clock["said"] = True
+        clock["now"] += dt.timedelta(seconds=seconds)
+    phase.setattr(start, "_sleep", sleep)
+    phase.setattr(start, "_now", lambda: clock["now"])
+    readers = Readers(phase)
+    code, out = run(capsys, "--wait")
+    assert code == 0 and out["state"] == "done" and clock["said"]
+    assert readers.asked("documents") == [] and "documents:Google Drive" not in journal()["sources_done"]
+    assert not [r for r in records_on_disk() if r.get("about") == "documents"]
+
+
+def test_each_documents_app_is_looked_up_again_right_before_it_is_read(phase, capsys):
+    """Two documents apps: a skip said while the first is read keeps the second from being read (I-5 a)."""
+    the_apps()
+    record = setup_journal.load()["apps"]
+    notion = {**record["verdicts"][1], "app": "Notion", "read": NOTION}
+    setup_journal.set_phase("apps", "done", verdicts=[*record["verdicts"], notion])
+    said = []
+
+    def documents(prompt):
+        if not said:
+            say_skip("Notion")
+            said.append(prompt)
+        return DOCS
+    readers = Readers(phase, answers={"documents": documents})
+    code, out = run(capsys)
+    asked = [s["prompt"] for s in readers.asked("documents")]
+    assert code == 0 and len(asked) == 1 and "Google Drive" in asked[0]
+    assert "documents:Notion" not in journal()["sources_done"] and "documents:Google Drive" in journal()["sources_done"]
+    assert [r for r in records_on_disk() if r.get("about") == "documents"]   # what the checks above look for is there
+
+
+def test_a_skip_said_while_that_documents_app_is_read_keeps_nothing_of_it(phase, capsys):
+    """Probe Q2b: "skip Google Drive" lands while Drive's own documents reader runs. What it read is dropped and the
+    app is not marked read, so nothing of it reaches the records or the profile (R43, N2-2)."""
+    the_apps()
+
+    def documents(prompt):
+        say_skip("Google Drive")
+        return DOCS
+    readers = Readers(phase, answers={"documents": documents})
+    code, out = run(capsys)
+    assert code == 0 and out["state"] == "done" and len(readers.asked("documents")) == 1
+    assert "documents:Google Drive" not in journal()["sources_done"]
+    assert not [r for r in records_on_disk() if r.get("about") == "documents"]
+    assert "Brand book" not in readers.asked("merge")[0]["prompt"]
+
+
+def test_an_apps_phase_stopped_with_the_documents_app_unread_holds_the_documents_step(phase, capsys):
+    """The apps phase stopped at a limit before it judged the documents app (`unfinished`): its verdicts exist, but
+    not the one the documents step needs, so research waits for it as before any verdict (N-4, probe P5). Skipped
+    by the person, it no longer holds anything."""
+    drive = {"app": "Google Drive", "kinds": ["documents"], "read": DRIVE, "write": [], "send": []}
+    gmail = {"app": "Gmail", "kinds": ["mail"], "read": ["mcp__claude_ai_Gmail__search_threads"], "write": [], "send": []}
+    setup_journal.set_phase("apps", "waiting", groups=[gmail, drive], not_signed_in=[], unfinished=["Google Drive"],
+                            verdicts=[{**gmail, "account": ADA, "verdict": "work", "per_month": {}, "why": "w"}],
+                            card={"read": [], "skip": [], "not_signed_in": [],
+                                  "starts_after": (dt.datetime.now().astimezone() - dt.timedelta(minutes=1)).isoformat()})
+    readers = Readers(phase)
+    code, out = run(capsys)
+    assert out["state"] == "waiting" and out["why"] == start.APPS_FIRST_WHY and readers.asked("documents") == []
+    say_skip("Google Drive")
+    record = setup_journal.load()["apps"]
+    assert record["unfinished"] == [] and record["state"] == "done"
+    assert next(v for v in record["verdicts"] if v["app"] == "Google Drive")["verdict"] == "skip"
+    readers = Readers(phase)
+    code, out = run(capsys)
+    assert out["state"] == "done" and readers.asked("documents") == []
+
 def test_with_wait_the_phase_stays_until_the_card_has_been_shown_for_ten_minutes(phase, capsys):
     soon = dt.datetime.now().astimezone() + dt.timedelta(minutes=7)
     the_apps(starts_after=soon)

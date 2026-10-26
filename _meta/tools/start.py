@@ -798,21 +798,125 @@ def _read_apps(args, groups: list, unsigned: list, tools: list, claude: str, cwd
     person = {"name": who["name"], "email": emails[0] if emails else "", "emails": emails,
               **apps.company_of(journal, args.company, emails)}
     limit = None
-    try:
-        verdicts = apps.analyse(groups, person, cwd, reader=reader.read, known_tools=tools, claude=claude)
+    before = [str(s) for s in (journal.get("apps") or {}).get("person_skips") or []]
+    try:   # an app the person skipped is not read again, nor one skipped before its reader starts (R43, N2-3)
+        verdicts = apps.analyse([g for g in groups if g["app"] not in before], person, cwd, reader=reader.read,
+                                known_tools=tools, claude=claude, skipped=_skips_now)
     except apps.LimitReached as stop:   # what finished is kept; the rest waits for the limit to reset
         verdicts, limit = stop.verdicts, stop
+    fresh = setup_journal.load().get("apps")   # read again before writing: a skip said while the readers ran wins (R40)
+    skips = list(dict.fromkeys([*before, *((fresh if isinstance(fresh, dict) else {}).get("person_skips") or [])]))
+    verdicts = [_skipped(v) if v.get("app") in skips and v.get("app") not in before else v for v in verdicts]
     read = {v["app"] for v in verdicts}
-    unfinished = [g["app"] for g in groups if g["app"] not in read]
-    card, feeds = apps.card(verdicts, dt.datetime.now().astimezone(), unsigned), apps.feeds(verdicts)
+    verdicts += [_skipped(g) for g in groups if g["app"] in skips and g["app"] not in read]
+    unfinished = [g["app"] for g in groups if g["app"] not in read and g["app"] not in skips]
+    verdicts = _person_skips(verdicts, skips)   # the person's word stays
+    card, feeds = _skip_lines(apps.card(verdicts, dt.datetime.now().astimezone(), unsigned), verdicts), apps.feeds(verdicts)
     state = "waiting" if limit else "done"
     setup_journal.set_phase("apps", state, **facts, verdicts=verdicts, card=card, feeds=feeds, unfinished=unfinished)
     _app_needs(verdicts)
     result = {"state": state, "apps": [g["app"] for g in groups], "card": card, "feeds": feeds, "unfinished": unfinished}
     if limit:
-        result["why"] = (f"Your Claude limit was reached with {len(verdicts)} of {len(groups)} apps read"
+        read_now = [v for v in verdicts if v.get("verdict") != "skip"]   # the apps actually read (R43, N2-4)
+        result["why"] = (f"Your Claude limit was reached with {len(read_now)} of "
+                         f"{len([g for g in groups if g['app'] not in skips])} apps read"
                          + (f" ({limit.text})" if limit.text else "")
                          + ". Say the sentence again once it resets: the others are read then.")
+    return result
+
+
+SKIPPED_WHY = "you asked me to skip it"
+
+
+def _person_skips(verdicts: list, skipped: list) -> list:
+    """The verdicts with the person's word in place of the reader's for the apps they skipped: `skip`, the reader's
+    verdict kept as `was`. Not `work` or `mixed`, so the grant, the feeds, the history's counts and the research's
+    documents leave the app out."""
+    names = {str(s) for s in skipped}
+    return [{**v, "verdict": "skip", "was": v.get("verdict"), "why": SKIPPED_WHY}
+            if isinstance(v, dict) and v.get("app") in names and v.get("verdict") != "skip" else v for v in verdicts]
+
+
+def _skips_now() -> set:
+    """The apps the person skipped, as the journal says now: asked again right before each app's reader starts."""
+    try:
+        record = setup_journal.load().get("apps")
+    except Exception:   # noqa: BLE001 - a journal caught mid-write: the check after the readers still holds
+        return set()
+    return {str(s) for s in record.get("person_skips") or []} if isinstance(record, dict) else set()
+
+
+def apps_verdicts(journal: dict) -> list:
+    """The apps phase's verdicts with the person's word applied (`person_skips`, `_person_skips`). The feeds, the
+    grant, the history's counts, the documents step and the work mailbox read these, so a skip saved while the phase
+    wrote its verdicts still holds (R43, N2-8)."""
+    record = journal.get("apps") if isinstance(journal.get("apps"), dict) else {}
+    return _person_skips([v for v in record.get("verdicts") or [] if isinstance(v, dict)], record.get("person_skips") or [])
+
+
+def _skipped(app: dict) -> dict:
+    """The verdict of an app the person skipped, with nothing a reader found in it: what the probe saw of the app (its
+    name, kinds and tools) and the person's word (R40, I-5 b)."""
+    return {**{k: app[k] for k in ("app", "kinds", "read", "write", "send") if k in app}, "account": None,
+            "verdict": "skip", "why": SKIPPED_WHY}
+
+
+def _skip_lines(card: dict, verdicts: list) -> dict:
+    """The app card with a line for each app the person skipped, among the skipped ones."""
+    lines = [f"{v['app']}{apps.SEP}{v.get('account') or 'unknown account'}{apps.SEP}skip, {SKIPPED_WHY}"
+             for v in verdicts if isinstance(v, dict) and v.get("verdict") == "skip"]
+    return {**card, "skip": [*card.get("skip", []), *[line for line in lines if line not in card.get("skip", [])]]}
+
+
+def skip_apps(args) -> dict:
+    """"Skip <app>": the person's word becomes the app's verdict (`skip`) in the journal, its card line moves to the
+    skipped ones and the feeds are those of the apps still read; the card's start time stays. Once the build has
+    kept the verdicts in a workspace (`routine.APPS_FILE`), that file says it too, so the routines are not granted the
+    app's tools from their next run on. An app that is not among the person's apps changes nothing, and why names
+    them. The phase keeps the state its record shows (`run_phase` has marked it running meanwhile)."""
+    journal = setup_journal.load()
+    record = journal.get("apps") if isinstance(journal.get("apps"), dict) else {}
+    verdicts = [v for v in record.get("verdicts") or [] if isinstance(v, dict)]
+    groups = [g for g in record.get("groups") or [] if isinstance(g, dict) and g.get("app")]
+    known = list(dict.fromkeys([v["app"] for v in verdicts] + [g["app"] for g in groups]))
+    asked = [n.strip() for item in args.skip for n in str(item).split(",") if n.strip()]
+    found = [a for a in known if a.lower() in {n.lower() for n in asked}]
+    # Before any verdict the phase keeps its state: its readers may be running (R40); a skip changes no state then.
+    state = ("waiting" if record.get("unfinished") else "done") if verdicts else str(record.get("state") or "pending")
+    missing = [n for n in asked if n.lower() not in {a.lower() for a in found}]
+    if missing:
+        return {"state": state, "skipped": [], "why": (f"There is no app called {', '.join(missing)} among your apps"
+                                                       + (f": {', '.join(known)}." if known else " yet."))}
+    skipped = list(dict.fromkeys([*(record.get("person_skips") or []), *found]))
+    facts = {"person_skips": skipped}
+    result = {"state": state, "skipped": found}
+    if not verdicts:   # the readers may have written theirs since: the skip goes onto them, the state is theirs
+        latest = setup_journal.load().get("apps")
+        if isinstance(latest, dict) and latest.get("verdicts"):
+            return skip_apps(args)
+    if verdicts:   # an app not read yet (stopped at a limit) is not read at all: its verdict is the person's word
+        have = {v["app"] for v in verdicts}
+        verdicts = _person_skips(verdicts, skipped) + [_skipped(g) for g in groups if g["app"] in found and g["app"] not in have]
+        unfinished = [a for a in record.get("unfinished") or [] if a not in found]
+        state = result["state"] = "waiting" if unfinished else "done"
+        facts["unfinished"] = unfinished
+        old = record.get("card") if isinstance(record.get("card"), dict) else {}
+        card = _skip_lines(apps.card(verdicts, _now(), record.get("not_signed_in") or []), verdicts)
+        card["starts_after"] = old.get("starts_after") or card["starts_after"]
+        facts.update(verdicts=verdicts, card=card, feeds=apps.feeds(verdicts))
+        result.update(card=card, feeds=facts["feeds"])
+    setup_journal.set_phase("apps", state, **facts)
+    why = f"{', '.join(found)}: nothing more is copied from it."
+    workspace = _history_workspace(args, journal)
+    kept = Path(workspace) / routine.APPS_FILE if workspace else None
+    if kept and kept.exists():
+        try:
+            rows = (yaml.safe_load(kept.read_text(encoding="utf-8")) or {}).get("apps") or []
+            onboard.write_yaml(kept, {"apps": _person_skips([r for r in rows if isinstance(r, dict)], skipped)})
+            why += " Your routines no longer read it from their next run; what was already read stays."
+        except (OSError, yaml.YAMLError, AttributeError):
+            why += " Your routines could not be told yet: say it again."
+    result["why"] = why
     return result
 
 
@@ -826,7 +930,10 @@ def phase_apps(args) -> dict:
     (`apps.analyse`): the journal's `apps` record keeps `verdicts` (with `per_month`), `card`
     (read, skip, not_signed_in, starts_after), `feeds` and `unfinished`. The state is `done` when
     every app has a verdict (an app to reconnect or one that is blocked is a need, not a stop),
-    `waiting` when the plan's limit stopped the readers. A dry run only asks the question."""
+    `waiting` when the plan's limit stopped the readers. A dry run only asks the question. `--skip <app>`
+    asks nothing: the person's word becomes that app's verdict (`skip_apps`)."""
+    if getattr(args, "skip", None):
+        return skip_apps(args)
     if args.offline:
         return {"state": "done", "why": "offline: no app to read"}
     cwd = Path(tempfile.gettempdir()) if args.dry_run else apps.scratch()   # never the person's home or a repository
@@ -883,9 +990,32 @@ def _company_card(args, journal: dict) -> dict:
 
 def _documents_apps(journal: dict) -> list:
     """The apps of the apps phase that hold documents and are read (`apps.READ`), with their read tools."""
+    return [v for v in apps_verdicts(journal)
+            if "documents" in (v.get("kinds") or []) and v.get("verdict") in apps.READ and v.get("read")]
+
+
+APPS_FIRST = "apps"   # research's documents step waits for the apps phase's verdicts
+APPS_FIRST_WHY = ("Your documents app is read once I have finished looking at your apps; the rest of the research is "
+                  "done. Say the sentence again after that.")
+
+
+def _documents_read_now() -> set:
+    """The documents apps that are read, as the journal says now: looked up again right before a documents read."""
+    return {v["app"] for v in _documents_apps(setup_journal.load())}
+
+
+def _apps_judged(journal: dict) -> bool:
+    """Whether the documents step may go on: the apps phase has given its verdicts, or its probe saw no documents app
+    (none, or no probe at all). Research runs beside the apps phase, and a documents app the probe found has no
+    verdict until the apps are read: without one it is not known whether it is read (Ruling R38, I-11). An apps phase
+    stopped at a limit with a documents app among `unfinished` has not judged it either (R40, N-4); one the person
+    skipped holds nothing."""
     record = journal.get("apps") if isinstance(journal.get("apps"), dict) else {}
-    return [v for v in record.get("verdicts") or []
-            if isinstance(v, dict) and "documents" in (v.get("kinds") or []) and v.get("verdict") in apps.READ and v.get("read")]
+    docs = {g.get("app") for g in record.get("groups") or [] if isinstance(g, dict) and "documents" in (g.get("kinds") or [])}
+    docs -= set(record.get("person_skips") or [])
+    if "verdicts" in record:
+        return not docs & set(record.get("unfinished") or [])
+    return not docs
 
 
 def _card_opens(journal: dict) -> dt.datetime | None:
@@ -1007,9 +1137,11 @@ def _read_company(args, card: dict, prior: dict, journal: dict, reading: _Readin
                                   if own_account else "no code organisation of the company is known")
     sources += [("files", files), ("notes", notes)]
     reading.run(sources)
-    waiting = None
+    waiting, judged = None, _apps_judged(journal)
     docs = [v for v in _documents_apps(journal) if f"documents:{v['app']}" not in reading.done]
-    if docs and not reading.stop:
+    if not judged and not reading.stop:   # the documents app has no verdict yet: its step waits for the apps phase
+        waiting = APPS_FIRST
+    elif docs and not reading.stop:
         opens = _card_opens(journal)
         if opens and _now() < opens:
             if args.wait:   # stays until the app card has been shown for ten minutes
@@ -1019,12 +1151,16 @@ def _read_company(args, card: dict, prior: dict, journal: dict, reading: _Readin
                 waiting = opens
 
         def documents(app: dict):
-            def source() -> list:
+            def source() -> list | None:
+                if app["app"] not in _documents_read_now():   # a skip said since: never read (R40, I-5 a)
+                    return None
                 answer = ask(research.documents_prompt(card, app["app"]), list(app["read"]), research.WEB_SCHEMA)
+                if app["app"] not in _documents_read_now():   # skipped while it was read: what it read is dropped (R43)
+                    return None
                 return research.document_records(answer, app["app"], now, taken)
             return source
-        if not waiting:
-            reading.run([(f"documents:{v['app']}", documents(v)) for v in docs])
+        if not waiting:   # the verdicts as they are after the wait: a skip said during it wins
+            reading.run([(f"documents:{v['app']}", documents(v)) for v in docs if v["app"] in _documents_read_now()])
     records, merged, lines = research.read_records(), prior.get("profile_for"), prior.get("profile_lines") or 0
     if records and not reading.stop and (merged != len(records) or not research.profile_path().exists()):
         try:
@@ -1042,7 +1178,8 @@ def _read_company(args, card: dict, prior: dict, journal: dict, reading: _Readin
         except Exception as exc:
             reading.unread["profile"], reading.faults["profile"] = research.UNEXPECTED, type(exc).__name__
     return {"files": used, "records": len(records), "profile_for": merged, "profile_lines": lines,
-            "documents_after": waiting.isoformat(timespec="seconds") if waiting else None, "waiting": waiting}
+            "documents_after": waiting.isoformat(timespec="seconds") if isinstance(waiting, dt.datetime) else None,
+            "waiting": waiting}
 
 
 def phase_research(args) -> dict:
@@ -1053,7 +1190,8 @@ def phase_research(args) -> dict:
     run one after the other, each with only what its source needs: page rules for the site, the
     public register of the domain's country, the code organisation (never the person's own GitHub
     account); the documents on this computer, through the files reader (`reader.read_files`); a few
-    notes of Claude's about the company; the documents app's read tools, after the app card has
+    notes of Claude's about the company; the documents app's read tools, once the apps phase has
+    given its verdicts (`_apps_judged`; until then the phase waits) and after the app card has
     been shown for ten minutes (`--wait` stays until then, else the phase waits); last a reader
     with no tools merges everything. Records (with any key or password dropped, only the kind
     journaled) go to `~/.spaces/research/records.jsonl`, the profile to `profile.yaml`, the
@@ -1111,7 +1249,8 @@ def phase_research(args) -> dict:
     elif reading.stop:
         result["why"] = LIMIT_WHY.format(text=f" ({reading.stop.text})" if reading.stop.text else "")
     elif waiting:
-        result["why"] = HEAD_START_WHY.format(when=f"{waiting.astimezone():%H:%M}")
+        result["why"] = (APPS_FIRST_WHY if waiting == APPS_FIRST
+                         else HEAD_START_WHY.format(when=f"{waiting.astimezone():%H:%M}"))
     return result
 
 
@@ -1180,9 +1319,8 @@ def work_mailbox(journal: dict, known=(), domains=()) -> str:
     after reading mail anyone can write, and the briefing address is the only one agents may mail: so it
     counts only when it is one the person is known to have (`known`, exactly), or sits on a domain of the
     company that did not come from a reader (`domains`; a mail provider's never does). "" otherwise."""
-    record = journal.get("apps") if isinstance(journal.get("apps"), dict) else {}
-    for v in record.get("verdicts") or []:
-        if isinstance(v, dict) and v.get("verdict") == "work" and "mail" in (v.get("kinds") or []):
+    for v in apps_verdicts(journal):
+        if v.get("verdict") == "work" and "mail" in (v.get("kinds") or []):
             account = address_in(v.get("account"))
             domain = account.rpartition("@")[2]
             if account and (account in known or (domain in domains and not research.is_provider(domain))):
@@ -1226,7 +1364,8 @@ def found_by_setup(args, journal: dict, new_company: bool) -> dict:
     apps_record = journal.get("apps") if isinstance(journal.get("apps"), dict) else {}
     card = (journal.get("research") or {}).get("company") if isinstance(journal.get("research"), dict) else None
     card_name = " ".join(str(card.get("name") or "").split()) if isinstance(card, dict) and new_company else ""
-    found = str(apps_record.get("feeds") or "")
+    verdicts = [v for v in apps_verdicts(journal) if isinstance(v.get("kinds"), list) and "verdict" in v]
+    found = apps.feeds(verdicts) if verdicts else str(apps_record.get("feeds") or "")   # the person's word applied
     address, source = briefing_address(args, journal)
     return {"company": args.company or card_name or None, "email": address or None, "email_source": source,
             "feeds": args.feeds or found or None,
@@ -1247,9 +1386,7 @@ def keep_findings(report, journal: dict, briefing=("", "asked")) -> None:
         data["settings"] = settings
         setup_journal.save(data)
     workspace = getattr(report, "workspace", None)
-    record = journal.get("apps") if isinstance(journal.get("apps"), dict) else {}
-    verdicts = [{k: v for k, v in verdict.items() if k != "per_month"}
-                for verdict in record.get("verdicts") or [] if isinstance(verdict, dict)]
+    verdicts = [{k: v for k, v in verdict.items() if k != "per_month"} for verdict in apps_verdicts(journal)]
     if workspace and verdicts:
         onboard.write_yaml(Path(workspace) / "_meta" / "state" / "private" / "apps.yaml", {"apps": verdicts})
     if workspace:
@@ -1469,11 +1606,11 @@ NO_WORKSPACE = ("Your workspace was not found on this computer, so there is no h
 
 
 def history_counts(journal: dict) -> dict:
-    """Records a month in the apps that are read (`apps.READ`): the journal's verdicts, `per_month` summed."""
-    record = journal.get("apps") if isinstance(journal.get("apps"), dict) else {}
+    """Records a month in the apps that are read (`apps.READ`): the journal's verdicts with the person's word applied
+    (`apps_verdicts`), `per_month` summed."""
     counts: dict = {}
-    for verdict in record.get("verdicts") or []:
-        if isinstance(verdict, dict) and verdict.get("verdict") in apps.READ and isinstance(verdict.get("per_month"), dict):
+    for verdict in apps_verdicts(journal):
+        if verdict.get("verdict") in apps.READ and isinstance(verdict.get("per_month"), dict):
             for month, number in verdict["per_month"].items():
                 if isinstance(number, int) and not isinstance(number, bool) and number > 0:
                     counts[str(month)] = counts.get(str(month), 0) + number
@@ -1510,25 +1647,42 @@ def _sweep_task(workspace: Path) -> dict | None:
 
 
 def _stopped_since(workspace: Path, since) -> bool:
-    """Whether the newest routine outcome line, written after `since`, says a run stopped (it did not start, or
-    ended with no result): nothing is reading, so waiting on it is no use."""
-    try:
-        lines = (Path(workspace) / "_meta" / "state" / "runs.jsonl").read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return False
-    for line in reversed(lines[-50:]):
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(row, dict) or not isinstance(row.get("notes"), dict) or row["notes"].get("step") != "routine":
-            continue
-        try:
-            at = dt.datetime.fromisoformat(str(row.get("at")).replace("Z", "+00:00"))
-        except ValueError:
-            return False
-        return at > since and row.get("outcome") == "stopped"
-    return False
+    """Whether the newest run routine.py itself kept (`backfill.meter_rows`, never a line in runs.jsonl, where a
+    routine's agent can append its own; R43, O-3), dated after `since`, stopped (it did not start, or ended with no
+    result): nothing is reading, so waiting on it is no use."""
+    import backfill
+    rows = backfill.meter_rows(workspace, _now())
+    return bool(rows) and rows[-1]["at"] > since and rows[-1].get("outcome") == "stopped"
+
+
+ACCOUNT_SECONDS = 120   # two readings of one account's window end this close at most (R38; never observed live)
+
+
+def usage_account(workspace: Path, reading: dict, state: dict, now: dt.datetime | None = None) -> str | None:
+    """Whether the desktop app's usage reading is the routines' account (cli-facts section 8: nothing names the account
+    `get_usage` reads, so the windows decide). The newest meter row routine.py wrote since the plan was made
+    (`backfill.meter_rows`, never a run line an agent can write; R40, N-1), of a run that started, is compared: `same`
+    when its `limits` end both windows within ACCOUNT_SECONDS of the reading's, else `different` (other windows, or no
+    limits at all). None while nothing can be compared: no such run yet, the reading names no reset times, or the
+    run's 5-hour window had ended before the reading was taken."""
+    import backfill
+    since = backfill._dt(state.get("started"))
+    row = next((r for r in reversed(backfill.meter_rows(workspace, now or _now()))
+                if since and r["at"] >= since and r.get("outcome") != "stopped"), None)
+    if row is None:
+        return None
+    limits = row.get("limits") if isinstance(row.get("limits"), dict) else {}
+    theirs = [backfill._dt((limits.get(k) or {}).get("resets_at")) if isinstance(limits.get(k), dict) else None
+              for k in ("five_hour", "seven_day")]
+    ours = [backfill._dt(reading.get(k)) for k in ("five_hour_resets", "week_resets")]
+    taken = backfill._dt(reading.get("at"))
+    if None in ours:
+        return None
+    if theirs[0] and taken and theirs[0] <= taken:
+        return None
+    if None in theirs:
+        return "different"
+    return "same" if all(abs((a - b).total_seconds()) <= ACCOUNT_SECONDS for a, b in zip(ours, theirs)) else "different"
 
 
 def _wait_part(workspace: Path, which: str) -> dict:
@@ -1567,7 +1721,12 @@ def phase_history(args) -> dict:
     for the person (a paid account, a sign-in that ran out), `done` once every part is read. `--wait-part p1`
     stays until that part is done or paused (an hour at most). Run again, it changes nothing that is right: the plan is
     held only in the call that makes it (the person's go, `backfill.py start`, stays), and it is made again only while
-    no part has run and the counts have changed. A progress file that cannot be read waits with a plain line."""
+    no part has run and the counts have changed. A progress file that cannot be read waits with a plain line.
+    The reading is the desktop app's, which may be another account than the routines' (cli-facts section 8): it is
+    kept unconfirmed (paced as if extra usage were on) until a reading given after a run read part 1 compares its
+    windows (`usage_account`); the journal's `usage_account` then says `same` (readings pace as the routines') or
+    `different` (they are no longer kept: backfill paces from the routines' own meter, `backfill.meter_rows`).
+    Once part 1 has been started the journal's history says `in_background`: the setup counts as finished."""
     import backfill
     journal, now = setup_journal.load(), _now()
     counts = history_counts(journal)
@@ -1586,6 +1745,15 @@ def phase_history(args) -> dict:
     state = backfill.load(workspace)
     if state.get("broken"):
         return {"phase": "history", "state": "waiting", "why": backfill.BROKEN_WHY, "counts": counts}
+    account = journal.get("usage_account")
+    if reading is not None and account not in ("same", "different"):
+        account = usage_account(workspace, reading, state, now)
+        if account:
+            data = setup_journal.load()
+            data["usage_account"] = account
+            setup_journal.save(data)
+    if reading is not None:   # the desktop app's reading paces as the routines' only once their windows agreed (R38)
+        reading = None if account == "different" else {**reading, "confirmed": account == "same"}
     again = (bool(state.get("parts")) and isinstance(state.get("counts"), dict) and state["counts"] != counts
              and not backfill.touched(workspace) and not routine.locked(workspace))   # the counts came in, or changed
     if not state.get("parts") or again:
@@ -1604,11 +1772,18 @@ def phase_history(args) -> dict:
             why = "The routines are not scheduled yet, so the first part is read at the next routine run."
         elif not onboard.run_now(task):
             why = "The scheduler did not start the first part now; it is read at the next routine run."
+        else:   # from here a resumed setup shows where the read stands instead of starting phase 5 again
+            setup_journal.set_phase("history", "running", part1_started=now.isoformat(timespec="seconds"),
+                                    in_background=True)   # the setup counts as finished from here (R40, N-5)
     elif part is None:
         why = reason
     result = {"phase": "history"}
+    if account:
+        result["usage_account"] = account
     if args.wait_part:
         result["waited"] = _wait_part(workspace, args.wait_part)
+        if args.wait_part == "p1" and result["waited"].get("status") in ("done", "paused"):   # shown to the person: a resume knows
+            setup_journal.set_phase("history", "running", part1_waited=result["waited"]["status"])
     state = backfill.load(workspace)
     waiting = state.get("waiting") or next((p.get("why") for p in state.get("parts") or []
                                            if p.get("status") == "paused" and (p.get("runs") or [{}])[-1].get("outcome") == "auth"), None)
@@ -1631,7 +1806,7 @@ def run_phase(args) -> dict:
     none: `waiting` while the person is still needed, else `done`). One that raises is left
     `failed`, not `running`. A dry run changes nothing, the journal included."""
     name, journal = args.phase, not args.dry_run
-    if journal:
+    if journal and not (name == "apps" and getattr(args, "skip", None)):   # a skip leaves the state alone (R40)
         setup_journal.set_phase(name, "running")
     try:
         result = globals()[f"phase_{name}"](args)   # looked up now, so a test can stand in for one
@@ -1655,16 +1830,44 @@ def say_needs(needs: list) -> None:
               + f" (check: {n.get('check')})")
 
 
+def _history_going(args, data: dict) -> dict | None:
+    """Part 1 of the history has been started (the history phase started it, or a run began or read it): the rest is
+    the routines' work for days, not a phase to run again. Part 1's status, why, reset time and `current_by`; None
+    before then, for a plan held for the person, or without a workspace or a plan."""
+    import backfill
+    record = data.get("history") if isinstance(data.get("history"), dict) else {}
+    workspace = _history_workspace(args, data) if record else None
+    state = backfill.load(workspace) if workspace else {}
+    first = (state.get("parts") or [None])[0] if isinstance(state.get("parts"), list) else None
+    if not isinstance(first, dict) or state.get("waiting"):
+        return None
+    if not (record.get("part1_started") or backfill.touched(workspace) or first.get("status") != "pending"):
+        return None
+    return {"status": first.get("status"), "why": first.get("why") or "", "resets_at": first.get("resets_at"),
+            "current_by": state.get("current_by")}
+
+
 def resume(args) -> int:
     """Where the setup stands after a closed session or a day: the first phase that is not done,
-    what waits for the person, every phase's record. It runs nothing; the agent runs the phase."""
+    what waits for the person, every phase's record. It runs nothing; the agent runs the phase.
+    Once part 1 of the history has been started, the history runs on in the background: it is not
+    `next`, and its record says so (`in_background`, `part1`)."""
     data = setup_journal.load()
     result = {"next": setup_journal.next_phase(data), "needs": setup_journal.open_needs(data),
               "phases": {p: data.get(p) or {"state": "pending"} for p in PHASES}}
+    going = _history_going(args, data) if result["next"] == "history" else None
+    if going:
+        if not (data.get("history") or {}).get("in_background"):   # started by a routine run: marked now (R40, N-5)
+            setup_journal.set_phase("history", str((data.get("history") or {}).get("state") or "running"), in_background=True)
+        result["next"] = None
+        result["phases"]["history"] = {**result["phases"]["history"], "in_background": True, "part1": going}
     if args.json:
         print(json.dumps(result, indent=2))
         return 0
     for phase, record in result["phases"].items():
+        if record.get("in_background"):
+            print(f"{phase}: running in the background, part 1 {record['part1']['status']}")
+            continue
         print(f"{phase}: {record.get('state', 'pending')}")
     print(f"next: {result['next']}" if result["next"] else "every phase is done")
     say_needs(result["needs"])
@@ -1694,8 +1897,10 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--doctor", action="store_true", help="only check this machine and fix what needs no password")
     ap.add_argument("--probe", action="store_true",
                     help="apps: stop after asking Claude which apps it reaches (no content is read)")
+    ap.add_argument("--skip", action="append", metavar="APP",
+                    help="apps: the person said skip this app; it is not read (its verdict is `skip`)")
     ap.add_argument("--reading", help="history: the usage tool's reading, five_hour=<pct>,week=<pct>,five_hour_resets="
-                    "<iso>,week_resets=<iso>,extra=<0|1>; not_applicable for a paid account")
+                    "<iso>,week_resets=<iso>,extra=<0|1>,confirmed=0; not_applicable for a paid account")
     ap.add_argument("--wait-part", dest="wait_part", metavar="PART",
                     help="history: stay until this part (p1) is done or paused, an hour at most")
     ap.add_argument("--workspace", help="history: the person's workspace (default: the one just built, else the "

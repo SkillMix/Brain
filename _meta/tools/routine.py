@@ -141,6 +141,7 @@ PROTECTED_EDITS = ("_meta/tools/**", "_meta/migrations/**", "_meta/tests/**", "_
 PROTECTED_EDITS += ("_meta/state/backfill.yaml",)   # the history's pacing and the paid hold: written only through backfill.py
 # Rooted at each space: a folder name a subject could also have.
 PROTECTED_IN_ROOT = ("identity/**",)
+PROTECTED_EDITS += ("_meta/state/routine-limits.jsonl",)   # each run's windows and tokens: written by this process alone
 READ_ONLY = ("Bash(gh pr view *)", "Bash(gh pr list *)", "Bash(git status *)", "Bash(git log *)",
              "Bash(git diff *)", "Bash(git show *)")
 # The built-in tools a routine has (`--tools`, Ruling R30): the shell its tools run in, the files, and
@@ -1068,23 +1069,65 @@ def outcome(res, timed_out: bool, now=None) -> dict:
     return line("stopped", f"claude ended without a result (exit {res.returncode})")
 
 
+def limits_of(res) -> dict | None:
+    """The plan's windows as the run's own newest `rate_limit_event` gave them, the meter of the account the routines
+    draw on (cli-facts section 8): {"five_hour": {"utilization", "resets_at"}, "seven_day": {...}, "overage_status",
+    "using_overage"}, reset times as UTC text. Structured fields only, each kept only in the shape the command line
+    gives it (a number, a moment, one short word, true or false); None when the run printed no event."""
+    events, _ = events_of(res.stdout if res is not None else "")
+    infos = [e["rate_limit_info"] for e in events
+             if e.get("type") == "rate_limit_event" and isinstance(e.get("rate_limit_info"), dict)]
+    if not infos:
+        return None
+    info, limits = infos[-1], {}
+    windows = info.get("unifiedWindows") if isinstance(info.get("unifiedWindows"), dict) else {}
+    for name in ("five_hour", "seven_day"):
+        given = windows.get(name) if isinstance(windows.get(name), dict) else {}
+        window = {}
+        use, resets = given.get("utilization"), given.get("resetsAt")
+        if isinstance(use, (int, float)) and not isinstance(use, bool) and 0 <= use <= 100:
+            window["utilization"] = use
+        if isinstance(resets, (int, float)) and not isinstance(resets, bool) and 0 < resets < LAST_RESET:
+            window["resets_at"] = _utc(dt.datetime.fromtimestamp(resets, dt.timezone.utc))
+        if window:
+            limits[name] = window
+    status = info.get("overageStatus")
+    if isinstance(status, str) and re.fullmatch(r"[a-z_]{1,40}", status):
+        limits["overage_status"] = status
+    if isinstance(info.get("isUsingOverage"), bool):
+        limits["using_overage"] = info["isUsingOverage"]
+    return limits
+
+
 def _utc(moment: dt.datetime) -> str:
     return moment.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# Each run's windows and tokens as this process saw them (R40, N-1): no routine may edit the file (`PROTECTED_EDITS`)
+# and none of its tools writes it, so the history's pacing reads it, never `runs.jsonl`, where an agent appends lines.
+LIMITS_FILE = Path("_meta") / "state" / "routine-limits.jsonl"
+
+
 def write_outcome(workspace, routine_name: str, line: dict, now=None) -> None:
     """The run's own line in `_meta/state/runs.jsonl`, with the tokens it really used: `cost_tokens` is
-    their sum, cache reads and writes included."""
+    their sum, cache reads and writes included. Its moment, outcome, tokens and windows also go to `LIMITS_FILE`."""
     now = now or dt.datetime.now().astimezone()
     given = line.get("usage") if isinstance(line.get("usage"), dict) else {}
     usage = {key: _count(given.get(key)) for key in USAGE_KEYS}
     row = {"routine": routine_name, "at": _utc(now), "space": spaceyaml.load(workspace).name,
            "cost_tokens": sum(usage.values()), "outcome": line.get("outcome"), "why": line.get("why") or "",
            "resets_at": line.get("resets_at"), "usage": usage, "notes": {"step": "routine"}}
+    if isinstance(line.get("limits"), dict):   # a record only: an agent can append a line here too, so nothing trusts it
+        row["limits"] = line["limits"]
     path = Path(workspace) / "_meta" / "state" / "runs.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8", newline="\n") as fh:
         fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+    meter = {k: row[k] for k in ("routine", "at", "outcome", "cost_tokens")}
+    if "limits" in row:
+        meter["limits"] = row["limits"]
+    with (Path(workspace) / LIMITS_FILE).open("a", encoding="utf-8", newline="\n") as fh:   # the meter backfill paces from
+        fh.write(json.dumps(meter, ensure_ascii=False) + "\n")
 
 
 def _one_line(text, limit: int, tail: bool = False) -> str:
@@ -1503,6 +1546,7 @@ def _run(workspace: Path, prompt: Path, body: str, name: str, claude: str, fh, r
             fh.write(f"claude did not start: {exc.strerror or exc}\n")
         now = dt.datetime.now().astimezone()
         line = outcome(res, timed_out, now=now)
+        line["limits"] = limits_of(res)
         seen = init_of(res)
         if seen is not None:
             refresh_probe(seen)

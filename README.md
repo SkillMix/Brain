@@ -51,7 +51,8 @@ already knows.
 ## What you get
 
 **Day one:** one sentence sets up your workspace, mounts the brain and the projects you work
-on, runs the first sweep and shows the open items of your projects. **By the end of week
+on, and starts reading your recent history, oldest first; the same day it shows what the first
+stretch holds and opens a manual written in your company's own names. **By the end of week
 one:** a briefing every morning, a short list of what needs you, and the first pages people
 signed.
 
@@ -188,8 +189,13 @@ were better on 9 of the 12.
 ## What it costs
 
 - **Claude Code**, on your own plan or API key. Each person's routines are four agent runs a
-  day (three sweeps, one daily chain). The first sweep reads your last 90 days, so day one is
-  the longest run.
+  day (three sweeps, one daily chain), and a fifth at 01:00 while the history is read, which
+  starts only when a part is due. Setup reads your history window first: the plan's, 90
+  days by default, oldest first, in parts paced to your plan. In working hours a part leaves at
+  least half of your 5-hour window free, and on day one the reading takes at most 30% of what
+  is left of your week, so day one and the first night are the busiest. Routines never draw on
+  extra usage. On an API key, set a spending limit first: setup then builds everything, and the
+  history read starts when you say so.
 - **GitHub Actions minutes** on private repositories. Each sync pull request runs one check,
   about one billed minute. The sync task runs every 15 minutes but only opens a pull request
   when something changed: the routines' output when it lands, journal lines at most hourly,
@@ -212,76 +218,74 @@ were better on 9 of the 12.
 
 ## Start in one sentence
 
-You need git, GitHub's `gh` and Python 3.10 or newer. One command installs all three:
+You need Claude Code (the desktop app's Code tab, or the CLI) and a GitHub account; if you have
+none, setup gives you the link to make a free one. Setup installs the rest in your home folder,
+pinned, checksummed and without admin rights: Python, GitHub's command line, Claude's command
+line and, on Windows, Git. Anything that needs a password or a system dialog is one line for
+you to run.
 
-- macOS: `brew install git gh python`
-- Debian or Ubuntu: `sudo apt install git gh python3 python3-venv`
-- Windows: `winget install Git.Git GitHub.cli Python.Python.3.12`
-
-Then open Claude Code (the desktop app's Code tab, or the CLI) in any folder and say one sentence:
+Open Claude Code in any folder and say one sentence:
 
 - **A company with no brain yet:** "Set up our company brain from
   https://github.com/SkillMix/Brain" (this repository's address).
 - **Joining a company:** the sentence from your invitation, for example "Onboard me to Lantern
   Works: https://github.com/SkillMix/Brain with my invitation lantern-works/lantern-works-brain:ada".
 
-That is all. The agent copies this template and runs `_meta/tools/start.py`, which does every
-step itself. It reads who you are from git and your host account, finds your invitation,
-creates your repositories from this template and clones them, fills `space.yaml`, and mounts
-the brain and the projects you are crew on. It installs one instruction at user level so every
-session in any repository journals in your workspace, and allows your workspace for the
-harness. It registers the sync task, arms auto-merge and the required check, runs the first
-sweep, the status pass and the tests, and renders your two routines, which the agent then
-schedules with your operating system's scheduler so they run after the session ends.
-Every question has a default; the ones you may want to change come back on your Needs-you list.
+That is all. The agent downloads this template's latest release, checks its checksum, and runs
+`_meta/tools/start.py` phase by phase, with one short message at each milestone. First the
+sign-ins. Then, in the background, it looks at each connected app (whose account, whether it
+holds work, how much) and researches your company from its own sources. It builds your
+repositories from this template and clones them, mounts the brain and the projects you are crew
+on, installs one instruction at user level so every session in any repository journals in your
+workspace, registers the sync task, arms auto-merge and the required check, and schedules your
+routines with your operating system's scheduler, proving them with a test run so they run after
+the session ends. Last it reads your history, oldest first, in parts that survive a closed lid.
+Every question has a default; the defaults you may want to change sit under Settings on the
+progress page.
 
-What only you can do: sign in to GitHub once (`gh auth login`) if you never did, and sign in
-to your own mail, calendar and chat when you connect them. The tool lists each with the check
-that proves it. Your first morning briefing arrives the next day.
+What only you can do, all in the first two minutes: approve one card in the desktop app so
+setup runs without asking for each step (setup switches back when it is done), and the
+sign-ins in your browser: GitHub's one-time code, and Claude's command line when setup just
+installed it. Connect your mail, calendar and chat in Claude's connector settings if you have
+not. After that you can leave the tab. Your first morning briefing arrives the next day.
 
 While it runs, `start.py` keeps a page at `~/.spaces/onboarding.html` and your agent opens it:
-how far setup is, what only you can do, and how the system works, as a diagram.
-`onboard.py --check` brings it up to date.
+how far setup is, what it found, what each part of your history costs, and anything waiting,
+with the one thing that clears it ([docs/troubleshooting.md](docs/troubleshooting.md) explains
+each Waiting line). The sync task keeps it true after setup, and once the first stretch of your
+history is read it opens on a manual made from your own setup. `onboard.py --check` brings it
+up to date.
 
 ![The onboarding page of the fixture company's owner, Ada, when setup finishes](docs/onboarding-page.png)
 
 ### For agents
 
-When a person asks to be set up, onboarded or to start, and names this repository:
+When a person asks to be set up, onboarded or to start, and names this repository, follow
+`.claude/skills/onboard/SKILL.md`. In short:
 
-1. Clone it to a short folder: `gh repo clone SkillMix/Brain ~/.spaces/template` (on Windows
-   run `git config --global core.longpaths true` first; without `gh`, install it from
-   https://cli.github.com, on Windows `winget install --id GitHub.cli -e`; not signed in, ask
-   the person to run `gh auth login --web` once). The person's sentence is the go-ahead for
-   every step below: say what you are doing and go on.
-2. Run `sh <temporary folder>/_meta/tools/bootstrap.sh` (Windows: `powershell -NoProfile
-   -ExecutionPolicy Bypass -File <temporary folder>\_meta\tools\bootstrap.ps1`). It finds or
-   installs Python 3.10+ and runs `_meta/tools/start.py`, whose doctor checks this machine first
-   and installs what needs no password. Pass it `--invitation <brain>:<slug>` when the person
-   gave an invitation, `--company "<name>"` when they named their company, and `--feeds <list>`
-   naming the connectors your session has (mail, calendar, chat, calls, tracker, documents).
-   Ask nothing else: every other answer has a default. Open the page it prints (`page:`,
-   `~/.spaces/onboarding.html`) in the person's browser; reload it after each step below.
-3. Each `doctor:` row in `yours` is one sentence for the person with the exact command (a
-   sign-in, a password, a dialog, an access grant): ask once, wait, then run step 2 again.
-4. Schedule the two routines it rendered under `_meta/state/routines/` so they outlive this
-   session: `python <workspace>/_meta/tools/onboard.py <workspace> --os-routines`. The OS
-   scheduler runs each at its `schedule` (cron in the machine's local time) through `claude -p`.
-   Scheduled tasks that end with the session, such as those of Claude Code in a terminal, are
-   not enough. Use your harness's scheduled tasks only when they persist after it closes, then
-   record one read-back per routine: `python <workspace>/_meta/tools/onboard.py <workspace>
-   --routines-scheduled "test -f <the task's file>" ...`. The page and `onboard.py --check` show
-   Routines done only once the schedule reads back.
-5. Follow steps 7 to 9 of `.claude/skills/onboard/SKILL.md` in the clone: quiet GitHub
-   notifications for the repositories they just got, one sweep chain now, and an answer that
-   shows the open items of the projects they are crew on.
+1. The person's sentence is the go-ahead for every step: ask nothing that has a default. Show
+   the milestone messages of `.claude/skills/onboard/messages.md` and write nothing between
+   them, in plain words.
+2. Without a copy of the template yet, fetch it without git: the latest release's
+   `brain-template-<tag>.zip` and `SHA256SUMS`, the zip checked against its checksum before it
+   is unpacked to `~/.spaces/template`.
+3. Run the phases of `_meta/tools/start.py` through the bootstrap script, which finds or
+   installs Python 3.10+: `sh _meta/tools/bootstrap.sh <phase> ... --json` (Windows:
+   `powershell -NoProfile -ExecutionPolicy Bypass -File _meta\tools\bootstrap.ps1 <phase> ...`).
+   In order: `signins`, `apps`, `research` (these two in the background), `build`, `history`.
+   Pass `--invitation <brain>:<slug>` when the person gave an invitation and `--company
+   "<name>"` when they named their company. Each phase answers with its state and what only the
+   person can do (`needs`), and `resume --json` says where a setup that was interrupted stands.
+4. The build schedules the routines itself and proves them with a test run through the
+   scheduler; the history phase reads the person's history window oldest first, in parts paced
+   to their plan.
 
 Run again, `start.py` changes nothing that is right: it adopts the repositories it made.
 
-Where they go: the person's own GitHub account, the brain named `<company>-brain`. Pass
-`--org <name>` to put them in an organisation instead. A person who belongs to an organisation
-and gave no `--org` gets a `namespace` row in `yours`: ask them once which account, then run
-step 2 again with `--org`.
+Where they go: the brain is `<company>-brain`, in the organisation that matches the company or
+its mail domain when exactly one does, else in the person's own account; when that is not
+clear, the sign-ins ask once (the `namespace` need) and `build --org <name>` answers. A
+person's workspace goes in the same account, private.
 
 ### Without an agent
 
@@ -336,7 +340,8 @@ The seed's pages become the project's first drafts, the subject's home moves to 
 
 - **Routines**, each a tool under `_meta/tools/` and a skill under `.claude/skills/`:
   `sweep` → `route` → `distill` → `check` three times a day, and `status` → `release` →
-  `morning-view` once a day. They write files and queue items; they never sign, send, post or spend.
+  `morning-view` once a day; while a person's history is read, one more run at 01:00 reads its
+  next part. They write files and queue items; they never sign, send, post or spend.
 - **The sync task**: `_meta/tools/sync.py` every 15 minutes through the OS scheduler
   (`schtasks` on Windows, cron elsewhere). It commits what sessions left and opens the pull
   request, and the host merges it when `checks` is green. Nothing else runs git.

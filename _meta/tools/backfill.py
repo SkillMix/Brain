@@ -20,13 +20,22 @@ Pacing (Decision D keeps full judgment for every day inside the window; only the
 - On the setup day the backfill takes at most 30% of the week that was left at setup.
 - With extra usage on, a used-up week stops everything like a used-up 5-hour window, until the week resets or a
   newer reading shows room; after an `overage` that named no time the part waits for a newer reading.
+- A reading that may be another account's (`confirmed: false`: the desktop app's, until setup found its windows are
+  the routines'; the `reading` command confirms one only then) counts as extra usage on. The windows a routine run's
+  own `rate_limit_event` gave are a reading of the right account, used when newer than the one kept
+  (`routine_reading`). They and each run's tokens are read from the rows routine.py itself writes
+  (`ROUTINE_LIMITS`, which no routine may edit), never from `runs.jsonl`, where an agent appends its own lines.
 - Before part 1 is measured only part 1 is due. A guess (`DEFAULT_PER_TOKEN_SHARE`) takes over, and cuts what is
   left by it, when nobody measured it within `CALIBRATE_WAIT_HOURS`.
 - A usage limit that names no reset time pauses the part with no time at all: nothing here makes one up.
 - A paid account's plan is held from the write that makes it until the person says go (`start`); a held plan
   does not stop the regular sweep, which exports what is new from the day the plan was made (`export_mark`).
 - A routine may not say what only a session or the person says: `plan`, `reading`, `calibrate` and `start`
-  refuse while a routine run holds the workspace's lock.
+  refuse while a routine run holds the workspace's lock. A routine run says nothing about another space's history:
+  every command refuses while the space it is said from (the working directory's) holds a live routine lock and
+  names another one (Ruling R43).
+- A reading dated more than FUTURE_SLACK after now is refused, and one kept anyway is not read, like a meter row
+  dated ahead.
 
 The state is `_meta/state/backfill.yaml` in the workspace (`PATH`): `started`, `window_days`, `current_by`,
 `per_token_share`, `tokens_per_record`, `counts`, `setup_reading` and `reading` (see `record_reading`), `waiting`
@@ -64,6 +73,8 @@ import yaml
 
 PATH = Path("_meta/state/backfill.yaml")
 RUNS = Path("_meta/state/runs.jsonl")
+ROUTINE_LIMITS = Path("_meta/state/routine-limits.jsonl")   # routine.LIMITS_FILE: written by routine.py alone
+FUTURE_SLACK = dt.timedelta(minutes=5)   # a meter row dated later than this after now is no run that happened
 TOKENS_PER_RECORD = 6000          # the estimate before part 1 measures the real figure
 DEFAULT_PER_TOKEN_SHARE = 0.00002  # points of the 5-hour window per token: a guess, 500,000 tokens are 10 points
 WEEK_WINDOWS = 10                 # a week holds about this many full 5-hour windows (a guess until measured)
@@ -103,8 +114,13 @@ REPLAN_WHY = ("A new plan was made because the notes on your history could not b
               "say go.")
 RUN_GOING_WHY = ("A routine run is going in this workspace right now, and this is for you to say in a session, not "
                  "for a routine; say it again when the run is over.")
+OTHER_SPACE_WHY = ("A routine run is going in the workspace this was said from, and a routine run may not touch another "
+                   "workspace's history; say it again when the run is over.")
+AHEAD_WHY = "A usage reading dated later than now is not kept: a reading is taken now, or earlier."
 OVERAGE_WHY = ("The last run would have used extra usage and Claude didn't say when there is room again, so the read "
                "waits for your next reading of your usage.")
+CALIBRATED_WHY = ("Part 1 was measured already, so it is not measured again: a second measurement would replace the pace "
+                  "the rest of your history was cut by.")
 
 
 # ----- times -------------------------------------------------------------------------------------
@@ -275,6 +291,23 @@ def _own_run(workspace) -> tuple:
     return (True, held.get("part") or None) if held else (False, None)
 
 
+def _caller_space() -> Path | None:
+    """The space a command is said from: the nearest folder at or above the working directory that holds a
+    space.yaml. A routine's agent runs its commands in its own space and cannot leave it (R43). None outside any."""
+    try:
+        here = Path.cwd().resolve()
+    except OSError:
+        return None
+    return next((folder for folder in (here, *here.parents) if (folder / "space.yaml").is_file()), None)
+
+
+def _same_folder(a, b) -> bool:
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return Path(a).resolve() == Path(b).resolve()
+
+
 def _find(state: dict, which: str) -> dict:
     found = next((p for p in _parts(state) if p["id"] == which), None)
     if found is None:
@@ -327,27 +360,114 @@ def _when(value, name: str) -> str | None:
 
 def reading_of(value: dict, now: dt.datetime | None = None) -> dict:
     """A usage reading as the state keeps it: `{at, five_hour_pct, week_pct, five_hour_resets, week_resets,
-    extra_usage}`, moments as ISO text. ValueError for one that is not a reading."""
+    extra_usage}`, moments as ISO text, and `confirmed: false` for one that may be another account's (the desktop
+    app's, until setup found its windows are the routines'): the pacing takes extra usage as on for it.
+    ValueError for one that is not a reading, or, given `now`, one dated more than FUTURE_SLACK after it."""
     if not isinstance(value, dict):
         raise ValueError("a usage reading is five_hour, week, five_hour_resets, week_resets and extra")
     at = _dt(value.get("at")) or now
     if at is None:
         raise ValueError("a usage reading needs the time it was taken")
-    return {"at": _iso(at), "five_hour_pct": _number(value.get("five_hour_pct"), "five_hour"),
-            "week_pct": _number(value.get("week_pct", 0), "week"),
-            "five_hour_resets": _when(value.get("five_hour_resets"), "five_hour_resets"),
-            "week_resets": _when(value.get("week_resets"), "week_resets"),
-            "extra_usage": bool(value.get("extra_usage"))}
+    if now is not None and at > _aware(now) + FUTURE_SLACK:   # dated ahead it would stay the newest for good (R43)
+        raise ValueError(AHEAD_WHY)
+    given = {"at": _iso(at), "five_hour_pct": _number(value.get("five_hour_pct"), "five_hour"),
+             "week_pct": _number(value.get("week_pct", 0), "week"),
+             "five_hour_resets": _when(value.get("five_hour_resets"), "five_hour_resets"),
+             "week_resets": _when(value.get("week_resets"), "week_resets"),
+             "extra_usage": bool(value.get("extra_usage"))}
+    if value.get("confirmed", True) in (False, 0, "0", "false", "False", "no"):
+        given["confirmed"] = False
+    return given
+
+
+def _unconfirmed(reading) -> bool:
+    return isinstance(reading, dict) and reading.get("confirmed") is False
+
+
+def _share_of(value) -> float | None:
+    """A window's utilization as a share in percent: the command line gives a fraction (0.2 is 20%); a figure above 1
+    is taken as percent already. None for anything else."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 <= value <= 100:
+        return None
+    return round(value * 100 if value <= 1 else value, 2)
+
+
+def meter_rows(workspace, now: dt.datetime | None = None) -> list:
+    """The rows routine.py itself wrote, one a run (`ROUTINE_LIMITS`: its moment, outcome, tokens and windows), oldest
+    first, `at` as a moment. A row dated more than FUTURE_SLACK after now is left out: no run happened then (R40,
+    N-1). Never `runs.jsonl`: a routine's agent appends its own lines there."""
+    try:
+        lines = (Path(workspace) / ROUTINE_LIMITS).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    latest, rows = (now or dt.datetime.now(dt.timezone.utc)) + FUTURE_SLACK, []
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        at = _dt(row.get("at")) if isinstance(row, dict) else None
+        if at is not None and at <= latest:
+            rows.append({**row, "at": at})
+    return rows
+
+
+def routine_reading(workspace, now: dt.datetime | None = None) -> dict | None:
+    """The newest reading of the routines' own account: the windows of the newest meter row with `limits`
+    (`meter_rows`, from `routine.limits_of`). Extra usage counts as off only when that run said it was refused and not
+    in use. Its moment is a second before the row, so what that run used counts on top: its event may have come early
+    in the run. None without one."""
+    for row in reversed(meter_rows(workspace, now)):
+        if not isinstance(row.get("limits"), dict):
+            continue
+        limits, at = row["limits"], row["at"]
+        five, week = (limits.get(k) if isinstance(limits.get(k), dict) else {} for k in ("five_hour", "seven_day"))
+        if _share_of(five.get("utilization")) is None:
+            continue
+        refused = limits.get("overage_status") == "rejected" and limits.get("using_overage") is False
+        try:
+            return reading_of({"at": at - dt.timedelta(seconds=1), "five_hour_pct": _share_of(five["utilization"]),
+                               "week_pct": _share_of(week.get("utilization")) or 0,
+                               "five_hour_resets": five.get("resets_at"), "week_resets": week.get("resets_at"),
+                               "extra_usage": not refused})
+        except ValueError:
+            continue
+    return None
+
+
+def _on_time(reading, now: dt.datetime) -> bool:
+    """A kept reading not dated more than FUTURE_SLACK after now (one without a time is left as it is)."""
+    at = _dt(reading.get("at")) if isinstance(reading, dict) else None
+    return at is None or at <= _aware(now) + FUTURE_SLACK
+
+
+def _timely(state: dict, now: dt.datetime | None) -> dict:
+    """The state without a kept reading dated more than FUTURE_SLACK after now: like a meter row dated ahead, it is
+    not read (R43, N2-1 a). The state as it is without a clock."""
+    if now is None:
+        return state
+    return {k: v for k, v in state.items() if k not in ("reading", "setup_reading") or _on_time(v, now)}
+
+
+def _newest_reading(workspace, state: dict, now: dt.datetime | None = None) -> dict:
+    """The state with the newest reading of the two: the one kept, or the routines' own (`routine_reading`). A kept
+    reading dated ahead of now is not one (`_timely`)."""
+    state = _timely(state, now)
+    theirs, kept = routine_reading(workspace, now), state.get("reading")
+    if theirs and (not kept or (_dt(kept.get("at")) or _dt("1970-01-01T00:00:00Z")) < _dt(theirs["at"])):
+        return {**state, "reading": theirs}
+    return state
 
 
 READING_KEYS = {"five_hour": "five_hour_pct", "week": "week_pct", "five_hour_resets": "five_hour_resets",
-                "week_resets": "week_resets", "extra": "extra_usage", "at": "at"}
+                "week_resets": "week_resets", "extra": "extra_usage", "at": "at", "confirmed": "confirmed"}
 
 
 def parse_reading(text, now: dt.datetime) -> dict | None:
     """A reading from the phrase the commands take: `five_hour=12,week=40,five_hour_resets=<iso>,
-    week_resets=<iso>,extra=0|1` (the usage tool's own figures). None for nothing, or `unavailable` (it could not be
-    read now). ValueError, in plain words, for anything else; `not_applicable` is the caller's to ask for."""
+    week_resets=<iso>,extra=0|1[,confirmed=0|1]` (the usage tool's own figures; `confirmed=0` for one that may be
+    another account's). None for nothing, or `unavailable` (it could not be read now). ValueError, in plain words, for
+    anything else; `not_applicable` is the caller's to ask for."""
     text = (text or "").strip()
     if text in ("", "unavailable"):
         return None
@@ -362,6 +482,26 @@ def parse_reading(text, now: dt.datetime) -> dict | None:
         raise ValueError("a usage reading needs five_hour=<the share of the 5-hour limit in use>")
     fields["extra_usage"] = fields.get("extra_usage", "0") in ("1", "true", "True", "yes")
     return reading_of(fields, now)
+
+
+UNKNOWN_ACCOUNT_WHY = ("Kept as unconfirmed: setup has not yet found that this app's usage is the Claude account your "
+                       "routines use, so the reading counts as if extra usage were on.")
+OTHER_ACCOUNT_WHY = ("Kept as unconfirmed: this app's usage is another Claude account than the one your routines use, "
+                     "so the reading counts as if extra usage were on.")
+
+
+def unconfirmed_why() -> str | None:
+    """Why the `reading` command keeps a reading unconfirmed: only setup's finding that the app's usage is the routines'
+    account (`usage_account: same` in the setup journal) confirms one (R40, N-2). None then; a journal that cannot be
+    read confirms nothing."""
+    try:
+        import setup_journal
+        account = setup_journal.load().get("usage_account")
+    except Exception:   # noqa: BLE001 - no journal to read: not confirmed
+        account = None
+    if account == "same":
+        return None
+    return OTHER_ACCOUNT_WHY if account == "different" else UNKNOWN_ACCOUNT_WHY
 
 
 def record_reading(workspace, reading: dict) -> None:
@@ -515,8 +655,8 @@ def _refresh(workspace, state: dict, now: dt.datetime | None) -> None:
         return
     now = now or _state_now(state)
     left = sum(_points(state, p) for p in _parts(state) if p.get("status") != DONE)
-    use, end = _window_use(state, now)
-    room = _day_one_tokens(state)
+    use, end = _window_use(_timely(state, now), now)
+    room = _day_one_tokens(_timely(state, now))
     day_one = None
     if room is not None and state.get("started"):
         share = state.get("per_token_share")
@@ -606,7 +746,7 @@ def plan(workspace: Path, counts: dict, now: dt.datetime, reading: dict | None =
     the plan in the same write that makes it (a paid account) unless the person already said go (`person_started`),
     which a plan made again keeps; a plan made over a file that cannot be read is held the same way."""
     now = _aware(now)
-    old = load(workspace)
+    old = _timely(load(workspace), now)   # a reading kept from before and dated ahead is not read, nor kept
     asked = window = int(window_days)
     given = reading_of(reading, now) if reading else None
     kept = given or old.get("reading") or old.get("setup_reading")   # a plan made again estimates with the reading kept
@@ -764,10 +904,14 @@ def calibrate(workspace, before_pct: float, after_pct: float, tokens: int, week_
     the part used), stored as `per_token_share` and returned. A change under MIN_MEASURED points measures
     nothing, and the guess stays (`calibration: assumed`). The window cut at plan time on the guess is settled for
     good from the measurement (`_settle_window`: it can grow, never shrink, since the oldest stretch is read), and
-    what is left is cut again so each part fits a night (`_resplit`). A slower pace moves `current_by`."""
+    what is left is cut again so each part fits a night (`_resplit`). A slower pace moves `current_by`. Once only: a
+    second measurement (or one after the guess took over) is refused, since it would replace the pace the parts left
+    were cut by."""
     state = _writable(workspace)
     if not _parts(state):
         raise ValueError("there is no plan to measure")
+    if state.get("calibration"):
+        raise ValueError(CALIBRATED_WHY)
     now = now or _state_now(state)
     change = float(after_pct) - float(before_pct)
     measured = tokens > 0 and change >= MIN_MEASURED
@@ -787,22 +931,12 @@ def calibrate(workspace, before_pct: float, after_pct: float, tokens: int, week_
 
 # ----- what is due -------------------------------------------------------------------------------
 def _run_tokens(workspace, since: dt.datetime, until: dt.datetime) -> int:
-    """The tokens the routines really used between two moments: the outcome lines `routine.py` writes (an agent's
-    own run line is an estimate of the same run and is not counted twice)."""
+    """The tokens the routines really used between two moments: the meter rows `routine.py` writes (`meter_rows`;
+    nothing an agent wrote, its own run line included, counts)."""
     total = 0
-    try:
-        lines = (Path(workspace) / RUNS).read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return 0
-    for line in lines:
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(row, dict) or not isinstance(row.get("notes"), dict) or row["notes"].get("step") != "routine":
-            continue
-        at, tokens = _dt(row.get("at")), row.get("cost_tokens")
-        if at and since < at <= until and isinstance(tokens, int) and not isinstance(tokens, bool) and tokens > 0:
+    for row in meter_rows(workspace, until):
+        tokens = row.get("cost_tokens")
+        if since < row["at"] <= until and isinstance(tokens, int) and not isinstance(tokens, bool) and tokens > 0:
             total += tokens
     return total
 
@@ -889,19 +1023,21 @@ def _gate(workspace, state: dict, part: dict, now: dt.datetime) -> tuple:
         return None, (f"Between {DAY_FROM}:00 and {DAY_TO}:00 a part starts only with a reading of your usage from "
                       "the last hour, and there is none.")
     use = _use(workspace, state, now, share)
-    extra = bool(reading and reading.get("extra_usage"))
+    # a reading that may be another account's says nothing about this one's extra usage: it counts as on (R38)
+    extra = bool(reading and (reading.get("extra_usage") or _unconfirmed(reading)))
+    on = "extra usage is on" if reading and reading.get("extra_usage") else "extra usage may be on"
     if extra:   # a limit reached is paid usage: nothing starts that, by its own estimate, passes the window or the week
         if use >= 100:
-            return None, "Your 5-hour limit is used up and extra usage is on, so nothing starts until it resets."
+            return None, f"Your 5-hour limit is used up and {on}, so nothing starts until it resets."
         week_resets = _dt(reading.get("week_resets"))
         if week_resets is None or now < week_resets:
             week_used, week_need = _week_used(workspace, state, now), _tokens_left(state, part) * _week_rate(state)
             if week_used >= 100:
-                return None, ("Your week's limit is used up and extra usage is on, so nothing starts until it resets or a "
+                return None, (f"Your week's limit is used up and {on}, so nothing starts until it resets or a "
                               "newer reading of your usage shows room.")
             if week_used + week_need > 100:
                 return None, (f"This part needs about {week_need:.0f}% of your week's limit and {week_used:.0f}% is in use, "
-                              "and extra usage is on, so it waits until the week resets or a newer reading of your "
+                              f"and {on}, so it waits until the week resets or a newer reading of your "
                               "usage shows room.")
     cap = _cap(now)
     need = _points(state, part, share)
@@ -910,7 +1046,7 @@ def _gate(workspace, state: dict, part: dict, now: dt.datetime) -> tuple:
     lone = single and need > cap and not day and use < cap and bool(reading) and not extra
     if use + need > cap and not lone:
         if need > cap and single and (extra or not reading):
-            return None, _lone_why(part, reading)
+            return None, _lone_why(part, None if _unconfirmed(reading) else reading)
         if need > cap:
             figure = f"This part needs about {math.ceil(round(need, 6))}% of your 5-hour limit, more than the "
             if single:
@@ -945,6 +1081,7 @@ def explain(workspace, now: dt.datetime, own: bool = False) -> tuple:
     part = _next(state)
     if part is None:
         return None, "The history is read."
+    state = _newest_reading(workspace, state, now)   # a routine's own windows, when they are newer than the reading kept
     going, named = _own_run(workspace)
     if not going:
         return _gate(workspace, state, part, now)
@@ -1109,6 +1246,9 @@ def main(argv=None) -> int:
         print(f"backfill: {args.now!r} is not a date and time", file=sys.stderr)
         return 2
     try:
+        caller = _caller_space()
+        if caller is not None and not _same_folder(caller, ws) and _own_run(caller)[0]:
+            raise ValueError(OTHER_SPACE_WHY)   # a routine run says nothing about another space's history (R43)
         going, named = _own_run(ws)
         if args.command in PERSON_VERBS and going:   # what only a session or the person says, not a routine
             raise ValueError(RUN_GOING_WHY)
@@ -1137,7 +1277,12 @@ def main(argv=None) -> int:
             given = parse_reading(args.phrase, now)
             if given is None:
                 raise ValueError("that is not a usage reading")
+            why = unconfirmed_why()
+            if why:
+                given["confirmed"] = False
             record_reading(ws, given)
+            if why:
+                print(json.dumps({"confirmed": False, "why": why}) if args.json else why)
         elif args.command == "calibrate":
             state = load(ws)
             first = (_parts(state) or [{}])[0]

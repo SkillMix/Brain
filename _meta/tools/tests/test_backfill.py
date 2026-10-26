@@ -45,6 +45,16 @@ def run_line(ws, at: str, tokens: int, step: str = "routine") -> None:
     with path.open("a", encoding="utf-8", newline="\n") as fh:
         fh.write(json.dumps({"routine": "sweep-chain", "at": at, "space": "ws", "cost_tokens": tokens,
                              "notes": {"step": step}}) + "\n")
+    if step == "routine":   # routine.py writes the same run to its meter, which the pacing reads
+        meter_row(ws, routine="sweep-chain", at=at, outcome="finished", cost_tokens=tokens)
+
+
+def meter_row(ws, **row) -> None:
+    """A row routine.py itself writes for each run (`routine.LIMITS_FILE`), the file no routine can edit."""
+    path = ws / routine.LIMITS_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps(row) + "\n")
 
 
 def parts_of(ws) -> list:
@@ -777,6 +787,106 @@ def test_the_history_command_takes_a_reading_and_a_part_to_wait_for():
     assert got.reading == READING_TEXT and got.wait_part == "p1" and got.workspace == "x" and got.json
 
 
+# ----- Task 13 fix round 1 (Ruling R38): whose usage a reading is, and a history that runs on in the background ----
+LATER = AT_01H + dt.timedelta(minutes=50)
+
+
+def part_one_ran(ws, limits: dict | None, at: str = "2026-10-24T23:40:00Z", outcome: str = "finished") -> None:
+    """Part 1 was read by a routine run whose outcome line holds the windows its own rate_limit_event gave."""
+    backfill.checkpoint(ws, "p1", "mail", "2026-08-02T10:00:00Z")
+    backfill.after_run(ws, "p1", FINISHED, now=AT_01H + dt.timedelta(minutes=40))
+    path = ws / "_meta" / "state" / "runs.jsonl"
+    with path.open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps({"routine": "sweep-chain", "at": at, "space": "ada", "cost_tokens": 0, "outcome": outcome,
+                             "notes": {"step": "routine"}, **({"limits": limits} if limits else {})}) + "\n")
+    meter_row(ws, routine="sweep-chain", at=at, outcome=outcome, cost_tokens=0, **({"limits": limits} if limits else {}))
+
+
+SAME = {"five_hour": {"utilization": 0.1, "resets_at": "2026-10-25T03:00:00Z"},      # READING_TEXT's 05:00+02:00
+        "seven_day": {"utilization": 0.3, "resets_at": "2026-10-29T04:00:00Z"},      # and its 29 October 06:00+02:00
+        "overage_status": "rejected", "using_overage": False}
+SECOND = ("five_hour=15,week=27,five_hour_resets=2026-10-25T05:01:30+02:00,week_resets=2026-10-29T05:59:10+02:00,extra=0,"
+          "confirmed=0")
+
+
+def test_a_reading_given_to_history_paces_as_unconfirmed_while_the_account_is_not_known(tmp_path, monkeypatch):
+    ws, started = history_world(tmp_path, monkeypatch)
+    start.phase_history(history_args(tmp_path, ws, reading=READING_TEXT + ",confirmed=1"))
+    state = backfill.load(ws)
+    assert state["reading"]["confirmed"] is False and state["setup_reading"]["confirmed"] is False
+    assert "usage_account" not in setup_journal.load() and started == ["space-sweep-chain-ada"]
+
+
+def test_after_part_one_the_same_windows_make_the_desktop_reading_the_routines_own(tmp_path, monkeypatch):
+    ws, _ = history_world(tmp_path, monkeypatch)
+    start.phase_history(history_args(tmp_path, ws, reading=READING_TEXT))
+    part_one_ran(ws, SAME)
+    monkeypatch.setattr(start, "_now", lambda: LATER)
+    result = start.phase_history(history_args(tmp_path, ws, reading=SECOND))
+    assert result["usage_account"] == "same" and setup_journal.load()["usage_account"] == "same"
+    kept = backfill.load(ws)["reading"]
+    assert kept["five_hour_pct"] == 15 and "confirmed" not in kept                # within two minutes on both windows
+    start.phase_history(history_args(tmp_path, ws, reading=SECOND.replace("five_hour=15", "five_hour=20")))
+    assert "confirmed" not in backfill.load(ws)["reading"]                       # settled: later readings pace as the routines'
+
+
+@pytest.mark.parametrize("limits, outcome", [
+    ({**SAME, "seven_day": {"utilization": 0.3, "resets_at": "2026-10-27T11:00:00Z"}}, "finished"),   # a week two days apart
+    ({**SAME, "five_hour": {"utilization": 0.1, "resets_at": "2026-10-25T03:04:00Z"}}, "finished"),   # 150 seconds apart
+    (None, "finished"),                                                          # the run gave no limits
+])
+def test_after_part_one_other_windows_or_none_stop_the_desktop_readings(tmp_path, monkeypatch, limits, outcome):
+    ws, _ = history_world(tmp_path, monkeypatch)
+    start.phase_history(history_args(tmp_path, ws, reading=READING_TEXT))
+    part_one_ran(ws, limits, outcome=outcome)
+    monkeypatch.setattr(start, "_now", lambda: LATER)
+    result = start.phase_history(history_args(tmp_path, ws, reading=SECOND))
+    assert result["usage_account"] == "different" and setup_journal.load()["usage_account"] == "different"
+    assert backfill.load(ws)["reading"]["five_hour_pct"] == 5                    # the desktop's second reading is not kept
+
+
+def test_nothing_is_decided_before_a_run_read_part_one_or_once_its_window_has_reset(tmp_path, monkeypatch):
+    ws, _ = history_world(tmp_path, monkeypatch)
+    start.phase_history(history_args(tmp_path, ws, reading=READING_TEXT))
+    monkeypatch.setattr(start, "_now", lambda: LATER)
+    start.phase_history(history_args(tmp_path, ws, reading=SECOND))             # no run has read part 1 yet
+    assert "usage_account" not in setup_journal.load() and backfill.load(ws)["reading"]["confirmed"] is False
+    part_one_ran(ws, {**SAME, "five_hour": {"utilization": 0.1, "resets_at": "2026-10-24T23:50:00Z"}})
+    start.phase_history(history_args(tmp_path, ws, reading=SECOND))             # its 5-hour window ended before the reading
+    assert "usage_account" not in setup_journal.load()
+
+
+def test_resume_says_the_history_runs_in_the_background_once_part_one_was_started(tmp_path, monkeypatch, capsys):
+    ws, started = history_world(tmp_path, monkeypatch)
+    setup_journal.set_phase("build", "done")
+    assert start.main(["history", "--reading", READING_TEXT, "--workspace", str(ws), "--json"]) == 0
+    capsys.readouterr()
+    assert started == ["space-sweep-chain-ada"] and setup_journal.load()["history"]["part1_started"]
+    assert setup_journal.load()["history"]["in_background"] is True          # the setup counts as finished (R40, N-5)
+    assert start.main(["resume", "--workspace", str(ws), "--json"]) == 0
+    got = json.loads(capsys.readouterr().out)
+    assert got["next"] is None and got["phases"]["history"]["in_background"] is True
+    assert got["phases"]["history"]["part1"]["status"] == "pending"
+    part_one_ran(ws, SAME)
+    start.main(["resume", "--workspace", str(ws)])
+    assert "history: running in the background, part 1 done" in capsys.readouterr().out
+    monkeypatch.setattr(start, "_sleep", lambda s: pytest.fail("part 1 is read: no wait"))
+    start.main(["history", "--wait-part", "p1", "--workspace", str(ws), "--json"])
+    capsys.readouterr()
+    assert setup_journal.load()["history"]["part1_waited"] == "done"
+
+
+def test_a_held_history_is_still_next_on_resume(tmp_path, monkeypatch, capsys):
+    ws, started = history_world(tmp_path, monkeypatch, claude="api-key")
+    setup_journal.set_phase("build", "done")
+    start.main(["history", "--workspace", str(ws), "--json"])
+    capsys.readouterr()
+    start.main(["resume", "--workspace", str(ws), "--json"])
+    got = json.loads(capsys.readouterr().out)
+    assert got["next"] == "history" and "in_background" not in got["phases"]["history"] and started == []
+    assert "in_background" not in setup_journal.load()["history"]
+
+
 def test_the_night_prompt_is_rendered_and_scheduled_at_one(tmp_path, monkeypatch):
     no_outside(monkeypatch)
     finished_setup()
@@ -1349,3 +1459,263 @@ def test_a_parts_entry_that_is_not_a_list_reads_as_damaged_and_never_as_no_backf
         assert backfill.export_mark(ws, "mail") is not None
     path.write_text("started: 2026-10-24T14:00:00+02:00\nreading: {five_hour_pct: 5}\n", encoding="utf-8")   # no parts: no plan yet
     assert "broken" not in backfill.load(ws) and not backfill.active(ws)
+
+
+# ===== Task 13 fix round 1 (Ruling R38): which account a reading is from, and one calibration =======================
+def limits_row(ws, at: str, five_hour=0.0, week=0.1, overage="rejected", using=False, tokens=0, **more) -> None:
+    """A routine's outcome line with the windows its own rate_limit_event gave (`routine.limits_of`)."""
+    limits = {"five_hour": {"utilization": five_hour, "resets_at": more.get("five_hour_resets", "2026-10-25T03:00:00Z")},
+              "seven_day": {"utilization": week, "resets_at": more.get("week_resets", "2026-10-29T04:00:00Z")},
+              "overage_status": overage, "using_overage": using}
+    path = ws / "_meta" / "state" / "runs.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps({"routine": "sweep-chain", "at": at, "space": "lone", "cost_tokens": tokens, "outcome": "finished",
+                             "notes": {"step": "routine"}, **({"limits": limits} if more.get("with_limits", True) else {})}) + "\n")
+    meter_row(ws, routine="sweep-chain", at=at, outcome="finished", cost_tokens=tokens,
+              **({"limits": limits} if more.get("with_limits", True) else {}))
+
+
+def test_a_reading_says_whether_it_is_confirmed_and_one_that_is_not_counts_as_extra_usage_on(tmp_path):
+    given = backfill.parse_reading("five_hour=0,week=10,extra=0,confirmed=0", AT_01H)
+    assert given["confirmed"] is False and given["extra_usage"] is False
+    assert "confirmed" not in backfill.parse_reading("five_hour=0,week=10,extra=0,confirmed=1", AT_01H)
+    assert "confirmed" not in backfill.parse_reading("five_hour=0,week=10,extra=0", AT_01H)
+    ws = one_big_day(tmp_path)
+    taken = AT_01H - dt.timedelta(minutes=10)
+    backfill.record_reading(ws, {**reading(five_hour_pct=0, week_pct=10, at=taken), "confirmed": False})
+    assert backfill.due(ws, AT_01H) is None                                   # the desktop's reading may be another account's
+    assert "with extra usage on" not in backfill.explain(ws, AT_01H)[1]       # it does not say extra usage is on: it may be
+    backfill.record_reading(ws, reading(five_hour_pct=0, week_pct=10, at=taken + dt.timedelta(minutes=1)))
+    assert backfill.due(ws, AT_01H)["id"] == "p1"                             # the same reading, confirmed: the night is free
+
+
+def test_an_unconfirmed_reading_keeps_a_part_that_would_pass_the_week_from_starting(tmp_path):
+    ws = a_year_ago_plan(tmp_path)
+    taken = AT_01H - dt.timedelta(minutes=10)
+    backfill.record_reading(ws, {**reading(five_hour_pct=0, week_pct=100, at=taken), "confirmed": False})
+    assert backfill.due(ws, AT_01H) is None and "extra usage may be on" in backfill.explain(ws, AT_01H)[1]
+    backfill.record_reading(ws, reading(five_hour_pct=0, week_pct=100, at=taken + dt.timedelta(minutes=1)))
+    assert backfill.due(ws, AT_01H)["id"] == "p1"                             # confirmed, extra off: a limit only stops the run
+
+
+def test_the_newest_routine_outcome_with_limits_is_a_reading_of_the_routines_own_account(tmp_path):
+    ws = one_big_day(tmp_path)
+    assert backfill.due(ws, AT_01H) is None                                   # no reading at all
+    limits_row(ws, "2026-10-24T22:50:00Z")                                    # 00:50 local: extra usage refused, 0% in use
+    got = backfill.routine_reading(ws, AT_01H)
+    assert got["five_hour_pct"] == 0 and got["week_pct"] == 10 and got["extra_usage"] is False and "confirmed" not in got
+    assert got["five_hour_resets"] == "2026-10-25T03:00:00Z" and backfill._dt(got["at"]) < backfill._dt("2026-10-24T22:50:00Z")
+    assert backfill.due(ws, AT_01H)["id"] == "p1"
+    limits_row(ws, "2026-10-24T22:55:00Z", overage="allowed")                 # the newest says extra usage may be used
+    assert backfill.due(ws, AT_01H) is None
+    limits_row(ws, "2026-10-24T22:56:00Z", five_hour=0.95)                    # a fraction is a share: 95% in use
+    assert backfill.routine_reading(ws, AT_01H)["five_hour_pct"] == 95 and backfill.due(ws, AT_01H) is None
+    backfill.record_reading(ws, reading(five_hour_pct=0, week_pct=10, at=AT_01H - dt.timedelta(minutes=2)))
+    assert backfill.due(ws, AT_01H)["id"] == "p1"                             # a newer confirmed reading than the routine's wins
+    limits_row(ws, "2026-10-24T22:59:30Z", with_limits=False)                 # a run that printed no limits says nothing
+    assert backfill.routine_reading(ws, AT_01H)["five_hour_pct"] == 95
+
+
+def test_calibrate_refuses_a_second_time_in_plain_words(tmp_path):
+    ws = planned(tmp_path, per_token_share=0.00002)
+    before = backfill.load(ws)
+    with pytest.raises(ValueError, match="measured already"):
+        backfill.calibrate(ws, 3, 4, 500_000)
+    assert backfill.load(ws) == before
+    res = cli(ws, "calibrate", "--before", "3", "--after", "4")
+    assert res.returncode == 2 and "measured already" in res.stderr and "Traceback" not in res.stderr
+    guessed = make_space(tmp_path / "guessed")
+    backfill.plan(guessed, SPEC_COUNTS, AT_14H)
+    backfill.after_run(guessed, "p1", used(2_000_000), now=AT_14H + dt.timedelta(minutes=50))
+    backfill.due(guessed, SEVEN_AM)                                           # twelve hours on: the guess took over
+    with pytest.raises(ValueError, match="measured already"):
+        backfill.calibrate(guessed, 3, 13, 500_000)
+
+
+# ===== Task 13 fix round 2 (Ruling R40): a meter no agent writes, and a reading confirmed only by setup =============
+FORGED = {"five_hour": {"utilization": 0, "resets_at": "2099-01-01T00:00:00Z"},
+          "seven_day": {"utilization": 0, "resets_at": "2099-01-01T00:00:00Z"},
+          "overage_status": "rejected", "using_overage": False}
+
+
+def agent_line(ws, at: str, tokens: int = 0) -> None:
+    """What a routine's agent can append to runs.jsonl with Edit or Write: a line shaped like routine.py's own."""
+    path = ws / "_meta" / "state" / "runs.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps({"routine": "sweep-chain", "at": at, "space": "lone", "cost_tokens": tokens,
+                             "outcome": "finished", "notes": {"step": "routine"}, "limits": FORGED}) + "\n")
+
+
+def test_a_run_line_an_agent_could_write_never_paces_the_history(tmp_path):
+    """Probe P1: the person's reading says extra usage is on, so R36 keeps the lone day from starting. Run lines that
+    claim no use and extra usage refused, one of them dated far ahead, change nothing: the pacing reads only what
+    routine.py itself kept (R40, N-1)."""
+    ws = one_big_day(tmp_path)
+    backfill.record_reading(ws, reading(five_hour_pct=0, week_pct=10, extra_usage=True, at=AT_01H - dt.timedelta(minutes=10)))
+    assert backfill.due(ws, AT_01H) is None
+    agent_line(ws, "2099-01-01T00:00:00Z")
+    agent_line(ws, "2026-10-24T22:55:00Z")
+    assert backfill.routine_reading(ws, AT_01H) is None and backfill.due(ws, AT_01H) is None
+
+
+def test_a_meter_row_dated_more_than_five_minutes_ahead_is_not_read(tmp_path):
+    ws = one_big_day(tmp_path)
+    backfill.record_reading(ws, reading(five_hour_pct=0, week_pct=10, extra_usage=True, at=AT_01H - dt.timedelta(minutes=10)))
+    limits_row(ws, "2099-01-01T00:00:00Z")                                    # 0% in use, extra usage refused
+    limits_row(ws, "2026-10-24T23:06:00Z")                                    # six minutes after 01:00 local
+    assert backfill.routine_reading(ws, AT_01H) is None and backfill.due(ws, AT_01H) is None
+    limits_row(ws, "2026-10-24T23:04:00Z")                                    # four: a clock a little apart
+    assert backfill.routine_reading(ws, AT_01H)["extra_usage"] is False and backfill.due(ws, AT_01H)["id"] == "p1"
+
+
+def test_only_the_tokens_routine_py_kept_count_as_used(tmp_path):
+    ws = planned(tmp_path, per_token_share=0.00002, part_tokens=500_000)     # 10 points a part
+    backfill.record_reading(ws, reading(five_hour_pct=75, at=AT_01H - dt.timedelta(minutes=30),
+                                        five_hour_resets=AT_01H + dt.timedelta(hours=4)))
+    agent_line(ws, "2026-10-24T22:45:00Z", tokens=-5_000_000)                 # an agent's line lowers nothing
+    agent_line(ws, "2026-10-24T22:46:00Z", tokens=500_000)                    # and adds nothing
+    assert backfill.due(ws, AT_01H)["id"] == "p2"
+    meter_row(ws, routine="sweep-chain", at="2026-10-24T22:45:00Z", outcome="finished", cost_tokens=500_000)
+    assert backfill.due(ws, AT_01H) is None                                   # 75 + 10 + 10 > 90
+
+
+def test_the_reading_command_keeps_a_reading_unconfirmed_until_setup_found_the_same_account(tmp_path):
+    """`backfill.py reading` confirms a reading only when the setup journal says the app's usage is the routines'
+    account (`usage_account: same`); otherwise it keeps it unconfirmed and says why in plain words (R40, N-2)."""
+    ws = one_big_day(tmp_path)
+    phrase = "five_hour=0,week=10,five_hour_resets=2026-10-25T03:00:00Z,week_resets=2026-10-29T04:00:00Z,extra=0"
+    now = "--now=2026-10-25T00:50:00+02:00"
+    done = cli(ws, "reading", phrase, now)
+    assert done.returncode == 0 and backfill.load(ws)["reading"]["confirmed"] is False
+    assert done.stdout.strip() == backfill.UNKNOWN_ACCOUNT_WHY and "usage_account" not in done.stdout
+    setup_journal.save({"usage_account": "different"})
+    done = cli(ws, "reading", phrase, now)
+    assert backfill.load(ws)["reading"]["confirmed"] is False and done.stdout.strip() == backfill.OTHER_ACCOUNT_WHY
+    setup_journal.save({"usage_account": "same"})
+    done = cli(ws, "reading", phrase, now)
+    assert done.returncode == 0 and "confirmed" not in backfill.load(ws)["reading"] and done.stdout.strip() == ""
+    cli(ws, "reading", phrase + ",confirmed=0", now)
+    assert backfill.load(ws)["reading"]["confirmed"] is False
+
+
+def test_a_history_found_going_on_resume_is_marked_in_the_background(tmp_path, monkeypatch, capsys):
+    """Part 1 started by a routine run rather than by the history phase: the first resume that sees it going marks
+    the history `in_background`, so the setup counts as finished from then on (R40, N-5)."""
+    ws, _ = history_world(tmp_path, monkeypatch)
+    start.main(["history", "--reading", READING_TEXT, "--workspace", str(ws), "--json"])
+    capsys.readouterr()
+    setup_journal.set_phase("build", "done")
+    data = setup_journal.load()
+    data["history"] = {k: v for k, v in data["history"].items() if k not in ("in_background", "part1_started")}
+    setup_journal.save(data)
+    backfill.checkpoint(ws, "p1", "mail", "2026-08-02T10:00:00Z")
+    assert start.main(["resume", "--workspace", str(ws), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["next"] is None and setup_journal.load()["history"]["in_background"] is True
+
+
+def test_whose_usage_the_app_reads_is_decided_from_the_meter_alone(tmp_path, monkeypatch):
+    """A run line with the same windows, which an agent could write, decides nothing; nor does a meter row dated
+    far ahead (R40, N-1)."""
+    ws, _ = history_world(tmp_path, monkeypatch)
+    start.phase_history(history_args(tmp_path, ws, reading=READING_TEXT))
+    path = ws / "_meta" / "state" / "runs.jsonl"
+    with path.open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps({"routine": "sweep-chain", "at": "2026-10-24T23:40:00Z", "space": "ada", "cost_tokens": 0,
+                             "outcome": "finished", "notes": {"step": "routine"}, "limits": SAME}) + "\n")
+    monkeypatch.setattr(start, "_now", lambda: LATER)
+    start.phase_history(history_args(tmp_path, ws, reading=SECOND))
+    assert "usage_account" not in setup_journal.load()
+    meter_row(ws, routine="sweep-chain", at="2099-01-01T00:00:00Z", outcome="finished", cost_tokens=0, limits=SAME)
+    start.phase_history(history_args(tmp_path, ws, reading=SECOND))
+    assert "usage_account" not in setup_journal.load()
+    meter_row(ws, routine="sweep-chain", at="2026-10-24T23:40:00Z", outcome="finished", cost_tokens=0, limits=SAME)
+    assert start.phase_history(history_args(tmp_path, ws, reading=SECOND))["usage_account"] == "same"
+
+
+# ===== fix round 3 (Ruling R43): a reading dated ahead, and a routine run in one space says nothing about another =====
+AHEAD = "five_hour=0,week=0,five_hour_resets=2099-01-01T00:00:00Z,week_resets=2099-01-01T00:00:00Z,extra=0"
+NIGHT = "--now=2026-10-25T01:00:00+02:00"
+
+
+def test_a_reading_dated_ahead_is_refused_and_one_kept_anyway_is_never_read(tmp_path, capsys):
+    """Probe Q1a: a reading dated 2099 with extra usage off would stay the newest for good and open the lone day that
+    R36 holds. The commands refuse a reading dated more than FUTURE_SLACK after their now, as the meter does; one kept
+    anyway (dated by a clock the caller chose) is not read, so the routines' own newer row decides (R43, N2-1 a)."""
+    ws = one_big_day(tmp_path)
+    backfill.record_reading(ws, reading(five_hour_pct=0, week_pct=10, extra_usage=True, at=AT_01H - dt.timedelta(minutes=10)))
+    setup_journal.save({"usage_account": "same"})
+    kept = backfill.load(ws)["reading"]
+    for at in ("2099-01-01T00:00:00Z", "2026-10-24T23:06:00Z"):                # six minutes after 01:00 local
+        assert backfill.main([str(ws), "reading", f"{AHEAD},at={at}", NIGHT]) == 2, at
+        err = capsys.readouterr().err
+        assert backfill.AHEAD_WHY in err and "Traceback" not in err
+    assert backfill.load(ws)["reading"] == kept and backfill.due(ws, AT_01H) is None
+    other = make_space(tmp_path / "other")
+    assert backfill.main([str(other), "plan", "--counts", "2026-10=1400", "--reading", f"{AHEAD},at=2099-01-01T00:00:00Z",
+                          NIGHT]) == 2
+    assert backfill.AHEAD_WHY in capsys.readouterr().err and not backfill.load(other).get("parts")
+    assert backfill.main([str(ws), "reading", AHEAD, "--now=2099-01-01T00:00:00Z"]) == 0          # its own clock: kept
+    assert backfill.load(ws)["reading"]["at"].startswith("2099")
+    assert backfill.due(ws, AT_01H) is None                                                       # but never read
+    assert backfill.explain(ws, AT_01H)[1].endswith("once a reading of your usage shows that extra usage is off.")
+    limits_row(ws, "2026-10-24T22:58:00Z", overage="allowed")                 # a real run: extra usage may be on
+    assert backfill.due(ws, AT_01H) is None
+    limits_row(ws, "2026-10-24T22:59:00Z")                                    # a newer one: extra usage refused
+    assert backfill.due(ws, AT_01H)["id"] == "p1"
+    assert backfill.main([str(ws), "reading", f"{AHEAD},at=2026-10-24T23:04:00Z", NIGHT]) == 0    # four: a clock apart
+
+
+def test_a_routine_run_in_one_space_says_nothing_about_another_spaces_history(tmp_path, monkeypatch, capsys):
+    """Probes Q1a and Q1b, O-1: the brain's routine run holds the brain's lock, and its agent's commands run in the
+    brain, but may name the person's workspace. Every verb refuses there and nothing changes: the paid hold stays, no
+    reading is kept, no part is touched (R43, N2-1 b). Said in the person's own workspace, or once the run is over,
+    they work."""
+    brain = make_space(tmp_path / "brain", profile="brain")
+    ws = planned(tmp_path)
+    backfill.hold(ws, "paid account: the person starts the read")
+    setup_journal.save({"usage_account": "same"})
+    before = backfill.load(ws)
+    assert routine.take_lock(brain, "sweep-chain")
+    try:
+        monkeypatch.chdir(brain / "_meta")                                    # anywhere in the brain: its own space.yaml
+        for words in (("start",), ("reading", AHEAD), ("plan", "--counts", "2026-10=10"),
+                      ("calibrate", "--before", "0", "--after", "10"), ("due",), ("status",), ("mark", "mail"),
+                      ("checkpoint", "p1", "mail", "2026-08-02T10:00:00Z"), ("read", "p1"), ("unfinished", "p1")):
+            assert backfill.main([str(ws), *words, NIGHT]) == 2, words
+            err = capsys.readouterr().err
+            assert backfill.OTHER_SPACE_WHY in err and "Traceback" not in err, words
+        assert backfill.load(ws) == before and backfill.due(ws, AT_01H) is None
+        assert backfill.main([str(brain), "start", NIGHT]) == 2                  # in its own space: a person's verb
+        assert backfill.RUN_GOING_WHY in capsys.readouterr().err
+        monkeypatch.chdir(ws)                                                   # said in the person's own workspace
+        assert backfill.main([str(ws), "due", NIGHT]) == 0
+        assert backfill.main([str(ws), "start", NIGHT]) == 0
+    finally:
+        routine.release_lock(brain)
+    assert backfill.due(ws, AT_01H)["id"] == "p1"
+    monkeypatch.chdir(brain)                                                    # the run is over: a session in the brain
+    assert backfill.main([str(ws), "mark", "mail", NIGHT]) == 0
+
+
+def test_a_stopped_line_an_agent_wrote_does_not_end_the_wait_for_part_one(tmp_path, monkeypatch):
+    """`--wait-part` stops waiting when the newest run stopped without reading: routine.py's own meter says so, never
+    a line in runs.jsonl, which a routine's agent can append (R43, O-3)."""
+    ws, started = history_world(tmp_path, monkeypatch)
+    start.phase_history(history_args(tmp_path, ws, reading=READING_TEXT))
+    looks = []
+
+    def sleep(seconds):
+        looks.append(seconds)
+        assert len(looks) < 6, "it waits on, though the run stopped"
+        if len(looks) == 2:                                                   # shaped like routine.py's own line
+            with (ws / "_meta" / "state" / "runs.jsonl").open("a", encoding="utf-8", newline="\n") as fh:
+                fh.write(json.dumps({"routine": "sweep-chain", "at": "2026-10-24T23:02:00Z", "space": "ada",
+                                     "cost_tokens": 0, "outcome": "stopped", "notes": {"step": "routine"}}) + "\n")
+        if len(looks) == 3:
+            routine.write_outcome(ws, "sweep-chain", routine._stopped("claude did not start"), AT_01H + dt.timedelta(minutes=3))
+    monkeypatch.setattr(start, "_sleep", sleep)
+    monkeypatch.setattr(start, "_clock", lambda: 0.0)
+    result = start.phase_history(history_args(tmp_path, ws, wait_part="p1"))
+    assert looks == [30, 30, 30] and result["waited"]["status"] == "pending" and "stopped" in result["waited"]["why"]

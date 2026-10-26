@@ -1,14 +1,21 @@
 ---
 name: seed
-description: A person's backfill - count their activity per month, export up to a year of their own declared sources in full (the last 90 days with full judgment, the older months as history), sweep, route with understanding first, rebuild the candidates and check them. Use once after onboarding ("seed my workspace", "backfill my mail"), when re-reading a space at full depth, or for one subject as a pilot ("backfill <subject>"); never on a schedule.
+description: A person's backfill - count their activity per month, export up to a year of their own declared sources in full (the plan's first-read window, 90 days by default, with full judgment, the older months as history), sweep, route with understanding first, rebuild the candidates and check them. Use when re-reading a space at full depth ("seed my workspace", "backfill my mail"), or for one subject as a pilot ("backfill <subject>"); never on a schedule, and never while setup's history read is running.
 ---
 
 # seed: evidence eagerly, signatures only for what matters
 
 Run in the person's own workspace. Depth over thrift: every record in full, every subject
-understood before anything is placed or written. The last 90 days (`routing.since`) get full
-judgment; older months (`routing.history_since`) are history: captured as fully, used as
-background, never a question per record and never an open item.
+understood before anything is placed or written. The first-read window gets full judgment: the
+plan's (`routing.since`), 90 days by default; older months (`routing.history_since`) are
+history: captured as fully, used as background, never a question per record and never an open
+item.
+
+A new person's first read is not a seed: setup's history read does it, oldest first in paced
+parts that start with the window's oldest stretch (`_meta/state/backfill.yaml`; part 1 replaces
+the first sweep onboarding used to run). Seed is for reading a space again at full depth later,
+or a pilot of one subject. Never start it while that history read has a part that is not
+`done`: both would read the same range.
 
 ## Run
 

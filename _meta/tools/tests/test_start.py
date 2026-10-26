@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import types
 from pathlib import Path
 
@@ -13,6 +14,7 @@ import yaml
 import apps
 import doctor
 import onboard
+import reader
 import research
 import routine
 import setup_journal
@@ -570,6 +572,227 @@ def test_offline_the_build_makes_no_call_to_github(tmp_path, monkeypatch):
     assert not [a for a in seen if a and a[0] == "gh"]   # no organisation check, no identity lookup
     assert not (Path(result["workspace"]) / "_inbound" / "needs-you" / "onboard-org.yaml").exists()
 
+
+# ----- "skip <app>": the person's word is the app's verdict (Ruling R38, I-5) -------------------------------------
+def test_skipping_an_app_makes_the_persons_word_its_verdict_for_the_card_the_feeds_and_the_research(tmp_path, monkeypatch, capsys):
+    no_outside(monkeypatch)
+    finished_setup()
+    before = setup_journal.load()["apps"]["card"]["starts_after"]
+    monkeypatch.setattr(routine, "probe_tools", lambda *a, **k: pytest.fail("a skip asks Claude nothing"))
+    assert start.main(["apps", "--skip", "google calendar", "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["skipped"] == ["Google Calendar"] and out["state"] == "done" and out["feeds"] == "mail: owner"
+    record = setup_journal.load()["apps"]
+    calendar = next(v for v in record["verdicts"] if v["app"] == "Google Calendar")
+    assert calendar["verdict"] == "skip" and calendar["was"] == "work" and record["person_skips"] == ["Google Calendar"]
+    assert not any("Google Calendar" in line for line in record["card"]["read"])
+    assert any(line.startswith("Google Calendar") and "you asked me to skip it" in line for line in record["card"]["skip"])
+    assert record["card"]["starts_after"] == before and record["state"] == "done"
+    assert start.history_counts(setup_journal.load()) == {"2026-10": 212, "2026-09": 187}      # its records are not read
+    assert start.APPS_RUN not in out.get("why", "") and "mcp__" not in out.get("why", "")
+
+
+def test_a_skip_of_an_app_that_is_not_there_changes_nothing_and_names_the_apps(tmp_path, monkeypatch, capsys):
+    no_outside(monkeypatch)
+    finished_setup()
+    before = setup_journal.load()["apps"]
+    assert start.main(["apps", "--skip", "Dropbox", "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["skipped"] == [] and "Dropbox" in out["why"] and "Gmail" in out["why"] and out["state"] == "done"
+    assert setup_journal.load()["apps"] == before
+
+
+def test_after_the_build_a_skip_takes_the_app_out_of_the_routines_grant(tmp_path, monkeypatch, capsys):
+    no_outside(monkeypatch)
+    finished_setup()
+    ws = make_space(tmp_path / "ada")
+    grant_file = ws / "_meta" / "state" / "private" / "apps.yaml"
+    onboard.write_yaml(grant_file, {"apps": [{k: v for k, v in a.items() if k != "per_month"} for a in (GMAIL, CALENDAR)]})
+    assert start.main(["apps", "--skip", "Gmail", "--workspace", str(ws), "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    kept = {v["app"]: v["verdict"] for v in routine._verdicts(ws)}
+    assert kept == {"Gmail": "skip", "Google Calendar": "work"} and "routines" in out["why"]
+    assert all("per_month" not in v for v in yaml.safe_load(grant_file.read_text(encoding="utf-8"))["apps"])
+
+
+def test_reading_the_apps_again_keeps_what_the_person_skipped(tmp_path, monkeypatch, capsys):
+    no_outside(monkeypatch)
+    finished_setup()
+    start.main(["apps", "--skip", "Google Calendar", "--json"])
+    capsys.readouterr()
+    tools = ["mcp__claude_ai_Gmail__search_threads", "mcp__claude_ai_Google_Calendar__list_events"]
+    servers = [{"name": "claude.ai Gmail", "status": "connected"}, {"name": "claude.ai Google Calendar", "status": "connected"}]
+    monkeypatch.setattr(routine, "probe_tools", lambda *a, **k: {"tools": tools, "mcp_servers": servers})
+    monkeypatch.setattr(routine, "find_claude", lambda: "/bin/claude")
+    monkeypatch.setattr(apps, "analyse", lambda groups, *a, **k: [dict(GMAIL), dict(CALENDAR)])
+    assert start.main(["apps", "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["feeds"] == "mail: owner" and any("Google Calendar" in line for line in out["card"]["skip"])
+    assert next(v for v in setup_journal.load()["apps"]["verdicts"] if v["app"] == "Google Calendar")["verdict"] == "skip"
+
+
+
+def probed_apps(monkeypatch):
+    tools = ["mcp__claude_ai_Gmail__search_threads", "mcp__claude_ai_Google_Calendar__list_events"]
+    servers = [{"name": "claude.ai Gmail", "status": "connected"}, {"name": "claude.ai Google Calendar", "status": "connected"}]
+    monkeypatch.setattr(routine, "probe_tools", lambda *a, **k: {"tools": tools, "mcp_servers": servers})
+    monkeypatch.setattr(routine, "find_claude", lambda: "/bin/claude")
+
+
+def test_a_skip_said_while_the_apps_are_read_wins_and_drops_what_was_read_of_it(tmp_path, monkeypatch, capsys):
+    """"Skip Google Calendar" while its reader runs: the phase reads the journal again before it writes, so the
+    calendar is not a feed, not granted, and what its reader found is not kept (R40, I-5 b; probe P6). The skip
+    itself leaves the running phase's state alone."""
+    no_outside(monkeypatch)
+    probed_apps(monkeypatch)
+    assert start.main(["apps", "--probe", "--json"]) == 0
+    capsys.readouterr()
+
+    def analyse(groups, *a, **k):
+        assert start.main(["apps", "--skip", "Google Calendar", "--json"]) == 0
+        said = json.loads(capsys.readouterr().out)
+        assert said["skipped"] == ["Google Calendar"] and said["state"] == "running"
+        assert setup_journal.load()["apps"]["state"] == "running"
+        return [dict(GMAIL), dict(CALENDAR)]
+    monkeypatch.setattr(apps, "analyse", analyse)
+    assert start.main(["apps", "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    record = setup_journal.load()["apps"]
+    calendar = next(v for v in record["verdicts"] if v["app"] == "Google Calendar")
+    assert out["feeds"] == "mail: owner" and record["person_skips"] == ["Google Calendar"] and record["state"] == "done"
+    assert calendar["verdict"] == "skip" and not {"per_month", "was"} & set(calendar) and calendar["account"] is None
+    assert start.history_counts(setup_journal.load()) == {"2026-10": 212, "2026-09": 187}
+    assert any(line.startswith("Google Calendar") for line in out["card"]["skip"])
+
+
+def test_an_app_the_person_skipped_is_not_read_again_and_a_skip_before_any_verdict_keeps_the_state(tmp_path, monkeypatch,
+                                                                                                  capsys):
+    no_outside(monkeypatch)
+    probed_apps(monkeypatch)
+    assert start.main(["apps", "--probe", "--json"]) == 0
+    assert start.main(["apps", "--skip", "Google Calendar", "--json"]) == 0
+    capsys.readouterr()
+    assert setup_journal.load()["apps"]["state"] == "pending"                  # the probe's state, not "running"
+    asked = []
+
+    def analyse(groups, *a, **k):
+        asked.extend(g["app"] for g in groups)
+        return [dict(GMAIL)]
+    monkeypatch.setattr(apps, "analyse", analyse)
+    assert start.main(["apps", "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert asked == ["Gmail"] and out["unfinished"] == [] and out["state"] == "done" and out["feeds"] == "mail: owner"
+    assert next(v for v in setup_journal.load()["apps"]["verdicts"] if v["app"] == "Google Calendar")["verdict"] == "skip"
+
+
+# ----- Task 13 fix round 3 (Ruling R43): a skip holds wherever it lands -------------------------------------------
+def six_apps(n=6) -> list:
+    names = ["Gmail", "Google Calendar", "Slack", "Notetaker", "Linear", "Notion"][:n]
+    kinds = ["mail", "calendar", "chat", "calls", "tracker", "documents"][:n]
+    return [{"app": a, "kinds": [k], "read": [f"mcp__claude_ai_{a.replace(' ', '_')}__read"], "write": [], "send": []}
+            for a, k in zip(names, kinds)]
+
+
+WORK = {"account": "ada@lanternworks.example", "verdict": "work", "per_month": {}, "why": "w"}
+APPS_ARGS = types.SimpleNamespace(name=None, email="ada@lanternworks.example", company=None)
+
+
+def say(app: str) -> dict:
+    return start.skip_apps(types.SimpleNamespace(skip=[app], workspace=None))
+
+
+def test_an_app_skipped_while_the_first_four_are_read_is_never_read(monkeypatch):
+    """Probe Q2a: six apps, four readers at a time. "Skip Notion" is said while the first readers run, before any of
+    them is through: Notion waits behind them, and its reader never starts (R43, N2-3)."""
+    no_outside(monkeypatch)
+    groups = six_apps()
+    setup_journal.set_phase("apps", "running", groups=groups, not_signed_in=[])
+    started, said, first = [], [], threading.Lock()
+
+    def read(prompt, tools, schema, cwd, **kw):
+        started.append(next(g["app"] for g in groups if g["read"][0] in tools))
+        with first:                                                          # the others wait until it is said
+            if not said:
+                said.append(say("Notion"))
+        return dict(WORK)
+    monkeypatch.setattr(reader, "read", read)
+    got = start._read_apps(APPS_ARGS, groups, [], [], "/bin/claude", None, {"groups": groups, "not_signed_in": []})
+    notion = next(v for v in setup_journal.load()["apps"]["verdicts"] if v["app"] == "Notion")
+    assert said[0]["skipped"] == ["Notion"] and "Notion" not in started and len(started) == 5
+    assert notion["verdict"] == "skip" and got["unfinished"] == [] and "documents" not in got["feeds"]
+
+
+def test_a_skip_before_the_apps_and_one_after_a_limit_are_never_read_and_never_counted_as_read(monkeypatch):
+    """Probe Q2c: Slack skipped before the apps phase, then a limit while the calendar is read. The message counts
+    the apps actually read (R43, N2-4); a skip after the limit ends the phase, and the phase run again reads only
+    what is left of the person's apps."""
+    no_outside(monkeypatch)
+    groups = six_apps(3)
+    setup_journal.set_phase("apps", "pending", groups=groups, not_signed_in=[])
+    assert say("Slack")["state"] == "pending"
+    seen = []
+
+    def read(prompt, tools, schema, cwd, **kw):
+        seen.append(next(g["app"] for g in groups if g["read"][0] in tools))
+        if seen[-1] == "Google Calendar":
+            raise reader.ReaderError("limit", "resets 03:00")
+        return dict(WORK)
+    real = apps.analyse
+    monkeypatch.setattr(reader, "read", read)
+    monkeypatch.setattr(apps, "analyse", lambda groups, *a, **k: real(groups, *a, **{**k, "workers": 1}))
+    got = start._read_apps(APPS_ARGS, groups, [], [], "/bin/claude", None, {"groups": groups, "not_signed_in": []})
+    assert got["why"].startswith("Your Claude limit was reached with 1 of 2 apps read (resets 03:00).")
+    assert seen == ["Gmail", "Google Calendar"] and got["unfinished"] == ["Google Calendar"] and got["state"] == "waiting"
+    said = say("Google Calendar")
+    record = setup_journal.load()["apps"]
+    assert said["state"] == "done" and record["unfinished"] == [] and record["feeds"] == "mail: owner"
+    seen.clear()
+    got = start._read_apps(APPS_ARGS, groups, [], [], "/bin/claude", None, {"groups": groups, "not_signed_in": []})
+    assert seen == ["Gmail"] and got["feeds"] == "mail: owner" and got["state"] == "done"
+
+
+def test_a_skip_kept_only_as_the_persons_word_still_holds_wherever_the_verdicts_are_read(tmp_path, monkeypatch):
+    """The skip's last race (R43, N2-8): a skip saved while the apps phase wrote its verdicts is in `person_skips` but
+    not on the verdict. The feeds, the grant, the history's counts, the documents step and the work mailbox read the
+    person's word too, so the app is left out everywhere."""
+    no_outside(monkeypatch)
+    drive = {"app": "Google Drive", "kinds": ["documents"], "read": ["mcp__claude_ai_Google_Drive__search_files"],
+             "write": [], "send": [], "account": "ada@lanternworks.example", "verdict": "work",
+             "per_month": {"2026-10": 5}, "why": "w"}
+    journal = {"apps": {"verdicts": [dict(GMAIL), dict(CALENDAR), drive], "person_skips": ["Gmail", "Google Drive"],
+                        "feeds": "mail: owner, calendar: owner, documents: owner"}}
+    assert start.history_counts(journal) == {"2026-10": 40}
+    assert start._documents_apps(journal) == []
+    assert start.work_mailbox(journal, {"ada@lanternworks.example"}) == ""
+    found = start.found_by_setup(types.SimpleNamespace(company=None, feeds=None, email=None, name="Ada Okafor",
+                                                       domain=None, offline=True), journal, False)
+    assert found["feeds"] == "calendar: owner" and found["connected"] == ["calendar"]
+    ws = make_space(tmp_path / "ada", owner="Ada Okafor", owner_email="ada@lanternworks.example")
+    start.keep_findings(types.SimpleNamespace(settings=None, workspace=ws), journal)
+    kept = {v["app"]: v["verdict"] for v in yaml.safe_load((ws / routine.APPS_FILE).read_text(encoding="utf-8"))["apps"]}
+    assert kept == {"Gmail": "skip", "Google Calendar": "work", "Google Drive": "skip"}
+
+
+def test_a_skip_said_as_the_apps_phase_finishes_never_puts_back_its_old_state(monkeypatch):
+    """A skip that read the phase before any verdict, and writes after the readers wrote theirs: it goes onto their
+    verdicts, and the phase stays done (R43, N2-8)."""
+    no_outside(monkeypatch)
+    groups = six_apps(2)
+    setup_journal.set_phase("apps", "running", groups=groups, not_signed_in=[])
+    real_load, loads = setup_journal.load, []
+
+    def load(*a, **k):
+        loads.append(1)
+        if len(loads) == 2:                                                   # the readers finish in between
+            setup_journal.set_phase("apps", "done", verdicts=[{**g, **WORK} for g in groups], unfinished=[],
+                                    feeds="mail: owner, calendar: owner")
+        return real_load(*a, **k)
+    monkeypatch.setattr(setup_journal, "load", load)
+    said = say("Google Calendar")
+    monkeypatch.setattr(setup_journal, "load", real_load)
+    record = setup_journal.load()["apps"]
+    assert said["skipped"] == ["Google Calendar"] and record["state"] == "done" and record["feeds"] == "mail: owner"
+    assert next(v for v in record["verdicts"] if v["app"] == "Google Calendar")["verdict"] == "skip"
 
 # ----- the briefing address: one the person is known to have, never a reader's word alone --------
 def _person(email=None, domain=None, offline=True):

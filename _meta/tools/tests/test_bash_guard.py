@@ -3,6 +3,7 @@ only one plain command of a shape the profile's own allow list names, so the per
 (`Bash(wget *)`) never widen a routine. Tested as a function, as a process, and as the command line the
 routine's profile carries, through a shell."""
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -76,6 +77,40 @@ def test_the_tools_a_routine_runs_pass(ws):
 ])
 def test_anything_else_is_refused(ws, command):
     assert not passes(profile(ws), command), command
+
+
+
+METER = "_meta/state/routine-limits.jsonl"
+
+
+@pytest.mark.parametrize("command", [
+    "python _meta/tools/routine.py _meta/state/routines/sweep-chain.md", "python _meta/tools/routine.py --locked .",
+    f"git diff --output={METER}", f"git log -1 --output {METER}", f"git show HEAD:{METER} --output={METER}",
+    f"python _meta/tools/status.py . > {METER}", f"python _meta/tools/status.py . >> {METER}",
+    f"tee -a {METER}", f"cp x {METER}", f"python -c \"open('{METER}', 'a').write('x')\"",
+    "python _meta/tools/../tools/routine.py x", "python3 _meta/tools/routine.py x",
+])
+def test_no_command_the_guard_lets_through_writes_the_routines_own_meter(ws, command):
+    """routine.py, the process, alone writes each run's windows and tokens (R40, N-1): Edit is denied on the file,
+    routine.py is no tool of a routine, and no shape the guard lets through redirects or writes into it."""
+    path = profile(ws)
+    assert f"Edit(//**/{METER})" in json.loads(path.read_text(encoding="utf-8"))["permissions"]["deny"]
+    assert not passes(path, command), command
+
+
+def test_no_tool_a_routine_may_run_writes_the_meter():
+    """Of the tools a routine runs, only backfill.py names the meter in code, and it only reads it; sync.py names
+    the path only to hold a meter-only change for its quiet window, and to count it as no real commit (R43), as git
+    commits it."""
+    tools = Path(routine.__file__).resolve().parent
+    named = [t for t in routine.ROUTINE_TOOLS if "routine-limits" in (tools / t).read_text(encoding="utf-8")]
+    assert sorted(named) == ["backfill.py", "sync.py"] and "routine.py" not in routine.ROUTINE_TOOLS
+    in_sync = [line.strip() for line in (tools / "sync.py").read_text(encoding="utf-8").splitlines() if "routine-limits" in line]
+    assert len(in_sync) == 2 and in_sync[0].startswith("real = [rel for rel in self.staged() if rel not in (") \
+        and in_sync[1].startswith("housekeeping = {"), in_sync
+    code = [line for line in (tools / "backfill.py").read_text(encoding="utf-8").splitlines()
+            if re.search(r"(?<![`\w])ROUTINE_LIMITS(?![`\w])", line)]   # the name in code, not in a docstring's backticks
+    assert code and all("read_text(" in line or line.startswith("ROUTINE_LIMITS = ") for line in code), code
 
 
 def test_the_persons_own_allows_do_not_count(ws):

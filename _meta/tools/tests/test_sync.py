@@ -119,6 +119,22 @@ def test_quiet_runs_commit_nothing_and_write_one_heartbeat_a_day(repo):
     assert len(run_lines(repo)) == 2
 
 
+def test_a_routine_run_alone_is_no_commit_worth_a_sync_line(repo):
+    """routine.py writes a run line and its meter row with every run. That alone is housekeeping, never `committed`,
+    so a routine run makes no sync run line of its own (R43, N2-5)."""
+    write(repo / "work" / "notes.md", "# Notes\n\nedited\n")
+    assert run(repo) == 0                                                     # the day's committed line
+    assert run(repo) == 0                                                     # and its one heartbeat
+    count = len(run_lines(repo))
+    runs = repo / "_meta" / "state" / "runs.jsonl"
+    row = {"routine": "sweep-chain", "at": "2026-10-14T01:00:00Z", "outcome": "finished", "cost_tokens": 0}
+    write(runs, runs.read_text(encoding="utf-8") + json.dumps({**row, "notes": {"step": "routine"}}) + "\n", minutes_old=20)
+    write(repo / "_meta" / "state" / "routine-limits.jsonl", json.dumps(row) + "\n", minutes_old=20)
+    assert run(repo) == 0
+    lines = run_lines(repo)
+    assert len(lines) == count + 1 and lines[-1]["routine"] == "sweep-chain"   # the routine's line, and no sync line
+
+
 @pytest.mark.parametrize("marker", ["MERGE_HEAD", "index.lock", "rebase-merge", "rebase-apply"])
 def test_run_is_skipped_while_git_is_mid_operation(repo, marker):
     write(repo / "work" / "notes.md", "# Notes\n\nedited\n")
@@ -388,8 +404,11 @@ def test_run_lines_and_pins_alone_wait_until_the_quiet_window_passes(repo, monke
     first = branch()
     assert first   # nothing published from this checkout yet: it goes out
     add_line(2)
+    # routine.py's own meter line changes with every run, like a run line
+    meter = repo / "_meta" / "state" / "routine-limits.jsonl"
+    write(meter, json.dumps({"at": "2026-10-14T02:00:00Z"}) + "\n", minutes_old=20)
     assert sync.main(["--root", str(repo)]) == 0
-    assert branch() == first   # only run lines, inside the window: it waits
+    assert branch() == first   # only run lines and the meter, inside the window: it waits
     write(repo / "work" / "notes.md", "# Notes\n\nline one\nline two\n", minutes_old=20)
     assert sync.main(["--root", str(repo)]) == 0
     second = branch()

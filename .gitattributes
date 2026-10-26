@@ -2,6 +2,7 @@
 journal/**            merge=union
 log.md                merge=union
 _meta/questions.log   merge=union
+_meta/friction-log.md merge=union
 _meta/state/*.jsonl   merge=union
 _meta/state/**/*.jsonl merge=union
 * text=auto eol=lf

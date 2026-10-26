@@ -10,7 +10,7 @@ sweeps nothing of its own. You export; the tool decides.
 
 ## When
 
-- Scheduled: `routines.sweep` in `space.yaml` (default 01:00, 10:00, 16:00 UTC), first
+- Scheduled: 07:00, 13:00 and 19:00 on the machine's own clock (the sweep-chain routine), first
   step of the sweep chain (sweep, then distill, then check).
 - On request: "sweep my mail", "anything new from the calendar?". No `sources`: nothing to do.
 
@@ -72,6 +72,31 @@ sweeps nothing of its own. You export; the tool decides.
 3. `python _meta/tools/sweep.py <root>` (`--dry-run` prints the plan and writes nothing).
 4. With `routing:` in `space.yaml`: route what the sweep wrote, as
    `.claude/skills/route/SKILL.md` says. The sweep itself then releases nothing.
+
+## Saving as you read, the history read and the lock
+
+- **Oldest first, in batches.** Export each source oldest first and append to its feed file
+  at most 50 records per batch, so a run that stops (a limit, a closed lid, the hour's timeout)
+  keeps what it read and the next run goes on from there.
+- **While the person's history is read** (`_meta/state/backfill.yaml` has a part not done), the
+  workspace's own sources are read by part, never in one unpaced run (decision F). The part
+  this run may read is the one `python _meta/tools/backfill.py <root> due --json` names; each
+  source starts at `python _meta/tools/backfill.py <root> mark <source>` (that part's
+  checkpoint, else its start), not at the feed file's last `at`, and ends at the part's `to`.
+  After every batch: `python _meta/tools/backfill.py <root> checkpoint <part> <source> <the
+  newest record's at>`. With no part due, export nothing new for those sources and say so in
+  your run line, except while the plan is held for the person (`due --json` says `held`: a paid
+  account's plan waiting for their go, or notes that could not be read): then the history is
+  not read, but what is new is, from the later of the feed file's last `at` and what `mark`
+  prints (the day the plan was made). Once every part is done, `mark` prints nothing and the
+  feed file's last `at` takes over again. A feed with no file yet starts at the plan's first-read window, 90 days by
+  default.
+- **One sweep at a time.** Before a sweep someone asks for in a session, run
+  `python _meta/tools/routine.py --locked <workspace>`. When it prints a run, a routine holds
+  the workspace's lock and is sweeping now: say so in one line and export nothing. A routine
+  run holds the lock itself and skips this check.
+- **A personal workspace's documents** are the person's own files only (the files they own or
+  made), never a company-wide file search.
 
 ## What the tool already did
 

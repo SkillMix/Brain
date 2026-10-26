@@ -262,12 +262,13 @@ def _failed(grouped: dict, verdict: str, why: str) -> dict:
     return {**copy.deepcopy(grouped), "account": "", "verdict": verdict, "per_month": {}, "why": why}
 
 
-def _one(grouped, person, cwd, read, stop, limits, known_tools, claude, today):
-    """One app's verdict, or None when it was not started or ran into the limit. A reader's error
+def _one(grouped, person, cwd, read, stop, limits, known_tools, claude, today, skipped=None):
+    """One app's verdict, or None when it was not started, the person skipped it before its reader
+    started (`skipped()`, asked right then), or it ran into the limit. A reader's error
     is the app's verdict (a sign-in to give again: `reconnect`; anything else: `blocked`, with the
     error's text), never a stop for the others. Any other fault in the run is that app's `blocked`
     too, with a fixed sentence: its own text could repeat what the app held."""
-    if stop.is_set():
+    if stop.is_set() or (skipped is not None and grouped["app"] in skipped()):
         return None
     try:
         answer = read(reader_prompt(grouped, person, today), list(grouped["read"]), VERDICT_SCHEMA, cwd,
@@ -284,20 +285,23 @@ def _one(grouped, person, cwd, read, stop, limits, known_tools, claude, today):
 
 
 def analyse(groups: list, person: dict, cwd: Path, reader=reader.read, workers: int = 4,
-            known_tools: list | None = None, claude: str | None = None, today: dt.date | None = None) -> list:
+            known_tools: list | None = None, claude: str | None = None, today: dt.date | None = None,
+            skipped=None) -> list:
     """One reader per app, `workers` at a time. Each verdict is the group plus the schema's fields.
     `person` is {"email", and optionally "emails", "name", "company", "domains"}: who the account
     is compared with, and what work is judged against. `known_tools` are the probe's tools: every
     connector tool a reader was not given is denied in its run. A reader's `auth` error is the
     verdict `reconnect`, any other error `blocked`; none stops the other apps. The plan's limit
     does: no new reader starts, and LimitReached carries the verdicts that finished. `today` is
-    the day the 12 months end with (default: today)."""
+    the day the 12 months end with (default: today). `skipped` gives the apps the person skipped, and
+    is asked again right before each reader starts: such an app is not read and has no verdict (R43)."""
     if not groups:
         return []
     today = today or dt.date.today()
     stop, limits = threading.Event(), []
     with ThreadPoolExecutor(max_workers=max(1, min(workers, len(groups)))) as pool:
-        done = list(pool.map(lambda g: _one(g, person, cwd, reader, stop, limits, known_tools, claude, today), groups))
+        done = list(pool.map(lambda g: _one(g, person, cwd, reader, stop, limits, known_tools, claude, today, skipped),
+                             groups))
     verdicts = [v for v in done if v is not None]
     if stop.is_set():
         raise LimitReached(verdicts, limits[0] if limits else "")

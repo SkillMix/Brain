@@ -370,7 +370,8 @@ class Run:
         if rels:
             self.pathspec("add", "-A", rels=rels)
         self.scan_staged()
-        real = [rel for rel in self.staged() if rel != RUNS_PATH.as_posix()]
+        # a routine run's own line and its meter row alone are no commit worth a run line (R43)
+        real = [rel for rel in self.staged() if rel not in (RUNS_PATH.as_posix(), "_meta/state/routine-limits.jsonl")]
         message = getattr(self.args, "message", None) or (
             "chore: structure" if getattr(self.args, "only", None) else "chore: sync")
         if self.commit(message) and real:
@@ -666,9 +667,10 @@ class Run:
         self.open_pr(branch)
 
     def waits(self, paths: list) -> bool:
-        """A change that is only run lines and mount pins waits QUIET_HOURS since the last push,
+        """A change that is only run lines, the meter and mount pins waits QUIET_HOURS since the last push,
         one that is only journal lines and run logs BATCH_HOURS; anything else goes out now."""
-        housekeeping = {RUNS_PATH.as_posix(), *self.submodules()}
+        # routine.py writes its meter line with every run, as it writes a run line
+        housekeeping = {RUNS_PATH.as_posix(), "_meta/state/routine-limits.jsonl", *self.submodules()}
         if paths and all(p in housekeeping for p in paths):
             hours, what = QUIET_HOURS, "run lines and pins only"
         elif paths and all(p in housekeeping or p in RUN_LOGS or p.startswith("journal/") for p in paths):
