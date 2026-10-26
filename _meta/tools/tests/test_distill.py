@@ -498,6 +498,45 @@ def test_checked_refuses_when_verify_finds_problems(tmp_path, capsys):
     assert "source" in capsys.readouterr().out
 
 
+# ----- prepare: which pages need their questions prepared --------------------------------------
+def test_prepare_lists_subject_candidates_only(tmp_path, capsys):
+    root = make_space(tmp_path / "ada", subjects=[
+        {"id": "harbor", "kind": "projects", "title": "Harbor", "state": "active"}])
+    candidate_file(root, CLEAN)
+    old = pages.generated("test", NOW - 5 * D)   # none of these is evidence that arrived after a check
+    # each of these has a `subject` and still is not a subject candidate: a lesson (by its name), a
+    # decision, a review batch, a released record and a source
+    for name, extra in (("lesson-retry-webhooks", {}), ("2026-10-05-use-a-queue", {"type": "decision"}),
+                        ("review-2026-w41", {"review_batch": True}), ("m-released", {"released_from": "m-9"}),
+                        ("m-source", {"type": "source"})):
+        write_page(root, f"_inbound/candidates/{name}.md", "Text.\n", subject="harbor", generated=old, **extra)
+    rows = distill.to_prepare(root)
+    assert [row["candidate"] for row in rows] == ["harbor"]
+    assert rows[0] == {"candidate": "harbor", "subject": "harbor", "why": "never checked"}
+    sign_questions.mark_checked(root, "harbor", by="routine:distill", now=NOW)
+    assert distill.to_prepare(root) == []
+    assert distill.main([str(root), "prepare"]) == 0 and "nothing to prepare" in capsys.readouterr().out
+    witness(root, "m-3", "harbor", "Harbor went live.\n", NOW + H)
+    assert [(r["candidate"], r["why"]) for r in distill.to_prepare(root)] == [
+        ("harbor", "new records since the last check")]
+    assert distill.main([str(root), "prepare"]) == 0
+    assert capsys.readouterr().out.splitlines() == ["harbor\tharbor\tnew records since the last check"]
+
+
+def test_prepare_writes_nothing_and_takes_no_argument(tmp_path, capsys):
+    root = make_space(tmp_path / "ada", subjects=[
+        {"id": "harbor", "kind": "projects", "title": "Harbor", "state": "active"}])
+    path = candidate_file(root, CLEAN)
+    before = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    assert distill.main([str(root), "prepare"]) == 0
+    assert {p: p.read_bytes() for p in root.rglob("*") if p.is_file()} == before
+    capsys.readouterr()
+    # `prepare` takes no argument; `verify` and `checked` keep exactly one; `--body` stays verify's
+    assert distill.main([str(root), "prepare", "harbor"]) == 2
+    assert distill.main([str(root), "verify"]) == 2 and distill.main([str(root), "checked", "--by", "Ben Liu"]) == 2
+    assert distill.main([str(root), "prepare", "--body", str(path)]) == 2
+
+
 def candidate_text(root, name):
     return (root / "_inbound" / "candidates" / f"{name}.md").read_text(encoding="utf-8")
 

@@ -1,0 +1,54 @@
+# `prepare` only reads: it lists the subject candidates whose questions need preparing (here the
+# one candidate, never checked) and changes nothing in the space.
+name: prepare lists the pages whose questions need preparing and writes nothing
+command:
+  - python
+  - _meta/tools/distill.py
+  - "{root}"
+  - prepare
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1440
+      name: ada
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience: [Ada Okafor]
+      parent: brain
+    work/.gitkeep: ""
+    journal/.gitkeep: ""
+    outbox/.gitkeep: ""
+    _meta/subjects.yaml:
+      subjects:
+        - id: harbor
+          kind: projects
+          title: Harbor
+          state: active
+          owner: Ada Okafor
+          home: harbor
+          match: {label: Harbor, channel: "#harbor"}
+    _inbound/candidates/harbor.md: |
+      ---
+      id: p-0000c001
+      type: entity
+      title: Harbor
+      status: draft
+      generated: {by: distill, at: "2026-10-05T09:00:00Z"}
+      subject: harbor
+      evidence: [m-scenario-1]
+      ---
+      # Harbor
+
+      Extension for the client. Go-live moves to 3 November.
+
+      ## New evidence
+
+      - 2026-10-02 the client moved the go-live to 3 November
+env: {SPACE_NOW: "2026-10-05T09:00:00Z"}
+expect:
+  exit: 0
+  writes_only_under: []
+  must_exist: ["_inbound/candidates/harbor.md"]

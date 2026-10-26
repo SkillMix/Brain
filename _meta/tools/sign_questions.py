@@ -8,8 +8,9 @@ One JSON object per line, one event each: {"at", "event", "id", "by"} plus, per 
 `asked` (subject, page, text, why, recommendation, searched, sensitive), `reworded` (text,
 optional recommendation), `settled` (source), `answered` (answer, or kept_in for a sensitive
 question), `parked`, `dropped` and `reopened` (reason). `checked` (subject) has no id: it marks
-when a subject's open questions were last looked over. Every line says who wrote it; only a
-named person answers (an empty `by`, or one that starts with `routine:`, is refused).
+when a subject's open questions were last looked over; the subject needs another look
+(`needs_recheck`) until then, and again once a record arrives after it. Every line says who wrote
+it; only a named person answers (an empty `by`, or one that starts with `routine:`, is refused).
 
 A question is its events folded in order of `at` (at equal times an `asked` comes first, so a
 merge never puts an answer ahead of its question; the rest keep file order). It is open
@@ -179,6 +180,19 @@ def last_checked(root, subject: str) -> dt.datetime | None:
     moments = [moment for moment, row in _rows(root)
                if row["event"] == "checked" and str(row.get("subject") or "") == subject]
     return max(moments) if moments else None
+
+
+def needs_recheck(root, subject: str, grouped: dict | None = None) -> bool:
+    """True when the subject was never checked, or has a record that arrived after its last
+    check. A record counts as it does for `distill.run`. A caller that asks about many subjects
+    reads the space once and passes `distill.evidence_by_subject(root)` as `grouped`."""
+    since = last_checked(root, subject)
+    if since is None:
+        return True
+    if grouped is None:
+        import distill   # here and not at the top: distill imports this module
+        grouped = distill.evidence_by_subject(root)
+    return any(ev.arrived > since for ev in grouped.get(subject, []))
 
 
 # ----- writing: one appended line per event ------------------------------------------------

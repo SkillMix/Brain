@@ -3,6 +3,7 @@ import json
 import pytest
 import sign_questions as sq
 from conftest import NOW, make_space
+from test_distill import witness
 
 LEDGER = "_meta/state/sign-questions.jsonl"
 
@@ -95,6 +96,25 @@ def test_checked_is_recorded_per_subject(tmp_path):
     assert sq.last_checked(root, "harbor") is None
     sq.mark_checked(root, "harbor", by="routine:distill", now=NOW)
     assert sq.last_checked(root, "harbor") == NOW and sq.last_checked(root, "beacon") is None
+
+def test_a_subject_needs_a_recheck_until_checked_and_again_after_new_records(tmp_path):
+    root = make_space(tmp_path / "ada", subjects=[{"id": "harbor", "kind": "projects", "title": "Harbor",
+                                                    "state": "active", "owner": "Ada Okafor"}])
+    witness(root, "m-1", "harbor", "Harbor kickoff.\n", NOW - dt.timedelta(days=2))
+    assert sq.needs_recheck(root, "harbor") is True
+    sq.mark_checked(root, "harbor", by="routine:distill", now=NOW)
+    assert sq.needs_recheck(root, "harbor") is False
+    witness(root, "m-2", "harbor", "Harbor went live.\n", NOW + dt.timedelta(hours=1))
+    assert sq.needs_recheck(root, "harbor") is True
+
+def test_only_records_of_the_subject_itself_call_for_a_recheck(tmp_path):
+    root = make_space(tmp_path / "ada", subjects=[{"id": "harbor", "kind": "projects", "title": "Harbor",
+                                                    "state": "active", "owner": "Ada Okafor"}])
+    witness(root, "m-1", "harbor", "Harbor kickoff.\n", NOW - dt.timedelta(days=2))
+    sq.mark_checked(root, "harbor", by="routine:distill", now=NOW)
+    witness(root, "m-2", "beacon", "Beacon went live.\n", NOW + dt.timedelta(hours=1))
+    witness(root, "m-3", "", "A note that names no subject.\n", NOW + dt.timedelta(hours=1))
+    assert sq.needs_recheck(root, "harbor") is False
 
 def test_duplicated_and_reordered_lines_fold_to_the_same_state(tmp_path):   # Review Focus 3
     root = make_space(tmp_path / "ada")
