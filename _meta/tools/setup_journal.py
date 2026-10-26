@@ -12,6 +12,11 @@ twice.
     apps: {state: running}
     needs:
     - {kind: github-code, text: ..., check: ..., link: ..., code: 4F2A-9C1B}
+    settings:
+    - {key: domains, ask: ..., default: ...}
+
+`settings` is what the build took by default (the interview's questions nobody was asked), kept
+for the progress page's Settings section; it belongs to no phase.
 
 It holds no secret: a one-time sign-in code is shown to the person on screen anyway, and a token
 or a password never enters it. Writes are atomic (a temporary file beside the journal, then a

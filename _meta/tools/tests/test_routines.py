@@ -340,3 +340,128 @@ def test_the_connector_texts_name_the_server_and_the_structured_kinds_map_to_the
                  'The MCP server "claude.ai Gmail" needs you to sign in; run /mcp to authenticate.'):
         assert first(routine.CONNECTOR_PATTERNS, text).group("server") == "claude.ai Gmail"
     assert routine.ERROR_KINDS["authentication_failed"] == "auth" and routine.ERROR_KINDS["rate_limit"] == "limit"
+
+
+# ----- an isolated run names its OS tasks under a prefix of its own (SPACES_TASK_PREFIX) ---------
+def test_the_task_prefix_is_space_unless_the_environment_says_a_prefix_of_ours(monkeypatch):
+    monkeypatch.delenv("SPACES_TASK_PREFIX", raising=False)
+    assert onboard.task_prefix() == "space-"
+    monkeypatch.setenv("SPACES_TASK_PREFIX", "")
+    assert onboard.task_prefix() == "space-"
+    for prefix in ("space-", "space-test-1a2b-", "space-test-"):
+        monkeypatch.setenv("SPACES_TASK_PREFIX", prefix)
+        assert onboard.task_prefix() == prefix
+
+
+@pytest.mark.parametrize("prefix", ["test-", "spaces--", "spaces--x-", "Space-x-", "space-Test-", "space_x-",
+                                    "space-x y-", "space-x/", "space-x\n", "xspace-", " space-"])
+def test_a_prefix_that_is_not_space_and_lower_case_words_is_refused_in_plain_words(monkeypatch, prefix):
+    monkeypatch.setenv("SPACES_TASK_PREFIX", prefix)
+    with pytest.raises(ValueError, match=r"SPACES_TASK_PREFIX must start with space-"):
+        onboard.task_prefix()
+
+
+def test_the_routine_tasks_take_the_prefix_and_are_read_back_by_the_name_recorded(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "SYSTEM", "Windows")
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")
+    monkeypatch.setenv("SPACES_TASK_PREFIX", "space-test-1a2b-")
+    calls = []
+    monkeypatch.setattr(onboard, "run_cmd", world({"schtasks /Query": (0, "".join(onboard.WINDOWS_TASK))}, calls))
+    ws = workspace(tmp_path)
+    records = onboard.register_routines(onboard.Report("person"), ws, offline=False, dry_run=False)
+    names = ["space-test-1a2b-daily-chain-ada", "space-test-1a2b-sweep-chain-ada"]
+    assert [r["name"] for r in records] == names
+    assert [c[0][c[0].index("/TN") + 1] for c in calls if c[0][:2] == ["schtasks", "/Create"]] == names
+    # --check finds them by the recorded name, whatever the environment says then
+    monkeypatch.delenv("SPACES_TASK_PREFIX")
+    queried = []
+    monkeypatch.setattr(onboard, "run_cmd", world({"schtasks /Query": (0, "".join(onboard.WINDOWS_TASK))}, queried))
+    steps = onboard.routine_schedule(ws)
+    assert [s.name for s in steps] == [f"routine task {n}" for n in names] and all(s.done for s in steps)
+    assert [q[0][q[0].index("/TN") + 1] for q in queried] == names
+
+
+def test_the_sync_task_takes_the_prefix(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPACES_TASK_PREFIX", "space-test-1a2b-")
+    root = make_space(tmp_path / "ada")
+    record = onboard.register_sync(onboard.Report("person"), root, "ada", 15, offline=True, dry_run=False)
+    assert record["name"] == "space-test-1a2b-sync-ada"
+    assert "space-test-1a2b-sync-ada" in (root / "_meta" / "state" / "sync-task.txt").read_text(encoding="utf-8")
+    monkeypatch.delenv("SPACES_TASK_PREFIX")
+    assert onboard.register_sync(onboard.Report("person"), root, "ada", 15, True, False)["name"] == "space-sync-ada"
+
+
+def test_a_registered_routine_task_records_its_log_name(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "SYSTEM", "Windows")
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")
+    monkeypatch.setenv("SPACES_TASK_PREFIX", "space-test-1a2b-")
+    monkeypatch.setattr(onboard, "run_cmd", world({"schtasks /Query": (0, "".join(onboard.WINDOWS_TASK))}, []))
+    ws = workspace(tmp_path)
+    records = onboard.register_routines(onboard.Report("person"), ws, offline=False, dry_run=False)
+    assert [r["log"] for r in records] == ["daily-chain-ada", "sweep-chain-ada"]   # routine.py's <routine>-<space>.log
+    state = onboard.read_yaml(ws / "_meta" / "state" / "onboard.yaml", {})
+    assert [t["log"] for t in state["routine_tasks"]] == ["daily-chain-ada", "sweep-chain-ada"]
+
+
+def test_the_run_of_a_task_is_found_by_its_recorded_log_not_by_the_environment(tmp_path, monkeypatch):
+    """routine.py keeps `<routine>-<space>.log`; the prefix is no part of it."""
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    log = tmp_path / "home" / ".spaces" / "logs" / "sweep-chain-ada.log"
+    log.parent.mkdir(parents=True)
+    log.write_text("\n== 2026-10-14T16:00:00 sweep-chain\nclaude is not installed or not on PATH\nexit 127\n", encoding="utf-8")
+    for env in (None, "space-test-1a2b-", "space-other-", "spaces--x-", "not even a prefix"):   # the variable is no input
+        if env is None:
+            monkeypatch.delenv("SPACES_TASK_PREFIX", raising=False)
+        else:
+            monkeypatch.setenv("SPACES_TASK_PREFIX", env)
+        step = onboard.routine_run_step("space-test-1a2b-sweep-chain-ada", "sweep-chain-ada")
+        assert not step.done and "claude is not installed" in step.result, env
+    # a record from before the log name was kept: the default prefix, as it was registered
+    assert not onboard.routine_run_step("space-sweep-chain-ada").done
+
+
+@pytest.mark.parametrize("env", [None, "space-other-", "spaces--x-", "not even a prefix"])
+def test_check_reads_a_prefixed_routine_back_whatever_the_environment_says(tmp_path, monkeypatch, env):
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    root = make_space(tmp_path / "ada")
+    log = tmp_path / "home" / ".spaces" / "logs" / "sweep-chain-ada.log"
+    log.parent.mkdir(parents=True)
+    log.write_text("\n== 2026-10-14T16:00:00 sweep-chain\nclaude is not installed or not on PATH\nexit 127\n", encoding="utf-8")
+    onboard.write_yaml(root / "_meta" / "state" / "onboard.yaml", {"case": "person", "offline": True, "routine_tasks": [
+        {"name": "space-test-1a2b-sweep-chain-ada", "log": "sweep-chain-ada", "kind": "cron"}]})
+    if env is None:
+        monkeypatch.delenv("SPACES_TASK_PREFIX", raising=False)
+    else:
+        monkeypatch.setenv("SPACES_TASK_PREFIX", env)
+    row = next(s for s in onboard.check(root) if s.name == "routine space-test-1a2b-sweep-chain-ada runs")
+    assert not row.done and "claude is not installed" in row.result
+    assert onboard.main([str(root), "--check"]) == 1   # a failing routine fails the check; a bad variable does not break it
+
+
+@pytest.mark.parametrize("argv", [["--register-sync", "--offline"], ["--os-routines", "--offline"], []])
+def test_a_prefix_that_is_not_ours_stops_every_entry_that_registers_before_anything_is_made(tmp_path, monkeypatch, capsys, argv):
+    monkeypatch.setenv("SPACES_TASK_PREFIX", "spaces--x-")
+    root = make_space(tmp_path / "ada")
+    assert onboard.main([str(root), *argv, "--home", str(tmp_path / "made")]) == 1
+    out = capsys.readouterr().out
+    assert "SPACES_TASK_PREFIX must start with space-" in out and "Traceback" not in out
+    assert not (tmp_path / "made").exists() and not (root / "_meta" / "state" / "sync-task.txt").exists()
+    assert not (root / "_meta" / "state" / "onboard.yaml").exists()
+
+
+def test_a_prefix_that_is_not_ours_stops_a_run_before_it_creates_a_space(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPACES_TASK_PREFIX", "Space-x-")
+    root = make_space(tmp_path / "brain", profile="brain")
+    with pytest.raises(ValueError, match="SPACES_TASK_PREFIX must start with space-"):
+        onboard.run(root, {"company": "Lantern Works", "owner": "Ada Okafor"}, offline=True, home=tmp_path / "made")
+    assert not (tmp_path / "made").exists()
+
+
+def test_mint_refuses_a_prefix_that_is_not_ours_before_it_makes_the_space(tmp_path, monkeypatch, capsys):
+    import mint
+    monkeypatch.setenv("SPACES_TASK_PREFIX", "spaces--x-")
+    root = make_space(tmp_path / "ada")
+    assert mint.main([str(root), "--vault", "--name", "board", "--audience", "Ada Okafor", "--offline",
+                      "--home", str(tmp_path / "made")]) == 1
+    assert "SPACES_TASK_PREFIX must start with space-" in capsys.readouterr().out
+    assert not (tmp_path / "made").exists()

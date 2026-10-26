@@ -84,10 +84,14 @@ TEXT_LIMIT = 4000        # what the reader's answer may hold of one (it is cut t
 LINE_MAX = 300
 MERGE_CHARS = 60_000     # how much of the records the merging reader is shown
 UNEXPECTED = "This source could not be read this time: the setup ran into a fault of its own."   # never the fault's own text
-# The first label of a mail domain that stands for a provider, not for a company (outlook.com and outlook.nl alike).
+# The first label of a mail domain that stands for a provider, not for a company (outlook.com and outlook.nl
+# alike): the one list of mail providers, internet providers' mail included, that every tool asks (`is_provider`).
 FREE_MAIL_LABELS = ("gmail", "googlemail", "outlook", "hotmail", "live", "msn", "icloud", "me", "mac", "yahoo", "ymail",
                     "rocketmail", "proton", "protonmail", "pm", "gmx", "aol", "web", "mail", "freenet", "t-online",
-                    "fastmail", "hey", "yandex", "qq")
+                    "fastmail", "hey", "yandex", "qq", "tutanota", "tuta", "posteo", "mailfence", "runbox",
+                    "ziggo", "kpnmail", "xs4all", "zonnet", "telenet", "skynet", "wanadoo", "laposte", "bluewin",
+                    "libero", "virgilio", "btinternet", "virginmedia", "talktalk", "comcast", "verizon", "sbcglobal",
+                    "bellsouth")
 SECOND_LEVEL = ("co", "com", "org", "net", "ac", "gov", "edu")   # as in shop.example.co.uk
 
 _RECORDS = {"type": "array", "items": {
@@ -197,6 +201,12 @@ def domain_label(domain) -> str:
     return parts[-1] if parts else ""
 
 
+def is_provider(domain) -> bool:
+    """Whether a mail domain is a provider's, which strangers share, not a company's own: judged by its first
+    label (`FREE_MAIL_LABELS`), so outlook.com and outlook.nl alike, and every country's yahoo."""
+    return domain_label(clean_domain(domain)) in FREE_MAIL_LABELS
+
+
 def terms(card: dict) -> list:
     """What a file or a note says when it is about this company: its name, the name without
     spaces and the label of its domain; lower case, three letters at least."""
@@ -253,7 +263,7 @@ def rivals(card: dict, signins: dict, apps_record: dict, namespace=None) -> list
         account = str(verdict.get("account") or "") if isinstance(verdict, dict) else ""
         domain = clean_domain(account.rsplit("@", 1)[-1]) if "@" in account else ""
         label = domain_label(domain)
-        if domain and domain not in mine and label and label not in FREE_MAIL_LABELS and label != domain_label(card.get("domain")):
+        if domain and domain not in mine and label and not is_provider(domain) and label != domain_label(card.get("domain")):
             found.append(label)
     ours = [t for t in (_plain(x) for x in terms(card)) if len(t) >= 3]
     return [x for x in dict.fromkeys(found) if not any(t in _plain(x) or (len(_plain(x)) >= 3 and _plain(x) in t) for t in ours)]

@@ -14,14 +14,15 @@ which does every step itself and asks nothing that has a default:
   matches the company or the mail domain, else the person's own (an account that is not clear
   is asked in the signins phase, never here), and runs onboard's company case, which also
   creates the person's own workspace;
-- renders the person's two routines (the sweep chain and the daily chain) for the agent to
-  schedule so they outlive the session (`onboard.py <workspace> --os-routines`);
+- schedules the person's two routines (the sweep chain and the daily chain) itself, as OS tasks
+  that outlive the session (`onboard.register_routines`), with no step left for the agent;
 - prints what only the person can do (sign-ins), each with the check that proves it;
 - keeps the onboarding page `~/.spaces/onboarding.html` (`onboarding_page.py`), rewritten after
   every step: what is done, what runs now, what is next, what only the person can do.
 
 Defaults the person may want to change (the domains, the never-leaves list, the schedule)
-are taken and return on their Needs-you list. Run again, it changes nothing that is right.
+are taken and kept in the setup journal's `settings`, which the progress page shows; they are not
+questions on Needs you. Run again, it changes nothing that is right.
 `--dry-run` prints the plan and stops before onboard; offline, a space is copied under
 `--home` when given, else beside this copy.
 
@@ -58,6 +59,17 @@ passwords dropped, to `~/.spaces/research/records.jsonl`, merged into a cited pr
 (`profile.yaml`); the company card goes into the journal, where the apps phase finds it. A colleague
 joining a brain skips it. The build puts the records into the new brain and drafts its company
 profile (`onboard.write_profile`), one item on Needs you.
+
+`build` takes what the phases before it found (`found_by_setup`): the company's name from the
+researched card, the feeds of the apps that are read, the namespace as the account, and the
+briefing address (`briefing_address`): the address given, else the account of the mail app read as
+work when it is an address the person is known to have or one on a company domain they typed
+(`--domain`), else git's, else the Claude sign-in's; with none, one item asks and the build waits. What the person said
+on the command line wins, and the journal's build record says where the address came from. It
+writes the apps' verdicts, without their counts, to the workspace's private zone, where the
+routines read their grant, and schedules the routines (`finish_workspace`). The workspace goes in the brain's account; when that is an
+organisation whose members can read each other's repositories, one item on Needs you gives the
+click path to change it, which only the person can do.
 
     python start.py [signins|apps|research|build|history|resume] [--wait] [--json] [--probe]
                     [--invitation <brain repo>:<slug> | --brain <brain repo>] [--company NAME]
@@ -156,6 +168,7 @@ import signin  # noqa: E402
 import spaceyaml  # noqa: E402
 
 HERE = Path(__file__).resolve().parents[2]
+LAST_REPORT = None   # the report of the last build in this process: its steps stay readable after the phase has returned its summary
 # One start at a time on this machine. The lock holds its process id: one whose process is gone is
 # a crashed run's (or a closed session's) and is taken over at once; a lock with no readable id
 # waits out LOCK_HOURS. The lock lives in the machine's temporary folder; SPACES_START_LOCK moves
@@ -427,7 +440,8 @@ def plan(report: onboard.Report, dst, full, tpl, case) -> onboard.Report:
 
 def start(here=HERE, invitation=None, brain=None, company=None, name=None, email=None, feeds=None,
           org=None, home=None, template=None, offline=False, dry_run=False,
-          user_instructions=None) -> onboard.Report:
+          user_instructions=None, connected=()) -> onboard.Report:
+    """`connected` are the feeds the apps phase has read already: no row asks the person to connect them."""
     report = onboard.Report(case="start")
     lock = take_lock()
     if lock is None:
@@ -442,7 +456,7 @@ def start(here=HERE, invitation=None, brain=None, company=None, name=None, email
         spaces = Path(home) if home else Path.home() / "spaces"
         if checkup(report, target, tpl, offline, not dry_run, spaces):
             setup(report, here, invitation, brain, company, name, email, feeds, org, home, template, offline,
-                  dry_run, user_instructions)
+                  dry_run, user_instructions, connected)
         else:
             report.stopped = True   # nothing was created: the person's rows come first
     finally:
@@ -453,7 +467,7 @@ def start(here=HERE, invitation=None, brain=None, company=None, name=None, email
 
 
 def setup(report, here, invitation, brain, company, name, email, feeds, org, home, template, offline, dry_run,
-          user_instructions) -> onboard.Report:
+          user_instructions, connected=()) -> onboard.Report:
     here = Path(here).resolve()
     who = identity(name, email, offline)
     given = Path(home) if home else None
@@ -471,6 +485,7 @@ def setup(report, here, invitation, brain, company, name, email, feeds, org, hom
         if slug and inv is None:
             return report
         answers = dict(inv or {})
+        report.invited = address_in(answers.get("email"))   # the journal says an address came from the invitation
         answers["name"] = answers.get("name") or who["name"]
         answers["email"] = answers.get("email") or who["email"]
         answers["slug"] = onboard.slugify(answers.get("slug") or answers["name"])
@@ -492,8 +507,10 @@ def setup(report, here, invitation, brain, company, name, email, feeds, org, hom
         if dry_run:
             return plan(report, dst, full, tpl, "person")
         answers = onboard.interview(answers, interactive=False, case="person", root=dst)
+        report.settings = settings_of(answers.pop("_skipped", []))
         sub = onboard.run(dst, answers, offline=offline, org=space_org, dry_run=dry_run, home=home,
-                          user_instructions=user_instructions, brain=answers["brain"], progress=report.progress)
+                          user_instructions=user_instructions, brain=answers["brain"], progress=report.progress,
+                          connected=connected)
         person, workspace = answers["name"], dst
     else:
         space_org = org or adopted_namespace(space_home, company)
@@ -514,8 +531,9 @@ def setup(report, here, invitation, brain, company, name, email, feeds, org, hom
         if dry_run:
             return plan(report, dst, full, tpl, "company")
         answers = onboard.interview(answers, interactive=False, case="company", root=dst)
+        report.settings = settings_of(answers.pop("_skipped", []))
         sub = onboard.run(dst, answers, offline=offline, org=space_org, dry_run=dry_run, home=home,
-                          user_instructions=user_instructions, progress=report.progress)
+                          user_instructions=user_instructions, progress=report.progress, connected=connected)
         person = who["name"]
         workspace = next((Path(p) for p in sub.spaces.values()
                           if Path(p) != dst and spaceyaml.load(p).profile == "personal"), None)
@@ -523,16 +541,56 @@ def setup(report, here, invitation, brain, company, name, email, feeds, org, hom
     report.spaces.update(sub.spaces)
     report.user_instructions = sub.user_instructions
     if workspace is not None and not dry_run:
-        routines = render_routines(workspace, person)
-        ws = Path(workspace).as_posix()
-        report.add("routine prompts", True, f"test -f {ws}/_meta/state/routines/daily-chain.md",
-                   "; ".join(f"{r['name']} at {r['schedule']}" for r in routines)
-                   + f" (cron, this machine's local time): next, `python {ws}/_meta/tools/onboard.py {ws} "
-                   "--os-routines` schedules them so they outlive this session")
+        if who["email"]:
+            fill_address(report, person, who["email"])
         report.workspace = workspace
-        report.routines = routines
+        report.routines = finish_workspace(report, workspace, person, space_org, offline)
         report.who = who
     return report
+
+
+def settings_of(skipped: list) -> list:
+    """The interview's defaults that nobody was asked about, as the setup journal keeps them for
+    the progress page's Settings section: each question's key and words, and the default taken. They
+    are not questions on Needs you."""
+    return [{"key": q["key"], "ask": q["ask"],
+             "default": list(q["default"]) if isinstance(q["default"], (list, tuple)) else q["default"]}
+            for q in skipped]
+
+
+def fill_address(report, owner: str, address: str, replace: bool = False) -> None:
+    """The person's own spaces that have no briefing address get the one now known: the answer to the item
+    that asked, said again with the sentence. An address that is there is not replaced by one worked out
+    (`replace` False); the one the person typed is their choice and replaces it (`replace` True). The line
+    of space.yaml is changed in place, the rest of the file as it was."""
+    for path in dict.fromkeys(report.spaces.values()):
+        space = spaceyaml.load(path)
+        if space.owner == owner and (not space.owner_email or (replace and space.owner_email != address)):
+            file = Path(path) / "space.yaml"
+            text = file.read_text(encoding="utf-8")
+            filled = re.sub(r"^owner_email:.*$", lambda _: f"owner_email: {json.dumps(address)}", text, count=1, flags=re.M)
+            if filled != text:
+                file.write_text(filled, encoding="utf-8", newline="\n")
+
+
+def finish_workspace(report, workspace, person: str, org: str, offline: bool) -> list:
+    """What makes a built workspace run without the agent: the routine prompts are rendered and
+    scheduled as OS tasks that outlive the session (`onboard.register_routines`; offline they are
+    recorded, not registered), the account's base permission is read (`onboard.org_members_item`), and
+    the briefing address is looked at: with none, one plain item asks for it and a row only the person
+    can give makes the build wait, as every other thing only they can give does. Returns the rendered
+    routines."""
+    routines = render_routines(workspace, person)
+    onboard.register_routines(report, workspace, offline=offline)
+    if not offline:
+        onboard.org_members_item(workspace, org)
+    address = spaceyaml.load(workspace).owner_email
+    onboard.briefing_item(workspace, address)
+    if "@" not in address:
+        report.add("briefing address", False, f"grep owner_email {Path(workspace).as_posix()}/space.yaml",
+                   "tell your agent which email address your morning briefing should go to, and say the sentence again",
+                   needs_owner=True)
+    return routines
 
 
 def summary(report: onboard.Report) -> dict:
@@ -794,17 +852,20 @@ HEAD_START_WHY = ("Your documents are read after {when}, ten minutes after you w
 
 def _company_card(args, journal: dict) -> dict:
     """The company the research is about: its name (`--company`, else the name its domain gives) and
-    its domain (`--domain`, else the first of the person's own addresses that is not a free mail
-    provider's: the one given, the Claude sign-in's, git's). The card is what `apps.company_of`
-    reads from the journal."""
+    its domain (`--domain`, else the first of the person's own addresses that is not a mail provider's:
+    the one given, the Claude sign-in's, git's). `domain_from` says which: `flag` (the person typed it),
+    `address` (taken from one of their addresses, so an internet provider on no list can be the card's
+    domain), `site` (the company's own site confirmed it; nothing sets that yet), "" (none). The briefing
+    check trusts `flag` and `site` only. The card is what `apps.company_of` reads from the journal."""
     record = journal.get("signins") if isinstance(journal.get("signins"), dict) else {}
     who = identity(args.name, args.email, offline=True)
     emails = [e for e in dict.fromkeys([args.email, record.get("claude_email"), who["email"]]) if e]
     own = (research.clean_domain(email_domain(e)) for e in emails)
-    domain = (research.clean_domain(getattr(args, "domain", None))
-              or next((d for d in own if d and d not in apps.FREE_MAIL), ""))
+    flag = research.clean_domain(getattr(args, "domain", None))
+    domain = flag or next((d for d in own if d and not research.is_provider(d)), "")
     name = args.company or (onboard.humanize(research.domain_label(domain)) if domain else "")
-    return {"name": name, "domain": domain, "domains": [domain] if domain else []}
+    return {"name": name, "domain": domain, "domains": [domain] if domain else [],
+            "domain_from": "flag" if flag else "address" if domain else ""}
 
 
 def _documents_apps(journal: dict) -> list:
@@ -1090,14 +1151,136 @@ def _research_line(landed: dict) -> str:
     return ", ".join(said + ["profile drafted" if landed.get("profile") else "no profile drafted"])
 
 
+ADDRESS = re.compile(r"[A-Za-z0-9._%+'-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
+
+
+def address_in(text) -> str:
+    """The one address in a text (`ada@x.example`, `Ada <ada@x.example>`, `ada@x.example (work)`), in lower
+    case; "" when there is none, or when there are several and so no telling which is meant."""
+    found = {a.lower() for a in ADDRESS.findall(str(text or ""))}
+    return found.pop() if len(found) == 1 else ""
+
+
+def work_mailbox(journal: dict, known=(), domains=()) -> str:
+    """The account of the first mail app the apps phase read as `work` (not `mixed`, not another person's),
+    when that is an address the briefing may go to. The account is a reader's free-text answer, written
+    after reading mail anyone can write, and the briefing address is the only one agents may mail: so it
+    counts only when it is one the person is known to have (`known`, exactly), or sits on a domain of the
+    company that did not come from a reader (`domains`; a mail provider's never does). "" otherwise."""
+    record = journal.get("apps") if isinstance(journal.get("apps"), dict) else {}
+    for v in record.get("verdicts") or []:
+        if isinstance(v, dict) and v.get("verdict") == "work" and "mail" in (v.get("kinds") or []):
+            account = address_in(v.get("account"))
+            domain = account.rpartition("@")[2]
+            if account and (account in known or (domain in domains and not research.is_provider(domain))):
+                return account
+    return ""
+
+
+def briefing_address(args, journal: dict) -> tuple:
+    """Where the morning briefing goes, worked out rather than asked, and where that came from:
+    the address the person gave (`asked`), else the work mailbox the apps phase found (`work-mailbox`),
+    else git's (`git`: the host's when git has none), else the Claude sign-in's (`sign-in`); ("", "asked")
+    when there is none, and one item asks. The work mailbox counts only as `work_mailbox` says: an address
+    the person has (git's, the sign-in's, the one given), exactly, or one on a company domain that no
+    reader named: `--domain`, or the researched company's card when its domain was typed (`--domain`) or
+    confirmed by the site (`domain_from`), never a mail provider's. The domain of a known address is not one,
+    and neither is a card domain taken from one (`domain_from` "address", or an old card without the marker):
+    people share their provider with strangers, listed (hotmail.nl, fastmail.com) or not (an internet
+    provider's own mail)."""
+    signins = journal.get("signins") if isinstance(journal.get("signins"), dict) else {}
+    research_record = journal.get("research") if isinstance(journal.get("research"), dict) else {}
+    card = research_record.get("company") if isinstance(research_record.get("company"), dict) else {}
+    given, signin = address_in(args.email), address_in(signins.get("claude_email"))
+    host = address_in(identity(args.name, None, args.offline)["email"])
+    known = {a for a in (given, host, signin) if a}
+    trusted = card.get("domain_from") in ("flag", "site")   # a card without the marker is an old one: its domain came from an address
+    named = [getattr(args, "domain", None), *([card.get("domain"), *(card.get("domains") or [])] if trusted else [])]
+    domains = {d for d in (research.clean_domain(x) for x in named if x) if d and not research.is_provider(d)}
+    if given:
+        return given, "asked"
+    for source, address in (("work-mailbox", work_mailbox(journal, known, domains)), ("git", host), ("sign-in", signin)):
+        if address:
+            return address, source
+    return "", "asked"
+
+
+def found_by_setup(args, journal: dict, new_company: bool) -> dict:
+    """What the phases before the build found, as the arguments `start` takes: the researched
+    company's name (a new company's), the briefing address (`briefing_address`) and the feeds of the
+    apps that are read. What the person said on the command line wins. `connected` are the feeds the
+    apps phase has read, so no row asks the person to connect them again."""
+    apps_record = journal.get("apps") if isinstance(journal.get("apps"), dict) else {}
+    card = (journal.get("research") or {}).get("company") if isinstance(journal.get("research"), dict) else None
+    card_name = " ".join(str(card.get("name") or "").split()) if isinstance(card, dict) and new_company else ""
+    found = str(apps_record.get("feeds") or "")
+    address, source = briefing_address(args, journal)
+    return {"company": args.company or card_name or None, "email": address or None, "email_source": source,
+            "feeds": args.feeds or found or None,
+            "connected": [f.partition(":")[0].strip() for f in found.split(",") if f.strip()]}
+
+
+def keep_findings(report, journal: dict, briefing=("", "asked")) -> None:
+    """What the build leaves for later, outside every tracked file: the interview's defaults in the
+    setup journal's `settings` (the progress page shows them), the apps' verdicts without their counts
+    in the workspace's private zone, which the sync never stages and where the routines read the tools
+    they may use, and in the build's record the briefing address with where it came from: `work-mailbox`,
+    `git`, `sign-in` or `asked` when this run's choice is the address there; `invitation` when it is the one
+    a colleague's invitation holds; what an earlier run recorded for it when that run set it; `kept` for one
+    nothing here set (a hand edit). `asked` with no address is the item waiting for the person."""
+    settings = getattr(report, "settings", None)
+    if settings is not None:
+        data = setup_journal.load()
+        data["settings"] = settings
+        setup_journal.save(data)
+    workspace = getattr(report, "workspace", None)
+    record = journal.get("apps") if isinstance(journal.get("apps"), dict) else {}
+    verdicts = [{k: v for k, v in verdict.items() if k != "per_month"}
+                for verdict in record.get("verdicts") or [] if isinstance(verdict, dict)]
+    if workspace and verdicts:
+        onboard.write_yaml(Path(workspace) / "_meta" / "state" / "private" / "apps.yaml", {"apps": verdicts})
+    if workspace:
+        address, source = briefing
+        actual = spaceyaml.load(workspace).owner_email
+        earlier = journal.get("build") if isinstance(journal.get("build"), dict) else {}
+
+        def same(a, b) -> bool:   # addresses are the same without regard to case: an invitation holds one as it was typed
+            return str(a or "").lower() == str(b or "").lower()
+        if same(actual, address):
+            real = source
+        elif actual and same(actual, getattr(report, "invited", "")):
+            real = "invitation"
+        elif actual and same(actual, earlier.get("owner_email")) and earlier.get("owner_email_source"):
+            real = earlier["owner_email_source"]
+        else:
+            real = "kept" if actual else "asked"
+        setup_journal.set_phase("build", "running", owner_email=actual, owner_email_source=real)
+
+
 def phase_build(args) -> dict:
     """Everything start did before there were phases: the spaces, the personal instruction, the
-    routines. Its state is `failed` when a step did not work (a dry run included), `pending` for
-    a dry run that did (nothing was created), `waiting` when it stopped for the person or left
-    rows only they can do (say the sentence again after), else `done`. While the namespace question
-    of the signins phase is open it refuses to start (`waiting`, and why); `--org <name>` answers
-    it: the name is remembered and the question closed. The account the signins phase settled on
-    is used when no `--org` is given."""
+    routines. It builds from what the earlier phases left in the journal (`found_by_setup`) and
+    schedules the routines itself (`finish_workspace`): the agent has no step left. Its state is
+    `failed` when a step did not work (a dry run included), `pending` for a dry run that did
+    (nothing was created), `waiting` when it stopped for the person or left rows only they can do
+    (say the sentence again after; the briefing address is one when no source has it), else `done`. While the namespace question of the signins phase
+    is open it refuses to start (`waiting`, and why); `--org <name>` answers it: the name is
+    remembered and the question closed. The account the signins phase settled on is used when no
+    `--org` is given. A task-name prefix that is not ours (`SPACES_TASK_PREFIX`) fails it before
+    anything is created. The report is kept on `LAST_REPORT`."""
+    global LAST_REPORT
+    try:
+        onboard.task_prefix()
+    except ValueError as exc:
+        if not args.json:
+            print(f"build: failed: {exc}")
+        return {"phase": "build", "state": "failed", "why": str(exc)}
+    if args.email and not address_in(args.email):
+        why = (f'"{" ".join(str(args.email).split())[:80]}" is not an email address, or holds more than one: give the '
+               "one address your morning briefing should go to.")
+        if not args.json:
+            print(f"build: failed: {why}")
+        return {"phase": "build", "state": "failed", "why": why}
     new_company = not (args.invitation or args.brain)   # the question is a new company's; a colleague's workspace has its own place
     if new_company and args.org and not args.dry_run:
         record_namespace(args.org)
@@ -1109,10 +1292,18 @@ def phase_build(args) -> dict:
             say_needs(asked)
         return {"phase": "build", "state": "waiting", "stopped": True, "why": why}
     org = args.org or (_signins_record().get("namespace") if new_company else None)
-    report = start(HERE, invitation=args.invitation, brain=args.brain, company=args.company, name=args.name,
-                   email=args.email, feeds=args.feeds, org=org, home=args.home, template=args.template,
-                   offline=args.offline, dry_run=args.dry_run, user_instructions=args.user_instructions)
+    journal = setup_journal.load()
+    found = found_by_setup(args, journal, new_company)
+    report = start(HERE, invitation=args.invitation, brain=args.brain, company=found["company"], name=args.name,
+                   email=found["email"], feeds=found["feeds"], org=org, home=args.home, template=args.template,
+                   offline=args.offline, dry_run=args.dry_run, user_instructions=args.user_instructions,
+                   connected=found["connected"])
+    LAST_REPORT = report
+    if args.email and getattr(report, "workspace", None):   # what they typed is their choice: it replaces an address worked out before
+        fill_address(report, spaceyaml.load(report.workspace).owner, address_in(args.email), replace=True)
     result = summary(report)
+    if not args.dry_run:
+        keep_findings(report, journal, (found["email"] or "", found["email_source"]))
     if new_company and not args.dry_run:   # the research of phase 3 goes into the brain just made
         try:
             landed = _land_research(report)
@@ -1199,11 +1390,14 @@ def parser() -> argparse.ArgumentParser:
                     help="the phase to run, or resume to see where the setup stands (without one: build)")
     ap.add_argument("--invitation", help="<brain repo>:<slug>, from the invitation sentence")
     ap.add_argument("--brain", help="the company's brain repository (owner/name, a URL or a local path)")
-    ap.add_argument("--company", help="no brain yet: the company's name (default: the organization's)")
+    ap.add_argument("--company", help="no brain yet: the company's name (default: the researched company's, "
+                    "else the organization's)")
     ap.add_argument("--domain", help="research: the company's website domain, when it is not the mail address's")
     ap.add_argument("--name")
-    ap.add_argument("--email")
-    ap.add_argument("--feeds", help="the connectors this session has: mail, calendar, chat, calls, tracker")
+    ap.add_argument("--email", help="the briefing address (default: the work mailbox the apps step found, else git's, else "
+                    "the Claude sign-in's)")
+    ap.add_argument("--feeds", help="the connectors to read: mail, calendar, chat, calls, tracker (default: "
+                    "the apps the apps step read)")
     ap.add_argument("--org")
     ap.add_argument("--home", help="where the spaces are cloned (default ~/spaces)")
     ap.add_argument("--template", help="the template repository (default: where this copy came from)")

@@ -10,7 +10,9 @@ workspace); a desk seed, a project (handed to `mint.py`). `--check` re-runs only
 read-back checks and changes nothing. `--fixture DIR` onboards the fixture company
 offline and runs the chain and the tests over it. Offline mode never runs gh, git,
 schtasks, crontab or systemctl; online, every such call goes through `run_cmd`. Nothing is deleted,
-nothing is signed, `main` is pushed only for a repository created seconds earlier.
+nothing is signed, `main` is pushed only for a repository created seconds earlier. The OS tasks it
+registers are named `space-sync-<name>` and `space-<routine>-<name>`; an isolated test run sets
+SPACES_TASK_PREFIX=space-test-<id>- so that its tasks, and only those, carry that prefix instead.
 """
 from __future__ import annotations
 
@@ -549,12 +551,15 @@ def write_identity(root, company, owner, domains, never_leaves, now) -> None:
 
 
 def write_needs_you(root, skipped, path="_inbound/needs-you/onboard.yaml", prefix="onboard") -> None:
+    """One item a question: `key`, `ask` and `default` (the recommendation); `if_nothing` says what happens
+    when the person does nothing, when that is not the generic "the default stays". A file of its own and
+    no question empties the file: an item an earlier run left is withdrawn."""
     target = Path(root) / path
     existing = (read_yaml(target, {}) or {}).get("items") or []
     kept = [i for i in existing if not str(i.get("id", "")).startswith(prefix + "-")]
     items = kept + [{"id": f"{prefix}-{q['key']}", "kind": "question", "text": q["ask"],
                      "recommendation": joiner(q).join(map(str, q["default"])) if isinstance(q["default"], list)
-                     else str(q["default"]), "default": "the default stays", "deadline": None,
+                     else str(q["default"]), "default": q.get("if_nothing") or "the default stays", "deadline": None,
                      "depends": 1, "payload": "space.yaml", "fingerprint": ""} for q in skipped]
     if items or target.exists():
         write_yaml(target, {"items": items})
@@ -628,6 +633,20 @@ def write_profile(root, profile: dict, now) -> Path | None:
     write_needs_you(root, [{"key": "profile", "ask": PROFILE_ASK, "default": "sign it when it reads right"}],
                     path=PROFILE_ITEMS, prefix="onboard")
     return path
+
+
+BRIEFING_ITEMS = "_inbound/needs-you/onboard-briefing.yaml"   # its own file, like the profile's
+
+
+def briefing_item(workspace, address: str) -> None:
+    """The morning briefing goes to the address in the workspace's space.yaml, and every notice the
+    agents queue for the person with it. With none, one plain item asks for it; once there is one, the
+    item an earlier run left is withdrawn."""
+    asked = [] if "@" in str(address) else [{
+        "key": "briefing-address", "default": "your work email address",
+        "ask": "Which email address should your morning briefing go to? It is sent from your own mailbox to you alone.",
+        "if_nothing": "no morning briefing is sent"}]
+    write_needs_you(workspace, asked, path=BRIEFING_ITEMS, prefix="onboard")
 
 
 # ----- the personal instruction ---------------------------------------------
@@ -756,6 +775,23 @@ WINDOWS_TASK = {"<DisallowStartIfOnBatteries>false": "starts on battery",
                 "<StopIfGoingOnBatteries>false": "keeps running on battery",
                 "<StartWhenAvailable>true": "catches up after sleep",
                 "conhost.exe": "runs without a window"}
+
+
+TASK_PREFIX = "space-"
+TASK_PREFIX_ENV = "SPACES_TASK_PREFIX"
+
+
+def task_prefix() -> str:
+    """The start of every OS task name onboard registers: `space-` (`space-sync-ada`,
+    `space-sweep-chain-ada`). An isolated test run sets SPACES_TASK_PREFIX to `space-test-<id>-`, so
+    it registers, reads back and removes tasks of its own and never touches a person's. A value
+    that is not `space-` and lower-case letters, digits and hyphens is refused, never replaced by the
+    default: a typo must not register tasks under the person's own names."""
+    prefix = os.environ.get(TASK_PREFIX_ENV) or TASK_PREFIX
+    if not re.fullmatch(r"space-[a-z0-9-]*", prefix):
+        raise ValueError(f"{TASK_PREFIX_ENV} must start with space- and use only lower-case letters, digits and "
+                         f"hyphens, not {prefix!r}")
+    return prefix
 
 
 def python_cmd() -> str:
@@ -967,7 +1003,7 @@ def forget_space(root) -> bool:
 def register_sync(report, root, name, minutes, offline, dry_run) -> dict:
     """Register `sync.py` every `minutes`. Offline: recorded, not registered."""
     root = Path(root)
-    script, task = root / "_meta" / "tools" / "sync.py", f"space-sync-{name}"
+    script, task = root / "_meta" / "tools" / "sync.py", f"{task_prefix()}sync-{name}"
     args = [script, "--root", root, "--release-leg"]
     if offline:
         line = (f"{CONHOST} --headless {_argline(sys.executable, args)}" if SYSTEM == "Windows"
@@ -1007,7 +1043,7 @@ def register_routines(report, workspace, offline=False, dry_run=False) -> list:
     for prompt in sorted((workspace / "_meta" / "state" / "routines").glob("*.md")):
         meta = yaml.safe_load(prompt.read_text(encoding="utf-8").split("---")[1]) or {}
         routine, schedule = meta.get("name") or prompt.stem, str(meta.get("schedule") or "")
-        task, times = f"space-{routine}-{name}", daily_times(schedule)
+        task, times = f"{task_prefix()}{routine}-{name}", daily_times(schedule)
         label = f"routine task {task}"
         if offline:
             report.add(label, True, f"cat {prompt}", "offline: not registered")
@@ -1015,9 +1051,10 @@ def register_routines(report, workspace, offline=False, dry_run=False) -> list:
         if times is None:
             report.add(label, False, f"cat {prompt}", f"schedule {schedule!r} is not a list of daily times")
             continue
-        records.append(register_task(report, label, task, workspace,
-                                     [workspace / "_meta" / "tools" / "routine.py", prompt],
-                                     times=times, cron=schedule, dry_run=dry_run))
+        record = register_task(report, label, task, workspace, [workspace / "_meta" / "tools" / "routine.py", prompt],
+                               times=times, cron=schedule, dry_run=dry_run)
+        record["log"] = f"{routine}-{name}"   # routine.py's log, whatever prefix the task has
+        records.append(record)
     if records and not dry_run:
         path = workspace / "_meta" / "state" / "onboard.yaml"
         state = read_yaml(path, {}) or {}
@@ -1113,6 +1150,30 @@ def platform_settings(report, root, repo, org, dry_run) -> None:
     # No organization-level grant is needed: the checks workflow arms auto-merge with the
     # repository token, which the merge settings above allow (proved on the template's own
     # pull requests). The platform's own first pull request is the read-back check.
+
+
+MEMBERS_READ = ("read", "write", "admin")   # the base permissions that let every member read all the organisation's repositories
+MEMBERS_ITEMS = "_inbound/needs-you/onboard-org.yaml"   # its own file: onboard.yaml is rewritten by every run
+
+
+def org_members_item(workspace, org: str) -> None:
+    """The workspace is private, but it lives in the brain's account (decision A). When that account
+    is an organisation whose base permission lets every member read all its repositories, they can
+    read it: one item on the person's list gives the click path to "No permission". Agents change no
+    organisation setting. A personal account has no such organisation (GitHub answers with an error)
+    and a setting that cannot be read says nothing: neither raises an item. A later run withdraws the
+    item once the permission reads `none`."""
+    res = run_cmd(["gh", "api", f"orgs/{org}", "-q", ".default_repository_permission"]) if org else None
+    permission = (res.stdout or "").strip() if res is not None and res.returncode == 0 else ""
+    if permission in MEMBERS_READ:
+        ask = (f"Everyone in {org} can read all of its repositories on GitHub, your workspace included. To keep it to "
+               f"you and the people you choose: on GitHub open {org}, then Settings > Member privileges > "
+               "Base permissions: No permission.")
+        write_needs_you(workspace, [{"key": "org-members", "ask": ask, "default": "set it to No permission",
+                                     "if_nothing": f"every member of {org} can read your workspace"}],
+                        path=MEMBERS_ITEMS, prefix="onboard")
+    elif permission == "none":
+        write_needs_you(workspace, [], path=MEMBERS_ITEMS, prefix="onboard")
 
 
 def _lazy(report, name, module, call, check, gate=True) -> None:
@@ -1250,7 +1311,8 @@ def resolve_brain(root, brain, offline):
 
 
 def run(root, answers, offline=False, org=None, dry_run=False, home=None, user_instructions=None,
-        brain=None, everyone=False, with_projects=False, progress=None) -> Report:
+        brain=None, everyone=False, with_projects=False, progress=None, connected=()) -> Report:
+    task_prefix()   # a name that is not ours stops the run here, before it creates a space it would then register
     root = Path(root).resolve()
     answers = dict(answers or {})
     skipped = answers.pop("_skipped", [])
@@ -1401,8 +1463,11 @@ def run(root, answers, offline=False, org=None, dry_run=False, home=None, user_i
                            else pins.stderr.strip()[:200])
             commit_fill(report, dst, True, dry_run)
     for feed in feeds:
-        report.add(f"connect {feed['name']}", False,
-                   f"test -s {workspace or root}/_meta/state/feed/{feed['name']}.jsonl",
+        check = f"test -s {workspace or root}/_meta/state/feed/{feed['name']}.jsonl"
+        if feed["name"] in connected:   # the apps step signed in to it and read it: nothing is the person's
+            report.add(f"connect {feed['name']}", True, check, "connected: the apps step read it")
+            continue
+        report.add(f"connect {feed['name']}", False, check,
                    "sign in with `/mcp` in Claude Code, or Settings, Connectors on claude.ai",
                    needs_owner=True)
     write_needs_you(root, skipped)
@@ -1632,7 +1697,7 @@ def check(root) -> list:
     if not scheduled and not state.get("offline") and any((root / ROUTINE_PROMPTS).glob("*.md")):
         scheduled = [unscheduled_step(root)]   # rendered is not scheduled: done only once it reads back
     steps.extend(scheduled)
-    steps.extend(routine_run_step(t["name"]) for t in state.get("routine_tasks") or [] if t.get("name"))
+    steps.extend(routine_run_step(t["name"], t.get("log")) for t in state.get("routine_tasks") or [] if t.get("name"))
     if state and not state.get("offline"):
         # this machine's prerequisites, read only: what broke since onboarding is named with its fix
         for r in doctor.diagnose(doctor.Machine(run=run_cmd, reach=lambda: True), fix=False,
@@ -1664,10 +1729,12 @@ def check(root) -> list:
     return steps
 
 
-def routine_run_step(task: str) -> Step:
-    """An OS routine's last run, from the log routine.py keeps: a task can be registered and still
-    fail every time (no `claude` command, a sign-in gone)."""
-    log = Path.home() / ".spaces" / "logs" / f"{task.removeprefix('space-')}.log"
+def routine_run_step(task: str, stem: str | None = None) -> Step:
+    """An OS routine's last run, from the log routine.py keeps (`<routine>-<space>.log`, the `log` the
+    task was recorded with, here `stem`; a record from before that was kept has the default prefix): a task can be
+    registered and still fail every time (no `claude` command, a sign-in gone). Never read from the
+    environment: the check runs where the task was not registered."""
+    log = Path.home() / ".spaces" / "logs" / f"{stem or task.removeprefix(TASK_PREFIX)}.log"
     lines = log.read_text(encoding="utf-8", errors="replace").splitlines() if log.exists() else []
     exits = [i for i, line in enumerate(lines) if line.startswith("exit ")]
     if not exits:
@@ -2054,6 +2121,12 @@ def main(argv=None) -> int:
                     help="the harness's own scheduled tasks hold the routines and persist: one read-back per "
                          "routine (test -f <path>, grep -c '<text>' <path>, or a gh command)")
     args = ap.parse_args(argv)
+    if not (args.check or args.connect or args.invite or args.routines_scheduled):   # the others register no task
+        try:
+            task_prefix()
+        except ValueError as exc:
+            print(f"onboard: {exc}")
+            return 1
     if args.fixture:
         return fixture(args.fixture)
     root = Path(args.root).resolve()

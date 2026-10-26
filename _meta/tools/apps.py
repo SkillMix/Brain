@@ -29,6 +29,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import reader
+import research
 
 # A claude.ai connector named "claude.ai <Name>" gives tools "mcp__" + reader.server_part(name) + "__<tool>".
 SERVER_PREFIX = "mcp__claude_ai_"
@@ -68,9 +69,6 @@ TOOL_WORDS = {
 }
 WRITE_WORDS = ("create", "update", "save")   # a tracker tool containing one writes
 SEND_WORD = "send"                           # a mail tool containing it sends
-# A mail domain nobody owns: it is not a company's.
-FREE_MAIL = ("gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "icloud.com", "me.com",
-             "yahoo.com", "proton.me", "protonmail.com")
 
 # `reader.read` checks an answer against this (its schema subset): the account the app is signed
 # in as, the verdict, items per month for the last 12 months (keys YYYY-MM), and one sentence.
@@ -174,8 +172,8 @@ def company_of(journal: dict, company: str | None, emails: list) -> dict:
     company card in the journal (a name, or a mapping with `name` and `domain`/`domains`), else the
     name the person gave; the domains of that card, else the person's own mail domains (a free
     mail provider's is nobody's company)."""
-    research = (journal or {}).get("research")
-    card = research.get("company") if isinstance(research, dict) else None
+    record = (journal or {}).get("research")
+    card = record.get("company") if isinstance(record, dict) else None
     name, domains = (card, []) if isinstance(card, str) else (None, [])
     if isinstance(card, dict):
         name = card.get("name")
@@ -183,7 +181,7 @@ def company_of(journal: dict, company: str | None, emails: list) -> dict:
         domains = [given] if isinstance(given, str) else [d for d in given if isinstance(d, str)]
     if not domains:
         own = (str(e).split("@", 1)[1].lower() for e in emails or [] if "@" in str(e))
-        domains = list(dict.fromkeys(d for d in own if d and d not in FREE_MAIL))
+        domains = list(dict.fromkeys(d for d in own if d and not research.is_provider(d)))
     return {"company": name or company or None, "domains": domains}
 
 

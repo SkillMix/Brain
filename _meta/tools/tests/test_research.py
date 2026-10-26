@@ -530,7 +530,8 @@ def test_a_full_run_reads_each_source_with_its_own_tools_and_writes_the_records_
             assert s["cwd"].is_dir() and scratch in [s["cwd"], *s["cwd"].parents] and s["known_tools"] == PROBE["tools"]
             assert s["claude"] == "/bin/claude"
     # the company card the apps phase reads
-    assert journal()["company"] == {"name": "Lantern Works", "domain": "lanternworks.example", "domains": ["lanternworks.example"]}
+    assert journal()["company"] == {"name": "Lantern Works", "domain": "lanternworks.example", "domains": ["lanternworks.example"],
+                                    "domain_from": "address"}
     assert journal()["state"] == "done" and journal()["files"] == [str(tmp_path / "_home" / "Documents" / "Lantern Works" / "Brand book.pdf")]
     assert "register" in journal()["unread"] and "code" in journal()["unread"]   # no register for .example; no organisation
     # the records: web ones public, the document, the file and the note kept as what they are
