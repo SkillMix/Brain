@@ -11,9 +11,12 @@ anything is touched (rules.md section 1, hard rule 3). Nothing here sends or run
 
 `--body` names an edit's write-up, a file relative to the root that must lie inside it
 (`_scratch/sign/<id>.md`): the read-back shows that text and its fingerprint, and the
-heading ends `(your edit)`. For a page whose yes signs its text (a candidate that is not a
-record or a review batch, or a leaving item that already carries a fingerprint), a `base:`
-line follows the fingerprint: it names the draft the read-back was made from.
+heading ends `(your edit)`; for an item whose edit does not become its text (a check, a doubt
+item) it says the write-up is not used. For a page whose yes signs its text (a candidate that
+is not a record or a review batch, or a leaving item that already carries a fingerprint), a
+`base:` line follows the fingerprint: it names the draft the read-back was made from. A
+first-release line lists the items it stands for and prints no fingerprint: a bare verb
+answers it.
 
 The verdicts file maps item ids to a verb, a [verb, note] pair, or a mapping. A yes, edit
 or always on such a page is a mapping with the fingerprint and base its read-back printed,
@@ -196,7 +199,9 @@ def _refusal(entry: Found, verb: str, note: str, pin: dict, require_pin: bool) -
 
 def read_back(root, selection, bodies: dict | None = None) -> str:
     """The exact text that would land for each item, its fingerprint, and where it goes.
-    `bodies` maps an id to its edit's write-up: that text is shown instead, marked as the edit."""
+    `bodies` maps an id to its edit's write-up: that text is shown instead, marked as the edit.
+    A first-release line lists the items it stands for; a bare verb answers it, so it has no
+    fingerprint."""
     root = Path(root)
     found = index(root)
     bodies = bodies or {}
@@ -206,10 +211,23 @@ def read_back(root, selection, bodies: dict | None = None) -> str:
         if entry is None:
             parts.append(f"## {item_id}: not found\n")
             continue
-        title = entry.fm.get("title") or (entry.item.text if entry.item else item_id)
         edit = bodies.get(str(item_id))
-        edited = bool(edit and edit.strip() and _takes_edit(entry))
-        lines = [f"## {item_id}: {title} ({entry.kind})" + (" (your edit)" if edited else "")]
+        given = bool(edit and edit.strip())
+        edited = given and _takes_edit(entry)
+        # a check or a doubt item: its edit is a note, never its text
+        unused = ["the write-up is not used for this item"] if given and not edited else []
+        if entry.kind == "first_release":   # as its Needs-you line: the first N items since ...
+            n, sid = len(entry.members), str(item_id).removeprefix("first-")
+            lines = [f"## {item_id}: the first {n} item{'s' if n != 1 else ''} since {sid} was classified "
+                     f"({entry.kind})", *unused]
+            for member in entry.members:
+                mid, where = member.fm.get("id") or member.path.stem, member.fm.get("destination")
+                lines.append(f"- {mid}: {member.fm.get('title') or mid}"
+                             + (f" (it will go to {where})" if where else ""))
+            parts.append("\n".join(lines) + "\n")
+            continue
+        title = entry.fm.get("title") or (entry.item.text if entry.item else item_id)
+        lines = [f"## {item_id}: {title} ({entry.kind})" + (" (your edit)" if edited else ""), *unused]
         destination = entry.fm.get("destination")
         if destination:
             lines.append(f"it will go to {destination}")

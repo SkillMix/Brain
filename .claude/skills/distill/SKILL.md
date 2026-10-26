@@ -60,10 +60,13 @@ search until the gap is closed, and let a second agent check.
       `python _meta/tools/sign_questions.py <root> ask <subject> --page <candidate id> --text
       "<the question, plain words>" --why "<what the page cannot say without it>"
       --recommendation "<the line the page would get>" --searched "<where, the terms, when>"
-      --by <your name>`. At most four per page, most important first (the tool holds a subject
-      to four open questions). A question about a category on the never-leaves list or the
-      destination's left-out list is asked with `--sensitive` and without the amount ("Harbor's
-      terms: recorded?"). What stays open beyond that stays in the brief's Open questions.
+      --by <your name>`. When `ask` returns an existing question that is not open, it was asked
+      before: reopen a dropped one with a reason if it matters again (`reopen <qid> --reason
+      "<why>" --by <your name>`), and leave the others as they are. At most four per page, most
+      important first (the tool holds a subject to four open questions). A question about a
+      category on the never-leaves list or the destination's left-out list is asked with
+      `--sensitive` and without the amount ("Harbor's terms: recorded?"). What stays open beyond
+      that stays in the brief's Open questions.
    7. **Write** the body in the shape of `_meta/templates/pages/<kind>.md`:
       - lasting facts only: what the subject is, how it started, scope, people and roles,
         agreements, decisions, how it ended. Where it stands is the status page's; at most one

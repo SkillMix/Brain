@@ -119,7 +119,7 @@ Each question carries:
   `parked` (the person does not know or skipped it: never asked again, but every recheck still
   tries to settle it from records), `dropped` (no longer matters).
 - When closed: `source` (the record id), or `by` plus `answer` (the person's words, short),
-  or `why` for a drop.
+  or `reason` for a drop.
 
 Events: `asked`, `reworded`, `settled`, `answered`, `parked`, `dropped`, each with `at` and who
 wrote it.
@@ -337,5 +337,14 @@ Where the build differs from the design above:
   (candidate, subject, and "never checked" or "new records since the last check"), and writes
   nothing. `sign_questions.py <root> checked <subject> --by <name>` marks a subject's
   questions as looked over.
+- **An answer can be corrected, and a drop undone.** 4.1 has no move out of `answered` or
+  `dropped`. As built, a named person can answer an answered question again, with the same
+  refusals as a first answer; the later answer wins, and the id stays, so a page that cites it
+  cites the correction. A dropped question that matters again is reopened with a reason, as a
+  settle the check does not support is.
+- **Settled, then not asked: unit tests, not a scenario.** Section 7 asks for a behaviour
+  scenario in which a new record settles an open question and the next sitting does not ask
+  it. Unit tests cover it instead: the Needs-you count holds only a subject's open questions,
+  and `sign_questions.py list` shows only open ones unless `--state` asks for more.
 - **The open questions** were answered on 25 October 2026 (section 9): one preparation run at
   rollout, and a word from the person for each read-back before `submit`.

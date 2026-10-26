@@ -460,6 +460,18 @@ def test_verify_checks_a_write_up_against_the_candidate(tmp_path, capsys):
     assert distill.main([str(root), "verify", "harbor", "--body", str(file)]) == 0
 
 
+def test_verify_reads_a_write_up_saved_with_a_bom(tmp_path, capsys):   # final review, Minor 1
+    root = make_space(tmp_path / "ada")
+    candidate_file(root, "- Kept as it is. [src: m-1]\n", evidence=["m-1"])
+    q = sign_questions.ask(root, "harbor", "p-0000c0de", "Has Harbor gone live?", "why", "rec", [],
+                           by="routine:distill", now=NOW)
+    sign_questions.answer(root, q.id, by="Ada Okafor", text="yes, 3 November", now=NOW)
+    file = tmp_path / "write-up.md"
+    file.write_text(f"# Harbor\n\n- Harbor went live on 3 November. [src: {q.id}]\n", encoding="utf-8-sig")
+    assert distill.main([str(root), "verify", "harbor", "--body", str(file)]) == 0
+    assert capsys.readouterr().out.strip() == "clean"
+
+
 def test_verify_checks_facts_and_leaves_topics_to_the_page_check(tmp_path):
     """Never-leaves and left-out matter is the page check's judgement (a second agent reading
     the lists); a word in a line is no problem for verify."""

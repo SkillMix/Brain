@@ -15,7 +15,8 @@ it; only a named person answers (an empty `by`, or one that starts with `routine
 A question is its events folded in order of `at` (at equal times an `asked` comes first, so a
 merge never puts an answer ahead of its question; the rest keep file order). It is open
 until it is settled by a record, answered, parked or dropped. Open and parked questions can be
-settled, answered, dropped or reworded; open ones can be parked; settled ones can be
+settled, answered, dropped or reworded; open ones can be parked; an answered one can be
+answered again, a correction (the later answer wins); settled and dropped ones can be
 reopened. A new write that breaks this is refused. The fold also ignores a line that breaks it,
 an `asked` for an id it already has, and any line that is not valid JSON, so lines a merge
 duplicated or reordered, or a crash half wrote, change nothing and never reopen a question.
@@ -54,8 +55,9 @@ LEDGER = Path("_meta") / "state" / "sign-questions.jsonl"
 STATES = ("open", "settled", "answered", "parked", "dropped")
 PER_SUBJECT = 4   # open questions one subject can hold
 # the states an event may be applied from, and the state it leaves the question in
-MOVES = {"reworded": ("open", "parked"), "settled": ("open", "parked"), "answered": ("open", "parked"),
-         "parked": ("open",), "dropped": ("open", "parked"), "reopened": ("settled",)}
+MOVES = {"reworded": ("open", "parked"), "settled": ("open", "parked"),
+         "answered": ("open", "parked", "answered"), "parked": ("open",), "dropped": ("open", "parked"),
+         "reopened": ("settled", "dropped")}
 BECOMES = {"settled": "settled", "answered": "answered", "parked": "parked", "dropped": "dropped",
            "reopened": "open"}
 
@@ -152,6 +154,8 @@ def _fold(rows: list) -> dict:
             q.answer, q.kept_in = str(row.get("answer") or ""), str(row.get("kept_in") or "")
         elif kind in ("dropped", "reopened"):
             q.reason = str(row.get("reason") or "")
+            if kind == "reopened":
+                q.source = ""   # open again: no record settles it
         q.status = BECOMES.get(kind, q.status)
         q.by, q.updated_at = str(row.get("by") or ""), stamp
     return questions
@@ -278,8 +282,8 @@ def settle(root, qid, source: str, by, now) -> Question:
 
 
 def answer(root, qid, by, now, text: str = "", kept_in: str = "") -> Question:
-    """A named person's answer. A sensitive question takes only `kept_in`, where the answer is
-    kept; any other takes `text`."""
+    """A named person's answer, or their correction of one: the later answer wins. A sensitive
+    question takes only `kept_in`, where the answer is kept; any other takes `text`."""
     who = _named(by, person=True)
     if _get(root, qid).sensitive:
         if str(text or "").strip():
@@ -315,6 +319,10 @@ COMMANDS = ("list", "ask", "reword", "settle", "answer", "park", "drop", "reopen
 
 
 def main(argv=None) -> int:
+    # a console that cannot show a character (cp1252 on Windows) must not fail a write that landed
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure:
+        reconfigure(errors="backslashreplace")
     argv = list(sys.argv[1:] if argv is None else argv)
     root = Path(".")
     if argv and argv[0] not in COMMANDS and not argv[0].startswith("-"):
@@ -361,7 +369,7 @@ def main(argv=None) -> int:
             states = STATES if args.state == "all" else (args.state,)
             found = for_subject(root, args.subject, states)
             if args.json:
-                print(json.dumps([asdict(q) for q in found], indent=2, ensure_ascii=False))
+                print(json.dumps([asdict(q) for q in found], indent=2, ensure_ascii=True))
             else:
                 for q in found:
                     print(f"{q.id}  {q.status}  {q.page}  {q.text}")
@@ -389,7 +397,7 @@ def main(argv=None) -> int:
     except QuestionError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    print(json.dumps(asdict(q), indent=2, ensure_ascii=False))
+    print(json.dumps(asdict(q), indent=2, ensure_ascii=True))
     return 0
 
 

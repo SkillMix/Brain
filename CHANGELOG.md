@@ -18,8 +18,10 @@ back to back, and nothing a record or the person settled is asked again.
   through a reword) and a state: open, settled by a record, answered by the person, parked
   ("I don't know": never asked again, but every recheck still tries to settle it) or dropped.
   It belongs to its subject and carries over to the subject's next candidate; a subject holds
-  at most four open questions. Only a named person answers. A sensitive answer is kept in a
-  desk file in the answerer's own workspace, and the ledger holds only where it is kept.
+  at most four open questions. Only a named person answers, and answers again to correct it:
+  the later answer wins. A dropped question that matters again is reopened. A sensitive answer
+  is kept in a desk file in the answerer's own workspace, and the ledger holds only where it
+  is kept. `forget.py` lists a subject's ledger lines.
 - **Answers a page can cite.** A page line can cite an answered or settled question of its own
   subject as `[src: q-...]`, and `verify` accepts it. `verify --body <file>` checks a write-up
   against its candidate.
@@ -35,19 +37,25 @@ back to back, and nothing a record or the person settled is asked again.
 
 - **`sign.py apply` at the command line requires the pin.** A yes, edit or always on a page
   names the `fingerprint` and `base` its read-back printed, and an edit names its write-up as
-  `body_file`; so does one on a signed page's release, which carries the signature. A page
-  whose text or draft changed since the read-back, or that names no fingerprint, is refused,
-  stays on Needs you and is read back again; the other items go ahead.
-  `no` and `later` need no pin. A weekly review batch line that would sign a draft is refused:
-  the draft is signed by its own id after its read-back. A yes on a page from an emailed reply is
-  bare, so it is refused too. `read-back --body <id>=<file>` reads back a write-up. The Python
-  API keeps `require_pin=False` for the tools and tests that call it.
+  `body_file`. A signed page's release takes the same pin. A page whose text or draft changed
+  since the read-back, or that names no fingerprint, is refused, stays on Needs you and is read
+  back again; the other items go ahead. `no` and `later` need no pin. A weekly review batch
+  line that would sign a draft is refused: the draft is signed by its own id after its
+  read-back. A yes on a page from an emailed reply is bare, so it is refused too.
+  `read-back --body <id>=<file>` reads back a write-up. The Python API keeps
+  `require_pin=False` for the tools and tests that call it.
 - **The sign sitting.** The agent picks the order, shows what each page says, where it lands and
   who reads it, then asks only what no source can answer, at most four questions per page.
   Answers are recorded as they are given. A helper writes each answered page's edit to
   `_scratch/sign/<page id>.md` and verifies it while the person answers the next page; the
   read-back comes at the next break, and each takes its own word. `submit` signs every page
   that has its word; "stop" waits for the running write-ups and reads them back.
+
+### Fixed
+
+- **A first-release line reads back.** `sign.py read-back` failed on a `first-<subject>` line,
+  and took every other item of the same call with it. It now lists the line's items and prints
+  no fingerprint: a bare verb answers it.
 
 **Migration.** After upgrading, run `python _meta/tools/distill.py <root> prepare` once and
 follow distill's Recheck and Ask steps for each page it lists.

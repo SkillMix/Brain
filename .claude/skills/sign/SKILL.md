@@ -28,7 +28,8 @@ back; you do the research, the write-ups and every bit of the filing.
    classified yet. Its recommendation says who classifies each; once classified, the held ones
    leave on their own and the candidates come back to be signed. A line
    "<subject>: the first N items since it was classified company leave for ..." stands for every
-   one of them: its verdict applies to each.
+   one of them: its verdict applies to each. Its read-back lists them and prints no
+   fingerprint: a bare verb answers it.
 2. Run `python _meta/tools/distill.py <root> prepare` once. Each page it lists gets the
    fallback (step 9) before you reach it.
 3. Take the items in the list's order. You pick; never ask which comes next. The person can
@@ -58,10 +59,10 @@ back; you do the research, the write-ups and every bit of the filing.
       to a helper and go on to the next page. The helper writes the complete edited text to
       `_scratch/sign/<page id>.md`, and nothing else: the page's body only, no frontmatter, a
       source on every line, an answer cited as `[src: <qid>]`. From the space root it runs
-      `python _meta/tools/distill.py <root> verify <candidate> --body _scratch/sign/<page id>.md`
-      and fixes every problem before it reports back with the changes, word for word. You alone
-      write desk files, the daily note and the verdicts. Without background helpers, the same
-      steps run in line, in the same order.
+      `python _meta/tools/distill.py <root> verify <candidate>
+      --body _scratch/sign/<page id>.md` and fixes every problem before it reports back with
+      the changes, word for word. You alone write desk files, the daily note and the verdicts.
+      Without background helpers, the same steps run in line, in the same order.
 5. **Rolling read-backs.** At the next break between pages (this page's questions done, the
    next page's not yet asked), read back each write-up that is ready: the changes word for
    word, the path to the full text, and `python _meta/tools/sign.py <root> read-back <id>
@@ -72,19 +73,23 @@ back; you do the research, the write-ups and every bit of the filing.
    <answer>". Never hold read-backs back for a pile at the end.
 6. **One word per page.** Each read-back takes its own yes, no or later from the person
    (`always` is a yes that adds the standing choice). An edit means answering again: record
-   it, and the page gets a new write-up and a new read-back. Nothing is signed for a page
-   without its word.
+   it with `sign_questions.py <root> answer <qid> --text "<their words, short>" --by "<the
+   person's name>"` again (`--kept-in` for a sensitive one; the later answer wins, under the
+   same id), and the page gets a new write-up and a new read-back. Nothing is signed for a
+   page without its word.
 7. **The other items** (checks, held and doubt items, questions, releases, lines of a review
    batch) are briefed and answered as the contract below says, in bulk if the person likes
    ("1 to 4 yes, 5 edit: the date is the ninth, 6 later"), and read back with
    `python _meta/tools/sign.py <root> read-back <ids>`. An item whose read-back prints a
    `base:` line takes the pin like a page, a signed page's release included: its yes, edit or
    always is a mapping with that `fingerprint` and `base`, and its edit is written to
-   `_scratch/sign/<id>.md` and read back with `read-back <id> --body <id>=_scratch/sign/<id>.md`.
-   For an `edit` of any other item, compose the complete corrected body and read that back in
-   full yourself; it is what apply will sign. A review batch line that names a draft
-   (`_inbound/candidates/...`) is not signed through the batch: read the draft back and sign it
-   by its own id; the line, answered after, closes.
+   `_scratch/sign/<id>.md` and read back with
+   `read-back <id> --body <id>=_scratch/sign/<id>.md`. For an `edit` of any other item,
+   compose the complete corrected body and read that back in full yourself; it is what apply
+   will sign. On an item whose edit is not its text (a check, a doubt item), `--body` says the
+   write-up is not used. A review batch line that names a draft (`_inbound/candidates/...`) is
+   not signed through the batch: read the draft back and sign it by its own id; the line,
+   answered after, closes.
 8. The word `submit` (exact) signs every page that has its word and every other item read
    back. Anything else amends verdicts and repeats the read-back. Write the verdicts to a
    scratch file outside the tracked zones (your harness's temp directory, or
@@ -102,8 +107,9 @@ back; you do the research, the write-ups and every bit of the filing.
 9. **The fallback.** A page with no prepared questions, or one `distill.py <root> prepare`
    lists with new records, gets a helper that prepares or rechecks its questions (distill's
    Recheck and Ask steps, then `sign_questions.py <root> checked <subject> --by <its
-   name>`) while the person answers the current page. Without helpers, do it in line before
-   the page.
+   name>`) while the person answers the current page. An answer the helper finds that is not
+   yet a record is reported back, and the question stays open: the helper writes only the
+   ledger. Without helpers, do it in line before the page.
 10. **"Stop".** Say you need a moment, wait for the running write-ups, read them back, take
     their words, and ask for `submit`. A page not yet answered keeps its questions in the
     ledger for the next sitting.
@@ -122,8 +128,9 @@ back; you do the research, the write-ups and every bit of the filing.
 line, append-only and merged by union. A question has an id (`q-` and 8 hex, kept through a
 reword) and a state: open, settled (a record answered it), answered (the person did), parked or
 dropped. It belongs to its subject and carries over to the subject's next candidate; a subject
-holds at most four open questions. Only a named person answers, and a sensitive question takes
-`--kept-in`, never the answer: the ledger never holds the amount.
+holds at most four open questions. Only a named person answers (again, to correct an answer:
+the later one wins), and a sensitive question takes `--kept-in`, never the answer: the ledger
+never holds the amount.
 
 `apply`: `yes` moved the candidate to `knowledge/<kind>/<subject>/` (or `decisions/`) with
 `status: stable`, `signed_by`, `signed_at`, `signed_in`, `fingerprint`, and queued its

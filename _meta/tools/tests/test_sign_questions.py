@@ -1,6 +1,10 @@
 import datetime as dt
 import json
+import os
+import subprocess
+import sys
 import pytest
+import distill
 import sign_questions as sq
 from conftest import NOW, make_space
 from test_distill import witness
@@ -76,7 +80,8 @@ def test_transitions(tmp_path):
     sq.park(root, q.id, by="Ada Okafor", now=NOW)
     s = sq.settle(root, q.id, source="m-7", by="routine:distill", now=NOW)
     assert s.status == "settled" and s.source == "m-7"
-    assert sq.reopen(root, q.id, reason="m-7 does not say it", by="routine:check", now=NOW).status == "open"
+    back = sq.reopen(root, q.id, reason="m-7 does not say it", by="routine:check", now=NOW)
+    assert back.status == "open" and back.source == ""   # the record that did not settle it is gone
     with pytest.raises(sq.QuestionError):
         sq.reopen(root, q.id, reason="again", by="routine:check", now=NOW)
     sq.drop(root, q.id, reason="the page no longer says it", by="routine:distill", now=NOW)
@@ -217,3 +222,67 @@ def test_cli_writes_use_the_space_clock_and_errors_exit_one(tmp_path, capsys, mo
     assert sq.main([str(root), "answer", q.id, "--text", "yes", "--by", "Ada Okafor"]) == 0
     folded = sq.load(root)[q.id]
     assert folded.status == "answered" and folded.updated_at == "2026-10-13T09:00:00Z"
+
+
+# ----- the final review: output, corrections and a question that matters again ----------------
+def test_cli_output_survives_a_cp1252_console(tmp_path):   # final review, Important 1
+    root = make_space(tmp_path / "ada")
+    env = dict(os.environ, PYTHONIOENCODING="cp1252", SPACE_NOW="2026-10-13T09:00:00Z")
+    env.pop("PYTHONUTF8", None)
+
+    def run(*args):
+        done = subprocess.run([sys.executable, sq.__file__, str(root), *args], env=env, capture_output=True)
+        return done.returncode, done.stdout.decode("cp1252")
+
+    text, said = "Did Harbor sign off → yes?", "yes → on 3 November"
+    code, out = run("ask", "harbor", "--page", "p-00000101", "--text", text, "--why", "the launch",
+                    "--recommendation", "add: signed off → 3 November", "--by", "routine:distill")
+    assert code == 0
+    qid = json.loads(out)["id"]
+    assert run("answer", qid, "--text", said, "--by", "Ada Okafor")[0] == 0
+    assert run("list", "harbor", "--state", "all")[0] == 0
+    code, out = run("list", "harbor", "--state", "all", "--json")
+    assert code == 0
+    row, = json.loads(out)
+    assert row["id"] == qid and row["text"] == text and row["answer"] == said
+
+def test_a_named_person_corrects_an_answer_and_the_later_one_wins(tmp_path):   # final review, Important 2
+    root = make_space(tmp_path / "ada")
+    q = ask(root)
+    sq.answer(root, q.id, by="Ada Okafor", text="yes, on 3 November", now=NOW)
+    fixed = sq.answer(root, q.id, by="Ada Okafor", text="no, on the 10th", now=NOW)   # same second: file order
+    assert fixed.id == q.id and fixed.status == "answered" and fixed.answer == "no, on the 10th"
+    assert sq.load(root)[q.id].answer == "no, on the 10th"
+    assert [x.answer for x in sq.for_subject(root, "harbor", states=("answered",))] == ["no, on the 10th"]
+    assert events(root) == ["asked", "answered", "answered"]
+    # the id is unchanged, so a page that cites it cites the corrected answer
+    body = f"- Harbor went live on 10 November. [src: {q.id}]\n"
+    assert distill.verify_body(root, {"subject": "harbor", "evidence": []}, body) == []
+
+def test_a_correction_takes_the_refusals_of_a_first_answer(tmp_path):   # final review, Important 2
+    root = make_space(tmp_path / "ada")
+    q = ask(root)
+    sq.answer(root, q.id, by="Ada Okafor", text="yes", now=NOW)
+    for by in ("routine:distill", ""):
+        with pytest.raises(sq.QuestionError):
+            sq.answer(root, q.id, by=by, text="no", now=NOW)
+    s = ask(root, text="Beacon's terms: recorded?", sensitive=True)
+    sq.answer(root, s.id, by="Ada Okafor", kept_in="ada: work/clients/beacon/commercial.md", now=NOW)
+    with pytest.raises(sq.QuestionError):
+        sq.answer(root, s.id, by="Ada Okafor", text="EUR 2,000 a month", now=NOW)
+    moved = sq.answer(root, s.id, by="Ada Okafor", kept_in="ada: work/projects/beacon/commercial.md", now=NOW)
+    assert moved.kept_in == "ada: work/projects/beacon/commercial.md" and moved.answer == ""
+    assert sq.load(root)[q.id].answer == "yes" and "EUR" not in (root / LEDGER).read_text(encoding="utf-8")
+
+def test_a_dropped_question_that_matters_again_is_reopened(tmp_path):   # final review, Minor 3
+    root = make_space(tmp_path / "ada")
+    q = ask(root)
+    sq.drop(root, q.id, reason="the page no longer says it", by="routine:distill", now=NOW)
+    again = ask(root)   # asked before: the dropped question comes back as it is
+    assert again.id == q.id and again.status == "dropped"
+    for reason, by in (("", "routine:distill"), ("the launch is back on the page", "")):
+        with pytest.raises(sq.QuestionError):
+            sq.reopen(root, q.id, reason=reason, by=by, now=NOW)
+    back = sq.reopen(root, q.id, reason="the launch is back on the page", by="routine:distill", now=NOW)
+    assert back.status == "open" and back.reason == "the launch is back on the page"
+    assert [x.id for x in sq.for_subject(root, "harbor")] == [q.id]

@@ -1,7 +1,9 @@
 # Submit signs only the text that was read back. At the command line a bare yes on a page
-# names no fingerprint, so it is refused: exit 0, the candidate stays a draft where it was,
-# nothing lands, and only the refusal line reaches the log. The subject is classified, so the
-# candidate is offered for a signature and the refusal, not the classification gate, keeps it.
+# names no fingerprint, so it is refused: exit 0, the candidate stays a draft where it was, and
+# nothing lands. The verdict names the candidate by the id the setup gives it, so it reaches
+# the pin check. The harness checks the exit and the files; test_sign.py checks the refusal and
+# its log line. The subject is classified, so the candidate is offered for a signature and the
+# refusal, not the classification gate, keeps it.
 name: a bare yes on a page is refused at the command line
 command:
   - python
@@ -38,7 +40,7 @@ setup:
           classification: {class: walled, state: settled, home: harbor, crew: [ada], reason: its own space,
                            decided_by: Ada Okafor, at: "2026-10-01T09:00:00Z"}
           match: {label: Harbor, channel: "#harbor"}
-    _meta/state/scenario-verdicts.yaml: "harbor: yes\n"
+    _meta/state/scenario-verdicts.yaml: "p-0000c001: yes\n"
     _inbound/candidates/harbor.md: |
       ---
       id: p-0000c001

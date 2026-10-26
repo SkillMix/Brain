@@ -504,3 +504,28 @@ def test_a_review_line_still_signs_a_draft_when_the_pin_is_not_required(tmp_path
     report = sign.apply(root, {"review-2026-10-12#1": "yes"}, by="Ada Okafor", now=NOW)
     assert report.refused == [] and report.signed == ["p-00000101"]
     assert pages.read(root / "knowledge/projects/harbor/harbor.md")[0]["status"] == "stable"
+
+
+# ----- the final review: read-backs of items that are not one page ---------------------------------
+def test_a_first_release_line_reads_back_beside_a_page(tmp_path):   # final review, Important 3
+    root = make_space(tmp_path / "ada")
+    candidate(root)
+    for item_id, title in (("p-00000201", "Go-live date"), ("p-00000202", "Kickoff notes")):
+        queue_item(root, item_id, title, NOW + dt.timedelta(hours=10), first_release="harbor")
+    text = sign.read_back(root, ["p-00000101", "first-harbor"])
+    page, first = text.split("## first-harbor", 1)
+    fm, body = pages.read(root / "_inbound/candidates/harbor.md")
+    assert BODY in page and f"base: {sign.base_of(fm, body)}" in page
+    assert "p-00000201: Go-live date" in first and "p-00000202: Kickoff notes" in first
+    assert "fingerprint:" not in first and "base:" not in first   # a bare verb answers it (R10)
+    assert pins_in(text) == {"p-00000101": pin(root, "p-00000101"), "first-harbor": {}}
+    report = sign.apply(root, {"first-harbor": "yes"}, by="Ada Okafor", now=NOW, require_pin=True)
+    assert report.refused == [] and sorted(report.signed) == ["p-00000201", "p-00000202"]
+
+
+def test_a_read_back_says_when_a_write_up_is_not_used(tmp_path):   # final review, Minor 9
+    root = make_space(tmp_path / "ada")
+    check_item(root)
+    text = sign.read_back(root, ["p-00000401"], bodies={"p-00000401": "Harbor is at 20%.\n"})
+    assert "the write-up is not used for this item" in text and "(your edit)" not in text
+    assert "Harbor is at 20%." not in text and "I think 20%" in text

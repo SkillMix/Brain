@@ -750,7 +750,8 @@ def main(argv=None) -> int:
                 problems = checked(root, args[0], flags["by"])
             elif "body" in flags:   # a write-up, checked against the candidate's frontmatter
                 fm, _ = pages.split(candidate_path(root, args[0]).read_text(encoding="utf-8"))
-                problems = verify_body(root, fm, Path(flags["body"]).read_text(encoding="utf-8"))
+                # utf-8-sig, as sign.write_up: an editor may save the write-up with a BOM
+                problems = verify_body(root, fm, Path(flags["body"]).read_text(encoding="utf-8-sig"))
             else:
                 problems = verify(root, args[0])
         except OSError as exc:
