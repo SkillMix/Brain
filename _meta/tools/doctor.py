@@ -405,10 +405,14 @@ def _long_paths(m: Machine, fix: bool) -> Row:
 def _scheduler(m: Machine) -> Row:
     if m.system == "Windows":
         return Row("scheduler", True, "Task Scheduler", "schtasks /Query /TN space-sync-<name> /XML")
-    if m.run(["crontab", "-l"]).returncode != 127:
-        return Row("scheduler", True, "cron", "crontab -l")
+    # the scheduler the work runs under (onboard.register_task): launchd on a Mac, systemd user timers on a
+    # Linux where the user manager works, else cron, which does not catch up after sleep
+    if m.system == "Darwin":
+        return Row("scheduler", True, "launchd", "launchctl print gui/$(id -u)")
     if m.system == "Linux" and m.ok("systemctl", "--user", "show-environment"):
-        return Row("scheduler", True, "systemd user timers (no cron)", "systemctl --user show-environment")
+        return Row("scheduler", True, "systemd user timers", "systemctl --user show-environment")
+    if m.run(["crontab", "-l"]).returncode != 127:
+        return Row("scheduler", True, "cron (does not catch up after sleep)", "crontab -l")
     return Row("scheduler", False, "no cron", "crontab -l", yours=(
         "install cron once so your work lands every 15 minutes: run `! sudo apt install cron` "
         "(Fedora: `! sudo dnf install cronie`), then say the sentence again"))

@@ -3,8 +3,9 @@
     python _meta/tools/offboard.py [root] [--online] [--dry-run]
 
 Prints what still waits (queue, held, candidates) and moves nothing; removes the sync task
-(online: the Windows task, the cron line by its `# <task>` marker, or the systemd user timer
-and its two unit files) and the personal instruction block from the user-level file; archives
+(online: the Windows task, the macOS launch agent and its file, the systemd user timer and its two
+unit files, or the cron line by its `# <task>` marker) and the personal instruction block from the
+user-level file; archives
 the repository (online, `gh repo archive`); sets `state: archived` on the subjects whose home
 is this space: in its own registry at once, and in the registry that holds one (the brain) by
 a registry note that ships at once, alone (online, or to `offline_roots`); writes
@@ -13,9 +14,8 @@ a registry note that ships at once, alone (online, or to `offline_roots`); write
 from __future__ import annotations
 
 import argparse
-import os
+import re
 import sys
-import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -33,9 +33,9 @@ def run_cmd(argv, dry_run=False, cwd=None):
 
 
 def remove_sync_task(report, root, state, task_name, dry_run, label="sync task removed") -> None:
+    """Remove one OS task onboard registered: the sync task, or a routine's (`label` names it)."""
     if not dry_run and label == "sync task removed":
         onboard.forget_space(root)   # the chains stop running over it on this machine
-    """Remove one OS task onboard registered: the sync task, or a routine's (`label` names it)."""
     if onboard.SYSTEM == "Windows":
         present = run_cmd(["schtasks", "/Query", "/TN", task_name], dry_run)
         if not dry_run and present.returncode != 0:
@@ -47,29 +47,45 @@ def remove_sync_task(report, root, state, task_name, dry_run, label="sync task r
         ok = res.returncode == 0 and (dry_run or verify.returncode != 0)
         report.add(label, ok, f"schtasks /Query /TN {task_name}", res.stderr.strip()[:200] or task_name)
         return
+    recorded = next((r for r in [state.get("sync_task") or {}, *(state.get("routine_tasks") or [])]
+                     if isinstance(r, dict) and r.get("name") == task_name), {})
+    ident = str(recorded.get("label") or "")
+    if not re.fullmatch(r"com\.spaces\.[\w.-]+", ident):   # the record is read from a file a merge can change
+        ident = onboard.LAUNCHD_PREFIX + task_name
+    agent = Path.home() / "Library" / "LaunchAgents" / f"{ident}.plist"
+    if agent.exists() or recorded.get("kind") == "launchd":   # a Mac: the agent is let go of, then its file removed
+        loaded = f"gui/{onboard.user_id()}/{ident}"
+        run_cmd(["launchctl", "bootout", loaded], dry_run)
+        verify = run_cmd(["launchctl", "print", loaded], dry_run)
+        ok = dry_run or verify.returncode != 0   # whatever bootout said: the file goes only once it is not loaded
+        if ok and not dry_run:
+            agent.unlink(missing_ok=True)
+        report.add(label, ok, f"launchctl print {loaded}",
+                   "launch agent let go, its file removed" if ok else "the launch agent is still loaded")
+        return
     timer = Path.home() / ".config" / "systemd" / "user" / f"{task_name}.timer"
-    if timer.exists():   # a Linux without cron got a systemd user timer instead
+    if timer.exists():   # a Linux with a systemd user session got a timer
         run_cmd(["systemctl", "--user", "disable", "--now", timer.name], dry_run)
-        if not dry_run:
+        verify = run_cmd(["systemctl", "--user", "is-enabled", timer.name], dry_run)
+        ok = dry_run or verify.returncode != 0   # the files stay while systemd still has the timer
+        if ok and not dry_run:
             timer.unlink()
             timer.with_suffix(".service").unlink(missing_ok=True)
-        run_cmd(["systemctl", "--user", "daemon-reload"], dry_run)
-        verify = run_cmd(["systemctl", "--user", "is-enabled", timer.name], dry_run)
-        ok = dry_run or verify.returncode != 0
+            run_cmd(["systemctl", "--user", "daemon-reload"])
         report.add(label, ok, f"systemctl --user is-enabled {timer.name}",
                    "timer disabled, its two unit files removed" if ok else "the timer is still enabled")
         return
-    listed = run_cmd(["crontab", "-l"], dry_run)
-    if listed.returncode == 127:
+    lines, state, why = onboard.read_crontab(dry_run, run=run_cmd)
+    if state == "missing":
         report.add(label, True, "crontab -l", "no cron on this machine: nothing was registered")
         return
-    current = listed.stdout
-    keep = [l for l in current.splitlines() if not onboard.is_task_line(l, task_name, root)]
-    if len(keep) != len(current.splitlines()):
-        with tempfile.NamedTemporaryFile("w", suffix=".cron", delete=False, encoding="utf-8", newline="\n") as tmp:
-            tmp.write("\n".join(keep) + ("\n" if keep else ""))
-        run_cmd(["crontab", tmp.name], dry_run)
-        os.unlink(tmp.name)
+    if state == "failed":   # not an empty crontab: nothing was written, and "no line left" would be a guess
+        report.add(label, False, "crontab -l", f"this computer's scheduler could not be read ({why}), so nothing was "
+                   "removed: try again once it can be read")
+        return
+    keep = [l for l in lines if not onboard.is_task_line(l, task_name, root)]
+    if len(keep) != len(lines):
+        onboard.write_crontab(keep, dry_run, run=run_cmd)
     verify = run_cmd(["crontab", "-l"], dry_run).stdout
     ok = dry_run or not any(onboard.is_task_line(l, task_name, root) for l in verify.splitlines())
     report.add(label, ok, "crontab -l", "no line left" if ok else "a line remains")

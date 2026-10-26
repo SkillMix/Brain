@@ -30,25 +30,34 @@ Remove (offboard):
 
     schtasks /Delete /TN "space-sync-<name>" /F
 
-## macOS and Linux (cron)
+## macOS (launch agent)
 
-One line in the owner's crontab, replaced by its marker on a re-run:
+`~/Library/LaunchAgents/com.spaces.space-sync-<name>.plist`: `ProgramArguments` (an array: one string per
+word, no shell), `WorkingDirectory`, `StartInterval` 900, the PATH onboarding saw in
+`EnvironmentVariables`, and `StandardOutPath`/`StandardErrorPath` in `~/.spaces/logs/`. launchd runs a
+start it missed while the Mac slept as soon as the Mac wakes. Loaded into the person's own session with
+`launchctl bootstrap gui/$(id -u) <plist>` (after a `launchctl bootout` of any copy loaded before).
+
+Read-back: `launchctl print gui/$(id -u)/com.spaces.space-sync-<name>`. Run now: `launchctl kickstart
+gui/$(id -u)/com.spaces.space-sync-<name>`. Remove (offboard): `launchctl bootout` of the same name, then
+the plist.
+
+## Linux (systemd user timer, else cron)
+
+With a user session (`systemctl --user show-environment` works), `~/.config/systemd/user/space-sync-<name>.service`
+and `.timer` (`OnCalendar=*:0/15`, `Persistent=true`, so a start missed while asleep runs on waking), enabled
+with `systemctl --user enable --now space-sync-<name>.timer`. Read-back: `systemctl --user is-active
+space-sync-<name>.timer`. Run now: `systemctl --user start --no-block space-sync-<name>.service`. A user timer
+runs while the person is logged in; `loginctl enable-linger` keeps it running when they are not.
+
+Without one, one line in the owner's crontab, replaced by its marker on a re-run:
 
     */15 * * * * cd "<root>" && PATH="<PATH at registration>" "<python>" "<root>/_meta/tools/sync.py" --root "<root>" --release-leg >> "$HOME/.spaces/logs/space-sync-<name>.log" 2>&1  # space-sync-<name>
 
-The PATH is the one onboarding saw, so cron finds `gh` and `git` (Homebrew's `/opt/homebrew/bin`
-is not on cron's own). Output goes to the log, not to local mail. A run missed while the
-machine slept is simply the next one.
-
-Read-back: `crontab -l | grep space-sync-<name>`. Remove (offboard): the line with the marker.
-
-## Linux without cron (systemd user timer)
-
-`~/.config/systemd/user/space-sync-<name>.service` and `.timer` (`OnCalendar=*:0/15`,
-`Persistent=true`, so a start missed while asleep runs on waking), enabled with
-`systemctl --user enable --now space-sync-<name>.timer`. Read-back:
-`systemctl --user is-active space-sync-<name>.timer`. A user timer runs while the person is
-logged in; `loginctl enable-linger` keeps it running when they are not.
+The PATH is the one onboarding saw, so cron finds `gh` and `git`. Output goes to the log, not to local
+mail. Cron does not catch up: a run due while the machine slept is lost until the next one, and onboarding
+says so in one plain line. Read-back: `crontab -l | grep space-sync-<name>`. Remove (offboard): the line with
+the marker. A task moved to a timer or an agent has its older cron line removed, so one scheduler runs it.
 
 ## What a healthy registration looks like
 

@@ -11,8 +11,9 @@ on disk.
 ## When
 
 - Scheduled: every 15 minutes from the OS scheduler, registered by `onboard` (a hidden Task
-  Scheduler task that also runs on battery on Windows, a cron line on macOS and Linux, a
-  systemd user timer on a Linux without cron), one task per checkout on the machine.
+  Scheduler task that also runs on battery on Windows, a launch agent on macOS, a systemd user
+  timer on a Linux that has a user session, else a cron line), one task per checkout on the machine.
+  All but cron run a start missed while the machine slept as soon as it wakes.
 - By hand, only when the person asks to land now or asks why something did not land.
 
 ## Run

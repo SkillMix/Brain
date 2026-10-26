@@ -2,10 +2,12 @@
 times, which runs the prompt through `claude -p`. Done only once the schedule reads back."""
 import json
 import os
+import plistlib
 import re
 import subprocess
 import sys
-from pathlib import Path
+import xml.etree.ElementTree as ET
+from pathlib import Path, PurePosixPath
 
 import offboard
 import onboard
@@ -13,7 +15,7 @@ import pytest
 import routine
 import start
 from conftest import fake_run, make_space
-from test_sync_task import world
+from test_sync_task import split_sh, split_windows, unit_command, unit_setting, world
 
 
 def workspace(tmp_path) -> Path:
@@ -82,13 +84,16 @@ def test_on_windows_each_routine_is_a_hidden_task_at_its_times(tmp_path, monkeyp
 
 
 def test_with_cron_each_routine_is_one_marked_line(tmp_path, monkeypatch):
-    monkeypatch.setattr(onboard, "SYSTEM", "Darwin")
+    """Cron is the fallback of a Linux where `systemctl --user` does not work (no systemd, or no user session)."""
+    monkeypatch.setattr(onboard, "SYSTEM", "Linux")
     monkeypatch.setattr(routine, "find_claude", lambda: "claude")   # the machine has the CLI
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
     state = {"lines": "0 9 * * * /usr/bin/true\n"}
 
     def fake(argv, dry_run=False, cwd=None):
         argv = [str(a) for a in argv]
+        if argv[:2] == ["systemctl", "--user"]:
+            return subprocess.CompletedProcess(argv, 1, "", "Failed to connect to bus")
         if argv[:2] == ["crontab", "-l"]:
             return subprocess.CompletedProcess(argv, 0, state["lines"], "")
         if argv[0] == "crontab":
@@ -96,13 +101,152 @@ def test_with_cron_each_routine_is_one_marked_line(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(argv, 0, "", "")
     monkeypatch.setattr(onboard, "run_cmd", fake)
     ws = workspace(tmp_path)
-    onboard.register_routines(onboard.Report("person"), ws, offline=False, dry_run=False)
+    report = onboard.Report("person")
+    records = onboard.register_routines(report, ws, offline=False, dry_run=False)
     lines = state["lines"].splitlines()
     assert lines[0] == "0 9 * * * /usr/bin/true" and len(lines) == 3
     assert lines[1].startswith("30 6 * * * cd ") and lines[1].endswith("# space-daily-chain-ada")
     assert lines[2].startswith("0 7,13,19 * * * cd ") and "routine.py" in lines[2]
+    # cron does not catch up: one plain line says so, whatever the number of tasks; it blocks nothing
+    waiting = [s for s in report.steps if s.name == onboard.CRON_STEP]
+    assert len(waiting) == 1 and waiting[0].done and not waiting[0].needs_owner and not report.failed()
+    assert waiting[0].result == ("This computer's scheduler does not catch up on runs it missed while the computer was off "
+                                 "or asleep, so a routine can skip a day.")   # one sentence: what else it says was not verified
+    assert not any(tool in waiting[0].result.lower() for tool in ("cron", "systemd", "systemctl", "crontab"))   # no tool is named
+    import onboarding_page
+    assert onboarding_page.STAGES[onboarding_page.stage_of(onboard.CRON_STEP)][0] == "Routines"
+    assert [r["waiting"] for r in records] == [onboard.CRON_WAITING] * 2
     onboard.register_routines(onboard.Report("person"), ws, offline=False, dry_run=False)
     assert state["lines"].splitlines() == lines   # again: nothing doubles
+
+
+def test_on_macos_each_routine_is_a_launch_agent_at_its_times(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "SYSTEM", "Darwin")
+    monkeypatch.setattr(onboard, "user_id", lambda: 501)
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")   # the machine has the CLI
+    monkeypatch.setenv("PATH", "/opt/homebrew/bin:/usr/bin")
+    calls = []
+    monkeypatch.setattr(onboard, "run_cmd", world({"crontab": (1, "")}, calls))
+    ws = workspace(tmp_path)
+    report = onboard.Report("person")
+    records = onboard.register_routines(report, ws, offline=False, dry_run=False)
+    agents = Path.home() / "Library" / "LaunchAgents"
+    plist = (agents / "com.spaces.space-sweep-chain-ada.plist").read_text(encoding="utf-8")
+    assert plist.count("<key>Hour</key>") == 3 and "routine.py" in plist
+    daily = plistlib.loads((agents / "com.spaces.space-daily-chain-ada.plist").read_bytes())
+    assert daily["StartCalendarInterval"] == [{"Hour": 6, "Minute": 30}] and daily["WorkingDirectory"] == str(ws)
+    assert daily["ProgramArguments"][1:] == [str(ws / "_meta" / "tools" / "routine.py"),
+                                              str(ws / "_meta" / "state" / "routines" / "daily-chain.md")]
+    assert daily["EnvironmentVariables"]["PATH"] == "/opt/homebrew/bin:/usr/bin"
+    assert Path(daily["StandardOutPath"]) == Path.home() / ".spaces" / "logs" / "space-daily-chain-ada.log"
+    # a copy loaded before is let go, then the agent is loaded into the person's own session, then read back
+    mine = [c[0][1:] for c in calls if c[0][0] == "launchctl" and "sweep-chain" in " ".join(c[0])]
+    assert mine == [["bootout", "gui/501/com.spaces.space-sweep-chain-ada"],
+                    ["bootstrap", "gui/501", str(agents / "com.spaces.space-sweep-chain-ada.plist")],
+                    ["print", "gui/501/com.spaces.space-sweep-chain-ada"]]
+    assert all(s.done for s in report.steps) and not any(s.name == onboard.CRON_STEP for s in report.steps)
+    assert not [c for c in calls if c[0][0] == "crontab" and c[0][1] != "-l"]   # no cron line on a Mac
+    assert [(r["kind"], r["label"], r["log"]) for r in records] == [
+        ("launchd", "com.spaces.space-daily-chain-ada", "daily-chain-ada"),
+        ("launchd", "com.spaces.space-sweep-chain-ada", "sweep-chain-ada")]
+    state = onboard.read_yaml(ws / "_meta" / "state" / "onboard.yaml", {})
+    assert state["routine_tasks"][1]["check"] == ["launchctl", "print", "gui/501/com.spaces.space-sweep-chain-ada"]
+
+
+def test_a_launch_agent_that_will_not_load_is_a_failed_step_after_three_tries(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "SYSTEM", "Darwin")
+    monkeypatch.setattr(onboard, "user_id", lambda: 501)
+    slept, calls = [], []
+    monkeypatch.setattr(onboard, "_sleep", slept.append)
+    monkeypatch.setattr(onboard, "run_cmd", world({"launchctl bootstrap": (5, "")}, calls))   # "Input/output error"
+    report = onboard.Report("person")
+    onboard.register_task(report, "routine task", "space-sweep-chain-ada", tmp_path / "ada", ["/x/routine.py"], times=[(7, 0)])
+    assert [c[0][1] for c in calls if c[0][0] == "launchctl"].count("bootstrap") == 3 and slept == [1, 1]
+    assert not report.steps[-1].done and "failed" in report.steps[-1].result
+    # the first bootstrap right after a bootout can lose a race with it: a second try is enough
+    answers = iter([(5, ""), (0, "")])
+    monkeypatch.setattr(onboard, "run_cmd", lambda argv, dry_run=False, cwd=None: subprocess.CompletedProcess(
+        argv, *(next(answers) if argv[1] == "bootstrap" else (0, "")), ""))
+    report = onboard.Report("person")
+    onboard.register_task(report, "routine task", "space-sweep-chain-ada", tmp_path / "ada", ["/x/routine.py"], times=[(7, 0)])
+    assert report.steps[-1].done
+
+
+def test_a_dry_run_on_macos_writes_no_launch_agent(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(onboard, "SYSTEM", "Darwin")
+    monkeypatch.setattr(onboard, "user_id", lambda: 501)
+    report = onboard.Report("person")
+    onboard.register_task(report, "routine task", "space-sweep-chain-ada", tmp_path / "ada", ["/x/routine.py"],
+                          times=[(7, 0)], dry_run=True)
+    assert "dry-run: launchctl bootstrap gui/501" in capsys.readouterr().out
+    assert report.steps[-1].done and not (Path.home() / "Library").exists() and not (Path.home() / ".spaces").exists()
+
+
+def test_linux_prefers_a_persistent_systemd_timer_over_cron(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "SYSTEM", "Linux")
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")   # the machine has the CLI
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    ws = workspace(tmp_path)
+    older = onboard.cron_entry("0 7,13,19 * * *", ws, sys.executable, [ws / "_meta" / "tools" / "routine.py"],
+                               "space-sweep-chain-ada", "/bin")   # registered before systemd came first
+    state = {"lines": f"0 9 * * * /usr/bin/true\n{older}\n"}
+    calls = []
+
+    def fake(argv, dry_run=False, cwd=None):
+        argv = [str(a) for a in argv]
+        calls.append(argv)
+        if argv[:2] == ["crontab", "-l"]:
+            return subprocess.CompletedProcess(argv, 0, state["lines"], "")
+        if argv[0] == "crontab":
+            state["lines"] = Path(argv[1]).read_text(encoding="utf-8")
+        return subprocess.CompletedProcess(argv, 0, "", "")   # `systemctl --user show-environment` works: a user session
+    monkeypatch.setattr(onboard, "run_cmd", fake)
+    report = onboard.Report("person")
+    records = onboard.register_routines(report, ws, offline=False, dry_run=False)
+    units = tmp_path / "home" / ".config" / "systemd" / "user"
+    assert "Persistent=true" in (units / "space-daily-chain-ada.timer").read_text(encoding="utf-8")
+    sweep = (units / "space-sweep-chain-ada.timer").read_text(encoding="utf-8")
+    assert [l for l in sweep.splitlines() if l.startswith("OnCalendar")] == [
+        "OnCalendar=*-*-* 07:00:00", "OnCalendar=*-*-* 13:00:00", "OnCalendar=*-*-* 19:00:00"]
+    assert ["systemctl", "--user", "show-environment"] in calls
+    assert ["systemctl", "--user", "enable", "--now", "space-sweep-chain-ada.timer"] in calls
+    # exactly one scheduler: the cron line of the same task is gone, someone else's stays
+    assert state["lines"].splitlines() == ["0 9 * * * /usr/bin/true"]
+    assert "old cron line removed" in report.steps[1].result and "old cron line" not in report.steps[0].result
+    assert all(s.done for s in report.steps) and not any(s.name == onboard.CRON_STEP for s in report.steps)
+    assert [r["kind"] for r in records] == ["systemd", "systemd"] and not any("waiting" in r for r in records)
+
+
+def test_a_systemd_timer_that_will_not_start_leaves_the_cron_line_alone(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "SYSTEM", "Linux")
+    older = onboard.cron_entry("0 7 * * *", tmp_path, sys.executable, [tmp_path / "routine.py"], "space-sweep-chain-ada", "/bin")
+    state, writes = {"lines": older + "\n"}, []
+
+    def fake(argv, dry_run=False, cwd=None):
+        argv = [str(a) for a in argv]
+        if argv[:3] == ["systemctl", "--user", "enable"]:
+            return subprocess.CompletedProcess(argv, 1, "", "Failed to enable unit")
+        if argv[:2] == ["crontab", "-l"]:
+            return subprocess.CompletedProcess(argv, 0, state["lines"], "")
+        if argv[0] == "crontab":
+            writes.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+    monkeypatch.setattr(onboard, "run_cmd", fake)
+    report = onboard.Report("person")
+    onboard.register_task(report, "routine task", "space-sweep-chain-ada", tmp_path, [tmp_path / "routine.py"], times=[(7, 0)])
+    assert not report.steps[-1].done and writes == []   # the schedule that worked is kept until the new one does
+
+
+def test_check_reads_a_launch_agent_back_with_launchctl(tmp_path, monkeypatch):
+    root = make_space(tmp_path / "ada")
+    ident = "com.spaces.space-daily-chain-ada"
+    onboard.write_yaml(root / "_meta" / "state" / "onboard.yaml", {"case": "person", "offline": True, "routine_tasks": [
+        {"name": "space-daily-chain-ada", "kind": "launchd", "label": ident, "check": ["launchctl", "print", f"gui/501/{ident}"]}]})
+    monkeypatch.setattr(onboard, "run_cmd", world({"launchctl print": (0, "state = not running")}, []))
+    assert next(s for s in onboard.check(root) if s.name == "routine task space-daily-chain-ada").done
+    monkeypatch.setattr(onboard, "run_cmd", world({"launchctl print": (113, "")}, []))
+    row = next(s for s in onboard.check(root) if s.name == "routine task space-daily-chain-ada")
+    assert not row.done and f"gui/501/{ident}" in row.check
 
 
 def test_without_cron_linux_gets_persistent_timers_at_the_routine_times(tmp_path, monkeypatch):
@@ -143,6 +287,721 @@ def test_offboard_removes_the_routine_tasks_too(tmp_path, monkeypatch):
     monkeypatch.setattr(offboard, "run_cmd", fake)
     offboard.run(root, online=True, dry_run=False)
     assert deleted == ["space-sync-ada", "space-daily-chain-ada", "space-sweep-chain-ada"]
+
+
+def test_offboard_removes_the_launch_agents_too(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "SYSTEM", "Darwin")
+    monkeypatch.setattr(onboard, "user_id", lambda: 501)
+    root = make_space(tmp_path / "ada")
+    names = ["space-sync-ada", "space-daily-chain-ada", "space-sweep-chain-ada"]
+    onboard.write_yaml(root / "_meta" / "state" / "onboard.yaml", {
+        "case": "person", "sync_task": {"name": names[0], "kind": "launchd"},
+        "routine_tasks": [{"name": n, "kind": "launchd"} for n in names[1:]]})
+    agents = Path.home() / "Library" / "LaunchAgents"
+    for ident in [*(f"com.spaces.{n}" for n in names), "com.spaces.space-sync-bob", "com.example.other"]:
+        onboard.write_text(agents / f"{ident}.plist", "<plist/>")
+    loaded = {f"gui/501/com.spaces.{n}" for n in names}
+    calls = []
+
+    def fake(argv, dry_run=False, cwd=None):
+        argv = [str(a) for a in argv]
+        calls.append(argv)
+        if argv[:2] == ["launchctl", "bootout"]:
+            loaded.discard(argv[2])
+        return subprocess.CompletedProcess(argv, 0 if argv[:2] != ["launchctl", "print"] or argv[2] in loaded else 113, "", "")
+    monkeypatch.setattr(offboard, "run_cmd", fake)
+    report = offboard.run(root, online=True, dry_run=False)
+    assert [c for c in calls if c[:2] == ["launchctl", "bootout"]] == [
+        ["launchctl", "bootout", f"gui/501/com.spaces.{n}"] for n in names]   # each is let go before its file goes
+    assert sorted(p.name for p in agents.glob("*.plist")) == ["com.example.other.plist", "com.spaces.space-sync-bob.plist"]   # no one else's
+    assert not [c for c in calls if c[0] == "crontab" and c[1] != "-l"]
+    assert all(s.done for s in report.steps if s.name.endswith("removed")) and not loaded
+
+
+def test_offboard_removes_a_systemd_timer_and_its_two_unit_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "SYSTEM", "Linux")
+    root = make_space(tmp_path / "ada")
+    units = Path.home() / ".config" / "systemd" / "user"
+    for suffix in ("timer", "service"):
+        onboard.write_text(units / f"space-sync-ada.{suffix}", "[Unit]\n")
+    state = {"enabled": True}
+
+    def fake(argv, dry_run=False, cwd=None):
+        argv = [str(a) for a in argv]
+        if argv[:3] == ["systemctl", "--user", "disable"]:
+            state["enabled"] = False
+        return subprocess.CompletedProcess(argv, 0 if argv[2] != "is-enabled" or state["enabled"] else 1, "", "")
+    monkeypatch.setattr(offboard, "run_cmd", fake)
+    report = onboard.Report("offboard")
+    offboard.remove_sync_task(report, root, {}, "space-sync-ada", False)
+    assert report.steps[-1].done and not list(units.glob("*"))
+
+
+# ----- every scheduler hands the program exactly the arguments it was given ---------------------------
+FOLDERS = ["José Pérez", "Ada & Co's 100% $HOME `id`",
+           pytest.param('say "hi" back\\slash (a;b)', marks=pytest.mark.skipif(os.name == "nt", reason="Windows allows no quote in a name"))]
+PATH_VALUE = "/opt/homebrew/bin:/opt/my bin:/opt/100%/bin:/usr/bin"
+
+
+def argv_of_registered_task(system, root, monkeypatch) -> tuple:
+    """Register one routine as `system` does, then read back, from the text its scheduler was given alone,
+    what that scheduler would run: (argv, working folder or None, PATH or None)."""
+    kind, _, flavour = system.partition(" ")
+    monkeypatch.setattr(onboard, "SYSTEM", kind)
+    monkeypatch.setattr(onboard, "user_id", lambda: 501)
+    monkeypatch.setenv("PATH", PATH_VALUE)
+    calls, crontab = [], {"text": ""}
+    outside = world({"systemctl --user show-environment": (0 if flavour == "systemd" else 1, ""),
+                     "schtasks /Query": (0, "".join(onboard.WINDOWS_TASK))}, calls)
+
+    def fake(argv, dry_run=False, cwd=None):   # the outside, with a crontab that keeps what it is given
+        done = outside(argv, dry_run, cwd)
+        if [str(a) for a in argv][:2] == ["crontab", "-l"]:
+            return subprocess.CompletedProcess(argv, 0, crontab["text"], "")
+        if str(argv[0]) == "crontab":
+            crontab["text"] = Path(argv[1]).read_text(encoding="utf-8")
+        return done
+    monkeypatch.setattr(onboard, "run_cmd", fake)
+    script, prompt = root / "_meta" / "tools" / "routine.py", root / "_meta" / "state" / "routines" / "sweep-chain.md"
+    report = onboard.Report("person")
+    onboard.register_task(report, "routine task", "space-sweep-chain-ada", root, [script, prompt],
+                          times=[(7, 0), (13, 0), (19, 0)], cron="0 7,13,19 * * *")
+    assert report.steps[0].done, report.steps[0].result
+    home = Path.home()
+    if kind == "Windows":
+        _, files = next(c for c in calls if c[0][:2] == ["schtasks", "/Create"])
+        task = ET.fromstring(next(iter(files.values())))   # UTF-16, as the file is read
+        action = task.find(".//{*}Exec")
+        assert action.find("{*}Command").text.lower().endswith("conhost.exe")
+        words = split_windows(action.find("{*}Arguments").text)
+        assert words[0] == "--headless"
+        return words[1:], None, None
+    if kind == "Darwin":
+        agent = plistlib.loads((home / "Library" / "LaunchAgents" / "com.spaces.space-sweep-chain-ada.plist").read_bytes())
+        return agent["ProgramArguments"], agent["WorkingDirectory"], agent["EnvironmentVariables"]["PATH"]
+    if flavour == "systemd":
+        service = (home / ".config" / "systemd" / "user" / "space-sweep-chain-ada.service").read_text(encoding="utf-8")
+        (path,) = unit_setting(service, "Environment")
+        return unit_command(service), unit_setting(service, "WorkingDirectory")[0], path.removeprefix("PATH=")
+    _, files = next(c for c in calls if c[0][0] == "crontab" and c[0][1] != "-l")
+    line = next(iter(files.values())).decode("utf-8").splitlines()[-1]
+    words = split_sh(line.split(None, 5)[5].replace("\\%", "%"))   # cron turns \% back into %
+    assert words[0] == "cd" and words[2] == "&&" and words[3].startswith("PATH=")
+    assert words[-3:] == [">>", "$HOME/.spaces/logs/space-sweep-chain-ada.log", "2>&1"]
+    return words[4:-3], words[1], words[3].removeprefix("PATH=")
+
+
+@pytest.mark.parametrize("folder", FOLDERS)
+@pytest.mark.parametrize("system", ["Windows", "Darwin", "Linux systemd", "Linux cron"])
+def test_paths_with_spaces_and_accents_survive_every_scheduler(tmp_path, monkeypatch, system, folder):
+    root = tmp_path / folder / "spaces" / "ada-okafor-workspace"
+    argv, cwd, path = argv_of_registered_task(system, root, monkeypatch)
+    assert argv == [sys.executable, str(root / "_meta" / "tools" / "routine.py"),
+                    str(root / "_meta" / "state" / "routines" / "sweep-chain.md")]
+    if not system.startswith("Windows"):   # a Windows task starts where the program says, by absolute paths
+        assert cwd == str(root) and path == PATH_VALUE
+
+
+def test_a_unit_file_escapes_what_systemd_would_read_as_its_own(tmp_path, monkeypatch):
+    """% is a specifier and $ a variable in ExecStart=; a backslash and a quote escape inside quotes."""
+    monkeypatch.setattr(onboard, "SYSTEM", "Linux")
+    monkeypatch.setattr(onboard, "run_cmd", world({}, []))
+    root = tmp_path / "100% $HOME \\ \"q\""
+    onboard.register_task(onboard.Report("person"), "routine task", "space-sweep-chain-ada", root, [root / "r.py"], times=[(7, 0)])
+    service = (Path.home() / ".config" / "systemd" / "user" / "space-sweep-chain-ada.service").read_text(encoding="utf-8")
+    exec_start = next(l for l in service.splitlines() if l.startswith("ExecStart="))
+    assert "%%" in exec_start and "$$HOME" in exec_start and '\\"q\\"' in exec_start and "\\\\" in exec_start
+    assert next(l for l in service.splitlines() if l.startswith("WorkingDirectory=")) == "WorkingDirectory=" + str(root).replace("%", "%%")
+
+
+def test_systemd_reads_the_program_word_differently_from_the_arguments():
+    """Found with `systemd-analyze --user verify` (systemd 255): the program word is no place for `$$`, and a
+    program path holding a quote or a backslash is a fatal "special characters" error."""
+    args, calendars = ["/home/ada/ws/routine.py", "/home/ada/100% ws/p.md", "--flag"], ["*:0/15"]
+    service, _ = onboard.systemd_units("space-x", "/home/ada/ws", "/home/Ada $HOME/100% bin/python3", args, "/usr/bin", calendars)
+    assert 'ExecStart="/home/Ada $HOME/100%% bin/python3" "/home/ada/ws/routine.py" "/home/ada/100%% ws/p.md" --flag\n' in service
+    for program in ("/home/Sean O'Brien/py", '/home/q"/py', "/home/back\\slash/py"):
+        service, _ = onboard.systemd_units("space-x", "/home/ada/ws", program, args, "/usr/bin", calendars)
+        assert unit_setting(service, "ExecStart") == ["/bin/sh", "-c", 'exec "$0" "$@"', program, *args]   # sh makes it an argument
+        assert next(l for l in service.splitlines() if l.startswith("ExecStart=")).startswith('ExecStart=/bin/sh -c "exec \\"$$0\\" \\"$$@\\"" "')
+
+
+def test_the_windows_arguments_survive_an_ampersand_an_apostrophe_and_angle_brackets(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "SYSTEM", "Windows")
+    calls = []
+    monkeypatch.setattr(onboard, "run_cmd", world({"schtasks /Query": (0, "".join(onboard.WINDOWS_TASK))}, calls))
+    root = tmp_path / "Ada & Co's <100%> José"
+    report = onboard.Report("person")
+    onboard.register_task(report, "routine task", "space-sweep-chain-ada", root, [root / "r.py"], times=[(7, 0)])
+    _, files = next(c for c in calls if c[0][:2] == ["schtasks", "/Create"])
+    raw = next(iter(files.values()))
+    assert raw.startswith((b"\xff\xfe", b"\xfe\xff")) and report.steps[-1].done   # UTF-16 with its mark
+    text = raw.decode("utf-16")
+    assert "&amp;" in text and "&lt;100%&gt;" in text and "Ada & Co" not in text   # well-formed XML
+    assert split_windows(ET.fromstring(raw).find(".//{*}Arguments").text)[-1] == str(root / "r.py")
+
+
+def test_a_folder_name_with_a_line_break_cannot_be_a_cron_line(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "SYSTEM", "Linux")
+    calls = []
+    monkeypatch.setattr(onboard, "run_cmd", world({"systemctl --user": (1, "")}, calls))
+    report = onboard.Report("person")
+    onboard.register_task(report, "routine task", "space-sweep-chain-ada", tmp_path / "a\nb", [tmp_path / "r.py"], times=[(7, 0)])
+    assert not report.steps[-1].done and "line break" in report.steps[-1].result
+    assert not [c for c in calls if c[0][0] == "crontab" and c[0][1] != "-l"]
+
+
+# ----- run a task now ------------------------------------------------------------------------------------
+def test_run_now_starts_the_task_on_each_scheduler(monkeypatch):
+    calls = []
+    monkeypatch.setattr(onboard, "run_cmd", world({}, calls))
+    monkeypatch.setattr(onboard, "user_id", lambda: 501)
+    assert onboard.run_now({"kind": "schtasks", "name": "space-sweep-chain-ada"})
+    assert calls[-1][0] == ["schtasks", "/Run", "/TN", "space-sweep-chain-ada"]
+    assert onboard.run_now({"kind": "launchd", "name": "space-sweep-chain-ada", "label": "com.spaces.space-sweep-chain-ada"})
+    assert calls[-1][0] == ["launchctl", "kickstart", "gui/501/com.spaces.space-sweep-chain-ada"]
+    assert onboard.run_now({"kind": "launchd", "name": "space-daily-chain-ada"})   # a record without its label
+    assert calls[-1][0] == ["launchctl", "kickstart", "gui/501/com.spaces.space-daily-chain-ada"]
+    # a routine runs for up to an hour: do not wait for it (a oneshot service's `start` would)
+    assert onboard.run_now({"kind": "systemd", "name": "space-sweep-chain-ada"})
+    assert calls[-1][0] == ["systemctl", "--user", "start", "--no-block", "space-sweep-chain-ada.service"]
+
+
+def cron_record(root, task="space-sweep-chain-ada", py="/usr/bin/python3", args=None, path="/usr/bin:/bin", when="0 7 * * *"):
+    """What register_task records for a cron task: the line and the fields it was built from."""
+    args = [str(root / "r.py")] if args is None else args
+    return {"name": task, "kind": "cron", "root": str(root), "python": py, "args": args, "path": path, "when": when,
+            "line": onboard.cron_entry(when, root, py, args, task, path)}
+
+
+def test_run_now_starts_the_crons_command_detached_the_way_cron_would(monkeypatch):
+    started = []
+    monkeypatch.setattr(onboard, "spawn_cmd", lambda argv, dry_run=False, env=None: started.append((argv, env)) or 4242)
+    root = PurePosixPath("/home/ada/100% ada")
+    record = cron_record(root)
+    assert onboard.run_now(record)
+    argv, env = started[-1]
+    assert argv[:2] == ["sh", "-c"] and argv[2].startswith(f'cd "{root}" && PATH="/usr/bin:/bin" "/usr/bin/python3"')
+    assert ">> \"$HOME/.spaces/logs/space-sweep-chain-ada.log\" 2>&1" in argv[2]   # the log the line itself writes
+    assert "\\%" not in argv[2] and "100% ada" in argv[2]   # cron's escape is cron's: sh gets the plain %
+    assert env["HOME"] == str(Path.home()) and set(env) <= {"HOME", "LOGNAME", "SHELL", "PATH"}   # as cron starts it, not as the session has it
+    monkeypatch.setattr(onboard, "spawn_cmd", lambda *a, **k: None)   # the shell would not start
+    assert not onboard.run_now(record)
+
+
+def test_run_now_runs_a_registered_cron_task_and_never_text_that_is_not_what_was_registered(tmp_path, monkeypatch):
+    """The record is read from a file a merge can change: the command is rebuilt from its fields, and a line
+    that is not exactly that command is refused."""
+    monkeypatch.setattr(onboard, "SYSTEM", "Linux")
+    monkeypatch.setattr(onboard, "run_cmd", world({"systemctl --user": (1, "")}, []))
+    started = []
+    monkeypatch.setattr(onboard, "spawn_cmd", lambda argv, dry_run=False, env=None: started.append(argv) or 1)
+    record = onboard.register_task(onboard.Report("person"), "routine task", "space-sweep-chain-ada", tmp_path / "ada",
+                                   [tmp_path / "ada" / "r.py"], times=[(7, 0)], cron="0 7 * * *")
+    assert [record[k] for k in ("python", "args", "when", "root")] == [
+        sys.executable, [str(tmp_path / "ada" / "r.py")], "0 7 * * *", str(tmp_path / "ada")] and record["path"] == os.environ["PATH"]
+    onboard.write_yaml(tmp_path / "r.yaml", record)   # as onboard.yaml keeps it, and reads it back
+    assert onboard.run_now(onboard.read_yaml(tmp_path / "r.yaml")) and started[-1][:2] == ["sh", "-c"]
+    started.clear()
+    for tampered in (dict(record, line=record["line"].replace("# space-", "; touch /tmp/PWNED # space-")),
+                     dict(record, line="0 7 * * * touch /tmp/PWNED  # space-sweep-chain-ada"),
+                     dict(record, args=["-c", "touch /tmp/PWNED"]),               # fields changed, the line not
+                     dict(record, python="/bin/sh"), dict(record, when="* * * * *"), dict(record, root="/tmp"),
+                     {k: v for k, v in record.items() if k != "args"},        # a record from before the fields were kept
+                     {k: v for k, v in record.items() if k != "line"}):
+        assert not onboard.run_now(tampered), tampered
+    assert started == []
+
+
+def test_run_now_is_false_when_the_scheduler_says_no_or_does_not_know_the_task(monkeypatch):
+    monkeypatch.setattr(onboard, "run_cmd", world({"schtasks": (1, ""), "launchctl": (113, ""), "systemctl": (5, "")}, []))
+    monkeypatch.setattr(onboard, "user_id", lambda: 501)
+    for kind in ("schtasks", "launchd", "systemd"):
+        assert not onboard.run_now({"kind": kind, "name": "space-sweep-chain-ada"})
+    assert not onboard.run_now({"kind": "carrier-pigeon", "name": "x"}) and not onboard.run_now({})
+    assert not onboard.run_now({"kind": "cron", "name": "x", "line": None}) and not onboard.run_now({"kind": "cron", "name": "x"})
+
+
+def test_a_dry_run_of_run_now_says_what_it_would_do_and_starts_nothing(monkeypatch, capsys):
+    monkeypatch.setattr(onboard, "user_id", lambda: 501)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: pytest.fail("started a process in a dry run"))
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("started a process in a dry run"))
+    cron = cron_record(PurePosixPath("/ada"), task="space-x")
+    for record in ({"kind": "schtasks", "name": "space-x"}, {"kind": "launchd", "name": "space-x"}, {"kind": "systemd", "name": "space-x"},
+                   cron):
+        assert onboard.run_now(record, dry_run=True)
+    out = capsys.readouterr().out
+    assert out.count("dry-run:") == 4 and "schtasks /Run /TN space-x" in out and "launchctl kickstart gui/501/com.spaces.space-x" in out
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a detached shell, as cron has")
+def test_spawn_cmd_starts_a_command_in_a_session_of_its_own(tmp_path):
+    pid = onboard.spawn_cmd(["sh", "-c", "sleep 1"], env={"PATH": os.environ["PATH"]})
+    assert isinstance(pid, int)
+    assert os.getsid(pid) == pid and os.getsid(pid) != os.getsid(0)   # a session leader: it outlives the process that asked
+    os.waitpid(pid, 0)
+    assert onboard.spawn_cmd(["/no/such/program-for-spawn-test"]) is None
+
+
+# ----- fix round 1: exactly one scheduler per task, nothing of anyone else's touched ------------------------
+class Outside:
+    """The schedulers of a machine as far as a registration touches them, with state: a crontab that keeps
+    what it is given, launch agents that are loaded, systemd timers that are enabled. Every call is kept.
+    `fail` names commands (by their first words) that exit 1 without changing anything."""
+
+    def __init__(self, systemd=True, crontab="", fail=(), crontab_error=None):
+        self.calls, self.systemd, self.crontab, self.fail = [], systemd, crontab, tuple(fail)
+        self.crontab_error = crontab_error   # `crontab -l` fails with this message, whatever the crontab holds
+        self.loaded, self.enabled = set(), set()
+
+    def __call__(self, argv, dry_run=False, cwd=None):
+        argv = [str(a) for a in argv]
+        self.calls.append(argv)
+
+        def done(code=0, out=""):
+            return subprocess.CompletedProcess(argv, code, out, "" if code == 0 else "failed")
+        if any(" ".join(argv).startswith(prefix) for prefix in self.fail):
+            return done(1)
+        if argv[:2] == ["schtasks", "/Query"]:
+            return done(0, "".join(onboard.WINDOWS_TASK))   # a task as registered
+        if argv[:2] == ["crontab", "-l"] and self.crontab_error:
+            return subprocess.CompletedProcess(argv, 1, "", self.crontab_error)
+        if argv[:2] == ["crontab", "-l"] and self.crontab is None:
+            return subprocess.CompletedProcess(argv, 1, "", "crontab: no crontab for ada")
+        if argv[:2] == ["crontab", "-l"]:
+            return done(0, self.crontab)
+        if argv[0] == "crontab":
+            self.crontab = Path(argv[1]).read_text(encoding="utf-8")
+        elif argv[:3] == ["systemctl", "--user", "show-environment"]:
+            return done(0 if self.systemd else 1)
+        elif argv[:3] == ["systemctl", "--user", "enable"]:
+            self.enabled.add(argv[-1])
+        elif argv[:3] == ["systemctl", "--user", "disable"]:
+            self.enabled.discard(argv[-1])
+        elif argv[:3] in (["systemctl", "--user", "is-active"], ["systemctl", "--user", "is-enabled"]):
+            return done(0 if argv[-1] in self.enabled else 1)
+        elif argv[:2] == ["launchctl", "bootstrap"]:
+            self.loaded.add(f"{argv[2]}/{Path(argv[3]).stem}")
+        elif argv[:2] == ["launchctl", "bootout"]:
+            was_loaded = argv[2] in self.loaded
+            self.loaded.discard(argv[2])
+            return done(0 if was_loaded else 113)
+        elif argv[:2] == ["launchctl", "print"]:
+            return done(0 if argv[2] in self.loaded else 113)
+        return done()
+
+    def ran(self, *words):
+        """The calls that begin with these words."""
+        return [c for c in self.calls if c[:len(words)] == list(words)]
+
+    def wrote_crontab(self):
+        return [c for c in self.calls if c[0] == "crontab" and c[1] != "-l"]
+
+
+TASK = "space-sweep-chain-ada"
+
+
+def register_sweep(root):
+    report = onboard.Report("person")
+    record = onboard.register_task(report, "routine task", TASK, root, [Path(root) / "r.py"], times=[(7, 0)], cron="0 7 * * *")
+    return report, record
+
+
+def test_is_task_line_is_the_marker_or_an_exact_legacy_sync_line(tmp_path):
+    ws, two = tmp_path / "ws", tmp_path / "ws-two"
+    sync = lambda root: f"*/15 * * * * /usr/bin/python3 {root}/_meta/tools/sync.py --root {root} --release-leg"
+    marked = onboard.cron_line(15, "/py", ws / "_meta" / "tools" / "sync.py", ws, "space-sync-ws", "/bin")
+    assert onboard.is_task_line(marked, "space-sync-ws", ws)
+    assert onboard.is_task_line(sync(ws), "space-sync-ws", ws)                                   # written before the marker existed
+    assert not onboard.is_task_line(sync(two), "space-sync-ws", ws)                              # a root that shares a prefix
+    assert not onboard.is_task_line(marked.replace("space-sync-ws", "space-sync-two"), "space-sync-ws", ws)   # another task's marker
+    two_marked = onboard.cron_line(15, "/py", two / "_meta" / "tools" / "sync.py", two, "space-sync-two", "/bin")
+    assert not onboard.is_task_line(two_marked, "space-sync-ws", ws)
+    hand = f"0 3 * * * cd {ws} && python3 {ws}/_meta/tools/sync.py --root {ws} --dry-run"
+    assert not onboard.is_task_line(hand, "space-sync-ws", ws)                                   # the person's own line
+    assert not onboard.is_task_line(sync(ws) + " --dry-run", "space-sync-ws", ws)
+    assert not onboard.is_task_line(sync(ws), "space-sweep-chain-ws", ws)                       # the legacy shape is the sync task's only
+
+
+def test_moving_a_task_off_cron_removes_its_own_line_and_no_one_elses(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "SYSTEM", "Linux")
+    ws, two = tmp_path / "ws", tmp_path / "ws-two"
+    mine = onboard.cron_entry("0 7 * * *", ws, sys.executable, [ws / "r.py"], TASK, "/bin")
+    keep = ["0 9 * * * /usr/bin/true",
+            onboard.cron_line(15, "/py", two / "_meta" / "tools" / "sync.py", two, "space-sync-ws-two", "/bin"),   # a sibling space's
+            onboard.cron_entry("0 7 * * *", two, sys.executable, [two / "r.py"], TASK, "/bin"),   # the same marker, another folder
+            f"0 3 * * * cd {ws} && python3 {ws}/_meta/tools/sync.py --root {ws} --dry-run",       # the person's, by hand
+            f"*/15 * * * * /py {ws}/_meta/tools/sync.py --root {ws} --release-leg"]               # no marker: not provably this task's
+    outside = Outside(crontab="\n".join([keep[0], mine, *keep[1:]]) + "\n")
+    monkeypatch.setattr(onboard, "run_cmd", outside)
+    report, record = register_sweep(ws)
+    assert record["kind"] == "systemd" and outside.crontab.splitlines() == keep
+    assert "old cron line removed" in report.steps[-1].result and report.steps[-1].done
+    # a line marked for this task that is not provably this folder's stays, and the step says so (it may be a copy)
+    after = report.steps[-1].result.partition("after sleep)")[2].replace("its old cron line removed", "")
+    assert report.steps[-1].done and "starts in a different folder" in after and no_tool_named(after)
+
+
+def test_a_cron_registration_replaces_only_its_own_line(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "SYSTEM", "Linux")
+    ws, two = tmp_path / "ws", tmp_path / "ws-two"
+    sibling = onboard.cron_line(15, "/py", two / "_meta" / "tools" / "sync.py", two, "space-sync-ws-two", "/bin")
+    hand = f"0 3 * * * cd {ws} && python3 {ws}/_meta/tools/sync.py --root {ws} --dry-run"
+    older = f"*/15 * * * * /py {ws}/_meta/tools/sync.py --root {ws} --release-leg"
+    outside = Outside(systemd=False, crontab="\n".join([sibling, hand, older]) + "\n")
+    monkeypatch.setattr(onboard, "run_cmd", outside)
+    record = onboard.register_sync(onboard.Report("person"), ws, "ws", 15, offline=False, dry_run=False)
+    assert outside.crontab.splitlines() == [sibling, hand, record["line"]]   # its pre-marker line is replaced, theirs stay
+
+
+def test_the_crontab_is_written_by_one_helper(tmp_path):
+    seen = []
+    run = lambda argv, dry_run=False: seen.append((argv, dry_run, Path(argv[1]).read_text(encoding="utf-8"))) or subprocess.CompletedProcess(argv, 0, "", "")
+    onboard.write_crontab(["0 9 * * * a", "0 10 * * * b"], run=run)
+    onboard.write_crontab([], dry_run=True, run=run)
+    assert [(s[1], s[2]) for s in seen] == [(False, "0 9 * * * a\n0 10 * * * b\n"), (True, "")]
+    assert not Path(seen[0][0][1]).exists()   # the file it handed to crontab is gone
+
+
+def test_an_old_cron_line_that_cannot_be_removed_is_a_step_the_person_sees(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "SYSTEM", "Linux")
+    older = onboard.cron_entry("0 7 * * *", tmp_path, sys.executable, [tmp_path / "r.py"], TASK, "/bin")
+    outside = Outside(crontab=older + "\n")
+
+    def fake(argv, dry_run=False, cwd=None):
+        refuse = [str(a) for a in argv][0] == "crontab" and str(argv[1]) != "-l"   # the terminal may not edit the crontab
+        return subprocess.CompletedProcess(argv, 1, "", "permission denied") if refuse else outside(argv, dry_run, cwd)
+    monkeypatch.setattr(onboard, "run_cmd", fake)
+    report, _ = register_sweep(tmp_path)
+    row = report.steps[-1]
+    assert not row.done and row.needs_owner and "could not be removed" in row.result and no_tool_named(row.result)
+    assert "permission denied" in row.result and TASK in row.result   # the reason, and the note that finds the job
+
+
+def test_a_fallback_to_cron_takes_the_tasks_timer_out_first(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "SYSTEM", "Linux")
+    units = Path.home() / ".config" / "systemd" / "user"
+    for suffix in ("timer", "service"):
+        onboard.write_text(units / f"{TASK}.{suffix}", "[Unit]\n")
+    onboard.write_text(units / "space-other.timer", "[Unit]\n")
+    outside = Outside(systemd=False)   # no user session today
+    outside.enabled.add(f"{TASK}.timer")
+    monkeypatch.setattr(onboard, "run_cmd", outside)
+    report, record = register_sweep(tmp_path)
+    assert record["kind"] == "cron" and [l for l in outside.crontab.splitlines() if l.endswith(f"# {TASK}")]
+    assert not outside.enabled and sorted(p.name for p in units.glob("*")) == ["space-other.timer"]   # not theirs
+    assert outside.ran("systemctl", "--user", "disable", "--now", f"{TASK}.timer") and all(s.done for s in report.steps)
+
+
+def test_a_timer_that_cannot_be_stopped_keeps_cron_out(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "SYSTEM", "Linux")
+    units = Path.home() / ".config" / "systemd" / "user"
+    for suffix in ("timer", "service"):
+        onboard.write_text(units / f"{TASK}.{suffix}", "[Unit]\n")
+    outside = Outside(systemd=False, fail=("systemctl --user disable",))   # "Failed to connect to bus"
+    outside.enabled.add(f"{TASK}.timer")
+    monkeypatch.setattr(onboard, "run_cmd", outside)
+    report, _ = register_sweep(tmp_path)
+    row = report.steps[-1]
+    assert not row.done and row.needs_owner and "could not be stopped" in row.result and no_tool_named(row.result)
+    assert outside.wrote_crontab() == [] and (units / f"{TASK}.timer").exists()   # the timer is still the one scheduler
+
+
+def test_a_fallback_to_cron_lets_go_of_a_launch_agent_of_the_task(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "SYSTEM", "Linux")
+    monkeypatch.setattr(onboard, "user_id", lambda: 501)
+    plist = Path.home() / "Library" / "LaunchAgents" / f"com.spaces.{TASK}.plist"
+    onboard.write_text(plist, "<plist/>")
+    onboard.write_text(plist.with_name("com.spaces.space-other.plist"), "<plist/>")
+    outside = Outside(systemd=False)
+    outside.loaded.add(f"gui/501/com.spaces.{TASK}")
+    monkeypatch.setattr(onboard, "run_cmd", outside)
+    report, record = register_sweep(tmp_path)
+    assert record["kind"] == "cron" and not outside.loaded and all(s.done for s in report.steps)
+    assert sorted(p.name for p in plist.parent.glob("*")) == ["com.spaces.space-other.plist"]
+
+
+def test_registering_a_launch_agent_again_leaves_a_running_job_alone(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "SYSTEM", "Darwin")
+    monkeypatch.setattr(onboard, "user_id", lambda: 501)
+    monkeypatch.setenv("PATH", "/opt/homebrew/bin:/usr/bin")
+    outside = Outside()
+    monkeypatch.setattr(onboard, "run_cmd", outside)
+    register_sweep(tmp_path)
+    assert [c[1] for c in outside.ran("launchctl")] == ["bootout", "bootstrap", "print"]
+    outside.calls.clear()
+    report, record = register_sweep(tmp_path)   # the same plist, still loaded: a job that is mid-run is not booted out
+    assert [c[1] for c in outside.ran("launchctl")] == ["print"] and report.steps[-1].done
+    assert record["kind"] == "launchd" and record["check"][1] == "print"
+    outside.calls.clear()
+    monkeypatch.setenv("PATH", "/usr/bin")      # another PATH is another plist: loaded again
+    register_sweep(tmp_path)
+    assert [c[1] for c in outside.ran("launchctl")] == ["bootout", "bootstrap", "print"]
+    outside.calls.clear()
+    outside.loaded.clear()                      # the same plist but no longer loaded (a logout): loaded again
+    report, _ = register_sweep(tmp_path)
+    assert [c[1] for c in outside.ran("launchctl")][-2:] == ["bootstrap", "print"] and report.steps[-1].done
+
+
+def test_registering_a_timer_again_does_not_restart_anything(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "SYSTEM", "Linux")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    outside = Outside()
+    monkeypatch.setattr(onboard, "run_cmd", outside)
+    register_sweep(tmp_path)
+    assert outside.ran("systemctl", "--user", "daemon-reload") and outside.ran("systemctl", "--user", "enable", "--now", f"{TASK}.timer")
+    outside.calls.clear()
+    report, _ = register_sweep(tmp_path)   # the same units, the timer active: nothing is told to start, stop or reload
+    assert [c[2] for c in outside.ran("systemctl")] == ["show-environment", "is-active"] and report.steps[-1].done
+    outside.calls.clear()
+    monkeypatch.setenv("PATH", "/usr/local/bin:/usr/bin")   # other units: written and enabled again
+    register_sweep(tmp_path)
+    assert outside.ran("systemctl", "--user", "daemon-reload") and outside.ran("systemctl", "--user", "enable", "--now", f"{TASK}.timer")
+    outside.calls.clear()
+    outside.enabled.clear()                                  # the same units but the timer is off: enabled again
+    register_sweep(tmp_path)
+    assert outside.ran("systemctl", "--user", "enable", "--now", f"{TASK}.timer")
+
+
+def test_a_windows_folder_with_a_word_between_percent_signs_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "SYSTEM", "Windows")
+    monkeypatch.setenv("ADA_PROJECTS", "D:\\work")
+    monkeypatch.delenv("NOT_A_SET_VARIABLE_9", raising=False)
+    outside = Outside()
+    monkeypatch.setattr(onboard, "run_cmd", outside)
+    for folder in ("x%ADA_PROJECTS%y", "Ada's %ADA_PROJECTS% co", "%NOT_A_SET_VARIABLE_9%ADA_PROJECTS%", "%ada_projects%"):
+        outside.calls.clear()
+        report, record = register_sweep(tmp_path / folder)
+        row = report.steps[-1]
+        assert not row.done and "percent signs" in row.result and "rename" in row.result, folder
+        assert not outside.ran("schtasks", "/Create") and record["kind"] == "schtasks"
+    for folder in ("100%", "50% off, 100%", "%NOT_A_SET_VARIABLE_9%", "Ada $ADA_PROJECTS", "a%b"):   # nothing here is swapped
+        report, _ = register_sweep(tmp_path / folder)
+        assert report.steps[-1].done, folder
+
+
+@pytest.mark.parametrize("what", ["root", "path", "python"])
+def test_systemd_refuses_a_control_character_in_plain_words(tmp_path, monkeypatch, what):
+    monkeypatch.setattr(onboard, "SYSTEM", "Linux")
+    outside = Outside()
+    monkeypatch.setattr(onboard, "run_cmd", outside)
+    if what == "path":
+        monkeypatch.setenv("PATH", "/usr/bin:/a\tb")
+    elif what == "python":
+        monkeypatch.setattr(sys, "executable", "/usr/bin/py\tthon")
+    report, _ = register_sweep(tmp_path / ("a\tb" if what == "root" else "ada"))
+    row = report.steps[-1]
+    assert not row.done and "control character" in row.result and no_tool_named(row.result)
+    assert {"root": "the folder name", "path": "the list of folders this computer searches for programs",
+            "python": "the location of the Python program"}[what] in row.result
+    assert not (Path.home() / ".config" / "systemd" / "user" / f"{TASK}.service").exists()
+    assert not outside.ran("systemctl", "--user", "enable") and outside.wrote_crontab() == []
+
+
+def test_what_a_unit_file_cannot_carry_is_named(tmp_path):
+    trouble = onboard.unit_trouble
+    assert "backslash" in trouble("/home/ada/ws\\", "/usr/bin/python3", "/usr/bin", [])
+    assert "control character" in trouble("/home/ada/ws", "/usr/bin/python3", "/usr/bin", ["/home/ada/\x7fx"])   # DEL too
+    assert "name of a file" in trouble("/home/ada/ws", "/usr/bin/python3", "/usr/bin", ["/home/ada/\x7fx"])
+    assert "folder name" in trouble("/home/ada/\tws", "/usr/bin/python3", "/usr/bin", [])
+    assert onboard.control_trouble("/home/ada/ws\\", "/usr/bin/python3", "/usr/bin", []) is None   # only a unit file minds this
+    assert trouble("/home/ada/ws", "/usr/bin/python3", "/usr/bin", ["--flag", "/home/ada/a\\b"]) is None   # a backslash inside is fine
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a Windows path has no trailing backslash")
+def test_a_folder_name_ending_in_a_backslash_is_refused_for_systemd(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "SYSTEM", "Linux")
+    outside = Outside()
+    monkeypatch.setattr(onboard, "run_cmd", outside)
+    report, _ = register_sweep(tmp_path / "ws\\")
+    row = report.steps[-1]
+    assert not row.done and "backslash" in row.result and "rename" in row.result and not outside.ran("systemctl", "--user", "enable")
+
+
+def test_offboard_keeps_a_launch_agents_file_while_launchd_still_has_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "SYSTEM", "Darwin")
+    monkeypatch.setattr(onboard, "user_id", lambda: 501)
+    root = make_space(tmp_path / "ada")
+    ident = f"com.spaces.{TASK}"
+    plist = Path.home() / "Library" / "LaunchAgents" / f"{ident}.plist"
+    onboard.write_text(plist, "<plist/>")
+    outside = Outside(fail=("launchctl bootout",))   # launchd is busy: the agent stays loaded
+    outside.loaded.add(f"gui/501/{ident}")
+    monkeypatch.setattr(offboard, "run_cmd", outside)
+    state = {"routine_tasks": [{"name": TASK, "kind": "launchd", "label": ident}]}
+    report = onboard.Report("offboard")
+    offboard.remove_sync_task(report, root, state, TASK, False, label="routine task removed")
+    assert plist.exists() and not report.steps[-1].done and "still loaded" in report.steps[-1].result
+    outside.fail = ()                                # a second try
+    report = onboard.Report("offboard")
+    offboard.remove_sync_task(report, root, state, TASK, False, label="routine task removed")
+    assert not plist.exists() and report.steps[-1].done and not outside.loaded
+
+
+def test_offboard_on_a_mac_with_no_plist_reports_gone_without_a_crash(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "SYSTEM", "Darwin")
+    monkeypatch.setattr(onboard, "user_id", lambda: 501)
+    root = make_space(tmp_path / "ada")
+    outside = Outside()
+    monkeypatch.setattr(offboard, "run_cmd", outside)
+    ident = f"com.spaces.{TASK}"
+    # recorded as a launch agent, the file already gone, nothing loaded: gone
+    report = onboard.Report("offboard")
+    offboard.remove_sync_task(report, root, {"routine_tasks": [{"name": TASK, "kind": "launchd", "label": ident}]}, TASK, False)
+    assert report.steps[-1].done and outside.ran("launchctl", "bootout", f"gui/501/{ident}")
+    # recorded as a launch agent, the file gone, but launchd still has it: not gone
+    outside.loaded.add(f"gui/501/{ident}")
+    outside.fail = ("launchctl bootout",)
+    report = onboard.Report("offboard")
+    offboard.remove_sync_task(report, root, {"routine_tasks": [{"name": TASK, "kind": "launchd", "label": ident}]}, TASK, False)
+    assert not report.steps[-1].done
+    # never a launch agent: the crontab is looked at, launchd is not
+    outside.calls.clear()
+    report = onboard.Report("offboard")
+    offboard.remove_sync_task(report, root, {}, "space-sync-ada", False)
+    assert report.steps[-1].done and not outside.ran("launchctl") and outside.ran("crontab", "-l")
+
+
+def test_offboard_keeps_a_timers_files_while_systemd_still_has_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "SYSTEM", "Linux")
+    root = make_space(tmp_path / "ada")
+    units = Path.home() / ".config" / "systemd" / "user"
+    for suffix in ("timer", "service"):
+        onboard.write_text(units / f"{TASK}.{suffix}", "[Unit]\n")
+    outside = Outside(fail=("systemctl --user disable",))
+    outside.enabled.add(f"{TASK}.timer")
+    monkeypatch.setattr(offboard, "run_cmd", outside)
+    report = onboard.Report("offboard")
+    offboard.remove_sync_task(report, root, {}, TASK, False, label="routine task removed")
+    assert not report.steps[-1].done and (units / f"{TASK}.timer").exists() and (units / f"{TASK}.service").exists()
+    outside.fail = ()
+    report = onboard.Report("offboard")
+    offboard.remove_sync_task(report, root, {}, TASK, False, label="routine task removed")
+    assert report.steps[-1].done and not list(units.glob("*"))
+
+
+def no_tool_named(text: str) -> bool:
+    """Owner-facing words name no tool or scheduler by its own name."""
+    return not any(word in text.lower() for word in ("systemd", "systemctl", "timer", "launch agent", "launchd", "launchctl",
+                                                      "crontab", "cron "))
+
+
+@pytest.mark.parametrize("system", ["Linux", "Darwin"])
+def test_moving_the_sync_task_off_cron_removes_its_pre_marker_line_too(tmp_path, monkeypatch, system):
+    """After an upgrade the sync would otherwise run under cron and under the new scheduler."""
+    monkeypatch.setattr(onboard, "SYSTEM", system)
+    monkeypatch.setattr(onboard, "user_id", lambda: 501)
+    ws, two = tmp_path / "ws", tmp_path / "ws-two"
+    legacy = lambda root: f"*/15 * * * * /usr/bin/python3 {root}/_meta/tools/sync.py --root {root} --release-leg"
+    marked = onboard.cron_line(15, "/py", ws / "_meta" / "tools" / "sync.py", ws, "space-sync-ws", "/bin")
+    keep = [legacy(two),                                                                 # another space's, same shape
+            f"0 3 * * * cd {ws} && python3 {ws}/_meta/tools/sync.py --root {ws} --dry-run",   # the person's, by hand
+            onboard.cron_line(15, "/py", two / "_meta" / "tools" / "sync.py", two, "space-sync-ws-two", "/bin")]
+    outside = Outside(crontab="\n".join([legacy(ws), keep[0], marked, *keep[1:]]) + "\n")
+    monkeypatch.setattr(onboard, "run_cmd", outside)
+    report = onboard.Report("person")
+    record = onboard.register_sync(report, ws, "ws", 15, offline=False, dry_run=False)
+    assert record["kind"] == ("launchd" if system == "Darwin" else "systemd")
+    assert outside.crontab.splitlines() == keep and "old cron line removed" in report.steps[-1].result
+    assert "starts in a different folder" not in report.steps[-1].result   # nothing marked for this task is left
+    # a routine task has no such pre-marker shape: a line without its marker is never taken
+    outside.crontab = legacy(ws) + "\n"
+    register_sweep(ws)
+    assert outside.crontab == legacy(ws) + "\n"
+
+
+def test_a_marked_line_for_this_task_that_is_not_this_folders_is_named_in_the_step(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "SYSTEM", "Linux")
+    ws = tmp_path / "ws"
+    other_spelling = onboard.cron_entry("0 7 * * *", tmp_path / "sub" / ".." / "ws", sys.executable, [ws / "r.py"], TASK, "/bin")
+    outside = Outside(crontab=other_spelling + "\n")
+    monkeypatch.setattr(onboard, "run_cmd", outside)
+    report, _ = register_sweep(ws)
+    row = report.steps[-1]
+    assert row.done and "starts in a different folder" in row.result and no_tool_named(row.result.partition("after sleep)")[2])
+    assert outside.crontab == other_spelling + "\n"   # not taken: it may be someone else's
+
+
+def test_a_crontab_that_cannot_be_read_is_not_an_empty_one(tmp_path, monkeypatch):
+    """A rewrite from an empty reading would drop the person's own lines."""
+    monkeypatch.setattr(onboard, "SYSTEM", "Linux")
+    mine = "0 9 * * * /usr/bin/true"
+    outside = Outside(systemd=False, crontab=mine + "\n", crontab_error="crontab: error: permission denied")
+    monkeypatch.setattr(onboard, "run_cmd", outside)
+    report, record = register_sweep(tmp_path)
+    row = report.steps[-1]
+    assert not row.done and "could not be read" in row.result and "nothing was changed" in row.result
+    assert "permission denied" in row.result and outside.wrote_crontab() == [] and outside.crontab == mine + "\n"
+    assert not any(s.name == onboard.CRON_STEP for s in report.steps) and "waiting" not in record
+    # a person who has no crontab yet is told so, and that is an empty one
+    outside = Outside(systemd=False, crontab=None)
+    monkeypatch.setattr(onboard, "run_cmd", outside)
+    report, record = register_sweep(tmp_path)
+    assert report.steps[0].done and outside.crontab.splitlines() == [record["line"]]
+
+
+def test_moving_to_a_new_scheduler_with_an_unreadable_crontab_is_a_step_that_needs_the_person(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "SYSTEM", "Linux")
+    outside = Outside(crontab="0 9 * * * /usr/bin/true\n", crontab_error="error: permission denied")
+    monkeypatch.setattr(onboard, "run_cmd", outside)
+    report, record = register_sweep(tmp_path)
+    row = report.steps[-1]
+    assert record["kind"] == "systemd" and f"{TASK}.timer" in outside.enabled   # the new schedule is in place
+    assert not row.done and row.needs_owner and "could not be read" in row.result and no_tool_named(row.result)
+    assert outside.wrote_crontab() == []
+
+
+def test_read_crontab_says_whether_it_was_read_missing_or_failed():
+    def run(code, out="", err=""):
+        return lambda argv, dry_run=False: subprocess.CompletedProcess(argv, code, out, err)
+    assert onboard.read_crontab(run=run(0, "a\nb\n")) == (["a", "b"], "read", "")
+    assert onboard.read_crontab(run=run(1, "", "crontab: no crontab for ada")) == ([], "read", "")   # none yet: empty
+    assert onboard.read_crontab(run=run(1, "no crontab for ada", "")) == ([], "read", "")
+    assert onboard.read_crontab(run=run(127, "", "not found")) == (None, "missing", "")
+    lines, state, why = onboard.read_crontab(run=run(1, "", "crontab: error: permission denied"))
+    assert lines is None and state == "failed" and "permission denied" in why
+    assert onboard.read_crontab(run=run(1))[1] == "failed"   # no message at all is not "no crontab"
+
+
+def test_offboard_does_not_report_a_crontab_it_could_not_read_as_clean(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "SYSTEM", "Linux")
+    root = make_space(tmp_path / "ada")
+    mine = onboard.cron_line(15, "/py", "/elsewhere/sync.py", "/elsewhere", "space-sync-ada", "/bin")
+    outside = Outside(crontab=mine + "\n", crontab_error="crontab: error: permission denied")
+    monkeypatch.setattr(offboard, "run_cmd", outside)
+    report = onboard.Report("offboard")
+    offboard.remove_sync_task(report, root, {}, "space-sync-ada", False)
+    assert not report.steps[-1].done and "could not be read" in report.steps[-1].result
+    assert outside.wrote_crontab() == [] and outside.crontab == mine + "\n"
+    outside = Outside(crontab=None)   # no crontab at all: nothing to remove, and that is done
+    monkeypatch.setattr(offboard, "run_cmd", outside)
+    report = onboard.Report("offboard")
+    offboard.remove_sync_task(report, root, {}, "space-sync-ada", False)
+    assert report.steps[-1].done and outside.wrote_crontab() == []
+
+
+@pytest.mark.parametrize("what", ["root", "path", "python"])
+def test_a_mac_refuses_a_control_character_in_plain_words_before_building_the_plist(tmp_path, monkeypatch, what):
+    """plistlib raises on one; a registration must give a plain step, and write nothing."""
+    monkeypatch.setattr(onboard, "SYSTEM", "Darwin")
+    monkeypatch.setattr(onboard, "user_id", lambda: 501)
+    outside = Outside()
+    monkeypatch.setattr(onboard, "run_cmd", outside)
+    if what == "path":
+        monkeypatch.setenv("PATH", "/usr/bin:/a\x01b")
+    elif what == "python":
+        monkeypatch.setattr(sys, "executable", "/usr/bin/py\x01thon")
+    report, _ = register_sweep(tmp_path / ("a\x01b" if what == "root" else "ada"))
+    row = report.steps[-1]
+    assert not row.done and "control character" in row.result and "run onboard again" in row.result and no_tool_named(row.result)
+    assert {"root": "the folder name", "path": "the list of folders this computer searches for programs",
+            "python": "the location of the Python program"}[what] in row.result
+    assert not (Path.home() / "Library").exists() and not outside.ran("launchctl")
+
+
+def test_the_same_refusal_serves_a_mac_and_a_systemd_unit():
+    words = ("/home/ada/\tws", "/usr/bin/python3", "/usr/bin", ["/home/ada/\tws/r.py"])
+    assert onboard.control_trouble(*words) == onboard.unit_trouble(*words) and "folder name" in onboard.unit_trouble(*words)
 
 
 def test_claude_is_found_where_its_windows_installer_puts_it(tmp_path, monkeypatch):

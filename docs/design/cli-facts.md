@@ -629,6 +629,71 @@ readings of one account land was not observed, since no matching pair was seen) 
 agrees with `subscriptionType`. Otherwise pace from the routines' own `rate_limit_event`, which
 every stream-json run prints and which always describes the account the routines draw on.
 
+## 9. The schedulers: what was checked, what is only documented (Task 9)
+
+Routines and the sync task run through the scheduler of the system that catches up after sleep:
+the Task Scheduler on Windows (a task XML, `StartWhenAvailable`), a launch agent on macOS, a
+systemd user timer on a Linux where `systemctl --user show-environment` exits 0, else cron, which
+does not catch up. Checked 2026-10-25 in WSL (Ubuntu, systemd 255.4): `systemctl --user
+show-environment` exits 0 and `crontab` exists, so a Linux with both uses the timer.
+
+**Unit files, read by systemd itself.** `systemd-analyze --user verify` was run on unit files that
+`onboard.systemd_units` generated into a scratch folder (read only: nothing was linked into
+`~/.config/systemd`, enabled or started). Five folder names: a plain one; one with spaces,
+accents, `&` and `%`; one with `$` and a backtick; one with an apostrophe; and one with a
+backslash, a double quote and `$` (given as text, since the drive cannot hold it). The first
+version of the unit text failed three of them, and that shaped the text:
+
+- The first word of `ExecStart=` (the program) must not hold a backslash, a double quote or an
+  apostrophe: `Executable name contains special characters`, then `Unit configuration has fatal
+  error, unit will not be started`. An argument may hold any of them. Nothing else notices:
+  `systemctl --user enable --now` would still succeed and `is-active` read `active`; the unit
+  would fail at its first run. The unit therefore starts such a program as the first argument of
+  `/bin/sh -c 'exec "$0" "$@"'`.
+- In the program word `$` is no variable: written `$$`, `verify` looked for a file named with two
+  dollar signs. In arguments `$$` is the escape (systemd.service(5)). `%` is a specifier in both:
+  `%%`.
+- Spaces, accents, `&`, `%%`, a single `$` and a backtick in the program path pass.
+- `verify` reads and never runs, so it does not show that the arguments arrive as intended; that
+  rests on the rules in systemd.syntax(7) (quotes, `\\`, `\"`) and on `test_routines.py`'s parser.
+
+  First version: `plain` and `accents` exit 0; `dollar` exit 1 (`Command .../Ada $$HOME `id`/bin dir/python3 is
+  not executable: No such file or directory`); `apostrophe` and `backslash` exit 1 (`Executable name contains
+  special characters`, `Unit configuration has fatal error, unit will not be started`). Final text: all five
+  exit 0.
+
+**Refused, not escaped.** Some folder names are turned away with a plain line, because no escape for them
+was seen to work: a defined `%NAME%` in a Windows task's arguments (the Task Scheduler has no documented escape
+for a percent sign, and it is not known whether it expands one at all: last section); on a Mac, a control
+character anywhere in the words (`plistlib` raises on most of them, so the plist is not built); for systemd, a
+control character likewise and a folder name that ends in a backslash
+(`WorkingDirectory=/tmp/ws\` continues on the next line and swallows `Environment=`, and `verify` still exits
+0 and says nothing; a tab in the program's path is `Executable name contains special characters`, fatal, as
+a quote is). Both seen in WSL on units written straight from `systemd_units`.
+
+**cron.** A `%` in a crontab line is a newline unless it is `\%`; the line is read by `sh`, so the
+folder names are double-quoted with `\`, `"`, `$` and the backtick escaped. Run for real with Git's `sh` on
+Windows and with the odd names `José Pérez`, `Ada & Co's 100% $HOME` + a backtick, `(a;b) {d} ! #x ~`: the program
+started in the right folder and got each argument unchanged.
+
+**Documented, not seen** (launchd.plist(5), launchctl(1), systemd.timer(5); the macOS items are in the
+last section with their commands). One thing below is not in those pages at all: a `launchctl bootstrap`
+straight after a `bootout` of the same label is said, by people who run launch agents, to fail now and then
+with `Input/output error` (exit 5) because the bootout lets go a moment later. That is hearsay, not seen here;
+`register_launchd` tries up to three times, a second apart, on that guess, and the loop in the last section
+settles it.
+
+- launchd starts a calendar job it missed while the Mac slept as soon as the Mac wakes, once for any
+  number of missed times; cron skips them. `StartInterval` is held over a sleep the same way.
+- `StandardOutPath` and `StandardErrorPath` are opened by launchd, which does not make their folder
+  (`~/.spaces/logs` is made before the agent is loaded) and does not expand `~`.
+- A launch agent in `gui/<uid>` runs in the person's graphical login session only.
+- `Persistent=true` makes a timer run a start missed while the machine was off or asleep on the
+  next start of the user manager. A user timer needs the person logged in unless `loginctl
+  enable-linger` is on.
+- A oneshot service's `systemctl start` waits until the run ends (a routine runs up to an hour):
+  `run_now` uses `--no-block`.
+
 ## Constants
 
 Copy these verbatim. Regexes are Python `re` patterns for `re.search`, case-sensitive; `\u00b7`
@@ -755,6 +820,22 @@ DESKTOP_TOOLS = {
 }
 ```
 
+```python
+# onboard.py, the schedulers (Task 9; section 9). The label of a launch agent is LAUNCHD_PREFIX + the task.
+LAUNCHD_PREFIX = "com.spaces."
+# Windows   register  schtasks /Create /F /TN <task> /XML <file>      run now  schtasks /Run /TN <task>
+# macOS     (UNVERIFIED live; the domain is the person's graphical session, gui/<uid>)
+#           load      launchctl bootout gui/<uid>/<label>      (error when none is loaded: ignored)
+#                     launchctl bootstrap gui/<uid> ~/Library/LaunchAgents/<label>.plist
+#           read back launchctl print gui/<uid>/<label>
+#           run now   launchctl kickstart gui/<uid>/<label>
+# Linux     probe     systemctl --user show-environment           (exit 0 = a user session; verified in WSL)
+#           load      systemctl --user daemon-reload; systemctl --user enable --now <task>.timer
+#           read back systemctl --user is-active <task>.timer
+#           run now   systemctl --user start --no-block <task>.service      (UNVERIFIED live)
+#           else cron: crontab -l / crontab <file>; run now = `sh -c <the line's command>` in a session of its own
+```
+
 Notes for the tasks that copy them:
 
 - Task 5: a reader that "may only read" is better made with `--tools ""` (no built-in tool at
@@ -862,3 +943,53 @@ Each item names the command or check that settles it, for the owner.
   `DISABLE_AUTOUPDATER` unset and look at `claude doctor`'s install and auto-update lines.
 - **The desktop tools' declined cards** (from section 8): `set_session_permission_mode`'s refusal
   text and whether `update_scheduled_task` shows a card at all, both not called live.
+- **A launch agent, end to end (Task 9, macOS).** Run from the root of a checkout of this template (the folder
+  that holds `_meta/tools`), in the scratch name below, never the person's own. `PY` is the interpreter
+  onboarding ran with: it needs PyYAML, which the system `python3` on a Mac does not have. Write each exit
+  code down:
+
+  ```sh
+  PY=~/.spaces/venv/bin/python
+  UIDN=$(id -u); LABEL=com.spaces.space-test-1; AGENT=~/Library/LaunchAgents/$LABEL.plist
+  mkdir -p ~/Library/LaunchAgents ~/.spaces/logs     # a fresh Mac has neither; launchd makes no log folder
+  make_agent() {   # make_agent HOUR MINUTE: an agent that runs `echo hello` at that time every day
+    "$PY" -c 'import sys; sys.path.insert(0, "_meta/tools"); import onboard
+  print(onboard.launch_agent("space-test-1", sys.argv[1], "/bin/echo", ["hello"], [(int(sys.argv[2]), int(sys.argv[3]))], None), end="")' "$PWD" "$1" "$2" > "$AGENT"
+  }
+  make_agent 9 0
+  launchctl bootstrap gui/$UIDN "$AGENT"; echo "bootstrap exit $?"                     # expect 0
+  launchctl print gui/$UIDN/$LABEL > ~/.spaces/logs/space-test-1.print; echo "print exit $?"   # expect 0
+  grep -i -A3 'calendar\|interval' ~/.spaces/logs/space-test-1.print                   # the 09:00 start is listed
+  launchctl kickstart gui/$UIDN/$LABEL; echo "kickstart exit $?"; sleep 2             # expect 0
+  cat ~/.spaces/logs/space-test-1.log                                                  # expect: hello
+  launchctl bootout gui/$UIDN/$LABEL; echo "bootout exit $?"                           # expect 0
+  launchctl print gui/$UIDN/$LABEL; echo "print after bootout exit $?"                 # expect non-zero, "Could not find service"
+  # the race: a bootstrap straight after a bootout of the same label. Does any exit 5 (Input/output error)?
+  for i in $(seq 10); do launchctl bootout gui/$UIDN/$LABEL; launchctl bootstrap gui/$UIDN "$AGENT"; echo "$i bootstrap exit $?"; done
+  launchctl bootout gui/$UIDN/$LABEL
+  rm -f "$AGENT" ~/.spaces/logs/space-test-1.log ~/.spaces/logs/space-test-1.print
+  ```
+
+  `register_launchd` tries a bootstrap three times, a second apart, on the guess that the race is real.
+- **launchd runs a missed calendar start on waking** (Task 9, macOS). With the shell functions and variables of
+  the item above:
+
+  ```sh
+  make_agent $(date -v+5M +"%H %M"); launchctl bootstrap gui/$UIDN "$AGENT"     # a start five minutes ahead
+  pmset sleepnow                    # wake the Mac after the start time has passed
+  cat ~/.spaces/logs/space-test-1.log   # expect one hello, shortly after waking
+  ```
+
+  Then the same with the lid closed on battery, and with the person logged out (expect nothing: `gui/<uid>` is
+  gone). Clean up as above (`bootout`, `rm`).
+- **The launch agent can use the Claude sign-in** (extends "launchd can use the sign-in" above): the agent of the
+  item above running `claude auth status --json` instead of `echo`, while the screen is locked.
+- **`systemctl --user start --no-block <task>.service`** (Task 9): with a throw-away oneshot service that runs
+  `sleep 30`, the command returns at once and `systemctl --user is-active` reads `activating` for 30
+  seconds; without `--no-block` it returns after 30. And `Persistent=true` on a real wake: set a timer five
+  minutes ahead, suspend past it, wake: `systemctl --user list-timers` shows it run.
+- **`%NAME%` in a Windows task's arguments** (Task 9): not known whether the Task Scheduler expands it, the way
+  it expands the `<Command>` the task uses (`%SystemRoot%`). `onboard` assumes it does and refuses a folder name
+  with a defined `%NAME%` in it (a lone `100%` is allowed). To settle it, a throw-away task whose arguments are
+  `--headless cmd /c echo %USERNAME%>out.txt`: read `out.txt` (the user name = expanded). If it is not
+  expanded, `windows_expands` and its refusal can go.

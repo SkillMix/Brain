@@ -533,3 +533,26 @@ def test_a_start_the_doctor_stopped_exits_non_zero(tmp_path, monkeypatch, capsys
                        "--home", str(tmp_path / "home"), "--json"])
     out = capsys.readouterr().out
     assert code == 1 and json.loads(out[out.index("{"):])["stopped"] is True
+
+
+# ----- the scheduler row names the scheduler the work runs under --------------------------------------------
+def scheduler(tmp_path, system, **answers):
+    return rows(Fake(tmp_path, answers, system=system))["scheduler"]
+
+
+def test_the_scheduler_row_says_launchd_on_a_mac_whatever_the_crontab_says(tmp_path):
+    for crontab in ((0, ""), (127, "")):
+        row = scheduler(tmp_path, "Darwin", **{"crontab -l": crontab})
+        assert row.ok and row.found == "launchd" and row.check.startswith("launchctl print gui/")
+
+
+def test_the_scheduler_row_says_systemd_on_a_linux_where_the_user_manager_works(tmp_path):
+    row = scheduler(tmp_path, "Linux", **{"crontab -l": (0, ""), "systemctl --user show-environment": (0, "HOME=/home/ada")})
+    assert row.ok and "systemd" in row.found and row.check == "systemctl --user show-environment"
+
+
+def test_the_scheduler_row_says_cron_otherwise_and_that_it_does_not_catch_up(tmp_path):
+    row = scheduler(tmp_path, "Linux", **{"crontab -l": (0, ""), "systemctl --user show-environment": (1, "")})
+    assert row.ok and "cron" in row.found and "catch up" in row.found
+    row = scheduler(tmp_path, "Linux", **{"crontab -l": (127, ""), "systemctl --user show-environment": (1, "")})
+    assert not row.ok and "cron" in row.yours and "sentence" in row.yours
