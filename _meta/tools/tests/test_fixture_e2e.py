@@ -4,6 +4,7 @@ This is the phase-1 gate of the template: `onboard.py --fixture` must build the 
 spaces, run every routine on them, land releases only where the rules allow, and pass
 the answer, leak and behaviour tests. It takes about a minute.
 """
+import json
 from pathlib import Path
 
 import pytest
@@ -212,3 +213,46 @@ def test_signed_release_lands_silently_at_its_home_and_the_sample_draws(fixture_
     items = yaml.safe_load((target / "harbor" / "_inbound" / "needs-you" / "librarian.yaml").read_text(
         encoding="utf-8"))["items"]
     assert any(i["kind"] == "sample" for i in items)
+
+
+def test_the_fixture_reads_its_history_in_three_parts_and_resumes_one(fixture_dir):
+    """Ada's history is read oldest first in three paced parts on the fast clock, one run a scaled day. The first run
+    of part 2 ends at a usage limit that names no reset time; the next run goes on from its checkpoint and takes
+    nothing twice. Every part ends done, each feed's records were taken in date order, and what Ada settled after
+    part 1 is not open again when the later parts have been read."""
+    import backfill
+    target, _ = fixture_dir
+    ada = target / "ada"
+    state = backfill.load(ada)
+    parts = state["parts"]
+    assert [p["id"] for p in parts] == ["p1", "p2", "p3"]
+    assert all(p["status"] == "done" for p in parts) and not backfill.active(ada)
+    assert [[r["outcome"] for r in p["runs"]] for p in parts] == [["finished"], ["limit", "finished"], ["finished"]]
+    assert state["calibration"] == "measured" and state["per_token_share"] > 0   # part 1 was measured
+    assert "history: ada read in 3 parts, all done" in OUTPUT["stdout"]
+
+    # each feed was taken oldest first (appended in date order, nothing twice) and swept in that order
+    taken = []
+    for feed in ("mail", "calls"):
+        rows = [json.loads(line) for line in (ada / "_meta" / "state" / "feed" / f"{feed}.jsonl").read_text(
+            encoding="utf-8").splitlines() if line.strip()]
+        assert [r["at"] for r in rows] == sorted(r["at"] for r in rows), feed
+        taken += [r["id"] for r in rows]
+    assert sorted(taken) == ["c-ada-003", "k-ada-004", "m-ada-001", "m-ada-002", "m-ada-005", "m-ada-006"]
+    swept = {}
+    for path in (ada / "knowledge" / "sources").rglob("*.md"):
+        if pages.is_page_path(path):
+            fm, _ = pages.read(path)
+            if fm.get("type") == "source":
+                swept[fm["record"]] = (fm["at"], fm["generated"]["at"])
+    assert set(swept) == set(taken)
+    assert [when for _, when in sorted(swept.values())] == sorted(when for _, when in swept.values())
+    day = {rid: when for rid, (_, when) in swept.items()}
+    assert day["m-ada-001"] == day["m-ada-002"] < day["c-ada-003"] < day["k-ada-004"] < day["m-ada-005"]   # one part a day, the limit's day apart
+
+    # what Ada settled after part 1 stays settled while the later parts arrive
+    held = [pages.read(p)[0] for p in (ada / "_outbound" / "held").glob("*.md")]
+    assert not [fm for fm in held if "m-ada-001" in (fm.get("evidence") or [])]
+    assert "m-ada-001" not in (ada / "live" / "needs-you.md").read_text(encoding="utf-8")
+    signed = [pages.read(p)[0] for p in (ada / "knowledge" / "projects" / "harbor").glob("*.md")]
+    assert any(fm.get("status") == "stable" and fm.get("signed_by") == "Ada Okafor" for fm in signed)

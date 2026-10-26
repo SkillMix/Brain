@@ -2323,8 +2323,16 @@ def company_answers(data) -> dict:
             "time_scale": data.get("time_scale") or 1440, "feeds": "mail: owner, calls: owner"}
 
 
-def fixture_spaces(target, company_yaml=None) -> Report:
-    """Offline company onboard of the fixture: brain, every workspace and every project as siblings."""
+def _feed_lines(path) -> dict:
+    """A fixture person's records by the feed file they are exported to: calls to `calls`, the rest to `mail`."""
+    lines = [l for l in Path(path).read_text(encoding="utf-8").splitlines() if l.strip()]
+    return {"mail": [l for l in lines if json.loads(l).get("kind") != "call"],
+            "calls": [l for l in lines if json.loads(l).get("kind") == "call"]}
+
+
+def fixture_spaces(target, company_yaml=None, hold=()) -> Report:
+    """Offline company onboard of the fixture: brain, every workspace and every project as siblings. The
+    feed of a person in `hold` is not copied: their history is read in parts (`staged_history`)."""
     target = Path(target).resolve()
     company_yaml = Path(company_yaml) if company_yaml else FIXTURE / "company.yaml"
     answers = company_answers(read_yaml(company_yaml, {}) or {})
@@ -2333,11 +2341,9 @@ def fixture_spaces(target, company_yaml=None) -> Report:
     report = run(brain, answers, offline=True, home=target, everyone=True)
     for person in people_of(answers):
         ws, src = report.spaces.get(person["slug"]), company_yaml.parent / "feed" / f"{person['slug']}.jsonl"
-        if ws is None or not src.exists():
+        if ws is None or not src.exists() or person["slug"] in hold:
             continue
-        lines = [l for l in src.read_text(encoding="utf-8").splitlines() if l.strip()]
-        for feed, mine in (("mail", [l for l in lines if json.loads(l).get("kind") != "call"]),
-                           ("calls", [l for l in lines if json.loads(l).get("kind") == "call"])):
+        for feed, mine in _feed_lines(src).items():
             if mine:
                 write_text(ws / "_meta" / "state" / "feed" / f"{feed}.jsonl", "\n".join(mine) + "\n")
     data = read_yaml(company_yaml, {}) or {}
@@ -2423,10 +2429,64 @@ def _late_feeds(spaces: dict):
     return inject
 
 
+STAGED = ("ada",)   # whose history the fixture reads in three parts: her records are dated 1 to 3 October
+STAGED_NOW = dt.datetime(2026, 10, 4, tzinfo=dt.timezone.utc)   # the day after the last of them
+STAGED_BATCH = 1     # records a batch; a real run appends at most 50
+STAGED_TOKENS = 120_000
+
+
+def staged_history(spaces: dict, slugs=STAGED):
+    """The history of each person in `slugs`, read oldest first in three paced parts on the fixture's fast clock
+    (Task 11). The plan is made at once; then one run a scaled day, at night, reads the part `backfill.due`
+    names: its records per feed, oldest first, in batches with a checkpoint after each. The first run of part 2
+    ends at a usage limit that names no reset time; the next run goes on from its checkpoint. Part 1, through,
+    is measured. Returns the `inject` for `chain.virtual`: it runs at the start of a scaled day, before the
+    chains, as the routines run before the sweep they feed."""
+    import backfill
+    held = {slug: _feed_lines(FIXTURE / "feed" / f"{slug}.jsonl") for slug in slugs}
+    for slug in held:
+        backfill.plan(spaces[slug], {"2026-10": 4}, STAGED_NOW, window_days=3, first_part_max=1)
+
+    def read(slug: str, part: dict, root: Path) -> str:
+        """Append the part's records per feed from where the last run stopped; the outcome of the run."""
+        limited = part["id"] == "p2" and not part.get("runs")
+        for feed, lines in held[slug].items():
+            marked = (part.get("checkpoints") or {}).get(feed)   # the last record read; else the part's first day
+            low, high = pages.parse_iso(backfill.export_mark(root, feed)), pages.parse_iso(part["to"])
+            todo = [rec for rec in map(json.loads, lines)
+                    if (pages.parse_iso(rec["at"]) > low if marked else pages.parse_iso(rec["at"]) >= low)
+                    and pages.parse_iso(rec["at"]) < high]
+            for number in range(0, len(todo), STAGED_BATCH):
+                batch = todo[number:number + STAGED_BATCH]
+                target = root / "_meta" / "state" / "feed" / f"{feed}.jsonl"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with target.open("a", encoding="utf-8", newline="\n") as fh:
+                    fh.write("".join(json.dumps({**rec, "backfill": True}) + "\n" for rec in batch))
+                backfill.checkpoint(root, part["id"], feed, batch[-1]["at"])
+                if limited:
+                    return "limit"
+        return "finished"
+
+    def inject(day: int, at) -> None:
+        night = at.replace(hour=1, minute=0, second=0, microsecond=0)
+        for slug in held:
+            root = Path(spaces[slug])
+            part = backfill.due(root, night)
+            if part is None:
+                continue
+            backfill.begin(root, part["id"])
+            outcome = read(slug, part, root)
+            backfill.after_run(root, part["id"], {"outcome": outcome, "why": "", "resets_at": None,
+                                                  "usage": {"input_tokens": STAGED_TOKENS}}, now=at)
+            if part["id"] == "p1":
+                backfill.calibrate(root, 2, 14, backfill.load(root)["parts"][0]["tokens"], now=at)
+    return inject
+
+
 def fixture(target) -> int:
     """Onboard the fixture company, run the chain over it and the tests; 1 on any failure. Ends
     with one line, `fixture: passed` or `fixture: failed (what)`."""
-    report = fixture_spaces(target)
+    report = fixture_spaces(target, hold=STAGED)
     print_steps([s for s in report.steps if not s.needs_owner])   # sign-ins belong to a real setup
     import onboarding_page   # the page as the top owner sees it when setup finishes, before the week
     print(f"page: {onboarding_page.write(Path(target) / 'onboarding.html', report.steps, report.spaces)}")
@@ -2436,13 +2496,20 @@ def fixture(target) -> int:
     # corridors carry requests; they run no chain of their own
     unique = [p for p in dict.fromkeys(roots.values()) if spaceyaml.load(p).profile != "channel"]
     try:
+        import backfill
         import chain
+        history, late = staged_history(report.spaces), _late_feeds(report.spaces)
         chain.virtual(unique, days=7, steps_per_day=3, persons=persons, offline_roots=roots,
                       verdicts_after_day=2, verdicts=chain.load_verdicts(FIXTURE / "verdicts.yaml", unique),
-                      inject=_late_feeds(report.spaces),
+                      inject=lambda day, at: (history(day, at), late(day, at)),
                       by={str(p): persons[p.name] for p in unique if p.name in persons})
-    except ImportError:
-        missing.append("chain")
+        for slug in STAGED:
+            left = backfill.active(report.spaces[slug])
+            print(f"history: {slug} read in {len(backfill.load(report.spaces[slug]).get('parts') or [])} parts"
+                  + ("" if left else ", all done"))
+            problems += [f"{slug}'s history is not all read"] if left else []
+    except ImportError as exc:
+        missing.append(exc.name or "chain")
     try:  # the walk-and-search probe at the end of the fixture's week, every space that has questions
         import tests_run as _probe
         for path in unique:

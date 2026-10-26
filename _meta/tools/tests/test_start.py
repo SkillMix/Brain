@@ -84,7 +84,7 @@ def test_one_sentence_sets_a_person_up_from_their_invitation(tmp_path, monkeypat
     assert errors(ws) == []
     assert onboard.instruction_present(ui, ws)
     names = {r["name"]: r for r in report.routines}
-    assert set(names) == {"sweep-chain", "daily-chain"}
+    assert set(names) == {"sweep-chain", "daily-chain", "backfill-night"}
     # one schedule, from the routine's own prompt, in the machine's local time
     assert all(r["timezone"] == "local" and r["schedule"] for r in report.routines)
     assert "routines" not in spaceyaml.load(ws).data
@@ -194,7 +194,7 @@ def test_the_start_command_onboards_offline_from_a_fixture_invitation(tmp_path):
     result = json.loads(done.stdout[done.stdout.index("{"):])
     ws = Path(result["workspace"])
     assert ws.parent == tmp_path / "home" and spaceyaml.load(ws).owner == "Ada Okafor"
-    assert result["failed"] == [] and len(result["routines"]) == 2 and errors(ws) == []
+    assert result["failed"] == [] and len(result["routines"]) == 3 and errors(ws) == []
 
 
 def test_identity_drops_a_no_reply_address(monkeypatch):
@@ -888,9 +888,9 @@ def _gh(calls):
 def test_online_the_routines_are_os_tasks_registered_by_the_build(tmp_path, monkeypatch):
     ws, report, calls = _finishing(tmp_path, monkeypatch, "none")
     routines = start.finish_workspace(report, ws, "Ada Okafor", "lantern-works", offline=False)
-    assert [r["name"] for r in routines] == ["daily-chain", "sweep-chain"]
+    assert [r["name"] for r in routines] == ["backfill-night", "daily-chain", "sweep-chain"]
     created = [c[0][c[0].index("/TN") + 1] for c in calls if c[0][:2] == ["schtasks", "/Create"]]
-    assert created == ["space-daily-chain-ada", "space-sweep-chain-ada"]
+    assert created == ["space-backfill-night-ada", "space-daily-chain-ada", "space-sweep-chain-ada"]
     assert [t["name"] for t in onboard.read_yaml(ws / "_meta" / "state" / "onboard.yaml")["routine_tasks"]] == created
     assert all(s.done for s in report.steps) and not any("--os-routines" in s.result for s in report.steps)
 
@@ -900,7 +900,8 @@ def test_an_isolated_run_registers_only_tasks_under_its_own_prefix(tmp_path, mon
     ws, report, calls = _finishing(tmp_path, monkeypatch, "none")
     start.finish_workspace(report, ws, "Ada Okafor", "lantern-works", offline=False)
     created = [c[0][c[0].index("/TN") + 1] for c in calls if c[0][:2] == ["schtasks", "/Create"]]
-    assert created == ["space-test-1a2b-daily-chain-ada", "space-test-1a2b-sweep-chain-ada"]
+    assert created == ["space-test-1a2b-backfill-night-ada", "space-test-1a2b-daily-chain-ada",
+                       "space-test-1a2b-sweep-chain-ada"]
 
 
 @pytest.mark.parametrize("permission", ["read", "write", "admin"])

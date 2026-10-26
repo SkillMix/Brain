@@ -70,18 +70,20 @@ def test_on_windows_each_routine_is_a_hidden_task_at_its_times(tmp_path, monkeyp
     ws = workspace(tmp_path)
     report = onboard.Report("person")
     records = onboard.register_routines(report, ws, offline=False, dry_run=False)
-    assert [r["name"] for r in records] == ["space-daily-chain-ada", "space-sweep-chain-ada"]
+    assert [r["name"] for r in records] == ["space-backfill-night-ada", "space-daily-chain-ada", "space-sweep-chain-ada"]
     xmls = {c[0][c[0].index("/TN") + 1]: c[1][c[0][c[0].index("/XML") + 1]].decode("utf-16")
             for c in calls if c[0][:2] == ["schtasks", "/Create"]}
-    daily, sweep = xmls["space-daily-chain-ada"], xmls["space-sweep-chain-ada"]
+    night, daily, sweep = xmls["space-backfill-night-ada"], xmls["space-daily-chain-ada"], xmls["space-sweep-chain-ada"]
+    assert night.count("<CalendarTrigger>") == 1 and "T01:00:00</StartBoundary>" in night
     assert daily.count("<CalendarTrigger>") == 1 and "T06:30:00</StartBoundary>" in daily
     assert sweep.count("<CalendarTrigger>") == 3 and "T19:00:00</StartBoundary>" in sweep
-    for xml in (daily, sweep):
+    for xml in (night, daily, sweep):
         assert "<DisallowStartIfOnBatteries>false" in xml and "<StartWhenAvailable>true" in xml
         assert "routine.py" in xml and "conhost.exe</Command>" in xml
     assert all(s.done for s in report.steps)
     state = onboard.read_yaml(ws / "_meta" / "state" / "onboard.yaml", {})
-    assert [t["name"] for t in state["routine_tasks"]] == ["space-daily-chain-ada", "space-sweep-chain-ada"]
+    assert [t["name"] for t in state["routine_tasks"]] == ["space-backfill-night-ada", "space-daily-chain-ada",
+                                                            "space-sweep-chain-ada"]
 
 
 def test_with_cron_each_routine_is_one_marked_line(tmp_path, monkeypatch):
@@ -105,9 +107,10 @@ def test_with_cron_each_routine_is_one_marked_line(tmp_path, monkeypatch):
     report = onboard.Report("person")
     records = onboard.register_routines(report, ws, offline=False, dry_run=False)
     lines = state["lines"].splitlines()
-    assert lines[0] == "0 9 * * * /usr/bin/true" and len(lines) == 3
-    assert lines[1].startswith("30 6 * * * cd ") and lines[1].endswith("# space-daily-chain-ada")
-    assert lines[2].startswith("0 7,13,19 * * * cd ") and "routine.py" in lines[2]
+    assert lines[0] == "0 9 * * * /usr/bin/true" and len(lines) == 4
+    assert lines[1].startswith("0 1 * * * cd ") and lines[1].endswith("# space-backfill-night-ada")
+    assert lines[2].startswith("30 6 * * * cd ") and lines[2].endswith("# space-daily-chain-ada")
+    assert lines[3].startswith("0 7,13,19 * * * cd ") and "routine.py" in lines[3]
     # cron does not catch up: one plain line says so, whatever the number of tasks; it blocks nothing
     waiting = [s for s in report.steps if s.name == onboard.CRON_STEP]
     assert len(waiting) == 1 and waiting[0].done and not waiting[0].needs_owner and not report.failed()
@@ -116,7 +119,7 @@ def test_with_cron_each_routine_is_one_marked_line(tmp_path, monkeypatch):
     assert not any(tool in waiting[0].result.lower() for tool in ("cron", "systemd", "systemctl", "crontab"))   # no tool is named
     import onboarding_page
     assert onboarding_page.STAGES[onboarding_page.stage_of(onboard.CRON_STEP)][0] == "Routines"
-    assert [r["waiting"] for r in records] == [onboard.CRON_WAITING] * 2
+    assert [r["waiting"] for r in records] == [onboard.CRON_WAITING] * 3
     onboard.register_routines(onboard.Report("person"), ws, offline=False, dry_run=False)
     assert state["lines"].splitlines() == lines   # again: nothing doubles
 
@@ -148,10 +151,11 @@ def test_on_macos_each_routine_is_a_launch_agent_at_its_times(tmp_path, monkeypa
     assert all(s.done for s in report.steps) and not any(s.name == onboard.CRON_STEP for s in report.steps)
     assert not [c for c in calls if c[0][0] == "crontab" and c[0][1] != "-l"]   # no cron line on a Mac
     assert [(r["kind"], r["label"], r["log"]) for r in records] == [
+        ("launchd", "com.spaces.space-backfill-night-ada", "backfill-night-ada"),
         ("launchd", "com.spaces.space-daily-chain-ada", "daily-chain-ada"),
         ("launchd", "com.spaces.space-sweep-chain-ada", "sweep-chain-ada")]
     state = onboard.read_yaml(ws / "_meta" / "state" / "onboard.yaml", {})
-    assert state["routine_tasks"][1]["check"] == ["launchctl", "print", "gui/501/com.spaces.space-sweep-chain-ada"]
+    assert state["routine_tasks"][2]["check"] == ["launchctl", "print", "gui/501/com.spaces.space-sweep-chain-ada"]
 
 
 def test_a_launch_agent_that_will_not_load_is_a_failed_step_after_three_tries(tmp_path, monkeypatch):
@@ -213,9 +217,9 @@ def test_linux_prefers_a_persistent_systemd_timer_over_cron(tmp_path, monkeypatc
     assert ["systemctl", "--user", "enable", "--now", "space-sweep-chain-ada.timer"] in calls
     # exactly one scheduler: the cron line of the same task is gone, someone else's stays
     assert state["lines"].splitlines() == ["0 9 * * * /usr/bin/true"]
-    assert "old cron line removed" in report.steps[1].result and "old cron line" not in report.steps[0].result
+    assert "old cron line removed" in report.steps[2].result and "old cron line" not in report.steps[1].result
     assert all(s.done for s in report.steps) and not any(s.name == onboard.CRON_STEP for s in report.steps)
-    assert [r["kind"] for r in records] == ["systemd", "systemd"] and not any("waiting" in r for r in records)
+    assert [r["kind"] for r in records] == ["systemd"] * 3 and not any("waiting" in r for r in records)
 
 
 def test_a_systemd_timer_that_will_not_start_leaves_the_cron_line_alone(tmp_path, monkeypatch):
@@ -1054,7 +1058,7 @@ def test_rendered_routines_are_not_scheduled_routines(tmp_path, monkeypatch):
 def test_a_persistent_harness_task_counts_once_its_read_back_passes(tmp_path, monkeypatch):
     ws = workspace(tmp_path)
     onboard.write_yaml(ws / "_meta" / "state" / "onboard.yaml", {"case": "person", "offline": True})
-    tasks = [tmp_path / "tasks" / name / "SKILL.md" for name in ("daily", "sweep")]
+    tasks = [tmp_path / "tasks" / name / "SKILL.md" for name in ("night", "daily", "sweep")]
     checks = [f"test -f {p.as_posix()}" for p in tasks]
     report = onboard.Report("routines")
     assert onboard.record_routine_checks(report, ws, checks[:1]) == []   # one per routine
@@ -1063,10 +1067,10 @@ def test_a_persistent_harness_task_counts_once_its_read_back_passes(tmp_path, mo
     for path in tasks:
         path.parent.mkdir(parents=True)
         path.write_text("the routine\n", encoding="utf-8")
-    assert len(onboard.record_routine_checks(onboard.Report("routines"), ws, checks)) == 2
-    assert [s.done for s in onboard.routine_schedule(ws)] == [True, True]
+    assert len(onboard.record_routine_checks(onboard.Report("routines"), ws, checks)) == 3
+    assert [s.done for s in onboard.routine_schedule(ws)] == [True, True, True]
     tasks[0].unlink()   # the harness lost a task: the check says so
-    assert [s.done for s in onboard.routine_schedule(ws)] == [False, True]
+    assert [s.done for s in onboard.routine_schedule(ws)] == [False, True, True]
 
 
 # ----- what the command line itself sees ------------------------------------------------------------
@@ -1229,7 +1233,7 @@ def test_the_routine_tasks_take_the_prefix_and_are_read_back_by_the_name_recorde
     monkeypatch.setattr(onboard, "run_cmd", world({"schtasks /Query": (0, "".join(onboard.WINDOWS_TASK))}, calls))
     ws = workspace(tmp_path)
     records = onboard.register_routines(onboard.Report("person"), ws, offline=False, dry_run=False)
-    names = ["space-test-1a2b-daily-chain-ada", "space-test-1a2b-sweep-chain-ada"]
+    names = ["space-test-1a2b-backfill-night-ada", "space-test-1a2b-daily-chain-ada", "space-test-1a2b-sweep-chain-ada"]
     assert [r["name"] for r in records] == names
     assert [c[0][c[0].index("/TN") + 1] for c in calls if c[0][:2] == ["schtasks", "/Create"]] == names
     # --check finds them by the recorded name, whatever the environment says then
@@ -1258,9 +1262,9 @@ def test_a_registered_routine_task_records_its_log_name(tmp_path, monkeypatch):
     monkeypatch.setattr(onboard, "run_cmd", world({"schtasks /Query": (0, "".join(onboard.WINDOWS_TASK))}, []))
     ws = workspace(tmp_path)
     records = onboard.register_routines(onboard.Report("person"), ws, offline=False, dry_run=False)
-    assert [r["log"] for r in records] == ["daily-chain-ada", "sweep-chain-ada"]   # routine.py's <routine>-<space>.log
+    assert [r["log"] for r in records] == ["backfill-night-ada", "daily-chain-ada", "sweep-chain-ada"]   # routine.py's <routine>-<space>.log
     state = onboard.read_yaml(ws / "_meta" / "state" / "onboard.yaml", {})
-    assert [t["log"] for t in state["routine_tasks"]] == ["daily-chain-ada", "sweep-chain-ada"]
+    assert [t["log"] for t in state["routine_tasks"]] == ["backfill-night-ada", "daily-chain-ada", "sweep-chain-ada"]
 
 
 def test_the_run_of_a_task_is_found_by_its_recorded_log_not_by_the_environment(tmp_path, monkeypatch):
@@ -2102,7 +2106,8 @@ def test_build_is_done_when_both_probes_pass_and_the_allowlist_was_written_betwe
     workspace = Path(result["workspace"])
     assert task == "space-probe-ada-okafor" and argv == [str(workspace / "_meta" / "tools" / "routine.py"), "--probe", str(workspace)]
     assert when.get("times") and when.get("cron")
-    assert seen["allowlist_before_second"] == ["daily-chain-ada-okafor.settings.json", "sweep-chain-ada-okafor.settings.json"]
+    assert seen["allowlist_before_second"] == ["backfill-night-ada-okafor.settings.json", "daily-chain-ada-okafor.settings.json",
+                                               "sweep-chain-ada-okafor.settings.json"]
     assert seen["events"][-1] == "remove"
 
 

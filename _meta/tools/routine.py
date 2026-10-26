@@ -128,6 +128,8 @@ ROUTINE_TOOLS = ("brief.py", "chain.py", "check.py", "classify.py", "distill.py"
                  "librarian.py", "morning_view.py", "needs_you.py", "outbox_reconcile.py",
                  "owner_email.py", "registry.py", "release.py", "request.py", "route.py", "search.py",
                  "status.py", "sweep.py", "sync.py", "tests_run.py", "tracker.py")
+# Setup's history reading runs inside the sweep chain (step 0).
+ROUTINE_TOOLS += ("backfill.py",)
 # What no routine edits, in any space on this machine: the code that runs (tools, migrations,
 # tests and their configuration), the instructions every session loads, git, the rules, the
 # routine prompts and the apps' verdicts the grant is read from. A path rule for Edit covers Write
@@ -136,6 +138,7 @@ PROTECTED_EDITS = ("_meta/tools/**", "_meta/migrations/**", "_meta/tests/**", "_
                    "_meta/state/routines/**", "_meta/state/private/apps.yaml", ".claude/**", ".github/**",
                    ".git/**", ".gitmodules", ".mcp.json", "rules.md", "space.yaml", "CLAUDE.md", "AGENTS.md",
                    "conftest.py", "pytest.ini", "pyproject.toml", "setup.cfg", "tox.ini")
+PROTECTED_EDITS += ("_meta/state/backfill.yaml",)   # the history's pacing and the paid hold: written only through backfill.py
 # Rooted at each space: a folder name a subject could also have.
 PROTECTED_IN_ROOT = ("identity/**",)
 READ_ONLY = ("Bash(gh pr view *)", "Bash(gh pr list *)", "Bash(git status *)", "Bash(git log *)",
@@ -731,7 +734,7 @@ def _lock_data(raw: bytes) -> dict | None:
     if not (isinstance(pid, int) and not isinstance(pid, bool) and pid > 0 and isinstance(started, dt.datetime)):
         return None
     return {"pid": pid, "routine": str(data.get("routine") or ""),
-            "started": started if started.tzinfo else started.astimezone()}
+            "started": started if started.tzinfo else started.astimezone(), "part": str(data.get("part") or "")}
 
 
 def _live(data: dict | None) -> bool:
@@ -847,16 +850,17 @@ def _being_written(path: Path, raw: bytes) -> bool:
     return not raw and _age(path) <= TAKEOVER_SECONDS
 
 
-def take_lock(workspace, routine_name: str) -> bool:
+def take_lock(workspace, routine_name: str, part: str | None = None) -> bool:
     """The workspace's lock for this run: False while a live run holds it. A dead one is taken over: its
     process is gone, it is older than LOCK_HOURS, or it cannot be read. Runs racing for it never both get
     it (Ruling R30): the lock is made whole in one exclusive step that fails when one is there, and a dead
-    one is moved out of the way by one run at a time (`_take_over`) before that step is tried again."""
+    one is moved out of the way by one run at a time (`_take_over`) before that step is tried again. `part` is
+    the part of the history this run reads (`next_part`), kept in the lock for as long as the run lasts."""
     path = lock_path(workspace)
     path.parent.mkdir(parents=True, exist_ok=True)
-    mine = yaml.safe_dump({"pid": os.getpid(), "routine": routine_name,
-                           "started": dt.datetime.now().astimezone().isoformat(timespec="seconds")},
-                          sort_keys=False).encode("utf-8")
+    held = {"pid": os.getpid(), "routine": routine_name,
+            "started": dt.datetime.now().astimezone().isoformat(timespec="seconds")}
+    mine = yaml.safe_dump({**held, **({"part": part} if part else {})}, sort_keys=False).encode("utf-8")
     for attempt in range(200):
         if _create(path, mine):
             return True
@@ -881,7 +885,8 @@ def locked(workspace) -> dict | None:
         return None
     if not _live(data):
         return None
-    return {"pid": data["pid"], "routine": data["routine"], "started": data["started"].isoformat(timespec="seconds")}
+    held = {"pid": data["pid"], "routine": data["routine"], "started": data["started"].isoformat(timespec="seconds")}
+    return {**held, "part": data["part"]} if data["part"] else held
 
 
 def release_lock(workspace, routine_name: str | None = None) -> None:
@@ -1380,6 +1385,53 @@ def wanted(workspace, meta: dict) -> bool:
         return False
 
 
+PART_ROUTINES = ("sweep-chain", "backfill-night")   # the routines whose prompts read a part of the history
+
+
+def next_part(workspace, routine_name: str, now=None) -> tuple:
+    """(the id of the part of the history this run reads, else None; why none, in plain words): what
+    `backfill.due` names at the start of a run that reads parts (PART_ROUTINES). A backfill that cannot be
+    read is no part, never a stop."""
+    if routine_name not in PART_ROUTINES:
+        return None, ""
+    try:
+        import backfill
+        now = now or dt.datetime.now().astimezone()
+        part = backfill.due(Path(workspace), now)
+        return (part["id"], "") if part else (None, backfill.explain(Path(workspace), now)[1])
+    except Exception:
+        return None, "How far the history has been read could not be checked just now, so this run reads no part."
+
+
+def note_start(workspace, part: str | None) -> tuple:
+    """(the part the run goes on with, the words for the log). The run is about to read `part`: until it checkpoints,
+    says `read` or `unfinished`, it has read nothing and the part is not marked done (`backfill.begin`). When that
+    cannot be noted the run goes on with no part, so what it came to is never told to the backfill and a part is
+    never finished without a begin; what the agent checkpoints is kept and read on from next time."""
+    if not part:
+        return None, ""
+    try:
+        import backfill
+        backfill.begin(Path(workspace), part)
+    except Exception as exc:
+        return None, f"the history's part {part} could not be marked as begun, so this run does not finish it: {exc}\n"
+    return part, ""
+
+
+def note_part(workspace, part: str | None, line: dict, now) -> str:
+    """What the run that read `part` came to goes to the backfill (`backfill.after_run`); the words for the
+    log when that could not be done. The routine's own outcome is already written. A run that stopped on a
+    fault of its own is told the same way (`stopped`): it leaves the part as it was, begun and not done."""
+    if not part:
+        return ""
+    try:
+        import backfill
+        backfill.after_run(Path(workspace), part, line, now=now)
+    except Exception as exc:
+        return f"the history's part {part} could not be noted: {exc}\n"
+    return ""
+
+
 def _stopped(why: str) -> dict:
     return {"outcome": "stopped", "why": why, "resets_at": None, "usage": dict.fromkeys(USAGE_KEYS, 0)}
 
@@ -1401,6 +1453,12 @@ def main(argv=None, run=subprocess.run) -> int:
     name = spaceyaml.load(workspace).name
     log = Path.home() / ".spaces" / "logs" / f"{prompt.stem}-{name}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
+    part, why = next_part(workspace, prompt.stem)
+    if meta.get("only_while") == "backfill" and part is None:   # a run would spend its first tokens to find that out
+        with log.open("a", encoding="utf-8") as fh:
+            fh.write(f"\n== {dt.datetime.now().isoformat(timespec='seconds')} {prompt.stem}\n"
+                     f"nothing to read now: {why}\nexit 0\n")
+        return 0
     doctor.use_tools()
     claude = find_claude()
     with log.open("a", encoding="utf-8") as fh:
@@ -1410,23 +1468,26 @@ def main(argv=None, run=subprocess.run) -> int:
             fh.write("claude is not installed or not on PATH: install Claude Code, then run onboard "
                      "--os-routines again\nexit 127\n")
             return 127
-        if not take_lock(workspace, prompt.stem):
+        if not take_lock(workspace, prompt.stem, part):
             held = locked(workspace) or {}
             write_outcome(workspace, prompt.stem, _stopped(BUSY))
             fh.write(f"{BUSY}: {held.get('routine', 'a routine')} since {held.get('started', 'a moment ago')}\n"
                      f"outcome stopped: {BUSY}\nexit 0\n")
             return 0
         try:
-            return _run(workspace, prompt, body, name, claude, fh, run)
+            return _run(workspace, prompt, body, name, claude, fh, run, part)
         finally:
             release_lock(workspace, prompt.stem)
 
 
-def _run(workspace: Path, prompt: Path, body: str, name: str, claude: str, fh, run) -> int:
+def _run(workspace: Path, prompt: Path, body: str, name: str, claude: str, fh, run, part: str | None = None) -> int:
     """One run under the lock: the grant's items, the profile, claude (in `routine_env`), then what it came to.
-    A fault of its own still ends in an outcome line (`stopped`, why in plain words) and an exit line."""
+    A fault of its own still ends in an outcome line (`stopped`, why in plain words) and an exit line. The part
+    of the history the run reads (`part`) is told it began and what it came to, a fault included."""
     told = False
     try:
+        part, words = note_start(workspace, part)
+        fh.write(words)
         roots = roots_of(workspace)
         got = grant(workspace)
         write_items(workspace, reconnect=got["reconnect"])
@@ -1450,16 +1511,18 @@ def _run(workspace: Path, prompt: Path, body: str, name: str, claude: str, fh, r
                     reconnect=got["reconnect"])
         write_outcome(workspace, prompt.stem, line, now)
         told = True
+        noted = note_part(workspace, part, line, now)   # never raises
         code = (0 if line["outcome"] == "finished" else 124 if timed_out else 127 if res is None
                 else res.returncode or 1)
         resets = f" (resets {line['resets_at']})" if line["resets_at"] else ""
-        fh.write(log_summary(res) + f"outcome {line['outcome']}" + (f": {line['why']}" if line["why"] else "")
+        fh.write(log_summary(res) + noted + f"outcome {line['outcome']}" + (f": {line['why']}" if line["why"] else "")
                  + f"{resets}\nexit {code}\n")
         return code
     except Exception as exc:   # noqa: BLE001 - the run's own line says it stopped, whatever stopped it
         why = f"the routine stopped on a fault of its own ({type(exc).__name__})"
         if not told:
             write_outcome(workspace, prompt.stem, _stopped(why))
+            note_part(workspace, part, _stopped(why), dt.datetime.now().astimezone())
         fh.write(f"outcome stopped: {why}\nexit 1\n")
         return 1
 

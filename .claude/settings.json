@@ -2,6 +2,7 @@
   "permissions": {
     "allow": [
       "Bash(python _meta/tools/agents_md.py *)",
+      "Bash(python _meta/tools/backfill.py *)",
       "Bash(python _meta/tools/brief.py *)",
       "Bash(python _meta/tools/chain.py *)",
       "Bash(python _meta/tools/check.py *)",
@@ -41,6 +42,7 @@
       "Bash(python _meta/tools/transcripts.py *)",
       "Bash(python _meta/tools/validate.py *)",
       "Bash(python3 _meta/tools/agents_md.py *)",
+      "Bash(python3 _meta/tools/backfill.py *)",
       "Bash(python3 _meta/tools/brief.py *)",
       "Bash(python3 _meta/tools/chain.py *)",
       "Bash(python3 _meta/tools/check.py *)",

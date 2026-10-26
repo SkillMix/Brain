@@ -60,6 +60,12 @@ passwords dropped, to `~/.spaces/research/records.jsonl`, merged into a cited pr
 joining a brain skips it. The build puts the records into the new brain and drafts its company
 profile (`onboard.write_profile`), one item on Needs you.
 
+`history` reads the person's history oldest first, in parts paced to their own usage limits (`backfill.py`): it
+plans the parts from the counts of the apps read as work, keeps the usage reading given with `--reading`, and
+starts part 1 now. The routines read the rest at night, or by day while there is room; a closed lid or a usage
+limit pauses a part and the next run goes on from its checkpoint. A paid account gets the plan and no part until
+the person says go. `--wait-part p1` stays until part 1 is done or paused.
+
 `build` takes what the phases before it found (`found_by_setup`): the company's name from the
 researched card, the feeds of the apps that are read, the namespace as the account, and the
 briefing address (`briefing_address`): the address given, else the account of the mail app read as
@@ -78,6 +84,8 @@ second must pass; the task is removed after.
                     [--invitation <brain repo>:<slug> | --brain <brain repo>] [--company NAME]
                     [--domain DOMAIN] [--name NAME] [--email EMAIL] [--feeds mail,calendar,chat,calls,tracker]
                     [--org ORG] [--home DIR] [--template REPO] [--offline] [--dry-run]
+                    [--reading five_hour=<pct>,week=<pct>,five_hour_resets=<iso>,week_resets=<iso>,extra=<0|1>]
+                    [--wait-part p1] [--workspace DIR]
 """
 from __future__ import annotations
 
@@ -1452,8 +1460,170 @@ def phase_build(args) -> dict:
     return {"phase": "build", "state": state, **result}
 
 
+# ----- the history, read oldest first in paced parts -----------------------------------------
+HISTORY_LOOK = 30         # seconds between looks at a part while `--wait-part` waits for it
+HISTORY_WAIT = 3600       # the most it waits: a routine run is stopped after an hour
+PAID_WHY = "Your Claude account is billed by use, so your history is read only when you say go."
+NO_WORKSPACE = ("Your workspace was not found on this computer, so there is no history to read yet. Finish the "
+                "build first.")
+
+
+def history_counts(journal: dict) -> dict:
+    """Records a month in the apps that are read (`apps.READ`): the journal's verdicts, `per_month` summed."""
+    record = journal.get("apps") if isinstance(journal.get("apps"), dict) else {}
+    counts: dict = {}
+    for verdict in record.get("verdicts") or []:
+        if isinstance(verdict, dict) and verdict.get("verdict") in apps.READ and isinstance(verdict.get("per_month"), dict):
+            for month, number in verdict["per_month"].items():
+                if isinstance(number, int) and not isinstance(number, bool) and number > 0:
+                    counts[str(month)] = counts.get(str(month), 0) + number
+    return counts
+
+
+def _history_workspace(args, journal: dict) -> Path | None:
+    """The person's workspace: the one `--workspace` names, else the one this process just built, else the
+    personal workspace on the machine's list of spaces (the person's own, when there are several)."""
+    if getattr(args, "workspace", None):
+        return Path(args.workspace)
+    if getattr(LAST_REPORT, "workspace", None):
+        return Path(LAST_REPORT.workspace)
+    try:
+        rows = (yaml.safe_load((Path.home() / onboard.MACHINE_SPACES).read_text(encoding="utf-8")) or {}).get("spaces") or []
+    except (OSError, yaml.YAMLError, AttributeError):
+        rows = []
+    mine = [r for r in rows if isinstance(r, dict) and r.get("profile") == "personal"
+            and (Path(str(r.get("root"))) / "space.yaml").exists()]
+    if len(mine) > 1:
+        name = identity(args.name, args.email, offline=True)["name"]
+        mine = [r for r in mine if str(r.get("owner")).lower() == name.lower()]
+    return Path(str(mine[0]["root"])) if len(mine) == 1 else None
+
+
+def _sweep_task(workspace: Path) -> dict | None:
+    """The record of the workspace's sweep-chain task, the one that reads a part of the history."""
+    try:
+        want = f"{onboard.task_prefix()}sweep-chain-{spaceyaml.load(workspace).name}"
+    except (ValueError, FileNotFoundError):
+        return None
+    state = onboard.read_yaml(Path(workspace) / "_meta" / "state" / "onboard.yaml", {}) or {}
+    return next((r for r in state.get("routine_tasks") or [] if isinstance(r, dict) and r.get("name") == want), None)
+
+
+def _stopped_since(workspace: Path, since) -> bool:
+    """Whether the newest routine outcome line, written after `since`, says a run stopped (it did not start, or
+    ended with no result): nothing is reading, so waiting on it is no use."""
+    try:
+        lines = (Path(workspace) / "_meta" / "state" / "runs.jsonl").read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return False
+    for line in reversed(lines[-50:]):
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict) or not isinstance(row.get("notes"), dict) or row["notes"].get("step") != "routine":
+            continue
+        try:
+            at = dt.datetime.fromisoformat(str(row.get("at")).replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        return at > since and row.get("outcome") == "stopped"
+    return False
+
+
+def _wait_part(workspace: Path, which: str) -> dict:
+    """Stay until part `which` is done or paused: at most HISTORY_WAIT seconds, a look every HISTORY_LOOK. It does
+    not stay when nothing can start it (held for the person, no part due and no run going) or when the newest run
+    stopped without reading."""
+    import backfill
+    deadline, since = _clock() + HISTORY_WAIT, _now()
+    while True:
+        state = backfill.load(workspace)
+        part = next((p for p in state.get("parts") or [] if isinstance(p, dict) and p.get("id") == which), None)
+        if part is None:
+            return {"part": which, "status": "missing", "why": f"There is no part {which} in this history."}
+        if part.get("status") in ("done", "paused"):
+            return {"part": which, "status": part["status"], "why": part.get("why") or ""}
+        coming, why = backfill.explain(workspace, _now())
+        if (state.get("waiting") or coming is None) and not routine.locked(workspace):
+            return {"part": which, "status": part.get("status"), "why": why}
+        if _stopped_since(workspace, since) and not routine.locked(workspace):
+            return {"part": which, "status": part.get("status"),
+                    "why": "The run stopped before it read anything; the next routine run tries again."}
+        if _clock() >= deadline:
+            return {"part": which, "status": part.get("status"),
+                    "why": "It had not finished within the hour; it goes on with the routines."}
+        _sleep(HISTORY_LOOK)
+
+
 def phase_history(args) -> dict:
-    return _pending("history")
+    """The history, oldest first, in paced parts (`backfill.py`). It cuts the window (90 days) into parts from the
+    counts of the apps read as work (the journal's `per_month`), keeps the usage reading given as `--reading
+    five_hour=<pct>,week=<pct>,five_hour_resets=<iso>,week_resets=<iso>,extra=<0|1>` (the window shrinks, in
+    whole weeks, when the reading says it cannot be read by the next morning), and starts part 1 now as the sweep
+    chain task, unless the pacing leaves no room right now or a run is going. A paid account (Claude signed in
+    with a key, or a reading of `not_applicable`) gets the plan and no part: the person starts the read. It
+    returns `parts`, `current_by` and `counts`; `state` is `running` while the routines read the rest, `waiting`
+    for the person (a paid account, a sign-in that ran out), `done` once every part is read. `--wait-part p1`
+    stays until that part is done or paused (an hour at most). Run again, it changes nothing that is right: the plan is
+    held only in the call that makes it (the person's go, `backfill.py start`, stays), and it is made again only while
+    no part has run and the counts have changed. A progress file that cannot be read waits with a plain line."""
+    import backfill
+    journal, now = setup_journal.load(), _now()
+    counts = history_counts(journal)
+    workspace = _history_workspace(args, journal)
+    if workspace is None:
+        return {"phase": "history", "state": "failed", "why": NO_WORKSPACE}
+    if args.dry_run:
+        return {"phase": "history", "state": "pending", "counts": counts, "why": "dry run: nothing is planned"}
+    text = (getattr(args, "reading", None) or "").strip()
+    signins = journal.get("signins") if isinstance(journal.get("signins"), dict) else {}
+    paid, reading = signins.get("claude") == "api-key" or text == "not_applicable", None
+    try:
+        reading = None if text == "not_applicable" else backfill.parse_reading(text, now)
+    except ValueError as exc:
+        return {"phase": "history", "state": "failed", "why": f"That is not a usage reading: {exc}"}
+    state = backfill.load(workspace)
+    if state.get("broken"):
+        return {"phase": "history", "state": "waiting", "why": backfill.BROKEN_WHY, "counts": counts}
+    again = (bool(state.get("parts")) and isinstance(state.get("counts"), dict) and state["counts"] != counts
+             and not backfill.touched(workspace) and not routine.locked(workspace))   # the counts came in, or changed
+    if not state.get("parts") or again:
+        backfill.plan(workspace, counts, now, reading=reading, hold=PAID_WHY if paid else None)
+    elif reading:
+        backfill.record_reading(workspace, reading)
+    why = ""
+    part, reason = backfill.explain(workspace, now)
+    first = (backfill.load(workspace).get("parts") or [{}])[0]
+    fresh = first.get("status") == "pending" and not backfill.touched(workspace)
+    if part is not None and fresh and part["id"] == first.get("id") and not (args.wait_part and not text):
+        task = _sweep_task(workspace)
+        if routine.locked(workspace):
+            why = "A routine run is going; it reads the first part."
+        elif task is None:
+            why = "The routines are not scheduled yet, so the first part is read at the next routine run."
+        elif not onboard.run_now(task):
+            why = "The scheduler did not start the first part now; it is read at the next routine run."
+    elif part is None:
+        why = reason
+    result = {"phase": "history"}
+    if args.wait_part:
+        result["waited"] = _wait_part(workspace, args.wait_part)
+    state = backfill.load(workspace)
+    waiting = state.get("waiting") or next((p.get("why") for p in state.get("parts") or []
+                                           if p.get("status") == "paused" and (p.get("runs") or [{}])[-1].get("outcome") == "auth"), None)
+    result.update(state="done" if not backfill.active(workspace) else "waiting" if waiting else "running",
+                  parts=state.get("parts") or [], current_by=state.get("current_by"), counts=counts,
+                  window_days=state.get("window_days"))
+    if state.get("shortened_because"):
+        result["shortened_because"] = state["shortened_because"]
+    if result["state"] == "done":
+        result["why"] = "There is nothing left to read." if not counts else "The history is read."
+    elif waiting:
+        result["why"] = str(waiting)
+    elif why:
+        result["why"] = why
+    return result
 
 
 def run_phase(args) -> dict:
@@ -1524,6 +1694,12 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--doctor", action="store_true", help="only check this machine and fix what needs no password")
     ap.add_argument("--probe", action="store_true",
                     help="apps: stop after asking Claude which apps it reaches (no content is read)")
+    ap.add_argument("--reading", help="history: the usage tool's reading, five_hour=<pct>,week=<pct>,five_hour_resets="
+                    "<iso>,week_resets=<iso>,extra=<0|1>; not_applicable for a paid account")
+    ap.add_argument("--wait-part", dest="wait_part", metavar="PART",
+                    help="history: stay until this part (p1) is done or paused, an hour at most")
+    ap.add_argument("--workspace", help="history: the person's workspace (default: the one just built, else the "
+                    "personal one on this machine's list of spaces)")
     ap.add_argument("--wait", action="store_true",
                     help="a phase that waits on the person stays until what they must do is done")
     ap.add_argument("--json", action="store_true", help="print the result as JSON")
