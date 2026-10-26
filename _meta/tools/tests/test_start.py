@@ -8,7 +8,9 @@ from pathlib import Path
 
 import yaml
 
+import doctor
 import onboard
+import setup_journal
 import spaceyaml
 import start
 import validate
@@ -219,15 +221,115 @@ def test_without_org_a_new_company_goes_to_the_persons_own_account(tmp_path, mon
     assert "tess-v/trial-works-brain" in out
 
 
-def test_a_person_in_an_organisation_is_asked_once_where_the_repositories_go(tmp_path, monkeypatch, capsys):
+def _signed_in(monkeypatch):
+    """The doctor's rows for gh and claude are fine, and both sign-ins read back."""
+    rows = {"gh": doctor.Row("gh", True, "gh 2.101.0", "gh --version"),
+            "claude command line": doctor.Row("claude command line", True, "2.1.303 (Claude Code)", "claude --version")}
+    monkeypatch.setattr(start.doctor, "tool_row", lambda name, m=None, fix=True: rows[name])
+    monkeypatch.setattr(start.signin, "github_signed_in", lambda m: True)
+    monkeypatch.setattr(start.signin, "claude_state", lambda m: "account")
+    monkeypatch.setattr(start.signin, "claude_identity", lambda m: {})
+
+
+def _build_args(tmp_path, *more):
+    return ["build", "--company", "Trial Works", "--template", "acme/Brain", "--home", str(tmp_path / "home"),
+            "--json", "--user-instructions", str(tmp_path / "CLAUDE.md"), *more]
+
+
+def test_an_ambiguous_namespace_is_a_need_in_the_signins_answer(tmp_path, monkeypatch, capsys):
+    calls = _online_dry_run(tmp_path, monkeypatch, orgs="acme\nother-co")
+    _signed_in(monkeypatch)
+    code = start.main(["signins", "--company", "Trial Works", "--json"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0 and result["state"] == "waiting" and result["namespace"] is None
+    [need] = result["needs"]
+    assert need["kind"] == "namespace" and "tess-v" in need["text"] and "acme, other-co" in need["text"]
+    assert result["choices"] == ["acme", "other-co", "tess-v"]
+    assert not any(c[:3] == ["gh", "repo", "create"] for c in calls)
+
+
+def test_the_build_waits_for_the_namespace_and_org_answers_it(tmp_path, monkeypatch, capsys):
+    calls = _online_dry_run(tmp_path, monkeypatch, orgs="acme\nother-co")
+    _signed_in(monkeypatch)
+    started = []
+    monkeypatch.setattr(start, "start", lambda *a, **k: started.append(k) or onboard.Report(case="start"))
+    start.main(["signins", "--company", "Trial Works", "--json"])
+    capsys.readouterr()
+    code = start.main(_build_args(tmp_path))
+    refused = json.loads(capsys.readouterr().out)
+    assert code == 1 and refused["state"] == "waiting" and refused["stopped"] is True
+    assert "files live on GitHub" in refused["why"] and [n["kind"] for n in refused["needs"]] == ["namespace"]
+    assert started == [] and setup_journal.load()["build"]["state"] == "waiting"
+    code = start.main(_build_args(tmp_path, "--org", "acme"))   # the answer
+    built = json.loads(capsys.readouterr().out)
+    assert code == 0 and built["state"] == "done" and built["needs"] == []
+    assert started[0]["org"] == "acme"
+    record = setup_journal.load()["signins"]
+    assert record["namespace"] == "acme" and record["state"] == "done"   # the namespace was all it waited for
+
+
+def test_a_refused_build_says_so_in_words_and_changes_nothing(tmp_path, monkeypatch, capsys):
+    _online_dry_run(tmp_path, monkeypatch, orgs="acme\nother-co")
+    _signed_in(monkeypatch)
+    start.main(["signins", "--company", "Trial Works", "--json"])
+    capsys.readouterr()
+    assert start.main(["build", "--company", "Trial Works", "--home", str(tmp_path / "home")]) == 1
+    out = capsys.readouterr().out
+    assert "build: waiting: Where should the company's files live on GitHub?" in out and "yours: namespace:" in out
+    assert not (tmp_path / "home").exists()
+
+
+def test_a_dry_run_build_answers_nothing_in_the_journal(tmp_path, monkeypatch, capsys):
+    _online_dry_run(tmp_path, monkeypatch, orgs="acme\nother-co")
+    _signed_in(monkeypatch)
+    start.main(["signins", "--company", "Trial Works", "--json"])
+    capsys.readouterr()
+    start.main(_build_args(tmp_path, "--org", "acme", "--dry-run"))
+    capsys.readouterr()
+    assert [n["kind"] for n in setup_journal.open_needs(setup_journal.load())] == ["namespace"]
+    assert "namespace" not in setup_journal.load()["signins"]
+
+
+def test_the_account_the_signins_recorded_is_where_the_build_goes(tmp_path, monkeypatch, capsys):
+    _online_dry_run(tmp_path, monkeypatch, orgs="acme\nother-co")
+    _signed_in(monkeypatch)
+    started = []
+    monkeypatch.setattr(start, "start", lambda *a, **k: started.append(k) or onboard.Report(case="start"))
+    start.main(["signins", "--company", "Trial Works", "--org", "other-co", "--json"])
+    capsys.readouterr()
+    assert start.main(_build_args(tmp_path)) == 0
+    assert started[0]["org"] == "other-co"
+
+
+def test_an_invited_colleague_is_not_asked_where_the_companys_repositories_go(tmp_path, monkeypatch, capsys):
+    _online_dry_run(tmp_path, monkeypatch, orgs="acme\nother-co")
+    _signed_in(monkeypatch)
+    started = []
+    monkeypatch.setattr(start, "start", lambda *a, **k: started.append(k) or onboard.Report(case="start"))
+    code = start.main(["signins", "--invitation", "acme/brain:ada", "--json"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0 and result["state"] == "done" and result["needs"] == [] and "namespace" not in setup_journal.load()["signins"]
+    assert start.main(["build", "--invitation", "acme/brain:ada", "--json"]) == 0
+    assert started[0]["org"] is None   # the invitation says where the workspace goes
+
+
+def test_setup_itself_never_stops_at_an_account_that_is_not_clear(tmp_path, monkeypatch, capsys):
+    """Asked before, in the signins phase; with nothing asked, the person's own account."""
     calls = _online_dry_run(tmp_path, monkeypatch, orgs="acme\nother-co")
     code = start.main(["--company", "Trial Works", "--template", "acme/Brain", "--home", str(tmp_path / "home"),
-                       "--json", "--user-instructions", str(tmp_path / "CLAUDE.md")])
-    result = json.loads(capsys.readouterr().out)
-    assert code == 1 and result["stopped"] is True
-    [row] = result["yours"]
-    assert row["name"] == "namespace" and "tess-v" in row["result"] and "acme, other-co" in row["result"]
-    assert not any(c[:3] == ["gh", "repo", "create"] for c in calls)
+                       "--dry-run", "--user-instructions", str(tmp_path / "CLAUDE.md")])
+    assert code == 0, capsys.readouterr().out
+    assert ["gh", "repo", "create", "tess-v/trial-works-brain", "--template", "acme/Brain", "--private",
+            "--clone"] in calls
+
+
+def test_setup_without_an_answer_picks_the_organisation_named_like_the_company(tmp_path, monkeypatch, capsys):
+    calls = _online_dry_run(tmp_path, monkeypatch, orgs="other-co\ntrial-works")
+    code = start.main(["--company", "Trial Works", "--template", "acme/Brain", "--home", str(tmp_path / "home"),
+                       "--dry-run", "--user-instructions", str(tmp_path / "CLAUDE.md")])
+    assert code == 0, capsys.readouterr().out
+    assert ["gh", "repo", "create", "trial-works/trial-works-brain", "--template", "acme/Brain", "--private",
+            "--clone"] in calls
 
 
 def test_a_target_that_is_the_template_itself_is_refused(tmp_path, monkeypatch):

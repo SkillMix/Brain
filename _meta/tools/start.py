@@ -10,9 +10,10 @@ which does every step itself and asks nothing that has a default:
   onboard there (the brain and every crew project mounted, the personal instruction at user
   level, the sync task, the host's merge settings, the first status and the tests);
 - a company (no brain given): creates the brain `<company>-brain` from the template, in the
-  account `--org` names, else the person's own (one who belongs to an organisation is asked
-  once, nothing created), and runs onboard's company case, which also creates the person's
-  own workspace;
+  account `--org` names, else the one the signins phase recorded, else the organisation that
+  matches the company or the mail domain, else the person's own (an account that is not clear
+  is asked in the signins phase, never here), and runs onboard's company case, which also
+  creates the person's own workspace;
 - renders the person's two routines (the sweep chain and the daily chain) for the agent to
   schedule so they outlive the session (`onboard.py <workspace> --os-routines`);
 - prints what only the person can do (sign-ins), each with the check that proves it;
@@ -32,6 +33,15 @@ build is everything described above; the flags below are its own, and without a 
 run it (`start.py --company X` is `start.py build --company X`). `--wait` is for a phase that
 waits on the person: it stays until what they must do is done. `--json` prints the phase's
 result, with the open needs, as one object.
+
+`signins` starts both sign-ins that only the person can give, GitHub's one-time code and the
+Claude command line's browser sign-in, in the first minute (`signin.py`): gh is made sure of and
+its flow started at once, then claude is (installed when missing, the long part) and its
+sign-in started; the rest of the doctor's walk is the build's. Each is a need; with `--wait` it
+stays until both read back. Once GitHub does, it
+works out where the company's repositories go (`pick_namespace`): when that is not clear it is
+one more need, the `namespace`, which `build` refuses to start before, and `build --org <name>`
+answers. Setup never stops at it.
 
     python start.py [signins|apps|research|build|history|resume] [--wait] [--json]
                     [--invitation <brain repo>:<slug> | --brain <brain repo>] [--company NAME]
@@ -122,6 +132,7 @@ import onboard  # noqa: E402
 import onboarding_page  # noqa: E402
 import routine  # noqa: E402
 import setup_journal  # noqa: E402
+import signin  # noqa: E402
 import spaceyaml  # noqa: E402
 
 HERE = Path(__file__).resolve().parents[2]
@@ -239,22 +250,58 @@ def _brain_yaml(text) -> dict:
     return data if isinstance(data, dict) and data.get("profile") == "brain" else {}
 
 
-def namespace(who: dict, offline: bool, home=None, company=None) -> tuple:
-    """Where a new company's repositories go without --org: the account of the brain an earlier
-    start cloned under `home` (a re-run adopts it), else the person's own account. A person who
-    belongs to an organisation is asked once, never given the first one: (None, their orgs)."""
+def adopted_namespace(home=None, company=None) -> str | None:
+    """The account of the brain an earlier start cloned under `home`: a re-run adopts it."""
     slug = onboard.slugify(company) if company else None
     for name in ([f"{slug}-brain"] if slug else []) + ["brain"] if home else []:
         settings, remote = Path(home) / name / "space.yaml", onboard.git_remote(Path(home) / name)
         data = _brain_yaml(settings.read_text(encoding="utf-8")) if settings.exists() else {}
         if data and remote and (not slug or data.get("name") == slug):
-            return remote.split("/")[0], []
-    own = who.get("login") or onboard.slugify(who.get("name") or getpass.getuser())
-    if offline:
-        return own, []
-    orgs = [o for o in _out(["gh", "api", "user/memberships/orgs?state=active", "-q",
-                             ".[].organization.login"]).splitlines() if o]
-    return (None, orgs) if orgs else (own, [])
+            return remote.split("/")[0]
+    return None
+
+
+MAX_ORG_NAMES = 10   # display names are one lookup each: a person in more organisations than this is matched by login for the rest
+
+
+def member_orgs() -> list:
+    """The organisations the signed-in GitHub account is an active member of, each as
+    {"login", "name"}: the display name comes from one lookup per organisation (the memberships
+    carry none), for the first MAX_ORG_NAMES of them. A lookup that fails leaves the name empty,
+    and the organisation is then matched by its login alone."""
+    logins = [o for o in _out(["gh", "api", "user/memberships/orgs?state=active", "-q",
+                               ".[].organization.login"]).splitlines() if o]
+    orgs = []
+    for number, login in enumerate(logins):
+        name = _out(["gh", "api", f"orgs/{login}", "-q", ".name"]) if number < MAX_ORG_NAMES else ""
+        orgs.append({"login": login, "name": "" if name == "null" else name})
+    return orgs
+
+
+def email_domain(email) -> str | None:
+    return str(email).split("@", 1)[1] if "@" in str(email or "") else None
+
+
+def _plain(text) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(text or "").lower())
+
+
+def pick_namespace(login: str, orgs: list, company: str | None, domain: str | None) -> tuple:
+    """Where a new company's repositories go, from who the person is. `orgs` are logins, or
+    {"login", "name"} with the organisation's display name too. No organisations: their own
+    account. Exactly one organisation whose login or display name is the company's name or the
+    first label of the mail domain (hyphens and capitals aside): that one. Anything else is a
+    choice only the person can make: (None, the organisations' logins and their own account)."""
+    names = {}
+    for entry in orgs:
+        org, name = (entry.get("login"), entry.get("name")) if isinstance(entry, dict) else (entry, "")
+        if org:
+            names[org] = names.get(org) or name or ""
+    if not names:
+        return login, []
+    wanted = {_plain(company), _plain(str(domain or "").split(".")[0])} - {""}
+    found = [org for org, name in names.items() if wanted & {_plain(org), _plain(name)}]
+    return (found[0], []) if len(found) == 1 else (None, [*names, login])
 
 
 def brain_name(slug: str, org: str, home, offline: bool) -> str:
@@ -429,14 +476,11 @@ def setup(report, here, invitation, brain, company, name, email, feeds, org, hom
                           user_instructions=user_instructions, brain=answers["brain"], progress=report.progress)
         person, workspace = answers["name"], dst
     else:
-        space_org, orgs = (org, []) if org else namespace(who, offline, space_home, company)
-        if space_org is None:
-            report.add("namespace", False, "python _meta/tools/start.py --org <account or organisation>",
-                       f"where should the company's repositories go? Your own account {who['login']} "
-                       f"(recommended) or an organisation you belong to: {', '.join(orgs)}. Say the sentence "
-                       "again with --org <name>; nothing was created", needs_owner=True)
-            report.stopped = True
-            return report
+        space_org = org or adopted_namespace(space_home, company)
+        if space_org is None:   # the signins phase already asked what is not clear: the own account is the default
+            own = who.get("login") or onboard.slugify(who.get("name") or getpass.getuser())
+            space_org = pick_namespace(own, [] if offline else member_orgs(), company,
+                                       email_domain(who["email"]))[0] or own
         answers = {"company": company or org_title(space_org, offline), "owner": who["name"],
                    "owner_email": who["email"], "org": space_org}
         if feeds_text:
@@ -490,8 +534,142 @@ def _pending(phase: str) -> dict:
     return {"phase": phase, "state": "pending"}
 
 
+SIGNIN_NEEDS = ("github-code", "claude-signin", "namespace")
+GITHUB_NEED = "Sign in to GitHub: open the link and type the one-time code there."
+CLAUDE_NEED = "Sign in to Claude with your Claude account in the browser window that opened."
+
+
+def _signins_record() -> dict:
+    record = setup_journal.load().get("signins")
+    return record if isinstance(record, dict) else {}
+
+
+def _asked(kind: str, code: bool = False) -> bool:
+    """Whether the journal lists a need of this kind (with a code shown, when `code`)."""
+    return any(n.get("kind") == kind and (n.get("code") or not code)
+               for n in setup_journal.open_needs(setup_journal.load()))
+
+
+def record_namespace(org: str) -> None:
+    """Where the company's repositories go is settled: remembered in the signins record, and the
+    question closed. The phase is done when that was all it waited for."""
+    record = _signins_record()
+    left = [n for n in setup_journal.open_needs(setup_journal.load())
+            if n.get("kind") in ("github-code", "claude-signin")]
+    state = "done" if record.get("state") == "waiting" and not left else record.get("state", "pending")
+    setup_journal.set_phase("signins", state, namespace=org)
+    setup_journal.clear_need("namespace")
+
+
+def _start_github(m, record, errors) -> None:
+    """Start GitHub's device flow, unless an earlier run's is still going and its code is still
+    listed. The flow's process is written to the journal at once: a run that is closed while it
+    waits must not start a second flow when it is run again. What cannot start is an error, not
+    a stop: the Claude sign-in still starts."""
+    if signin.flow_alive(record.get("github_pid"), record.get("github_started")) and _asked("github-code", code=True):
+        return
+    try:
+        got = signin.github_start(m)
+    except (OSError, signin.SigninError) as exc:
+        errors.append(f"GitHub's sign-in did not start: {exc}")
+        return
+    setup_journal.need("github-code", GITHUB_NEED, "gh auth status", link=got["link"], code=got["code"])
+    setup_journal.set_phase("signins", "running", github_pid=got["pid"], github_started=int(time.time()))
+
+
+def _start_claude(m, record, errors) -> None:
+    """Start the Claude command line's sign-in, on the same terms as GitHub's."""
+    if signin.flow_alive(record.get("claude_pid"), record.get("claude_started")) and _asked("claude-signin"):
+        return
+    try:
+        got = signin.claude_start(m)
+    except (OSError, signin.SigninError) as exc:
+        errors.append(f"Claude's sign-in did not start: {exc}")
+        return
+    setup_journal.need("claude-signin", CLAUDE_NEED, " ".join(signin.CLAUDE_STATUS), link=got["link"])
+    setup_journal.set_phase("signins", "running", claude_pid=got["pid"], claude_started=int(time.time()))
+
+
+def _settle_namespace(args, login, who, record, facts) -> tuple:
+    """Where a new company's repositories go, once GitHub reads back: what `--org` said or an
+    earlier run settled, else `pick_namespace`; a choice only the person can make is a need.
+    Returns (account or None, the choices)."""
+    namespace, choices = args.org or record.get("namespace"), []
+    if not namespace:
+        namespace, choices = pick_namespace(login, member_orgs(), args.company, email_domain(who["email"]))
+    setup_journal.clear_need("namespace")   # asked again below when it is still not clear, whatever the list was
+    if namespace:
+        facts["namespace"] = namespace
+    else:
+        ask = (f"Where should the company's files live on GitHub? Your own account {login} (recommended), or an "
+               f"organisation you belong to: {', '.join(choices[:-1])}.")
+        setup_journal.need("namespace", ask, "python _meta/tools/start.py build --org <account or organisation>")
+    return namespace, choices
+
+
 def phase_signins(args) -> dict:
-    return _pending("signins")
+    """Both sign-ins at once, in the first minute: gh is made sure of and GitHub's device flow
+    started at once, then claude is made sure of (installed when it is missing: the long part)
+    and its browser sign-in started, each unless it already reads back (or an earlier run's is
+    still going); each is a need with the check that proves it. The rest of the doctor's walk is
+    the build's. With `--wait` it stays until both read back. Once GitHub does, where a new
+    company's repositories go is worked out; when that is not clear it is a `namespace` need too
+    (a colleague joining by invitation is not asked). State: `waiting` while a sign-in or the
+    namespace is open, `done` when both read back and the namespace is known, `failed` when a
+    tool is missing or a sign-in would not start. The journal's `signins` record keeps what later
+    phases read: `github` (the account), `claude` (its state), `claude_email` and `claude_org`
+    (whose Claude account the command line is: the desktop app can be another one), `namespace`,
+    and the running flows' ids. A dry run only reads."""
+    if args.offline:
+        return {"state": "done", "needs": [], "github": False, "claude": "signed-out", "namespace": None,
+                "why": "offline: nothing to sign in to"}
+    m, fix, errors = doctor.Machine(), not args.dry_run, []
+    record = {} if args.dry_run else _signins_record()
+    gh = doctor.tool_row("gh", m, fix)
+    github = gh.ok and signin.github_signed_in(m)
+    if not gh.ok:
+        errors.append(gh.yours or "GitHub's command line could not be checked")
+    elif not github and not args.dry_run:
+        _start_github(m, record, errors)
+    cli = doctor.tool_row("claude command line", m, fix)   # may install it: after the GitHub code exists
+    claude = signin.claude_state(m) if cli.ok else "missing"
+    if not cli.ok:
+        errors.append(cli.yours or "Claude's command line could not be checked")
+    elif claude != "account" and not args.dry_run:
+        _start_claude(m, record, errors)
+    errors = list(dict.fromkeys(errors))   # no network: one sentence, not two
+    if args.dry_run:
+        return {"state": "pending", "needs": [], "github": github, "claude": claude, "namespace": None,
+                **({"why": "; ".join(errors)} if errors else {})}
+    facts = {}
+    if args.wait and not errors and not (github and claude == "account"):
+        got = signin.wait(m)
+        github, claude = got["github"], got["claude"]
+    new_company = not (args.invitation or args.brain)
+    namespace, choices = None, []
+    if github:
+        setup_journal.clear_need("github-code")
+        who = identity(args.name, args.email)
+        login = who["login"] or onboard.slugify(who["name"] or getpass.getuser())
+        facts.update(github=login, github_pid=None, github_started=None)
+        if new_company:
+            namespace, choices = _settle_namespace(args, login, who, record, facts)
+    facts["claude"] = claude
+    if claude == "account":
+        setup_journal.clear_need("claude-signin")
+        account = signin.claude_identity(m)
+        facts.update(claude_email=account.get("email"), claude_org=account.get("org"),
+                     claude_pid=None, claude_started=None)
+    setup_journal.set_phase("signins", "running", **facts)
+    state = ("failed" if errors else "done" if github and claude == "account" and (namespace or not new_company)
+             else "waiting")
+    result = {"state": state, "github": github, "claude": claude, "namespace": namespace,
+              "needs": [n for n in setup_journal.open_needs(setup_journal.load()) if n.get("kind") in SIGNIN_NEEDS]}
+    if choices:
+        result["choices"] = choices
+    if errors:
+        result["why"] = "; ".join(errors)
+    return result
 
 
 def phase_apps(args) -> dict:
@@ -506,9 +684,23 @@ def phase_build(args) -> dict:
     """Everything start did before there were phases: the spaces, the personal instruction, the
     routines. Its state is `failed` when a step did not work (a dry run included), `pending` for
     a dry run that did (nothing was created), `waiting` when it stopped for the person or left
-    rows only they can do (say the sentence again after), else `done`."""
+    rows only they can do (say the sentence again after), else `done`. While the namespace question
+    of the signins phase is open it refuses to start (`waiting`, and why); `--org <name>` answers
+    it: the name is remembered and the question closed. The account the signins phase settled on
+    is used when no `--org` is given."""
+    new_company = not (args.invitation or args.brain)   # the question is a new company's; a colleague's workspace has its own place
+    if new_company and args.org and not args.dry_run:
+        record_namespace(args.org)
+    asked = [n for n in setup_journal.open_needs(setup_journal.load()) if n.get("kind") == "namespace"]
+    if new_company and asked and not args.org:
+        why = f"{asked[0].get('text')} Nothing was created."
+        if not args.json:
+            print(f"build: waiting: {why}")
+            say_needs(asked)
+        return {"phase": "build", "state": "waiting", "stopped": True, "why": why}
+    org = args.org or (_signins_record().get("namespace") if new_company else None)
     report = start(HERE, invitation=args.invitation, brain=args.brain, company=args.company, name=args.name,
-                   email=args.email, feeds=args.feeds, org=args.org, home=args.home, template=args.template,
+                   email=args.email, feeds=args.feeds, org=org, home=args.home, template=args.template,
                    offline=args.offline, dry_run=args.dry_run, user_instructions=args.user_instructions)
     result = summary(report)
     if not args.json:
@@ -621,7 +813,7 @@ def main(argv=None) -> int:
     if args.json:
         print(json.dumps({**result, "needs": needs}, indent=2))
     elif args.phase != "build":   # the build printed its steps itself, as it always did
-        print(f"{result['phase']}: {result['state']}")
+        print(f"{result['phase']}: {result['state']}" + (f": {result['why']}" if result.get("why") else ""))
         say_needs(needs)
     return 1 if result["state"] == "failed" or result.get("stopped") else 0
 

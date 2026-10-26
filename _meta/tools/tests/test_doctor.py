@@ -18,6 +18,7 @@ TEMPLATE = Path(__file__).resolve().parents[3]
 ALL_GOOD = {
     "git --version": (0, "git version 2.56.0"),
     "gh --version": (0, "gh version 2.101.0"),
+    "claude --version": (0, "2.1.303 (Claude Code)"),
     "gh auth status": (0, "Logged in to github.com"),
     "git config user.name": (0, "Ada Okafor"),
     "git config user.email": (0, "ada@lantern.example"),
@@ -50,7 +51,7 @@ class Fake:
         self.calls.append(argv)
         line = " ".join(argv)
         tools = self.machine.home / ".spaces" / "tools"
-        if argv[0] in ("gh", "git") and argv[1] == "--version":
+        if argv[0] in ("gh", "git", "claude") and argv[1] == "--version":
             on_path = any(Path(p).is_relative_to(tools / argv[0]) for p in os.environ["PATH"].split(os.pathsep) if p)
             if on_path:
                 return subprocess.CompletedProcess(argv, 0, f"{argv[0]} version installed", "")
@@ -84,8 +85,8 @@ def test_a_ready_machine_is_all_ok_and_nothing_changes(tmp_path):
     fake = Fake(tmp_path)
     found = rows(fake, orgs=["lantern-org"], repos=["lantern-org/brain"])
     assert all(r.ok for r in found.values()), [r for r in found.values() if not r.ok]
-    assert {"python", "disk", "network", "git", "gh", "github sign-in", "git identity", "git credentials",
-            "long paths", "scheduler", "organization lantern-org", "access lantern-org/brain"} <= set(found)
+    assert {"python", "disk", "network", "git", "gh", "claude command line", "github sign-in", "git identity",
+            "git credentials", "long paths", "scheduler", "organization lantern-org", "access lantern-org/brain"} <= set(found)
     assert fake.wrote() == []
 
 
@@ -215,6 +216,152 @@ def test_installed_tools_come_first_on_path(tmp_path, monkeypatch):
     assert os.environ["PATH"].split(os.pathsep)[0] == str(home / ".spaces" / "tools" / "gh" / "bin")
     gh_bin = str(home / ".spaces" / "tools" / "gh" / "bin")
     assert doctor.use_tools(home) == [] and os.environ["PATH"].split(os.pathsep).count(gh_bin) == 1 and added
+
+
+def test_the_claude_row_follows_gh_and_is_in_every_walk_that_gets_that_far(tmp_path):
+    names = list(rows(Fake(tmp_path)))
+    assert names.index("claude command line") == names.index("gh") + 1
+    fake = Fake(tmp_path, {"gh --version": (127, "")}, archives={})
+    assert "claude command line" in rows(fake, fix=False)   # a missing gh ends the walk after it
+
+
+CLAUDE_BYTES = b"claude, as the release serves it"
+
+
+def fake_machine(tmp_path, monkeypatch, claude_missing=False, system="Windows", arch="AMD64", answers=None, sha=None):
+    """A machine whose download of claude is a file that matches the checksum pinned for it
+    (the pin is swapped for the test file's, since the real one belongs to the real program)."""
+    key = (system, doctor.ARCH[arch.lower()])
+    url, _ = doctor.ASSETS["claude"][key]
+    monkeypatch.setitem(doctor.ASSETS["claude"], key, (url, sha or hashlib.sha256(CLAUDE_BYTES).hexdigest()))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    answers = dict(answers or {}, **({"claude --version": (127, "")} if claude_missing else {}))
+    return Fake(tmp_path, answers, system=system, arch=arch, archives={url: CLAUDE_BYTES}).machine
+
+
+def test_the_doctor_installs_claude_pinned_and_checksummed(tmp_path, monkeypatch):
+    row = doctor._claude(fake_machine(tmp_path, monkeypatch, claude_missing=True), fix=True)
+    assert row.ok and doctor.VERSIONS["claude"] in row.fixed and row.name == "claude command line"
+
+
+def test_claude_is_a_bare_executable_copied_into_place_and_made_executable(tmp_path, monkeypatch):
+    m = fake_machine(tmp_path, monkeypatch, claude_missing=True, system="Linux", arch="x86_64")
+    assert doctor._claude(m, fix=True).ok
+    exe = tmp_path / "home" / ".spaces" / "tools" / "claude" / "claude"
+    assert exe.read_bytes() == CLAUDE_BYTES and [p.name for p in exe.parent.iterdir()] == ["claude"]
+    if os.name != "nt":
+        assert exe.stat().st_mode & 0o111 == 0o111
+    assert os.environ["PATH"].split(os.pathsep)[0] == str(exe.parent)
+    windows = fake_machine(tmp_path / "w", monkeypatch, claude_missing=True)
+    assert doctor._claude(windows, fix=True).ok
+    assert (tmp_path / "w" / "home" / ".spaces" / "tools" / "claude" / "claude.exe").read_bytes() == CLAUDE_BYTES
+
+
+def test_a_claude_download_whose_checksum_differs_installs_nothing(tmp_path, monkeypatch):
+    m = fake_machine(tmp_path, monkeypatch, claude_missing=True, sha="0" * 64)
+    row = doctor._claude(m, fix=True)
+    assert not row.ok and "checksum" in row.yours and "claude.ai/install" in row.yours
+    assert not (tmp_path / "home" / ".spaces" / "tools" / "claude").exists()
+
+
+def test_claude_is_not_installed_by_a_read_only_check(tmp_path, monkeypatch):
+    m = fake_machine(tmp_path, monkeypatch, claude_missing=True)
+    row = doctor._claude(m, fix=False)
+    assert not row.ok and row.check == "claude --version"
+    assert not (tmp_path / "home" / ".spaces").exists()
+
+
+def test_a_claude_that_runs_is_left_alone(tmp_path, monkeypatch):
+    fake = Fake(tmp_path)
+    row = doctor._claude(fake.machine, fix=True)
+    assert row.ok and row.found == "2.1.303 (Claude Code)" and fake.wrote() == []
+
+
+@pytest.mark.parametrize("ldd,musl", [
+    ("libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6", False),
+    ("libc.musl-x86_64.so.1 => /lib/ld-musl-x86_64.so.1", True)])
+def test_musl_linux_gets_the_musl_build(tmp_path, monkeypatch, ldd, musl):
+    monkeypatch.setattr(doctor, "_musl_loader", lambda: False)   # this host's own file system is not the test's
+    m = fake_machine(tmp_path, monkeypatch, claude_missing=True, system="Linux", arch="x86_64",
+                     answers={"ldd /bin/ls": (0, ldd)})
+    musl_url, _ = doctor.CLAUDE_MUSL[("Linux", "x86_64")]
+    glibc_url, _ = doctor.ASSETS["claude"][("Linux", "x86_64")]
+    monkeypatch.setitem(doctor.CLAUDE_MUSL, ("Linux", "x86_64"), (musl_url, hashlib.sha256(CLAUDE_BYTES).hexdigest()))
+    served = []
+    download = m.download
+    m.download = lambda url, dest: (served.append(url), download(glibc_url if url == musl_url else url, dest))[1]
+    assert doctor._claude(m, fix=True).ok
+    assert served == [musl_url if musl else glibc_url]
+
+
+def test_musl_is_told_by_the_loader_file_or_by_ldd_and_only_on_linux(tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor, "_musl_loader", lambda: False)
+    musl_ldd = Fake(tmp_path, {"ldd /bin/ls": (0, "libc.musl-aarch64.so.1 => /lib/ld-musl-aarch64.so.1")}, system="Linux")
+    glibc_ldd = Fake(tmp_path, {"ldd /bin/ls": (0, "libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6")}, system="Linux")
+    assert doctor._musl(musl_ldd.machine) and not doctor._musl(glibc_ldd.machine)
+    assert not doctor._musl(Fake(tmp_path, system="Darwin").machine) and not doctor._musl(Fake(tmp_path).machine)
+    monkeypatch.setattr(doctor, "_musl_loader", lambda: True)   # the loader file alone is enough: ldd is not asked
+    loader = Fake(tmp_path, system="Linux")
+    assert doctor._musl(loader.machine) and loader.calls == []
+    assert not doctor._musl(Fake(tmp_path).machine)   # Windows: no
+
+
+def test_the_loader_file_is_looked_for_where_alpine_keeps_it(tmp_path, monkeypatch):
+    present = []
+    monkeypatch.setattr(doctor.Path, "exists", lambda self: present.append(self.as_posix()) or self.as_posix().endswith("aarch64.so.1"))
+    assert doctor._musl_loader() is True
+    assert present == ["/lib/libc.musl-x86_64.so.1", "/lib/libc.musl-aarch64.so.1"]
+
+
+# ----- one tool at a time, and the environment a command runs in ----------------------------------
+def test_one_tool_row_is_made_without_the_rest_of_the_walk(tmp_path):
+    fake = Fake(tmp_path)
+    row = doctor.tool_row("claude command line", fake.machine)
+    assert row.ok and row.name == "claude command line"
+    assert fake.calls == [["claude", "--version"]]   # no git, no scheduler, no sign-in
+    assert doctor.tool_row("gh", Fake(tmp_path).machine).name == "gh"
+
+
+def test_a_missing_tool_is_installed_by_its_row_alone(tmp_path, monkeypatch):
+    m = fake_machine(tmp_path, monkeypatch, claude_missing=True)
+    row = doctor.tool_row("claude command line", m)
+    assert row.ok and doctor.VERSIONS["claude"] in row.fixed
+    assert doctor.tool_row("claude command line", fake_machine(tmp_path / "ro", monkeypatch, claude_missing=True), fix=False).ok is False
+
+
+def test_with_no_network_a_tool_row_is_the_networks(tmp_path):
+    fake = Fake(tmp_path, reach=False)
+    row = doctor.tool_row("gh", fake.machine)
+    assert row.name == "network" and not row.ok and "reconnect" in row.yours and fake.calls == []
+
+
+def test_a_command_runs_in_the_environment_it_is_given(monkeypatch):
+    monkeypatch.setenv("LANTERN_SESSION_ONLY", "session")
+    show = [sys.executable, "-c", "import os; print(os.environ.get('LANTERN_SESSION_ONLY', 'absent'), os.environ.get('LANTERN_GIVEN', 'absent'))"]
+    assert doctor.run_cmd(show).stdout.split() == ["session", "absent"]
+    given = {k: v for k, v in os.environ.items() if k != "LANTERN_SESSION_ONLY"}
+    assert doctor.run_cmd(show, env=dict(given, LANTERN_GIVEN="given")).stdout.split() == ["absent", "given"]
+
+
+def test_every_platform_has_a_pinned_checksummed_claude_and_a_musl_one():
+    base = "https://downloads.claude.ai/claude-code-releases/" + doctor.VERSIONS["claude"] + "/"
+    for system in ("Windows", "Darwin", "Linux"):
+        for arch in ("x86_64", "arm64"):
+            url, sha = doctor.ASSETS["claude"][(system, arch)]
+            assert url.startswith(base) and len(sha) == 64 and url.endswith("claude.exe" if system == "Windows" else "/claude")
+    for arch in ("x86_64", "arm64"):
+        url, sha = doctor.CLAUDE_MUSL[("Linux", arch)]
+        assert url.startswith(base) and "musl" in url and len(sha) == 64
+
+
+def test_the_installed_claude_is_on_the_path_the_tools_start_with(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".spaces" / "tools" / "claude").mkdir(parents=True)
+    (home / ".spaces" / "tools" / "claude" / "claude.exe").write_text("x")
+    monkeypatch.setenv("PATH", "elsewhere")
+    claude_dir = str(home / ".spaces" / "tools" / "claude")
+    assert claude_dir in doctor.use_tools(home)
+    assert os.environ["PATH"].split(os.pathsep)[0] == claude_dir
 
 
 def test_every_platform_has_a_pinned_checksummed_asset():

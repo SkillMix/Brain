@@ -154,6 +154,31 @@ def test_claude_is_found_where_its_windows_installer_puts_it(tmp_path, monkeypat
     assert routine.find_claude() == str(exe)
 
 
+def test_claude_is_found_where_the_doctor_installed_it(tmp_path, monkeypatch):
+    """The doctor's copy under ~/.spaces/tools counts without being on PATH, as gh's does once
+    use_tools has run; the person's own installer is the next place."""
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    monkeypatch.setattr(routine.shutil, "which", lambda name: None)
+    assert routine.find_claude() is None
+    own = tmp_path / "home" / ".local" / "bin" / "claude.exe"
+    ours = tmp_path / "home" / ".spaces" / "tools" / "claude" / "claude.exe"
+    for exe in (own, ours):
+        exe.parent.mkdir(parents=True)
+        exe.write_text("", encoding="utf-8")
+    assert routine.find_claude() == str(ours)   # first on PATH too once use_tools has run
+    ours.unlink()
+    assert routine.find_claude() == str(own)
+
+
+def test_a_routine_does_not_inherit_the_sessions_keys_tokens_or_provider():
+    env = {"PATH": "/bin", "ANTHROPIC_API_KEY": "k", "ANTHROPIC_AUTH_TOKEN": "t", "ANTHROPIC_BASE_URL": "https://gateway.example",
+           "CLAUDE_CODE_USE_BEDROCK": "1", "CLAUDE_CODE_USE_VERTEX": "1", "CLAUDE_CODE_OAUTH_TOKEN": "o",
+           "CLAUDE_CONFIG_DIR": "/home/ada/.claude", "anthropic_api_key": "lower"}
+    clean = routine.clean_env(env)
+    assert set(clean) == {"PATH", "CLAUDE_CONFIG_DIR"}   # the person's own configuration stays; Windows ignores case
+    assert len(env) == 9 and env["ANTHROPIC_API_KEY"] == "k"   # a copy: the caller's environment is not touched
+
+
 # ----- done only once the schedule reads back ------------------------------------------------------
 def test_rendered_routines_are_not_scheduled_routines(tmp_path, monkeypatch):
     ws = workspace(tmp_path)

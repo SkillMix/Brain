@@ -55,12 +55,25 @@ READ_ONLY = ("Bash(gh pr view *)", "Bash(gh pr list *)", "Bash(git status *)", "
              "Bash(git diff *)", "Bash(git show *)")
 
 
+# What a routine does not inherit from the session that set it up: another provider, another
+# endpoint, an API key or token. A routine bills the person's claude.ai sign-in, so the sign-in
+# that is checked, and the one that is started, is the one it will find without these.
+STRIPPED_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK",
+                "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_OAUTH_TOKEN")
+
+
+def clean_env(env: dict) -> dict:
+    """A copy of the environment as a routine sees it: without STRIPPED_ENV."""
+    return {key: value for key, value in env.items() if key.upper() not in STRIPPED_ENV}   # Windows ignores case
+
+
 def find_claude() -> str | None:
-    """Claude Code's command: on PATH, else where its own installer puts it."""
+    """Claude Code's command: on PATH, else where the doctor installed it, else where its own
+    installer puts it."""
     found = shutil.which("claude")
     if found:
         return found
-    for folder in (Path.home() / ".local" / "bin", Path.home() / ".claude" / "local"):
+    for folder in (doctor.tools_home() / "claude", Path.home() / ".local" / "bin", Path.home() / ".claude" / "local"):
         for name in ("claude", "claude.exe"):   # a scheduled task may start without the user's PATH
             if (folder / name).exists():
                 return str(folder / name)
