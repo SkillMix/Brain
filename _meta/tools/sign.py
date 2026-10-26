@@ -6,16 +6,35 @@ function in the template that writes `status: stable`, and only while executing 
 person's verdict: an empty `by`, or one that starts with `routine:`, is refused before
 anything is touched (rules.md section 1, hard rule 3). Nothing here sends or runs git.
 
-    python sign.py [root] read-back <ids...>
+    python sign.py [root] read-back <ids...> [--body <id>=<file>]...
     python sign.py [root] apply --by <name> --verdicts <verdicts.yaml>
 
-The verdicts file maps item ids to a verb or a [verb, note] pair:
-    p-1a2b3c4d: yes
-    p-5e6f7a8b: [edit, "Go-live is 9 November."]
+`--body` names an edit's write-up, a file relative to the root that must lie inside it
+(`_scratch/sign/<id>.md`): the read-back shows that text and its fingerprint, and the
+heading ends `(your edit)`. For a page whose yes signs its text (a candidate that is not a
+record or a review batch, or a leaving item that already carries a fingerprint), a `base:`
+line follows the fingerprint: it names the draft the read-back was made from.
 
-Per kind: a candidate lands at its `target` signed (yes), with the note as its body
-(edit), is discarded with a tombstone (no), gets a deadline one scaled day out (later),
-or lands and adds a standing choice for its destination (always); a signed candidate
+The verdicts file maps item ids to a verb, a [verb, note] pair, or a mapping. A yes, edit
+or always on such a page is a mapping with the fingerprint and base its read-back printed,
+and an edit names its write-up as `body_file`:
+    p-1a2b3c4d: {verb: yes, fingerprint: <hex>, base: <hex>}
+    p-5e6f7a8b: {verb: edit, body_file: _scratch/sign/p-5e6f7a8b.md, fingerprint: <hex>, base: <hex>}
+    p-9c0d1e2f: [later, "after the call"]
+    p-3a4b5c6d: no
+
+`apply` signs exactly the text that was read back. When the draft changed since (distill
+refreshed it), or the text did, the item is refused; from the command line, a page that
+names no fingerprint is refused too, and so is a line of the weekly review batch (or the
+whole batch) where a yes, edit or always would sign a draft: that line stays open, and the
+draft is signed by its own id after its read-back. A refused item stays where it is, still
+on Needs you, and writes only `- <ISO> refused <id> by <name>: <why>` to `log.md`; the
+other items go ahead. A body file that is missing or outside the space, or one given with a
+note or under another verb, stops the whole run before anything is written.
+
+Per kind: a candidate lands at its `target` signed (yes), with the note or the body file
+as its body (edit), is discarded with a tombstone (no), gets a deadline one scaled day out
+(later), or lands and adds a standing choice for its destination (always); a signed candidate
 with a `destination` also queues an `at_once` release carrying the signature. A check
 verdict goes to `_meta/state/check-verdicts.jsonl`. A leaving release ships tonight
 (yes), is pulled to `_outbound/held/` (no) or waits a scaled day (later). Every verdict
@@ -56,6 +75,7 @@ class ApplyReport:
     released_queued: list = field(default_factory=list)
     skipped: list = field(default_factory=list)
     retracted: list = field(default_factory=list)
+    refused: list = field(default_factory=list)   # {"id", "why"}: not what was read back
 
 
 @dataclass
@@ -106,10 +126,80 @@ def index(root: Path) -> dict:
     return found
 
 
-def read_back(root, selection) -> str:
-    """The exact text that would land for each item, its fingerprint, and where it goes."""
+# ----- the pin: what was read back is what is signed ----------------------------------
+PINNED_VERBS = ("yes", "edit", "always")
+
+
+def base_of(fm: dict, body: str) -> str:
+    """The draft a read-back was made from: its body and where and how it would go. When
+    distill refreshes a candidate during the sitting, this changes."""
+    head = (f"destination: {fm.get('destination') or ''}\n"
+            f"high_stakes: {fm.get('high_stakes') or ''}\n"
+            f"target: {fm.get('target') or ''}\n")
+    return pages.fingerprint(head + pages.normalize(body))
+
+
+def _page_candidate(entry: Found) -> bool:
+    """A candidate that lands as a page: not a record (filed as evidence), not a review batch."""
+    return (entry.kind == "candidate" and str(entry.fm.get("type")) != "source"
+            and not entry.fm.get("review_batch"))
+
+
+def _pinned(entry: Found) -> bool:
+    """A page whose yes signs its text: a page candidate, or a leaving item that already
+    carries a signature. A yes, edit or always on it names the fingerprint and base its
+    read-back printed."""
+    return entry.path is not None and (_page_candidate(entry) or (
+        entry.kind in ("leaving", "high_stakes") and bool(entry.fm.get("fingerprint"))))
+
+
+def _takes_edit(entry: Found) -> bool:
+    """An item whose edit becomes the text that lands (or leaves)."""
+    return entry.path is not None and (_page_candidate(entry)
+                                       or entry.kind in ("leaving", "high_stakes", "tracker"))
+
+
+def _text_of(entry: Found, edit: str | None = None) -> str:
+    """The exact text that would land: the edit when there is one, else the item's own body;
+    a candidate's without its `## New evidence` list."""
+    body = edit if edit and edit.strip() and _takes_edit(entry) else entry.body
+    if entry.kind == "candidate" and str(entry.fm.get("type")) != "source":
+        return landing_text(body)
+    return pages.normalize(body)
+
+
+def write_up(root, rel) -> str:
+    """The text of an edit's write-up (a verdict's `body_file`, a read-back's `--body`): a file
+    named relative to the root that must lie inside it."""
+    base = Path(root).resolve()
+    path = (base / str(rel)).resolve()
+    if not path.is_relative_to(base):
+        raise ValueError(f"{rel}: a body file must lie inside the space")
+    if not path.is_file():
+        raise ValueError(f"{rel}: no such body file")
+    return path.read_text(encoding="utf-8-sig")
+
+
+def _refusal(entry: Found, verb: str, note: str, pin: dict, require_pin: bool) -> str:
+    """Why a verdict may not sign this item, or "" when it may."""
+    if verb not in PINNED_VERBS or not _pinned(entry):
+        return ""
+    fingerprint, base = pin.get("fingerprint"), pin.get("base")
+    if not (fingerprint and base):   # a pin missing either half is a missing pin
+        return "no fingerprint: read it back first" if (require_pin or fingerprint or base) else ""
+    if base != base_of(entry.fm, entry.body):
+        return "the draft changed since the read-back: read it back again"
+    if fingerprint != pages.fingerprint(_text_of(entry, note if verb == "edit" else None)):
+        return "the text changed since the read-back"
+    return ""
+
+
+def read_back(root, selection, bodies: dict | None = None) -> str:
+    """The exact text that would land for each item, its fingerprint, and where it goes.
+    `bodies` maps an id to its edit's write-up: that text is shown instead, marked as the edit."""
     root = Path(root)
     found = index(root)
+    bodies = bodies or {}
     parts = []
     for item_id in selection:
         entry = found.get(str(item_id))
@@ -117,20 +207,22 @@ def read_back(root, selection) -> str:
             parts.append(f"## {item_id}: not found\n")
             continue
         title = entry.fm.get("title") or (entry.item.text if entry.item else item_id)
-        lines = [f"## {item_id}: {title} ({entry.kind})"]
+        edit = bodies.get(str(item_id))
+        edited = bool(edit and edit.strip() and _takes_edit(entry))
+        lines = [f"## {item_id}: {title} ({entry.kind})" + (" (your edit)" if edited else "")]
         destination = entry.fm.get("destination")
         if destination:
             lines.append(f"it will go to {destination}")
         if entry.path is not None:
-            body = entry.body
-            if entry.kind == "candidate" and str(entry.fm.get("type")) != "source":
-                body = landing_text(entry.body)
-                if body != pages.normalize(entry.body):
-                    lines.append("the New evidence list is for your review and does not land")
+            body = _text_of(entry, edit if edited else None)
+            if body != pages.normalize(edit if edited else entry.body):
+                lines.append("the New evidence list is for your review and does not land")
             fingerprint = pages.fingerprint(body)
         else:
             body, fingerprint = entry.item.text, entry.item.fingerprint
         lines.append(f"fingerprint: {fingerprint}")
+        if _pinned(entry):
+            lines.append(f"base: {base_of(entry.fm, entry.body)}")
         lines += ["", pages.normalize(body) if body.strip() else "(no text)\n"]
         parts.append("\n".join(lines))
     return "\n".join(parts)
@@ -434,21 +526,30 @@ def _routine_item(root, space, entry: Found, item_id, verb, note, by, now, repor
 
 # ----- the weekly review batch: verdicts per line --------------------------------------
 def _review_line(root: Path, space, batch: Path, number: int, verb: str, note: str, by: str, now,
-                 report: ApplyReport) -> bool:
+                 report: ApplyReport, require_pin: bool = False) -> str:
+    """One line of a weekly review batch: "answered", "refused", or "" when the batch has no
+    such open line. Under the pin, a line that would sign a draft is refused and stays open:
+    the draft is signed by its own id, after its read-back."""
     fm, body = pages.read(batch)
     lines = fm.get("lines") or []
     line = next((l for l in lines if int(l.get("n", 0)) == number), None)
     if line is None or line.get("answered"):
-        return False
+        return ""
     if verb == "later":
         report.deferred.append(f"{batch.stem}#{number}")
-        return True
+        return "answered"
     target = root / str(line["page"])
+    draft = (Found("candidate", target, *pages.read(target))
+             if str(line["page"]).startswith("_inbound/candidates/") and target.exists() else None)
+    if require_pin and verb in PINNED_VERBS and draft is not None and _pinned(draft):
+        why = "no fingerprint: read it back first"
+        _log(root, f"- {pages.iso(now)} refused {batch.stem}#{number} by {by}: {why}")
+        report.refused.append({"id": f"{batch.stem}#{number}", "why": why})
+        return "refused"
     if not target.exists():
         line["answered"] = "gone"
-    elif str(line["page"]).startswith("_inbound/candidates/"):
-        entry = Found("candidate", target, *pages.read(target))
-        _candidate(root, space, entry, str(line.get("id") or target.stem),
+    elif draft is not None:
+        _candidate(root, space, draft, str(line.get("id") or target.stem),
                    "yes" if verb in ("yes", "always") else verb, note, by, now, report)
         line["answered"] = verb
     else:
@@ -473,7 +574,7 @@ def _review_line(root: Path, space, batch: Path, number: int, verb: str, note: s
         batch.unlink()
     else:
         pages.write(batch, dict(fm, lines=lines), body)
-    return True
+    return "answered"
 
 
 HANDLERS = {"candidate": _candidate, "check": _check, "leaving": _queue_item, "doubt": _doubt, "tracker": _tracker_item,
@@ -491,49 +592,65 @@ def _verb(value) -> str:
 
 
 def _split(verdict) -> tuple:
+    """(verb, note, pin) from a verb, a [verb, note] pair, or a mapping; only a mapping
+    carries a pin: the read-back's `fingerprint` and `base`, and an edit's `body_file`."""
     if isinstance(verdict, (str, bool)):
-        return _verb(verdict), ""
+        return _verb(verdict), "", {}
     if isinstance(verdict, (list, tuple)) and verdict:
-        return _verb(verdict[0]), str(verdict[1]) if len(verdict) > 1 and verdict[1] else ""
+        return _verb(verdict[0]), str(verdict[1]) if len(verdict) > 1 and verdict[1] else "", {}
     if isinstance(verdict, dict):
-        return _verb(verdict.get("verb")), str(verdict.get("note") or "")
-    return "", ""
+        pin = {key: str(verdict[key]) for key in ("fingerprint", "base", "body_file")
+               if verdict.get(key) not in (None, "")}
+        return _verb(verdict.get("verb")), str(verdict.get("note") or ""), pin
+    return "", "", {}
 
 
-def apply(root, verdicts: dict, by: str, now: dt.datetime | None = None) -> ApplyReport:
-    """Record a named person's verdicts. Refuses routines and bad verbs before any write."""
+def apply(root, verdicts: dict, by: str, now: dt.datetime | None = None,
+          require_pin: bool = False) -> ApplyReport:
+    """Record a named person's verdicts. Refuses routines, bad verbs and bad body files
+    before any write. A yes, edit or always on a pinned page signs only the text that was read
+    back; with `require_pin`, one that names no fingerprint is refused too."""
     actor = str(by or "").strip()
     if not actor or actor.lower().startswith("routine:"):
         raise ValueError("sign.apply needs a named person as `by`; routines never sign "
                          "(rules.md section 1, hard rule 3)")
+    root = Path(root)
     wanted = {}
     for item_id, verdict in (verdicts or {}).items():
-        verb, note = _split(verdict)
+        verb, note, pin = _split(verdict)
         if verb not in VERBS:
             raise ValueError(f"{item_id}: the verdict must be one of {', '.join(VERBS)} (got {verb!r})")
-        wanted[str(item_id)] = (verb, note)
-    root = Path(root)
+        if "body_file" in pin:
+            if verb != "edit":
+                raise ValueError(f"{item_id}: a body_file goes with edit only (got {verb!r})")
+            if note:
+                raise ValueError(f"{item_id}: give the edit as a note or a body_file, not both")
+            note = write_up(root, pin["body_file"])
+        wanted[str(item_id)] = (verb, note, pin)
     space = spaceyaml.load(root)
     now = now or space.now()
     found = index(root)
     report = ApplyReport()
-    for item_id, (verb, note) in wanted.items():
+    for item_id, (verb, note, pin) in wanted.items():
         if "#" in item_id:  # one line of a weekly review batch: `review-<date>#<n>`
             stem, _, number = item_id.partition("#")
             batch = root / needs_you.CANDIDATES / f"{stem}.md"
-            if batch.exists() and number.isdigit() and _review_line(
-                    root, space, batch, int(number), verb, note, actor, now, report):
+            outcome = (_review_line(root, space, batch, int(number), verb, note, actor, now, report,
+                                    require_pin) if batch.exists() and number.isdigit() else "")
+            if outcome == "answered":
                 _log(root, f"- {pages.iso(now)} {verb} {item_id} by {actor}")
-                continue
-            report.skipped.append(item_id)
+            elif not outcome:
+                report.skipped.append(item_id)
             continue
         entry = found.get(item_id)
         if entry is not None and entry.kind == "candidate" and entry.fm.get("review_batch") and verb != "later":
             # the whole batch at once: the verb applies to every open line
-            for line in list(entry.fm.get("lines") or []):
-                if not line.get("answered") and entry.path.exists():
-                    _review_line(root, space, entry.path, int(line["n"]), verb, note, actor, now, report)
-            _log(root, f"- {pages.iso(now)} {verb} {item_id} by {actor}")
+            outcomes = [_review_line(root, space, entry.path, int(line["n"]), verb, note, actor, now, report,
+                                     require_pin)
+                        for line in list(entry.fm.get("lines") or [])
+                        if not line.get("answered") and entry.path.exists()]
+            if "answered" in outcomes or "refused" not in outcomes:   # not when every line was refused
+                _log(root, f"- {pages.iso(now)} {verb} {item_id} by {actor}")
             continue
         if entry is None and verb == "no":
             # an item that already left (listed under "left yesterday"): pulled back with one word
@@ -545,6 +662,11 @@ def apply(root, verdicts: dict, by: str, now: dt.datetime | None = None) -> Appl
                 continue
         if entry is None:
             report.skipped.append(item_id)
+            continue
+        why = _refusal(entry, verb, note, pin, require_pin)
+        if why:   # not what was read back: it stays where it is, still on Needs you
+            _log(root, f"- {pages.iso(now)} refused {item_id} by {actor}: {why}")
+            report.refused.append({"id": item_id, "why": why})
             continue
         HANDLERS.get(entry.kind, _routine_item)(root, space, entry, item_id, verb, note, actor, now, report)
         _log(root, f"- {pages.iso(now)} {verb} {item_id} by {actor}")
@@ -561,21 +683,40 @@ def main(argv=None) -> int:
         return 2
     command = argv.pop(0)
     if command == "read-back":
-        print(read_back(root, argv), end="")
+        ap = argparse.ArgumentParser(prog="sign.py read-back")
+        ap.add_argument("ids", nargs="*", help="the items to read back")
+        ap.add_argument("--body", action="append", default=[], metavar="ID=FILE",
+                        help="an edit's write-up, relative to the root and inside it "
+                             "(_scratch/sign/<id>.md): shown and fingerprinted instead")
+        args = ap.parse_intermixed_args(argv)
+        bodies = {}
+        try:
+            for pair in args.body:
+                item_id, sep, rel = pair.partition("=")
+                if not sep or not item_id or not rel:
+                    raise ValueError(f"{pair}: --body takes <id>=<file>")
+                bodies[item_id] = write_up(root, rel)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(read_back(root, args.ids, bodies=bodies), end="")
         return 0
     if command != "apply":
         print(__doc__)
         return 2
     ap = argparse.ArgumentParser(prog="sign.py apply")
     ap.add_argument("--by", required=True, help="the person whose verdicts these are")
-    ap.add_argument("--verdicts", required=True, help="YAML file: {item_id: verb | [verb, note]}")
+    ap.add_argument("--verdicts", required=True,
+                    help="YAML file: {item_id: verb | [verb, note] | {verb, fingerprint, base} | "
+                         "{verb: edit, body_file, fingerprint, base}}; a yes, edit or always on a "
+                         "page names the fingerprint and base its read-back printed")
     args = ap.parse_args(argv)
     data = yaml.safe_load(Path(args.verdicts).read_text(encoding="utf-8")) or {}
     if not isinstance(data, dict):
         print("error: the verdicts file must map item ids to verdicts", file=sys.stderr)
         return 1
     try:
-        report = apply(root, data, by=args.by)
+        report = apply(root, data, by=args.by, require_pin=True)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
