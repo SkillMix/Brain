@@ -202,6 +202,57 @@ code {
   color: var(--terminal-ink);
 }
 
+/* The tabs of a workspace page: the manual and the progress, chosen without a script */
+.tab-switch { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.tabs { display: flex; gap: 6px; margin: 40px 0 0; border-bottom: 1px solid var(--line); }
+.tabs label {
+  margin-bottom: -1px;
+  padding: 10px 18px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 10px 10px 0 0;
+  color: var(--muted);
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.tabs label:hover { color: var(--ink); }
+:root:has(#tab-manual:checked) label[for="tab-manual"],
+:root:has(#tab-progress:checked) label[for="tab-progress"] {
+  border-color: var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: inset 0 3px 0 var(--brand-red);
+}
+:root:has(#tab-manual:focus-visible) label[for="tab-manual"],
+:root:has(#tab-progress:focus-visible) label[for="tab-progress"] { outline: 2px solid var(--red); outline-offset: 2px; }
+:root:has(#tab-manual:checked) .panel-progress,
+:root:has(#tab-progress:checked) .panel-manual { display: none; }
+
+/* The six sections: what is happening, found, read, used, waiting and decided */
+.facts h2 { margin-top: 44px; }
+.facts dl { margin: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+.fact { display: grid; grid-template-columns: minmax(140px, 220px) 1fr; gap: 4px 24px; padding: 14px 22px; border-top: 1px solid var(--line); }
+.fact:first-child { border-top: 0; }
+.fact dt { color: var(--ink); font-size: 14px; font-weight: 700; }
+.fact dd { margin: 0; color: var(--body); font-size: 15px; overflow-wrap: anywhere; }
+.fact dd a { color: var(--red); }
+
+/* The manual: Your <company> brain */
+.manual h2 { margin-top: 36px; }
+.manual .lead { max-width: 68ch; color: var(--soft); font-size: 17px; }
+.manual .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.manual .card { padding: 20px 22px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+.manual .card:last-child { grid-column: 1 / -1; }
+.manual .card h3 { margin-bottom: 10px; font-size: 16px; }
+.manual .card p { color: var(--soft); font-size: 15px; }
+.manual ul { margin: 0; padding-left: 20px; }
+.manual li { margin: 0 0 9px; color: var(--body); font-size: 15px; }
+.manual .say { color: var(--ink); font-weight: 700; }
+.manual .does { color: var(--soft); }
+.manual .eg { display: block; color: var(--muted); font-size: 14px; }
+.manual q { color: var(--ink); quotes: "\201C" "\201D"; }
+
 /* How it works: the diagram */
 .how-card { margin: 0; padding: 26px 22px 18px; overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
 svg.how { display: block; width: 100%; min-width: 620px; height: auto; }
@@ -246,4 +297,7 @@ footer p { margin-top: 48px; padding-top: 14px; border-top: 1px solid var(--line
   }
   li.step:has(+ li.step:not(.state-next))::after { background: var(--brand-red); }
   li.step small { margin-top: 0; }
+  .tabs label { padding: 8px 12px; font-size: 14px; }
+  .fact { grid-template-columns: 1fr; padding: 12px 16px; }
+  .manual .card { padding: 16px; }
 }

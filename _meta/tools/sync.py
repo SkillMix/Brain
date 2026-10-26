@@ -33,6 +33,9 @@ routines only edit files. Each run:
      nobody watching the repository gets a pull request (and a paid check) every 15 minutes
   7. append one run line to _meta/state/runs.jsonl when something happened, plus at
      most one heartbeat a day; the line rides along in the next run's commit
+  8. after the lock is released: rewrite the progress page (`~/.spaces/onboarding.html`, outside the
+     repository) from the workspace, without the model (`onboarding_page.refresh`); not for a dry
+     run or `--only`
 
     python sync.py [--root R] [--dry-run] [--no-push] [--release-leg]
                    [--min-age-minutes N] [--only PATH ...] [--message TEXT]
@@ -745,6 +748,17 @@ class Run:
             fh.write(json.dumps(line, ensure_ascii=False, default=str) + "\n")
 
 
+def refresh_page(root: Path) -> None:
+    """The progress page (`~/.spaces/onboarding.html`, outside every repository) is rewritten from the workspace
+    after every ordinary run, once the lock is gone, so it is never older than the last sync. It reads files and
+    starts nothing; a page that cannot be written is one plain line here, never a failed sync."""
+    try:
+        import onboarding_page
+        onboarding_page.refresh(root)
+    except Exception as exc:
+        print(f"sync: the progress page could not be updated ({type(exc).__name__})")
+
+
 def parse(argv) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--root", default=".")
@@ -794,7 +808,10 @@ def main(argv=None) -> int:
         if not run.dry:
             run.record()
         run.unlock()
-    return ERROR if run.notes.get("errors") else OK
+    code = ERROR if run.notes.get("errors") else OK
+    if not args.only and not run.dry:
+        refresh_page(root)
+    return code
 
 
 if __name__ == "__main__":

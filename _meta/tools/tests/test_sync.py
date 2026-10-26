@@ -595,3 +595,46 @@ def test_a_red_sync_pull_request_with_no_known_cause_is_rerun_once(repo, monkeyp
     assert sync.main(["--root", str(repo)]) == 0   # the same head is still red: not rerun again
     assert len([c for c in gh.calls if c[:2] == ("run", "rerun")]) == 1
     assert run_lines(repo)[-1]["notes"]["pr_red"] == {"pr": 7, "checks": ["checks"]}
+
+
+def test_sync_rewrites_the_page_every_run(repo, monkeypatch):
+    import onboarding_page
+    refreshed = []
+    monkeypatch.setattr(onboarding_page, "refresh", lambda root: refreshed.append(Path(root)))
+    assert run(repo) == 0
+    assert refreshed == [repo.resolve()]
+    assert run(repo) == 0 and refreshed == [repo.resolve()] * 2   # nothing to land: the page is still rewritten
+
+
+def test_a_page_that_cannot_be_refreshed_never_fails_the_sync(repo, monkeypatch, capsys):
+    import onboarding_page
+
+    def broken(root):
+        raise RuntimeError("the page could not be written")
+    monkeypatch.setattr(onboarding_page, "refresh", broken)
+    write(repo / "work" / "old.md", "settled\n", minutes_old=15)
+    assert run(repo) == 0
+    assert "work/old.md" in head_files(repo)   # the landing happened
+    out = capsys.readouterr().out
+    assert out.count("sync: the progress page could not be updated (RuntimeError)") == 1   # one plain line
+    assert not (repo / ".git" / "sync.lock").exists()   # and the lock is gone
+
+
+def test_the_page_is_left_alone_by_a_dry_run_and_a_structure_landing(repo, monkeypatch):
+    import onboarding_page
+    refreshed = []
+    monkeypatch.setattr(onboarding_page, "refresh", lambda root: refreshed.append(root))
+    write(repo / "work" / "notes.md", "# Notes\n\nline one\nline two\n", minutes_old=15)
+    assert run(repo, "--dry-run") == 0
+    assert run(repo, "--only", "work/notes.md") == 0
+    assert refreshed == []
+
+
+def test_a_page_that_cannot_be_written_is_one_plain_line_and_the_sync_goes_on(repo, capsys):
+    import onboarding_page
+    onboarding_page.page_path().mkdir(parents=True)   # a folder where the page should be, in the test's fake home
+    write(repo / "work" / "old.md", "settled\n", minutes_old=15)
+    assert run(repo) == 0
+    out = capsys.readouterr().out
+    assert out.count("the progress page could not be updated") == 1
+    assert "work/old.md" in head_files(repo) and not (repo / ".git" / "sync.lock").exists()
