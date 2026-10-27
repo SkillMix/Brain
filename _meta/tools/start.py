@@ -123,22 +123,50 @@ def _pip(run, cmd) -> bool:
     return run([*cmd, flag], capture_output=True, text=True).returncode == 0
 
 
-def ensure_yaml(argv, venv=VENV, run=subprocess.run, have=None, install=None) -> int | None:
+def _in_appdata(path, env) -> bool:
+    """Whether a path is under %APPDATA%, where Claude's desktop app, a packaged Windows app, writes into a
+    private copy that Windows' scheduler never sees."""
+    roaming = env.get("APPDATA")
+    try:
+        return bool(roaming) and Path(path).resolve().is_relative_to(Path(roaming).resolve())
+    except (OSError, ValueError):
+        return False
+
+
+def _venv_home(venv: Path) -> str:
+    """The Python a venv was made from (`home` in its pyvenv.cfg), else ""."""
+    try:
+        text = (Path(venv) / "pyvenv.cfg").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+    return next((line.split("=", 1)[1].strip() for line in text.splitlines()
+                 if line.split("=", 1)[0].strip() == "home" and "=" in line), "")
+
+
+def ensure_yaml(argv, venv=VENV, run=subprocess.run, have=None, install=None, windows=None, env=None) -> int | None:
     """None when PyYAML imports here. Else the agent installs it: `pip --user` first; where the
     system Python refuses that (PEP 668: Homebrew on macOS, Debian and Ubuntu), a venv at
     ~/.spaces/venv, and start.py runs again with that interpreter, so the sync task uses it
     too. A Python without its venv module (Debian without python3-venv) gets the venv from uv,
-    pinned and checksummed, with no password. Returns that run's exit code, or 1 with the one
+    pinned and checksummed, with no password. On Windows there is no `--user` install, and a venv
+    made from a Python under %APPDATA% is made again from this one: from Claude's desktop app both
+    land where the scheduled tasks never look. Returns that run's exit code, or 1 with the one
     fix only the person can make."""
     have = have or (lambda: importlib.util.find_spec("yaml") is not None)
+    windows = os.name == "nt" if windows is None else windows
+    env = os.environ if env is None else env
     if have():
         return None
-    if _pip(run, [sys.executable, "-m", "pip", "install", "--quiet", "--user", "pyyaml"]):
+    if not windows and _pip(run, [sys.executable, "-m", "pip", "install", "--quiet", "--user", "pyyaml"]):
         import site
         sys.path.append(site.getusersitepackages())
         importlib.invalidate_caches()
         if have():
             return None
+    made_from = _venv_home(venv)
+    if windows and made_from and _in_appdata(made_from, env) and not _in_appdata(sys.executable, env):
+        import shutil
+        shutil.rmtree(venv, ignore_errors=True)
     py = venv_python(venv)
     pip = [str(py), "-m", "pip", "install", "--quiet", "pyyaml"]
     if not py.exists() and run([sys.executable, "-m", "venv", str(venv)]).returncode != 0:
@@ -1640,9 +1668,11 @@ PROBE_FAILED = ("The check that proves your routines run on their own found some
 PROBE_NOTHING = "The check that proves your routines run on their own reported nothing. Say the sentence again."
 PROBE_UNSCHEDULED = ("The check that proves your routines run on their own could not be scheduled on this computer. Say "
                      "the sentence again.")
+PROBE_ENDED = ("The check that proves your routines run on their own stopped before it reported, so they were not proved. "
+               "Your agent has the details; say the sentence again once it is put right.")
 # What the build may say of the proof as it is; any other line is PROBE_FAILED, its words the journal's detail (Minor 3).
 PROBE_PLAIN = (PROBE_REFUSED, PROBE_SILENT.format(minutes=PROBE_WAIT // 60), PROBE_ERROR, PROBE_BUSY, PROBE_STARTING,
-               PROBE_FAILED, PROBE_NOTHING, PROBE_UNSCHEDULED)
+               PROBE_FAILED, PROBE_NOTHING, PROBE_UNSCHEDULED, PROBE_ENDED)
 
 
 def _probe_result(started: float) -> dict | None:
@@ -1657,10 +1687,33 @@ def _probe_result(started: float) -> dict | None:
             "busy": data.get("busy") is True}
 
 
+def _log_size(log) -> int:
+    try:
+        return Path(log).stat().st_size if log else 0
+    except OSError:
+        return 0
+
+
+def _ended_saying(log, since: int) -> str | None:
+    """What the probe task wrote to its log after `since` bytes, once it added onboard.TASK_ENDED (its program
+    ended); None while it has not ended or has no log."""
+    try:
+        with open(log, "rb") as fh:
+            fh.seek(since)
+            text = fh.read().decode("utf-8", errors="replace")
+    except (OSError, TypeError):
+        return None
+    if onboard.TASK_ENDED not in text:
+        return None
+    said = [line.strip() for line in text.splitlines() if line.strip() and onboard.TASK_ENDED not in line]
+    return " ".join(said)[-600:] or "it printed nothing"
+
+
 def _probe_once(record: dict) -> dict:
     """Start the probe task at once and wait for its result, up to PROBE_WAIT; a result with `why` when the
-    scheduler would not start it or it never reported."""
-    started = time.time()
+    scheduler would not start it or it never reported. A task with a log (Windows) that ended without a
+    result fails at once, with what it printed as `detail` ("No Python at ..."), not after the wait."""
+    started, since = time.time(), _log_size(record.get("log"))
     if not onboard.run_now(record):
         return {"ok": False, "checks": [], "notes": [], "why": PROBE_REFUSED}
     deadline = _clock() + PROBE_WAIT
@@ -1668,6 +1721,10 @@ def _probe_once(record: dict) -> dict:
         seen = _probe_result(started)
         if seen is not None:
             return seen
+        said = _ended_saying(record.get("log"), since)
+        if said is not None:
+            return _probe_result(started) or {"ok": False, "checks": [], "notes": [], "why": PROBE_ENDED,
+                                              "detail": said}
         if _clock() >= deadline:
             return {"ok": False, "checks": [], "notes": [], "why": PROBE_SILENT.format(minutes=PROBE_WAIT // 60)}
         _sleep(PROBE_LOOK)
@@ -1709,7 +1766,8 @@ def _prove(report, workspace: Path, check: str) -> dict:
     try:
         record = onboard.register_task(report, f"routine probe task {task}", task, workspace,
                                        [workspace / "_meta" / "tools" / "routine.py", "--probe", workspace],
-                                       times=[PROBE_TIME], cron=f"{minute} {hour} * * *")
+                                       times=[PROBE_TIME], cron=f"{minute} {hour} * * *",
+                                       stderr_log=Path.home() / ".spaces" / "logs" / f"{task}.log")
         onboard.record_probe_task(workspace, record)   # how this scheduler names it, for a later removal
         if not report.steps or not report.steps[-1].done:
             return {"ok": False, "checks": [], "notes": [], "why": PROBE_UNSCHEDULED}

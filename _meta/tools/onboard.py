@@ -811,6 +811,7 @@ def default_user_instructions(root, offline, home) -> Path:
 # ----- OS tasks: the sync task and, without a harness scheduler, the routines --------------
 SYSTEM = platform.system()   # "Windows", "Darwin" or "Linux"
 CONHOST = r"%SystemRoot%\System32\conhost.exe"
+TASK_ENDED = "space-task-ended"   # the line a Windows task with a log adds to it as it ends (register_task)
 # What `onboard --check` reads back from a Windows task, each with what it means.
 WINDOWS_TASK = {"<DisallowStartIfOnBatteries>false": "starts on battery",
                 "<StopIfGoingOnBatteries>false": "keeps running on battery",
@@ -1084,18 +1085,29 @@ def windows_expands(text: str) -> bool:
     return any(name.upper() in names for name in re.findall(r"(?=%([^%]+)%)", text))
 
 
-def register_task(report, label, task, root, args, minutes=None, times=None, cron=None, dry_run=False) -> dict:
+def register_task(report, label, task, root, args, minutes=None, times=None, cron=None, dry_run=False,
+                  stderr_log=None) -> dict:
     """Register one OS task that runs this interpreter with `args` in `root`, every `minutes` or daily at
     `times` (`cron` is the same schedule in cron's words), through the scheduler that catches up after sleep:
     a task XML on Windows, a launch agent on macOS, a systemd user timer on a Linux where
     `systemctl --user` works, else a cron line, which does not catch up (one plain line says so). A task runs
-    through one scheduler: moving to another takes it out of the rest (`retire_others`)."""
+    through one scheduler: moving to another takes it out of the rest (`retire_others`). On Windows, a task
+    given `stderr_log` runs through cmd, which adds what it printed to its error output and then TASK_ENDED
+    to that file: a hidden task's Python that cannot start says so nowhere else (the other schedulers log)."""
     root, py, path = Path(root), sys.executable, os.environ.get("PATH", "")
     if SYSTEM == "Windows":
         arguments = f"--headless {_argline(py, args)}"
+        if stderr_log:
+            log = Path(stderr_log)
+            arguments = (f'--headless cmd.exe /d /s /c "{_argline(py, args)} 2>>"{log}" & '
+                         f'echo {TASK_ENDED}>>"{log}""')
         record = {"name": task, "kind": "schtasks", "line": f"{CONHOST} {arguments}",
                   "create": ["schtasks", "/Create", "/F", "/TN", task, "/XML", f"{task}.xml"],
                   "check": ["schtasks", "/Query", "/TN", task, "/XML"], "root": str(root)}
+        if stderr_log:
+            record["log"] = str(log)
+            if not dry_run:
+                log.parent.mkdir(parents=True, exist_ok=True)
         if windows_expands(arguments):
             report.add(label, False, " ".join(record["check"]), "a folder name with a word between percent signs "
                        "that Windows would swap for something else (%TEMP% is one) cannot be scheduled: rename "

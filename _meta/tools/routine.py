@@ -1445,6 +1445,27 @@ def send_check(got: dict, profiles: list) -> dict:
     return _check(name, True, "the guard refuses a stranger and lets mail to you through")
 
 
+GITHUB_CHECK = "work reaches GitHub"
+
+
+def github_check(run=subprocess.run) -> dict:
+    """That a run the scheduler starts can use the person's GitHub sign-in (`gh auth status`), as the sync
+    task, started the same way, needs to: where the desktop app's sign-in sits where the scheduler cannot
+    see it, the probe says so instead of the sync failing unseen."""
+    gh = shutil.which("gh") or "gh"
+    try:
+        res = run([gh, "auth", "status", "--hostname", "github.com"], capture_output=True, text=True,
+                  encoding="utf-8", errors="replace", timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return _check(GITHUB_CHECK, False, "GitHub's command line did not start as the scheduler runs it, so your "
+                                           "work would not reach GitHub")
+    if res.returncode == 0:
+        return _check(GITHUB_CHECK, True, "the scheduler's runs use your GitHub sign-in")
+    said = next((line.strip() for line in ((res.stderr or "") + (res.stdout or "")).splitlines() if line.strip()), "")
+    return _check(GITHUB_CHECK, False, "the scheduler's runs cannot use your GitHub sign-in, so your work would not "
+                                       f"reach GitHub: {said[:160]}")
+
+
 PROBE_NAME = "probe"   # the probe holds the workspace's lock under this name
 
 
@@ -1476,6 +1497,7 @@ def _probe(workspace: Path, run) -> int:
     old = read_probe()
     doctor.use_tools()
     claude = find_claude()
+    reach = github_check(run)
     try:
         if claude is None:
             raise ProbeError("Claude Code's command line is not installed on this machine")
@@ -1489,7 +1511,7 @@ def _probe(workspace: Path, run) -> int:
     got = grant(workspace, view, shell=candidate[0] if candidate else "")
     write_items(workspace, reconnect=got["reconnect"])
     profiles = _profiles(workspace, got, roots, view["seen"] + [t for t in view["tools"] if t not in view["seen"]])
-    checks = [*read_checks(workspace, got, profiles), *[folder_check(r) for r in roots], send_check(got, profiles)]
+    checks = [*read_checks(workspace, got, profiles), *[folder_check(r) for r in roots], send_check(got, profiles), reach]
     ok = all(c["ok"] for c in checks)
     write_probe({**view, "checks": checks, "notes": got["notes"], "ok": ok, "stamp": time.time(),
                  "workspace": str(workspace), "hook_shell": proven_shell(workspace, got)})

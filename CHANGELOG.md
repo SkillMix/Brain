@@ -133,6 +133,14 @@ back to back, and nothing a record or the person settled is asked again.
 - **A first-release line reads back.** `sign.py read-back` failed on a `first-<subject>` line,
   and took every other item of the same call with it. It now lists the line's items and prints
   no fingerprint: a bare verb answers it.
+- **Routines and the sync run from the Windows desktop app's setup.** Claude's desktop app is a
+  packaged Windows app: what setup wrote under `%APPDATA%` (uv's Python, gh's sign-in) landed in
+  a private copy the scheduled tasks never see, so they died without a word. The bootstrap installs
+  Python under `~/.spaces/tools/python`, a venv made from a Python under `%APPDATA%` is made again,
+  there is no `--user` install on Windows, and gh's folder is `~/.spaces/gh` (the sign-in setup made
+  is copied there). The probe task writes what it printed to `~/.spaces/logs/`, so a Python that
+  cannot start fails the build at once with its own words instead of after four silent minutes, and
+  the probe checks that a scheduled run can use the GitHub sign-in.
 
 **Migration.** After upgrading, run `python _meta/tools/distill.py <root> prepare` once and
 follow distill's Recheck and Ask steps for each page it lists.

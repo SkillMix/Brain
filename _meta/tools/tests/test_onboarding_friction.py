@@ -37,7 +37,7 @@ def test_a_certificate_failure_is_retried_with_the_system_store(tmp_path):
         if "--use-feature=truststore" in argv:
             return subprocess.CompletedProcess(argv, 0, "", "")
         return subprocess.CompletedProcess(argv, 1, "", "SSL: CERTIFICATE_VERIFY_FAILED")
-    code = start.ensure_yaml([], venv=tmp_path / "venv", run=run,
+    code = start.ensure_yaml([], venv=tmp_path / "venv", run=run, windows=False,   # Windows has no --user install
                              have=lambda: any("--use-feature=truststore" in c for c in calls))
     assert code is None
     assert calls[0][-1] == "pyyaml" and calls[1][-1] == "--use-feature=truststore"
