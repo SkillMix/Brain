@@ -268,6 +268,9 @@ fresh usage.
   not one of their apps changes nothing, and the `why` names their apps. What was copied before stays in
   their private workspace or the brain's drafts; only the person removes anything (agents never
   delete).
+- **Send my briefing to <address>** (the app card names where the briefing goes): run the build
+  with that address, `start.py build --email <address> --json`, now or when the running build is
+  done. The address given always wins over the one the card named.
 
 ## "Invite <colleague>"
 

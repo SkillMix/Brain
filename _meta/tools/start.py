@@ -69,8 +69,9 @@ the person says go. `--wait-part p1` stays until part 1 is done or paused.
 `build` takes what the phases before it found (`found_by_setup`): the company's name from the
 researched card, the feeds of the apps that are read, the namespace as the account, and the
 briefing address (`briefing_address`): the address given, else the account of the mail app read as
-work when it is an address the person is known to have or one on a company domain they typed
-(`--domain`), else git's, else the Claude sign-in's; with none, one item asks and the build waits. What the person said
+work when it is an address the person is known to have, one on a company domain they typed
+(`--domain`) or the one the app card named (`apps.briefing_mailbox`), else git's, else the Claude
+sign-in's; with none, one item asks and the build waits. What the person said
 on the command line wins, and the journal's build record says where the address came from. It
 writes the apps' verdicts, without their counts, to the workspace's private zone, where the
 routines read their grant, and schedules the routines (`finish_workspace`). The workspace goes in the brain's account; when that is an
@@ -1557,14 +1558,18 @@ def work_mailbox(journal: dict, known=(), domains=()) -> str:
     when that is an address the briefing may go to. The account is a reader's free-text answer, written
     after reading mail anyone can write, and the briefing address is the only one agents may mail: so it
     counts only when it is one the person is known to have (`known`, exactly), or sits on a domain of the
-    company that did not come from a reader (`domains`; a mail provider's never does). "" otherwise. A mailbox
+    company that did not come from a reader (`domains`; a mail provider's never does), or is the mailbox the app
+    card named as where the briefing goes (`apps.briefing_mailbox`), which the person saw for ten minutes and
+    could change. "" otherwise. A mailbox
     the routines can send from (`send`) comes before one setup only reads, as it reads a sorted one (M3)."""
+    record = journal.get("apps") if isinstance(journal.get("apps"), dict) else {}
+    named = address_in(record["card"].get("briefing")) if isinstance(record.get("card"), dict) else ""
     found = []
     for v in apps_verdicts(journal):
         if v.get("verdict") == "work" and "mail" in (v.get("kinds") or []):
             account = address_in(v.get("account"))
             domain = account.rpartition("@")[2]
-            if account and (account in known or (domain in domains and not research.is_provider(domain))):
+            if account and (account in known or account == named or (domain in domains and not research.is_provider(domain))):
                 found.append((bool(v.get("send")), account))
     return next((account for sends, account in found if sends), found[0][1] if found else "")
 

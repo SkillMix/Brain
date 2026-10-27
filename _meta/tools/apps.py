@@ -443,6 +443,7 @@ def card(verdicts: list, now: dt.datetime, unsigned=(), sorted_apps: dict | None
     bare name when the run gave none), for each in `unreadable` (sorted as a kind setup reads, but
     no tool of it only reads: NO_READ_TOOL) and for each in `unsorted` (the sorting run gave no
     answer), `nothing_to_read` names the ones sorted `none`. `sorted_apps` is what `sort` gave.
+    `briefing` is where the morning briefing goes unless the person says otherwise (`briefing_mailbox`).
     Nothing is copied before `starts_after`."""
     lines = {"read": [], "skip": []}
     for v in verdicts:
@@ -453,11 +454,36 @@ def card(verdicts: list, now: dt.datetime, unsigned=(), sorted_apps: dict | None
             lines["skip"].append(who + (f", {v['why']}" if v["why"] else ""))
     others = [f"{app}{SEP}{s['why']}" if s["why"].strip() else app
               for app, s in (sorted_apps or {}).items() if s["kind"] == "other"]
-    return {**lines, "not_signed_in": [f"{app}{SEP}not signed in" for app in unsigned],
+    return {**lines, "briefing": briefing_mailbox(verdicts), "not_signed_in": [f"{app}{SEP}not signed in" for app in unsigned],
             "not_read": others + [f"{app}{SEP}{NO_READ_TOOL}" for app in unreadable]
             + [f"{app}{SEP}{NOT_LOOKED}" for app in unsorted],
             "nothing_to_read": [app for app, s in (sorted_apps or {}).items() if s["kind"] == "none"],
             "starts_after": (now + dt.timedelta(minutes=HEAD_START)).isoformat(timespec="seconds")}
+
+
+ADDRESS = re.compile(r"[A-Za-z0-9._%+'-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
+
+
+def _address(account) -> str:
+    """The one address in a reader's account answer, in lower case; "" with none or several."""
+    found = {a.lower() for a in ADDRESS.findall(str(account or ""))}
+    return found.pop() if len(found) == 1 else ""
+
+
+def briefing_mailbox(verdicts: list) -> str:
+    """The mailbox the card names as where the morning briefing goes: the account of a mail app read as `work`
+    that the routines can send from, on no mail provider's domain, and the account of another app read as well
+    (`READ`), whose reader read other content: a mail anyone can write cannot name it alone. The card shows it
+    for HEAD_START minutes before the build takes it (`start.work_mailbox`), so the person can name another.
+    "" when no mailbox is that."""
+    others = [(v.get("app"), _address(v.get("account"))) for v in verdicts if v.get("verdict") in READ]
+    for v in verdicts:
+        account = _address(v.get("account"))
+        if (v.get("verdict") == "work" and "mail" in (v.get("kinds") or []) and v.get("send") and account
+                and not research.is_provider(account.rpartition("@")[2])
+                and any(app != v.get("app") and seen == account for app, seen in others)):
+            return account
+    return ""
 
 
 def feeds(verdicts: list) -> str:

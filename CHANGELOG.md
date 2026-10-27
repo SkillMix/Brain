@@ -147,6 +147,12 @@ back to back, and nothing a record or the person settled is asked again.
   longer run the template's own tests, and the gate no longer lets a protected change in such a
   workspace merge without the owner. The sync reruns a failed check at most three times a day, and
   not at all when the same checks failed again after a rerun.
+- **The briefing goes to the work mailbox the app card named.** The card now says where the
+  morning briefing goes: the work mailbox the routines can send from, when a second app's reader
+  names the same account (a mail anyone can write cannot name it alone). The person sees it for
+  ten minutes and can say "send my briefing to" another address; the build takes it before git's
+  address. The morning-view skill says that having the send tool is the mailbox check, so a
+  routine no longer holds the briefing because Claude is signed in on another domain.
 
 **Migration.** After upgrading, run `python _meta/tools/distill.py <root> prepare` once and
 follow distill's Recheck and Ask steps for each page it lists.

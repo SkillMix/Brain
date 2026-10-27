@@ -3,13 +3,16 @@ is a packaged Windows app, so what setup writes under %APPDATA% lands in a priva
 scheduled tasks never see (#7); a copy of the template takes itself for the template (#11); the
 briefing address (#13); apps still loading when they are looked at (#3, #8); a first push that failed
 without a word (#12, #14); and the smaller ones (#5, #6, #9, #15, the company site)."""
+import datetime as dt
 import json
 import os
 import subprocess
 import sys
 import time
+import types
 from pathlib import Path
 
+import apps
 import doctor
 import gate
 import onboard
@@ -245,3 +248,53 @@ def test_a_sync_pull_request_is_rerun_three_times_a_day_at_most(repo, monkeypatc
     for n in range(4):
         sync_again(repo, n)
     assert reruns(gh) == sync.HEAL_RERUNS == 3 and "pr_red" in run_lines(repo)[-1]["notes"]
+
+
+# ----- #13: the briefing goes to the work mailbox the app card named -------------------------------------
+MAIL = {"app": "Gmail", "kinds": ["mail"], "read": ["mcp__claude_ai_Gmail__search_threads"], "write": [],
+        "send": ["mcp__claude_ai_Gmail__send_message"], "account": "ada@desk.example", "verdict": "work",
+        "per_month": {"2026-10": 212}, "why": "The mailbox holds the company's mail."}
+DIARY = {"app": "Google Calendar", "kinds": ["calendar"], "read": ["mcp__claude_ai_Google_Calendar__list_events"],
+         "write": [], "send": [], "account": "ada@desk.example", "verdict": "mixed", "per_month": {"2026-10": 40},
+         "why": "Meetings and private appointments."}
+NOW = dt.datetime(2026, 10, 27, 9, 0, tzinfo=dt.timezone.utc)
+
+
+def test_the_app_card_names_the_work_mailbox_a_second_app_confirms_as_where_the_briefing_goes():
+    assert apps.card([MAIL, DIARY], NOW)["briefing"] == "ada@desk.example"
+    # one reader's word alone (a mail could have told it), a mailbox setup cannot send from, a mail provider's
+    # address and one that is not the person's work mailbox name no address: the build falls back as before
+    assert apps.card([MAIL], NOW)["briefing"] == ""
+    assert apps.card([{**MAIL, "send": []}, DIARY], NOW)["briefing"] == ""
+    assert apps.card([{**MAIL, "account": "ada@gmail.com"}, {**DIARY, "account": "ada@gmail.com"}], NOW)["briefing"] == ""
+    assert apps.card([{**MAIL, "verdict": "mixed"}, DIARY], NOW)["briefing"] == ""
+    assert apps.card([MAIL, {**DIARY, "verdict": "someone-else"}], NOW)["briefing"] == ""
+
+
+def journal(card_named: bool) -> dict:
+    verdicts = [MAIL, DIARY]
+    return {"signins": {"claude_email": "ada@lanternworks.example"},
+            "research": {"company": {"name": "Lantern Works", "domain": "lanternworks.example",
+                                     "domains": ["lanternworks.example"], "domain_from": "address"}},
+            "apps": {"verdicts": verdicts, **({"card": apps.card(verdicts, NOW)} if card_named else {})}}
+
+
+def test_the_build_takes_the_mailbox_the_card_named_before_git_s_address(monkeypatch):
+    monkeypatch.setattr(start, "_out", lambda argv, cwd=None: "ada.private@example.org" if "user.email" in argv else "")
+    person = types.SimpleNamespace(email=None, name="Ada Okafor", domain=None, offline=True)
+    assert start.briefing_address(person, journal(True)) == ("ada@desk.example", "work-mailbox")
+    assert start.briefing_address(person, journal(False)) == ("ada.private@example.org", "git")   # an older card
+
+
+def test_the_card_says_where_the_briefing_goes_and_how_to_change_it():
+    text = (ROOT / ".claude" / "skills" / "onboard" / "messages.md").read_text(encoding="utf-8")
+    assert "{card.briefing}" in text and "send my briefing to" in text
+    skill = (ROOT / ".claude" / "skills" / "onboard" / "SKILL.md").read_text(encoding="utf-8").lower()
+    assert "send my briefing to" in skill and "--email" in skill
+
+
+def test_the_morning_view_says_the_send_tool_is_the_mailbox_check():
+    flat = " ".join((ROOT / ".claude" / "skills" / "morning-view" / "SKILL.md").read_text(encoding="utf-8").split()).lower()
+    assert "only for the mailbox whose account is the briefing address" in flat
+    assert "the address claude itself is signed in with is not part of that check" in flat
+
