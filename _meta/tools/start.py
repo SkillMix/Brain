@@ -1087,9 +1087,10 @@ def phase_apps(args) -> dict:
     (no answer yet: the next run asks again), written before any reader starts, and empties `to_sort`. A sorted
     app only reads, and one sorted `other` or `none` is not read: the card says so (`not_read`,
     `nothing_to_read`). A sort stopped at the plan's limit starts no reader (each would run on paid usage before
-    it noticed): the phase waits for the limit to reset, the sort's answer kept (R5). With no app to read and none
-    left to sort, the one need is to connect one (`connect-app`, and the phase `waiting`). `--probe` and a dry run
-    never sort, but apply the sort the journal keeps to the apps the probe still sees (R7, M2): `--probe` stops
+    it noticed): the phase waits for the limit to reset, the sort's answer kept (R5), and every app with no verdict
+    yet is `unfinished`, so a skip of another app said before the reset leaves the phase waiting (R9). With no app
+    to read and none left to sort, the one need is to connect one (`connect-app`, and the phase `waiting`). `--probe`
+    and a dry run never sort, but apply the sort the journal keeps to the apps the probe still sees (R7, M2): `--probe` stops
     after asking Claude, having recorded the groups, the connectors that need a sign-in and `to_sort` (the apps no
     name knows not sorted yet and not skipped: research's documents step waits while there is one), and an account
     holding an app not sorted yet is not asked to connect one, while one whose apps were all sorted as holding
@@ -1139,7 +1140,9 @@ def phase_apps(args) -> dict:
     if args.dry_run:
         return {"state": "pending", **found}
     if limit is not None:   # the sort stopped at the plan's limit: no reader starts before it resets (R5)
-        setup_journal.set_phase("apps", "waiting", **facts)
+        have = {v["app"] for v in apps.kept(record, groups)}   # what has no verdict yet waits for the reset (R9)
+        unfinished = [g["app"] for g in groups if g["app"] not in have and g["app"] not in skips]
+        setup_journal.set_phase("apps", "waiting", **facts, unfinished=unfinished)
         return {"state": "waiting", **found, "why": SORT_LIMIT_WHY.format(text=f" ({limit})" if limit else "")}
     if not readable:
         setup_journal.set_phase("apps", "waiting", **facts)

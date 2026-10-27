@@ -940,6 +940,33 @@ def test_a_sort_at_the_limit_starts_no_reader_and_keeps_what_it_answered(tmp_pat
     assert out["state"] == "done" and "calls: owner" in out["feeds"]
 
 
+def test_a_skip_after_a_sort_at_the_limit_leaves_the_new_app_to_read(tmp_path, monkeypatch, capsys):
+    """A later run: Callwisp is new, its sort stops at the limit with its answer, and no reader starts. The person
+    then skips another app before the limit resets: Callwisp has no verdict yet, so it is unfinished, the phase
+    still waits, and the run after the reset reads it."""
+    no_outside(monkeypatch)
+    probed_unknown(monkeypatch, "Dealbook")
+    real = apps.sort
+    sorting(monkeypatch), reading(monkeypatch)
+    assert run_apps(capsys)["state"] == "done"                                        # Gmail read, Dealbook sorted
+    probed_unknown(monkeypatch, "Dealbook", "Callwisp")                               # Callwisp connected since
+
+    def limit(prompt, tools, schema, cwd, **k):
+        raise reader.ReaderError("limit", "resets 03:00", answer={"apps": [{"app": "Callwisp", **SORTED_AS["Callwisp"]}]})
+    monkeypatch.setattr(apps, "sort", lambda found, cwd, **k: real(found, cwd, reader=limit, **k))
+    monkeypatch.setattr(apps, "analyse", lambda *a, **k: pytest.fail("no reader starts at the limit"))
+    assert run_apps(capsys)["state"] == "waiting"
+    assert setup_journal.load()["apps"]["unfinished"] == ["Callwisp"]                 # sorted, in the groups, not read
+    out = run_apps(capsys, "--skip", "Gmail")
+    assert out["skipped"] == ["Gmail"] and out["state"] == "waiting"                  # Callwisp still waits
+    record = setup_journal.load()["apps"]
+    assert record["state"] == "waiting" and record["unfinished"] == ["Callwisp"]
+    asked, got = sorting(monkeypatch), reading(monkeypatch)                           # once it resets
+    out = run_apps(capsys)
+    assert asked == [] and [g["app"] for g in got] == ["Callwisp"]                    # Gmail stays skipped
+    assert out["state"] == "done" and out["feeds"] == "calls: owner"
+
+
 def test_with_only_apps_no_name_knows_a_failed_sort_waits_and_names_them(tmp_path, monkeypatch, capsys):
     """No app a name knows and a sort that gave nothing: the phase waits with the apps on the card, starts no reader
     and asks nothing of the person; it never ends `done` having read nothing (R5)."""
