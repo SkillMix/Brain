@@ -50,6 +50,9 @@ if (-not (Test-Path $uv)) {
   Expand-Archive -Path $zip -DestinationPath (Join-Path $tools 'uv') -Force
   Remove-Item -Recurse -Force $tmp
 }
+# Claude's desktop app is a packaged Windows app: what it writes under %APPDATA% lands in a private copy
+# that Windows' scheduler never sees, so the Python the scheduled tasks run goes under ~/.spaces too.
+$env:UV_PYTHON_INSTALL_DIR = Join-Path $tools 'python'
 & $uv python install 3.12 | Out-Host
 $py = (& $uv python find 3.12 | Select-Object -First 1).Trim()
 & $py $start @args

@@ -1978,7 +1978,7 @@ def test_the_probe_writes_what_it_saw_and_its_three_checks(tmp_path, monkeypatch
     seen = json.loads(routine.probe_path().read_text(encoding="utf-8"))
     assert seen["tools"] == TOOLS and seen["ok"] is True and seen["stamp"] >= before and seen["workspace"] == str(ws.resolve())
     names = [c["name"] for c in seen["checks"]]
-    assert names == ["reads Gmail", "reads Linear", "folder ada", "mail only to you"], names
+    assert names == ["reads Gmail", "reads Linear", "folder ada", "mail only to you", routine.GITHUB_CHECK], names
     assert all(c["ok"] for c in seen["checks"]) and seen["notes"] == []
 
 

@@ -102,6 +102,9 @@ _RECORDS = {"type": "array", "items": {
     "required": ["title", "text"], "additionalProperties": False}}
 WEB_SCHEMA = {"type": "object", "properties": {"name": {"type": "string"}, "records": _RECORDS},
               "required": ["records"], "additionalProperties": False}
+# The site's own read can also say where the site sent it: a domain that redirects to another host (a .nl that
+# moved to a .com) is read once more there.
+SITE_SCHEMA = {**WEB_SCHEMA, "properties": {**WEB_SCHEMA["properties"], "moved_to": {"type": "string"}}}
 FILES_SCHEMA = {"type": "object", "properties": {"records": {"type": "array", "items": {
     "type": "object", "properties": {"file": {"type": "string"}, "text": {"type": "string", "maxLength": TEXT_LIMIT}},
     "required": ["file", "text"], "additionalProperties": False}}},
@@ -228,6 +231,17 @@ def web_rules(domain) -> list:
 def hosts_of(rules: list) -> list:
     """The hosts of `WebFetch(domain:<host>)` rules."""
     return [r[len("WebFetch(domain:"):-1] for r in rules]
+
+
+def moved_host(answer: dict, domain) -> str | None:
+    """The host the site's read says the site sent it to, when that is a host other than the domain and its
+    `www.` twin; None for no answer, the same site, or anything that is not an http(s) address or a host."""
+    said = str((answer or {}).get("moved_to") or "").strip().lower()
+    parts = urlsplit(said if "://" in said else "https://" + said)
+    host = parts.hostname or ""
+    if parts.scheme not in ("http", "https") or not HOST.fullmatch(host):
+        return None
+    return None if host in hosts_of(web_rules(domain)) else host
 
 
 def register_host(domain) -> str | None:
@@ -550,14 +564,19 @@ def _who(card: dict) -> str:
     return card.get("name") or card.get("domain") or "the company"
 
 
-def site_prompt(card: dict) -> str:
-    hosts = ", ".join(hosts_of(web_rules(card.get("domain"))))
+def site_prompt(card: dict, host: str | None = None) -> str:
+    """The site's read, at the card's domain; with `host`, the read once more at the host the domain sent the
+    first read to."""
+    start = host or card.get("domain")
+    hosts = ", ".join(hosts_of(web_rules(start)))
+    moved = ("" if host else " If a fetch says the site redirects to another host, do not follow it: give that "
+             "address as \"moved_to\" and stop.")
     return (f"You are reading the public website of {_who(card)} ({card.get('domain')}) to learn what the company is "
-            f"and does. Fetch pages from these hosts only: {hosts}. Start at https://{card.get('domain')}/ and follow "
+            f"and does. Fetch pages from these hosts only: {hosts}. Start at https://{start}/ and follow "
             "at most 8 links on the site that tell: what the company does and sells, its team and the roles of "
             "the people it lists, its clients and cases, where it works from, its mission or vision, its brand. "
             "Each record has the page's \"url\" and \"about\": \"people\" for a team page, else \"identity\". "
-            f"Also give \"name\": the company's name as its site writes it.\n{RECORD_RULES}\n{DATA}")
+            f"Also give \"name\": the company's name as its site writes it.{moved}\n{RECORD_RULES}\n{DATA}")
 
 
 def register_prompt(card: dict, host: str) -> str:

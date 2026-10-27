@@ -69,8 +69,9 @@ the person says go. `--wait-part p1` stays until part 1 is done or paused.
 `build` takes what the phases before it found (`found_by_setup`): the company's name from the
 researched card, the feeds of the apps that are read, the namespace as the account, and the
 briefing address (`briefing_address`): the address given, else the account of the mail app read as
-work when it is an address the person is known to have or one on a company domain they typed
-(`--domain`), else git's, else the Claude sign-in's; with none, one item asks and the build waits. What the person said
+work when it is an address the person is known to have, one on a company domain they typed
+(`--domain`) or the one the app card named (`apps.briefing_mailbox`), else git's, else the Claude
+sign-in's; with none, one item asks and the build waits. What the person said
 on the command line wins, and the journal's build record says where the address came from. It
 writes the apps' verdicts, without their counts, to the workspace's private zone, where the
 routines read their grant, and schedules the routines (`finish_workspace`). The workspace goes in the brain's account; when that is an
@@ -123,22 +124,50 @@ def _pip(run, cmd) -> bool:
     return run([*cmd, flag], capture_output=True, text=True).returncode == 0
 
 
-def ensure_yaml(argv, venv=VENV, run=subprocess.run, have=None, install=None) -> int | None:
+def _in_appdata(path, env) -> bool:
+    """Whether a path is under %APPDATA%, where Claude's desktop app, a packaged Windows app, writes into a
+    private copy that Windows' scheduler never sees."""
+    roaming = env.get("APPDATA")
+    try:
+        return bool(roaming) and Path(path).resolve().is_relative_to(Path(roaming).resolve())
+    except (OSError, ValueError):
+        return False
+
+
+def _venv_home(venv: Path) -> str:
+    """The Python a venv was made from (`home` in its pyvenv.cfg), else ""."""
+    try:
+        text = (Path(venv) / "pyvenv.cfg").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+    return next((line.split("=", 1)[1].strip() for line in text.splitlines()
+                 if line.split("=", 1)[0].strip() == "home" and "=" in line), "")
+
+
+def ensure_yaml(argv, venv=VENV, run=subprocess.run, have=None, install=None, windows=None, env=None) -> int | None:
     """None when PyYAML imports here. Else the agent installs it: `pip --user` first; where the
     system Python refuses that (PEP 668: Homebrew on macOS, Debian and Ubuntu), a venv at
     ~/.spaces/venv, and start.py runs again with that interpreter, so the sync task uses it
     too. A Python without its venv module (Debian without python3-venv) gets the venv from uv,
-    pinned and checksummed, with no password. Returns that run's exit code, or 1 with the one
+    pinned and checksummed, with no password. On Windows there is no `--user` install, and a venv
+    made from a Python under %APPDATA% is made again from this one: from Claude's desktop app both
+    land where the scheduled tasks never look. Returns that run's exit code, or 1 with the one
     fix only the person can make."""
     have = have or (lambda: importlib.util.find_spec("yaml") is not None)
+    windows = os.name == "nt" if windows is None else windows
+    env = os.environ if env is None else env
     if have():
         return None
-    if _pip(run, [sys.executable, "-m", "pip", "install", "--quiet", "--user", "pyyaml"]):
+    if not windows and _pip(run, [sys.executable, "-m", "pip", "install", "--quiet", "--user", "pyyaml"]):
         import site
         sys.path.append(site.getusersitepackages())
         importlib.invalidate_caches()
         if have():
             return None
+    made_from = _venv_home(venv)
+    if windows and made_from and _in_appdata(made_from, env) and not _in_appdata(sys.executable, env):
+        import shutil
+        shutil.rmtree(venv, ignore_errors=True)
     py = venv_python(venv)
     pip = [str(py), "-m", "pip", "install", "--quiet", "pyyaml"]
     if not py.exists() and run([sys.executable, "-m", "venv", str(venv)]).returncode != 0:
@@ -886,7 +915,7 @@ def _read_apps(args, groups: list, unsigned: list, tools: list, claude: str, cwd
     looking = [a for a in unsorted if a not in skips]   # not looked at yet, and not skipped: the phase waits for them
     verdicts = _person_skips(verdicts, skips)   # the person's word stays
     now = dt.datetime.now().astimezone()
-    card = _app_card(verdicts, now, unsigned, sorted_apps, groups, unsorted, skips)
+    card = _held(record, verdicts, _app_card(verdicts, now, unsigned, sorted_apps, groups, unsorted, skips))
     feeds = apps.feeds(verdicts)
     state = "waiting" if limit or unfinished or looking else "done"
     setup_journal.set_phase("apps", state, **facts, verdicts=verdicts, card=card, feeds=feeds, unfinished=unfinished)
@@ -898,7 +927,7 @@ def _read_apps(args, groups: list, unsigned: list, tools: list, claude: str, cwd
         unfinished = [a for a in unfinished if a not in late]
         looking = [a for a in looking if a not in late]
         state = "waiting" if limit or unfinished or looking else "done"
-        card = _app_card(verdicts, now, unsigned, sorted_apps, groups, unsorted, skips)
+        card = _held(record, verdicts, _app_card(verdicts, now, unsigned, sorted_apps, groups, unsorted, skips))
         feeds = apps.feeds(verdicts)
         setup_journal.set_phase("apps", state, verdicts=verdicts, card=card, feeds=feeds, unfinished=unfinished)
     _app_needs(verdicts)
@@ -917,6 +946,16 @@ def _read_apps(args, groups: list, unsigned: list, tools: list, claude: str, cwd
     return result
 
 
+def _held(record: dict, verdicts: list, card: dict) -> dict:
+    """The card with the time its ten minutes end: they start again only when an app is read that the card shown
+    before did not read; reading the same apps again, or fewer, keeps the time the person was first shown them."""
+    old = record.get("card") if isinstance(record.get("card"), dict) else {}
+    read = lambda found: {v.get("app") for v in found if isinstance(v, dict) and v.get("verdict") in apps.READ}  # noqa: E731
+    if old.get("starts_after") and read(verdicts) <= read(record.get("verdicts") or []):
+        return {**card, "starts_after": old["starts_after"]}
+    return card
+
+
 SKIPPED_WHY = "you asked me to skip it"
 
 
@@ -925,8 +964,17 @@ def _person_skips(verdicts: list, skipped: list) -> list:
     verdict kept as `was`. Not `work` or `mixed`, so the grant, the feeds, the history's counts and the research's
     documents leave the app out."""
     names = {str(s) for s in skipped}
-    return [{**v, "verdict": "skip", "was": v.get("verdict"), "why": SKIPPED_WHY}
+    return [{**v, "verdict": "skip", "was": v.get("verdict"), "was_why": v.get("why"), "why": SKIPPED_WHY}
             if isinstance(v, dict) and v.get("app") in names and v.get("verdict") != "skip" else v for v in verdicts]
+
+
+def _unskipped(verdict: dict) -> dict | None:
+    """A skipped app's verdict with the skip taken back: the reader's own (`was`, `was_why`), or None for an app no
+    reader looked at before it was skipped."""
+    if not verdict.get("was"):
+        return None
+    kept = {k: v for k, v in verdict.items() if k not in ("was", "was_why")}
+    return {**kept, "verdict": verdict["was"], "why": verdict.get("was_why") or ""}
 
 
 def _skips_now() -> set:
@@ -1048,6 +1096,57 @@ def skip_apps(args) -> dict:
     return result
 
 
+def unskip_apps(args) -> dict:
+    """"Read <app> again": the person takes a skip back. The app leaves `person_skips`; the verdict a reader gave it
+    before the skip is its verdict again, and the card and the feeds follow (the card's start time stays: the person
+    asked for it); an app skipped before any reader looked at it is `unfinished`, read the next time the phase runs.
+    Once the build has kept the verdicts in a workspace (`routine.APPS_FILE`), that file follows too. An app that was
+    not skipped changes nothing, and why names the skipped ones."""
+    journal = setup_journal.load()
+    record = journal.get("apps") if isinstance(journal.get("apps"), dict) else {}
+    before = _skips_in(record)
+    asked = [n.strip() for item in args.unskip for n in str(item).split(",") if n.strip()]
+    found = [a for a in before if a.lower() in {n.lower() for n in asked}]
+    judged = isinstance(record.get("verdicts"), list)   # as skip_apps: the readers' state, else the record's
+    state = (("waiting" if record.get("unfinished") or [a for a in _unsorted_in(record) if a not in before] else "done")
+             if judged else str(record.get("state") or "pending"))
+    if not found:
+        return {"state": state, "unskipped": [], "why": f"{', '.join(asked)}: not among the apps you skipped"
+                + (f" ({', '.join(before)})." if before else "; you skipped none.")}
+    keep = [a for a in before if a not in found]
+    facts = {"person_skips": keep}
+    result = {"state": state, "unskipped": found}
+    if judged:
+        verdicts, unread = [], []
+        for v in (v for v in record["verdicts"] if isinstance(v, dict)):
+            back = _unskipped(v) if v.get("app") in found and v.get("verdict") == "skip" else v
+            verdicts += [back] if back else []
+            unread += [] if back else [v["app"]]
+        unfinished = list(dict.fromkeys([*(record.get("unfinished") or []), *unread]))
+        groups = [g for g in record.get("groups") or [] if isinstance(g, dict) and g.get("app")]
+        unsorted = _unsorted_in(record)
+        state = result["state"] = "waiting" if unfinished or [a for a in unsorted if a not in keep] else "done"
+        old = record.get("card") if isinstance(record.get("card"), dict) else {}
+        card = _app_card(verdicts, _now(), record.get("not_signed_in") or [], _sorted_in(record), groups, unsorted, keep)
+        card["starts_after"] = old.get("starts_after") or card["starts_after"]
+        facts.update(verdicts=verdicts, card=card, feeds=apps.feeds(verdicts), unfinished=unfinished)
+        result.update(card=card, feeds=facts["feeds"])
+    setup_journal.set_phase("apps", state, **facts)
+    why = f"{', '.join(found)}: read again."
+    workspace = _history_workspace(args, journal)
+    kept = Path(workspace) / routine.APPS_FILE if workspace else None
+    if kept and kept.exists():
+        try:
+            rows = [r for r in (yaml.safe_load(kept.read_text(encoding="utf-8")) or {}).get("apps") or [] if isinstance(r, dict)]
+            rows = [(_unskipped(r) or r) if r.get("app") in found and r.get("verdict") == "skip" else r for r in rows]
+            onboard.write_yaml(kept, {"apps": rows})
+            why += " Your routines read it again from their next run."
+        except (OSError, yaml.YAMLError, AttributeError):
+            why += " Your routines could not be told yet: say it again."
+    result["why"] = why
+    return result
+
+
 NOTHING_READABLE_WHY = ("None of your connected apps holds mail, a calendar, chat, calls, documents or tasks I can "
                         "read yet.")
 SORT_LIMIT_WHY = ("Your Claude limit was reached before your apps were read{text}. Say the sentence again once it "
@@ -1103,6 +1202,8 @@ def phase_apps(args) -> dict:
     asks the question. `--skip <app>` asks nothing: the person's word becomes that app's verdict (`skip_apps`)."""
     if getattr(args, "skip", None):
         return skip_apps(args)
+    if getattr(args, "unskip", None):
+        return unskip_apps(args)
     if args.offline:
         return {"state": "done", "why": "offline: no app to read"}
     cwd = Path(tempfile.gettempdir()) if args.dry_run else apps.scratch()   # never the person's home or a repository
@@ -1306,10 +1407,16 @@ def _read_company(args, card: dict, prior: dict, journal: dict, reading: _Readin
     sources = []
 
     def site() -> list:
-        answer = ask(research.site_prompt(card), rules, research.WEB_SCHEMA)
+        answer = ask(research.site_prompt(card), rules, research.SITE_SCHEMA)
+        hosts = research.hosts_of(rules)
+        moved = research.moved_host(answer, card["domain"])
+        if moved:   # the domain redirects to a host the reader may not fetch: read once more there
+            there = research.web_rules(moved)
+            answer = ask(research.site_prompt(card, moved), there, research.WEB_SCHEMA)
+            hosts += research.hosts_of(there)
         if not args.company and answer.get("name"):
             card["name"] = " ".join(str(answer["name"]).split())[:80]
-        found = research.web_records(answer, "site", research.hosts_of(rules), now, taken)
+        found = research.web_records(answer, "site", hosts, now, taken)
         if not found:   # pages fetched and nothing kept: not read, and read again next time (R45, Minor 14)
             raise _Empty(EMPTY_SITE_WHY)
         return found
@@ -1532,14 +1639,18 @@ def work_mailbox(journal: dict, known=(), domains=()) -> str:
     when that is an address the briefing may go to. The account is a reader's free-text answer, written
     after reading mail anyone can write, and the briefing address is the only one agents may mail: so it
     counts only when it is one the person is known to have (`known`, exactly), or sits on a domain of the
-    company that did not come from a reader (`domains`; a mail provider's never does). "" otherwise. A mailbox
+    company that did not come from a reader (`domains`; a mail provider's never does), or is the mailbox the app
+    card named as where the briefing goes (`apps.briefing_mailbox`), which the person saw for ten minutes and
+    could change. "" otherwise. A mailbox
     the routines can send from (`send`) comes before one setup only reads, as it reads a sorted one (M3)."""
+    record = journal.get("apps") if isinstance(journal.get("apps"), dict) else {}
+    named = address_in(record["card"].get("briefing")) if isinstance(record.get("card"), dict) else ""
     found = []
     for v in apps_verdicts(journal):
         if v.get("verdict") == "work" and "mail" in (v.get("kinds") or []):
             account = address_in(v.get("account"))
             domain = account.rpartition("@")[2]
-            if account and (account in known or (domain in domains and not research.is_provider(domain))):
+            if account and (account in known or account == named or (domain in domains and not research.is_provider(domain))):
                 found.append((bool(v.get("send")), account))
     return next((account for sends, account in found if sends), found[0][1] if found else "")
 
@@ -1643,9 +1754,11 @@ PROBE_FAILED = ("The check that proves your routines run on their own found some
 PROBE_NOTHING = "The check that proves your routines run on their own reported nothing. Say the sentence again."
 PROBE_UNSCHEDULED = ("The check that proves your routines run on their own could not be scheduled on this computer. Say "
                      "the sentence again.")
+PROBE_ENDED = ("The check that proves your routines run on their own stopped before it reported, so they were not proved. "
+               "Your agent has the details; say the sentence again once it is put right.")
 # What the build may say of the proof as it is; any other line is PROBE_FAILED, its words the journal's detail (Minor 3).
 PROBE_PLAIN = (PROBE_REFUSED, PROBE_SILENT.format(minutes=PROBE_WAIT // 60), PROBE_ERROR, PROBE_BUSY, PROBE_STARTING,
-               PROBE_FAILED, PROBE_NOTHING, PROBE_UNSCHEDULED)
+               PROBE_FAILED, PROBE_NOTHING, PROBE_UNSCHEDULED, PROBE_ENDED)
 
 
 def _probe_result(started: float) -> dict | None:
@@ -1660,10 +1773,33 @@ def _probe_result(started: float) -> dict | None:
             "busy": data.get("busy") is True}
 
 
+def _log_size(log) -> int:
+    try:
+        return Path(log).stat().st_size if log else 0
+    except OSError:
+        return 0
+
+
+def _ended_saying(log, since: int) -> str | None:
+    """What the probe task wrote to its log after `since` bytes, once it added onboard.TASK_ENDED (its program
+    ended); None while it has not ended or has no log."""
+    try:
+        with open(log, "rb") as fh:
+            fh.seek(since)
+            text = fh.read().decode("utf-8", errors="replace")
+    except (OSError, TypeError):
+        return None
+    if onboard.TASK_ENDED not in text:
+        return None
+    said = [line.strip() for line in text.splitlines() if line.strip() and onboard.TASK_ENDED not in line]
+    return " ".join(said)[-600:] or "it printed nothing"
+
+
 def _probe_once(record: dict) -> dict:
     """Start the probe task at once and wait for its result, up to PROBE_WAIT; a result with `why` when the
-    scheduler would not start it or it never reported."""
-    started = time.time()
+    scheduler would not start it or it never reported. A task with a log (Windows) that ended without a
+    result fails at once, with what it printed as `detail` ("No Python at ..."), not after the wait."""
+    started, since = time.time(), _log_size(record.get("log"))
     if not onboard.run_now(record):
         return {"ok": False, "checks": [], "notes": [], "why": PROBE_REFUSED}
     deadline = _clock() + PROBE_WAIT
@@ -1671,6 +1807,10 @@ def _probe_once(record: dict) -> dict:
         seen = _probe_result(started)
         if seen is not None:
             return seen
+        said = _ended_saying(record.get("log"), since)
+        if said is not None:
+            return _probe_result(started) or {"ok": False, "checks": [], "notes": [], "why": PROBE_ENDED,
+                                              "detail": said}
         if _clock() >= deadline:
             return {"ok": False, "checks": [], "notes": [], "why": PROBE_SILENT.format(minutes=PROBE_WAIT // 60)}
         _sleep(PROBE_LOOK)
@@ -1712,7 +1852,8 @@ def _prove(report, workspace: Path, check: str) -> dict:
     try:
         record = onboard.register_task(report, f"routine probe task {task}", task, workspace,
                                        [workspace / "_meta" / "tools" / "routine.py", "--probe", workspace],
-                                       times=[PROBE_TIME], cron=f"{minute} {hour} * * *")
+                                       times=[PROBE_TIME], cron=f"{minute} {hour} * * *",
+                                       stderr_log=Path.home() / ".spaces" / "logs" / f"{task}.log")
         onboard.record_probe_task(workspace, record)   # how this scheduler names it, for a later removal
         if not report.steps or not report.steps[-1].done:
             return {"ok": False, "checks": [], "notes": [], "why": PROBE_UNSCHEDULED}
@@ -1753,6 +1894,16 @@ TASK_PREFIX_WHY = ("This computer is set to name the routines' scheduled tasks i
                    "created. Your agent has the details.")
 
 
+def use_task_prefix(args) -> None:
+    """`--task-prefix`: keep it as this computer's task-name prefix (a ValueError when it is not ours); a dry run
+    only checks it."""
+    if getattr(args, "task_prefix", None):
+        if getattr(args, "dry_run", False):
+            onboard.check_task_prefix(args.task_prefix)
+        else:
+            onboard.save_task_prefix(args.task_prefix)
+
+
 def phase_build(args) -> dict:
     """Everything start did before there were phases: the spaces, the personal instruction, the
     routines. It builds from what the earlier phases left in the journal (`found_by_setup`) and
@@ -1767,6 +1918,7 @@ def phase_build(args) -> dict:
     on `LAST_REPORT`."""
     global LAST_REPORT
     try:
+        use_task_prefix(args)
         onboard.task_prefix()
     except ValueError as exc:
         if not args.json:
@@ -1863,13 +2015,20 @@ NO_WORKSPACE = ("Your workspace was not found on this computer, so there is no h
 
 def history_counts(journal: dict) -> dict:
     """Records a month in the apps that are read (`apps.READ`): the journal's verdicts with the person's word applied
-    (`apps_verdicts`), `per_month` summed."""
-    counts: dict = {}
+    (`apps_verdicts`), `per_month` summed. Apps of the same kinds on one account (a mailbox and a reader of its
+    attachments) are one source, counted once: its larger number each month."""
+    sources: dict = {}
     for verdict in apps_verdicts(journal):
         if verdict.get("verdict") in apps.READ and isinstance(verdict.get("per_month"), dict):
+            account = str(verdict.get("account") or "").strip().lower()
+            months = sources.setdefault((tuple(verdict.get("kinds") or ()), account) if account else (verdict.get("app"),), {})
             for month, number in verdict["per_month"].items():
                 if isinstance(number, int) and not isinstance(number, bool) and number > 0:
-                    counts[str(month)] = counts.get(str(month), 0) + number
+                    months[str(month)] = max(months.get(str(month), 0), number)
+    counts: dict = {}
+    for months in sources.values():
+        for month, number in months.items():
+            counts[month] = counts.get(month, 0) + number
     return counts
 
 
@@ -2096,7 +2255,8 @@ def run_phase(args) -> dict:
     running after it finished (F-4). A dry run changes nothing, the journal included."""
     global _HELD
     name, journal = args.phase, not args.dry_run
-    offline, skip = bool(getattr(args, "offline", False)), name == "apps" and bool(getattr(args, "skip", None))
+    offline = bool(getattr(args, "offline", False))
+    skip = name == "apps" and bool(getattr(args, "skip", None) or getattr(args, "unskip", None))
     held, before = None, LAST_REPORT
     if name == "build" and journal:
         held = take_lock()
@@ -2211,6 +2371,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--feeds", help="the connectors to read: mail, calendar, chat, calls, tracker (default: "
                     "the apps the apps step read)")
     ap.add_argument("--org")
+    ap.add_argument("--task-prefix", dest="task_prefix", help="build: start this computer's scheduled task names with "
+                    "this (space-<letters>-), kept for later builds; for a computer where another account holds the names")
     ap.add_argument("--home", help="where the spaces are cloned (default ~/spaces)")
     ap.add_argument("--template", help="the template repository (default: where this copy came from)")
     ap.add_argument("--user-instructions", help="the user-level instruction file (default ~/.claude/CLAUDE.md)")
@@ -2221,6 +2383,8 @@ def parser() -> argparse.ArgumentParser:
                     help="apps: stop after asking Claude which apps it reaches (no content is read)")
     ap.add_argument("--skip", action="append", metavar="APP",
                     help="apps: the person said skip this app; it is not read (its verdict is `skip`)")
+    ap.add_argument("--unskip", action="append", metavar="APP",
+                    help="apps: the person takes a skip back; the app is read again")
     ap.add_argument("--reading", help="history: the usage tool's reading, five_hour=<pct>,week=<pct>,five_hour_resets="
                     "<iso>,week_resets=<iso>,extra=<0|1>,confirmed=0; not_applicable for a paid account")
     ap.add_argument("--wait-part", dest="wait_part", metavar="PART",

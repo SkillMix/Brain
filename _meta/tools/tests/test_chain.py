@@ -15,7 +15,7 @@ TEMPLATE = Path(__file__).resolve().parents[3]
 FIXTURE = TEMPLATE / "_meta" / "tests" / "fixture"
 # The fixture company is the template's own test data; an instance keeps whatever copy it
 # first received (template sync never carries it), so its shape tests run in the template only.
-template_only = pytest.mark.skipif(not (TEMPLATE / ".github" / "template-marker").exists(),
+template_only = pytest.mark.skipif(not spaceyaml.is_template_repo(TEMPLATE),
                                    reason="the fixture company is the template's own test data")
 
 FEED_KEYS = {"id", "source", "kind", "at", "from", "to", "subject", "text", "identifiers",

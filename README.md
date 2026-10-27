@@ -249,6 +249,11 @@ sign-ins in your browser: GitHub's one-time code, and Claude's command line when
 installed it. Connect your mail, calendar and chat in Claude's connector settings if you have
 not. After that you can leave the tab. Your first morning briefing arrives the next day.
 
+Saying the sentence is your go-ahead for all of it: the repositories it creates, the scheduled
+tasks on this computer, the one instruction at user level, and reading your connected apps'
+history once the app card has been shown for ten minutes. "Skip <app>" leaves an app out, and
+"read <app> again" takes that back.
+
 While it runs, `start.py` keeps a page at `~/.spaces/onboarding.html` and your agent opens it:
 how far setup is, what it found, what each part of your history costs, and anything waiting,
 with the one thing that clears it ([docs/troubleshooting.md](docs/troubleshooting.md) explains

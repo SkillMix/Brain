@@ -9,12 +9,13 @@ import pytest
 import yaml
 
 import template_archive
+import spaceyaml
 
 TEMPLATE = Path(__file__).resolve().parents[3]
 RELEASE = TEMPLATE / ".github" / "workflows" / "release.yml"
 # Template sync installs these tests in every space; a test that archives the whole repository
 # as the template runs in the template only.
-template_only = pytest.mark.skipif(not (TEMPLATE / ".github" / "template-marker").exists(),
+template_only = pytest.mark.skipif(not spaceyaml.is_template_repo(TEMPLATE),
                                    reason="archives the repository as the template")
 
 

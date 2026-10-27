@@ -13,6 +13,7 @@ import pytest
 import doctor
 import onboard
 import routine
+import spaceyaml
 import start
 from conftest import make_space
 
@@ -20,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[3]
 SKILLS = ROOT / ".claude" / "skills"
 # A space keeps its own README, has no decision log (template sync never carries it) and fills its own friction
 # log, and its checks run these tests after every template sync: the tests of those files run in the template only.
-template_only = pytest.mark.skipif(not (ROOT / ".github" / "template-marker").exists(),
+template_only = pytest.mark.skipif(not spaceyaml.is_template_repo(ROOT),
                                    reason="runs in the template only (.github/template-marker): a space keeps its own "
                                           "README, decision log and friction log")
 
@@ -37,7 +38,7 @@ def test_a_certificate_failure_is_retried_with_the_system_store(tmp_path):
         if "--use-feature=truststore" in argv:
             return subprocess.CompletedProcess(argv, 0, "", "")
         return subprocess.CompletedProcess(argv, 1, "", "SSL: CERTIFICATE_VERIFY_FAILED")
-    code = start.ensure_yaml([], venv=tmp_path / "venv", run=run,
+    code = start.ensure_yaml([], venv=tmp_path / "venv", run=run, windows=False,   # Windows has no --user install
                              have=lambda: any("--use-feature=truststore" in c for c in calls))
     assert code is None
     assert calls[0][-1] == "pyyaml" and calls[1][-1] == "--use-feature=truststore"

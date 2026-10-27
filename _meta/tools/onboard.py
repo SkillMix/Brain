@@ -13,7 +13,8 @@ offline and runs the chain and the tests over it. Offline mode never runs gh, gi
 schtasks, launchctl, crontab or systemctl; online, every such call goes through `run_cmd`. Nothing is
 deleted, nothing is signed, `main` is pushed only for a repository created seconds earlier. The OS tasks it
 registers are named `space-sync-<name>` and `space-<routine>-<name>`; an isolated test run sets
-SPACES_TASK_PREFIX=space-test-<id>- so that its tasks, and only those, carry that prefix instead. Each
+SPACES_TASK_PREFIX=space-test-<id>- so that its tasks, and only those, carry that prefix instead, and a
+computer where another account holds those names keeps its own (`~/.spaces/settings.yaml`). Each
 runs through the scheduler of the system that catches up after sleep: the Task Scheduler on Windows, a
 launch agent (`com.spaces.<task>`) on macOS, a systemd user timer on a Linux that has one, else cron,
 which does not catch up and says so.
@@ -451,11 +452,28 @@ def commit_fill(report, dst, push, dry_run) -> None:
     run_cmd(["git", "add", "-A"], dry_run, cwd=dst)
     res = run_cmd(["git", "commit", "-q", "-m", "chore: onboard"], dry_run, cwd=dst)
     note = "committed; the sync script lands it"
+    done = res.returncode == 0 or "nothing to commit" in (res.stdout + res.stderr)
     if push and unconfigured_remote(dst, dry_run):
         out = run_cmd(["git", "push", "-q", "origin", "HEAD:main"], dry_run, cwd=dst)
-        note = "bootstrap push to main" if out.returncode == 0 else out.stderr.strip()[:200]
-    done = res.returncode == 0 or "nothing to commit" in (res.stdout + res.stderr)
+        said = " ".join(((out.stderr or "") + (out.stdout or "")).split())[:300]
+        if out.returncode != 0:   # main stays the template's: the build is not done (rc1 run, issue 12)
+            done, note = False, f"the first push to main failed, so main is still the template's: {said or 'git gave no reason'}"
+        elif not dry_run and unconfigured_remote(dst, dry_run):
+            done, note = False, "the first push to main went through, but main is still the template's"
+        else:
+            note = "bootstrap push to main"
     report.add(f"commit {Path(dst).name}", done, f"git -C {dst} status --short", note)
+
+
+def add_mount(report, root, repo, path, dry_run) -> None:
+    """Mount `repo` at `path` (a submodule on its `main`), as one step: a mount that did not come says so with git's
+    own words, since a workspace without its brain has no company layer to read (rc1 run, issue 14)."""
+    res = run_cmd(["git", "submodule", "add", "-b", "main", repo, str(path)], dry_run, cwd=root)
+    there = dry_run or (Path(root) / path / "space.yaml").exists()
+    said = " ".join(((res.stderr or "") + (res.stdout or "")).split())[:300]
+    report.add(f"mount {path} in {Path(root).name}", res.returncode == 0 and there,
+               f"test -f {Path(root).name}/{path}/space.yaml",
+               "mounted" if res.returncode == 0 and there else f"not mounted: {said or 'git gave no reason'}")
 
 
 # ----- content written by onboard --------------------------------------------
@@ -811,6 +829,7 @@ def default_user_instructions(root, offline, home) -> Path:
 # ----- OS tasks: the sync task and, without a harness scheduler, the routines --------------
 SYSTEM = platform.system()   # "Windows", "Darwin" or "Linux"
 CONHOST = r"%SystemRoot%\System32\conhost.exe"
+TASK_ENDED = "space-task-ended"   # the line a Windows task with a log adds to it as it ends (register_task)
 # What `onboard --check` reads back from a Windows task, each with what it means.
 WINDOWS_TASK = {"<DisallowStartIfOnBatteries>false": "starts on battery",
                 "<StopIfGoingOnBatteries>false": "keeps running on battery",
@@ -832,14 +851,50 @@ _sleep = time.sleep   # the tests stand in for it
 def task_prefix() -> str:
     """The start of every OS task name onboard registers: `space-` (`space-sync-ada`,
     `space-sweep-chain-ada`). An isolated test run sets SPACES_TASK_PREFIX to `space-test-<id>-`, so
-    it registers, reads back and removes tasks of its own and never touches a person's. A value
-    that is not `space-` and lower-case letters, digits and hyphens is refused, never replaced by the
-    default: a typo must not register tasks under the person's own names."""
-    prefix = os.environ.get(TASK_PREFIX_ENV) or TASK_PREFIX
-    if not re.fullmatch(r"space-[a-z0-9-]*", prefix):
+    it registers, reads back and removes tasks of its own and never touches a person's. Without it, this
+    computer's `task_prefix` (`~/.spaces/settings.yaml`, saved by `start.py build --task-prefix` where another
+    account holds the names). A value that is not `space-` and lower-case letters, digits and hyphens is
+    refused, never replaced by the default: a typo must not register tasks under the person's own names."""
+    prefix = os.environ.get(TASK_PREFIX_ENV) or _saved_settings().get("task_prefix") or TASK_PREFIX
+    if not re.fullmatch(r"space-[a-z0-9-]*", str(prefix)):
         raise ValueError(f"{TASK_PREFIX_ENV} must start with space- and use only lower-case letters, digits and "
                          f"hyphens, not {prefix!r}")
     return prefix
+
+
+def _settings_path() -> Path:
+    return Path.home() / ".spaces" / "settings.yaml"
+
+
+def _saved_settings() -> dict:
+    try:
+        data = yaml.safe_load(_settings_path().read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def check_task_prefix(prefix: str) -> None:
+    """A ValueError for a task-name prefix task_prefix would refuse."""
+    if not re.fullmatch(r"space-[a-z0-9-]*", str(prefix)):
+        raise ValueError(f"a task-name prefix starts with space- and uses only lower-case letters, digits and "
+                         f"hyphens, not {prefix!r}")
+
+
+def save_task_prefix(prefix: str) -> None:
+    """Keep `prefix` as this computer's task-name prefix, refused as task_prefix refuses it."""
+    check_task_prefix(prefix)
+    path = _settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump({**_saved_settings(), "task_prefix": prefix}, sort_keys=False), encoding="utf-8")
+
+
+def task_taken(task: str) -> str:
+    """What a Windows task row says when the name is another account's task, which this account can neither
+    read nor replace: schtasks only says "Access is denied"."""
+    return (f"a scheduled task named {task} already exists and belongs to another account on this computer, so this "
+            f"account cannot replace it: an administrator removes it with `schtasks /Delete /F /TN {task}`, or set up "
+            "again with names of your own (`start.py build --task-prefix space-<your initials>-`)")
 
 
 def python_cmd() -> str:
@@ -1084,18 +1139,29 @@ def windows_expands(text: str) -> bool:
     return any(name.upper() in names for name in re.findall(r"(?=%([^%]+)%)", text))
 
 
-def register_task(report, label, task, root, args, minutes=None, times=None, cron=None, dry_run=False) -> dict:
+def register_task(report, label, task, root, args, minutes=None, times=None, cron=None, dry_run=False,
+                  stderr_log=None) -> dict:
     """Register one OS task that runs this interpreter with `args` in `root`, every `minutes` or daily at
     `times` (`cron` is the same schedule in cron's words), through the scheduler that catches up after sleep:
     a task XML on Windows, a launch agent on macOS, a systemd user timer on a Linux where
     `systemctl --user` works, else a cron line, which does not catch up (one plain line says so). A task runs
-    through one scheduler: moving to another takes it out of the rest (`retire_others`)."""
+    through one scheduler: moving to another takes it out of the rest (`retire_others`). On Windows, a task
+    given `stderr_log` runs through cmd, which adds what it printed to its error output and then TASK_ENDED
+    to that file: a hidden task's Python that cannot start says so nowhere else (the other schedulers log)."""
     root, py, path = Path(root), sys.executable, os.environ.get("PATH", "")
     if SYSTEM == "Windows":
         arguments = f"--headless {_argline(py, args)}"
+        if stderr_log:
+            log = Path(stderr_log)
+            arguments = (f'--headless cmd.exe /d /s /c "{_argline(py, args)} 2>>"{log}" & '
+                         f'echo {TASK_ENDED}>>"{log}""')
         record = {"name": task, "kind": "schtasks", "line": f"{CONHOST} {arguments}",
                   "create": ["schtasks", "/Create", "/F", "/TN", task, "/XML", f"{task}.xml"],
                   "check": ["schtasks", "/Query", "/TN", task, "/XML"], "root": str(root)}
+        if stderr_log:
+            record["log"] = str(log)
+            if not dry_run:
+                log.parent.mkdir(parents=True, exist_ok=True)
         if windows_expands(arguments):
             report.add(label, False, " ".join(record["check"]), "a folder name with a word between percent signs "
                        "that Windows would swap for something else (%TEMP% is one) cannot be scheduled: rename "
@@ -1111,6 +1177,9 @@ def register_task(report, label, task, root, args, minutes=None, times=None, cro
         verify = run_cmd(record["check"], dry_run)
         missing = [] if dry_run else windows_task_missing(verify.stdout or "")
         ok = res.returncode == 0 and verify.returncode == 0 and not missing
+        if not ok and "access is denied" in f"{res.stderr} {verify.stderr}".lower():
+            report.add(label, False, " ".join(record["check"]), task_taken(task), needs_owner=True)
+            return record
         report.add(label, ok, " ".join(record["check"]), f"{task}: hidden, on battery too, catches up" if ok
                    else (res.stderr or verify.stderr).strip()[:200] or "registered without: " + ", ".join(missing))
         return record
@@ -2015,15 +2084,14 @@ def run(root, answers, offline=False, org=None, dry_run=False, home=None, user_i
                 if not offline:
                     for mount in mounts:
                         if mount.get("repo") and not (dst / mount["path"] / "space.yaml").exists():
-                            run_cmd(["git", "submodule", "add", "-b", "main", mount["repo"], mount["path"]],
-                                    dry_run, cwd=dst)
+                            add_mount(report, dst, mount["repo"], mount["path"], dry_run)
             else:
                 crew = [names.get(s, humanize(s)) for s in item.get("crew") or []]
                 values = space_values(answers, slugify(item["id"]), crew[0] if crew else top["name"],
                                       top["email"], crew, "brain", brain_repo, path)
                 setup_space(report, dst, "project", values, [])
             if not offline and brain_repo and not (dst / "brain" / "space.yaml").exists():
-                run_cmd(["git", "submodule", "add", "-b", "main", brain_repo, "brain"], dry_run, cwd=dst)
+                add_mount(report, dst, brain_repo, "brain", dry_run)
             report.spaces[spaceyaml.load(dst).name] = dst
     else:
         name = slugify(answers.get("slug") or answers.get("name") or answers.get("owner") or root.name)
@@ -2045,7 +2113,7 @@ def run(root, answers, offline=False, org=None, dry_run=False, home=None, user_i
                               mounts=crew_mounts)
         setup_space(report, root, "personal", values, feeds)
         if not offline and brain_repo and not (root / "brain" / "space.yaml").exists():
-            run_cmd(["git", "submodule", "add", "-b", "main", brain_repo, "brain"], dry_run, cwd=root)
+            add_mount(report, root, brain_repo, "brain", dry_run)
         try:   # the brain learns this is the person's workspace: late checks find it
             import classify
             sent = classify.announce(root, now)
@@ -2055,7 +2123,7 @@ def run(root, answers, offline=False, org=None, dry_run=False, home=None, user_i
             report.add("workspace announced", False, "python _meta/tools/classify.py . pending", str(exc)[:200])
         for mount in crew_mounts:
             if not offline and mount.get("repo") and not (root / mount["path"] / "space.yaml").exists():
-                run_cmd(["git", "submodule", "add", "-b", "main", mount["repo"], mount["path"]], dry_run, cwd=root)
+                add_mount(report, root, mount["repo"], mount["path"], dry_run)
             report.add(f"mount {mount['name']}", offline or (root / mount["path"] / "space.yaml").exists() or dry_run,
                        f"test -f {root / mount['path'] / 'space.yaml'}", "crew project mounted read-only")
         scan_codebases(report, root, now, offline)

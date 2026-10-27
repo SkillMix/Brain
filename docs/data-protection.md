@@ -76,6 +76,13 @@ the kind and date of any obligation seen (for example "confidentiality agreement
 2026-04-14"), never its wording. A client's name and class are therefore readable
 company-wide; a client whose very existence is confidential is not covered by this.
 
+Apps installed on the Git host read what their own permission covers, whatever the audience
+says. A sync pull request carries the workspace's private records in its diff, so a code-review
+app installed on the account for all repositories reads every one of them and may send them to
+its own service. Before setup, check the apps installed on the account or organization that will
+hold the workspaces (on GitHub: Settings, Applications, Installed GitHub Apps) and give each
+access only to the repositories it needs; a workspace needs none.
+
 `rules.md` sections 1 and 6 and `docs/shape-1.md` give the full rules.
 
 ## How long it is kept
