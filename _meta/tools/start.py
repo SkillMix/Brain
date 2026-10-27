@@ -848,7 +848,8 @@ def _read_apps(args, groups: list, unsigned: list, tools: list, claude: str, cwd
     an app to reconnect, a blocked one and a slow one are read again. A slow app (its reader ran out of turns or
     time) has no verdict: the phase waits, with a plain line that offers to skip it, and needs nothing of the IT
     administrator (I-3). A skip saved while the verdicts were written is on the card, the stored feeds and the
-    answer too (R47, N3-2)."""
+    answer too (R47, N3-2). The card also says what the sorting run made of the apps no name knew (`facts`: `sorted`,
+    `unsorted`), whichever of its two writes it is."""
     journal = setup_journal.load()
     who = identity(args.name, args.email, offline=True)
     emails = [e for e in dict.fromkeys([args.email, (journal.get("signins") or {}).get("claude_email"), who["email"]]) if e]
@@ -856,6 +857,7 @@ def _read_apps(args, groups: list, unsigned: list, tools: list, claude: str, cwd
               **apps.company_of(journal, args.company, emails)}
     limit = None
     record = journal.get("apps") if isinstance(journal.get("apps"), dict) else {}
+    sorted_apps, unsorted = facts.get("sorted") or {}, facts.get("unsorted") or []
     before = [str(s) for s in record.get("person_skips") or []]
     kept = [v for v in apps.kept(record, groups) if v["app"] not in before]   # what finished before is kept (R45, I-2)
     have = {v["app"] for v in kept}
@@ -874,7 +876,8 @@ def _read_apps(args, groups: list, unsigned: list, tools: list, claude: str, cwd
     unfinished = [g["app"] for g in groups if g["app"] not in read and g["app"] not in skips]
     verdicts = _person_skips(verdicts, skips)   # the person's word stays
     now = dt.datetime.now().astimezone()
-    card, feeds = _skip_lines(apps.card(verdicts, now, unsigned), verdicts), apps.feeds(verdicts)
+    card = _skip_lines(apps.card(verdicts, now, unsigned, sorted_apps=sorted_apps, unsorted=unsorted), verdicts)
+    feeds = apps.feeds(verdicts)
     state = "waiting" if limit or unfinished else "done"
     setup_journal.set_phase("apps", state, **facts, verdicts=verdicts, card=card, feeds=feeds, unfinished=unfinished)
     after = setup_journal.load().get("apps")   # a skip saved between the reload above and this write (R47, N3-2)
@@ -884,7 +887,8 @@ def _read_apps(args, groups: list, unsigned: list, tools: list, claude: str, cwd
         verdicts = apps_verdicts(setup_journal.load())
         unfinished = [a for a in unfinished if a not in late]
         state = "waiting" if limit or unfinished else "done"
-        card, feeds = _skip_lines(apps.card(verdicts, now, unsigned), verdicts), apps.feeds(verdicts)
+        card = _skip_lines(apps.card(verdicts, now, unsigned, sorted_apps=sorted_apps, unsorted=unsorted), verdicts)
+        feeds = apps.feeds(verdicts)
         setup_journal.set_phase("apps", state, verdicts=verdicts, card=card, feeds=feeds, unfinished=unfinished)
     _app_needs(verdicts)
     result = {"state": state, "apps": [g["app"] for g in groups], "card": card, "feeds": feeds, "unfinished": unfinished}
@@ -975,7 +979,8 @@ def skip_apps(args) -> dict:
         state = result["state"] = "waiting" if unfinished else "done"
         facts["unfinished"] = unfinished
         old = record.get("card") if isinstance(record.get("card"), dict) else {}
-        card = _skip_lines(apps.card(verdicts, _now(), record.get("not_signed_in") or []), verdicts)
+        card = _skip_lines(apps.card(verdicts, _now(), record.get("not_signed_in") or [], sorted_apps=_sorted_in(record),
+                                     unsorted=record.get("unsorted") or []), verdicts)
         card["starts_after"] = old.get("starts_after") or card["starts_after"]
         facts.update(verdicts=verdicts, card=card, feeds=apps.feeds(verdicts))
         result.update(card=card, feeds=facts["feeds"])
@@ -994,16 +999,46 @@ def skip_apps(args) -> dict:
     return result
 
 
+NOTHING_READABLE_WHY = ("None of your connected apps holds mail, a calendar, chat, calls, documents or tasks I can "
+                        "read yet.")
+
+
+def _sorted_in(record: dict) -> dict:
+    """What the sorting run made of the apps no name knows, as the journal's `apps` record keeps it
+    ({app: {"kind", "why"}}): the entries that are one, so a damaged journal gives fewer, never a fault."""
+    said = record.get("sorted") if isinstance(record, dict) else None
+    return {str(app): s for app, s in (said.items() if isinstance(said, dict) else ())
+            if isinstance(s, dict) and s.get("kind") in apps.SORT_KINDS and isinstance(s.get("why"), str)}
+
+
+def _sort_unknown(record: dict, found: list, cwd: Path, claude: str, tools: list) -> tuple:
+    """(sorted, unsorted) for the apps no name knows (`apps.unknown`): one sorting run for those the journal's
+    `apps` record has not sorted yet, so an app sorted before is not sorted again and one the probe no longer sees
+    drops out. An app the run gave no answer for is `unsorted`: the card says it is not looked at yet, and the next
+    run asks about it. The run fails into nothing (`apps.sort`), never into a failed phase."""
+    before = _sorted_in(record)
+    kept = {u["app"]: before[u["app"]] for u in found if u["app"] in before}
+    todo = [u for u in found if u["app"] not in kept]
+    fresh = apps.sort(todo, cwd, claude=claude, known_tools=tools) if todo else {}
+    sorted_ = {**kept, **fresh}
+    return sorted_, [u["app"] for u in found if u["app"] not in sorted_]
+
+
 def phase_apps(args) -> dict:
     """Which apps hold work, and the app card. Claude's command line is asked which apps it
     reaches (`routine.probe_tools`; a probe that fails is `failed`, never "no apps"), and every
-    claude.ai connector of a known kind with a tool that reads is an app (`apps.group`). With
-    none, the one need is to connect one (`connect-app`, and the phase `waiting`). `--probe` stops
-    there, having recorded the groups and the connectors that need a sign-in. Else one reader per
+    claude.ai connector of a known kind, or one the sorting run gave a kind, with a tool that reads
+    is an app (`apps.group`). A connector no name knows (`apps.unknown`) is sorted once by a run that sees
+    names only (`apps.sort`): the journal's `apps` record keeps `sorted` ({app: {kind, why}}) and `unsorted`
+    (no answer yet: the next run asks again), written before any reader starts. A sorted app only reads, and one sorted `other` or `none` is not
+    read: the card says so (`not_read`, `nothing_to_read`). With no app to read and none left to sort, the
+    one need is to connect one (`connect-app`, and the phase `waiting`). `--probe` and a dry run never sort:
+    `--probe` stops after asking Claude, having recorded the groups and the connectors that need a sign-in,
+    and an account holding only apps no name knows is not asked to connect one. Else one reader per
     app decides whose account it is, whether it holds work and how much per month
     (`apps.analyse`): the journal's `apps` record keeps `verdicts` (with `per_month`), `card`
-    (read, skip, not_signed_in, starts_after), `feeds` and `unfinished`. The state is `done` when
-    every app has a verdict (an app to reconnect or one that is blocked is a need, not a stop),
+    (read, skip, not_signed_in, not_read, nothing_to_read, starts_after), `feeds` and `unfinished`. The state is
+    `done` when every app has a verdict (an app to reconnect or one that is blocked is a need, not a stop),
     `waiting` when the plan's limit stopped the readers. A dry run only asks the question. `--skip <app>`
     asks nothing: the person's word becomes that app's verdict (`skip_apps`)."""
     if getattr(args, "skip", None):
@@ -1020,15 +1055,27 @@ def phase_apps(args) -> dict:
     if not args.dry_run:
         apps.keep_probe(probe)   # the research beside it reads this one instead of asking again (dry run B N-4)
     tools, servers = probe.get("tools") or [], probe.get("mcp_servers") or []
-    groups, unsigned = apps.group(tools, servers), apps.not_signed_in(servers)
+    unsigned, unknown = apps.not_signed_in(servers), apps.unknown(tools, servers)
+    if args.dry_run or getattr(args, "probe", False):   # the first look runs in the first two minutes: it never sorts
+        groups = apps.group(tools, servers)
+        facts, readable = {"groups": groups, "not_signed_in": unsigned}, bool(groups or unknown)
+    else:
+        record = setup_journal.load().get("apps")
+        sorted_, unsorted = _sort_unknown(record if isinstance(record, dict) else {}, unknown, cwd, claude, tools)
+        kinds = {app: [s["kind"]] for app, s in sorted_.items() if s["kind"] in apps.KINDS}
+        groups = apps.group(tools, servers, sorted_kinds=kinds)
+        facts = {"groups": groups, "not_signed_in": unsigned, "sorted": sorted_, "unsorted": unsorted}
+        # kept before anything reads: a skip said for a sorted app while the readers run finds it among the groups, and a
+        # fault later does not lose the sort (it cost a run of Claude)
+        setup_journal.set_phase("apps", "running", **facts)
+        readable = bool(groups or unsorted)   # an app not sorted yet may hold work: the card says it is not looked at yet
     found = {"apps": [g["app"] for g in groups], "not_signed_in": unsigned}
     if args.dry_run:
         return {"state": "pending", **found}
-    facts = {"groups": groups, "not_signed_in": unsigned}
-    if not groups:
+    if not readable:
         setup_journal.set_phase("apps", "waiting", **facts)
         setup_journal.need("connect-app", CONNECT_NEED, APPS_CHECK, link=apps.CONNECTORS_LINK)
-        return {"state": "waiting", **found, "why": "No app is connected to Claude yet."}
+        return {"state": "waiting", **found, "why": NOTHING_READABLE_WHY if unknown else "No app is connected to Claude yet."}
     setup_journal.clear_need("connect-app")
     if getattr(args, "probe", False):
         setup_journal.set_phase("apps", "pending", **facts)
