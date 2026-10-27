@@ -47,7 +47,9 @@ KINDS = ("mail", "calendar", "chat", "calls", "documents", "tracker")
 # kind setup does not read yet: a CRM's deals and contacts, an accounting app's invoices) or `none` (no
 # records of the person's work: makes images, runs code, a cloud console).
 SORT_KINDS = (*KINDS, "other", "none")
+SORT_TOOLS = 80   # the tool names the sorting run is given per app: some connectors carry hundreds
 NOT_LOOKED = "not looked at yet: I look at it the next time your apps are read"
+NO_READ_TOOL = "it has no tool that only reads, and I only read"   # sorted as a kind setup reads, but nothing reads
 VERDICTS = ("work", "personal", "mixed", "someone-else", "reconnect", "blocked")
 READ = ("work", "mixed")             # the card reads these
 SKIP = ("personal", "someone-else")  # the card skips these, and says why
@@ -218,9 +220,10 @@ def unknown(tools: list, servers: list | None = None) -> list:
 
 
 def sort_prompt(found: list) -> str:
-    """What the one sorting run is asked: each app's name and the names of its tools, nothing else. The
-    lines are JSON so that a name stays one value of one line, and the run is told a name is data."""
-    listing = "\n".join(json.dumps({"app": item["app"], "tools": item["tools"]}, ensure_ascii=False) for item in found)
+    """What the one sorting run is asked: each app's name and the names of its tools (the first SORT_TOOLS), nothing
+    else. The lines are JSON so that a name stays one value of one line, and the run is told a name is data."""
+    listing = "\n".join(json.dumps({"app": item["app"], "tools": item["tools"][:SORT_TOOLS]}, ensure_ascii=False)
+                        for item in found)
     return (
         "The person who is setting up has connected apps that no list of known apps names. Below is one line "
         "for each: the app's name and the names of its tools. You have no tools and see no records: judge from "
@@ -241,22 +244,40 @@ def sort_prompt(found: list) -> str:
         "one short sentence about what the app holds, without names of people, clients or records.")
 
 
-def sort(found: list, cwd: Path, reader=reader.read, claude: str | None = None, known_tools: list | None = None) -> dict:
+def _sort_answer(found: list, cwd: Path, read, claude, known_tools, limits) -> dict | None:
+    """The sorting run's answer, None when it gave none. At the plan's limit (or extra usage starting) the
+    command line's words go to `limits` (when given), and an answer that came with it is the answer all the
+    same, as `_one` keeps a verdict's (R5)."""
+    try:
+        return read(sort_prompt(found), [], SORT_SCHEMA, cwd, claude=claude, known_tools=known_tools)
+    except reader.ReaderError as exc:
+        if exc.kind != "limit":
+            return None
+        if limits is not None:
+            limits.append(exc.text)
+        return exc.answer if isinstance(exc.answer, dict) else None
+    except Exception:
+        return None
+
+
+def sort(found: list, cwd: Path, reader=reader.read, claude: str | None = None, known_tools: list | None = None,
+         limits: list | None = None) -> dict:
     """{app: {"kind", "why"}} for the apps of `found` (from `unknown`) that one run, given their names
     only and no tools, sorted. Only an app asked about is kept, the first entry for it, with a `why` of
     one line. {} without a run when `found` is empty, and {} when the run gave no answer (the plan's
-    limit, a command line error, a garbled answer, any other fault): those apps are sorted next time."""
+    limit, a command line error, a garbled answer, an answer of another shape, any other fault): those
+    apps are sorted next time. The plan's limit says so in `limits` (`_sort_answer`), so no reader is
+    started after it."""
     if not found:
         return {}
-    asked = {item["app"] for item in found}
+    asked, result = {item["app"] for item in found}, {}
+    answer = _sort_answer(found, cwd, reader, claude, known_tools, limits)
     try:
-        answer = reader(sort_prompt(found), [], SORT_SCHEMA, cwd, claude=claude, known_tools=known_tools)
-    except Exception:
+        for item in answer["apps"]:
+            if item["app"] in asked and item["app"] not in result:
+                result[item["app"]] = {"kind": item["kind"], "why": _line(item["why"], WHY_MAX)}
+    except Exception:   # no answer, or not the shape asked for
         return {}
-    result: dict = {}
-    for item in answer["apps"]:
-        if item["app"] in asked and item["app"] not in result:
-            result[item["app"]] = {"kind": item["kind"], "why": _line(item["why"], WHY_MAX)}
     return result
 
 
@@ -412,14 +433,17 @@ def analyse(groups: list, person: dict, cwd: Path, reader=reader.read, workers: 
 
 
 # ----- the card and the feeds --------------------------------------------------------------
-def card(verdicts: list, now: dt.datetime, unsigned=(), sorted_apps: dict | None = None, unsorted=()) -> dict:
+def card(verdicts: list, now: dt.datetime, unsigned=(), sorted_apps: dict | None = None, unsorted=(),
+         unreadable=()) -> dict:
     """What the person is shown before any content is copied: the apps that will be read
     (`work`, `mixed`) and the ones skipped with the reason (`personal`, `someone-else`), a line
     each, then the connectors that need a sign-in as information. An app that must be reconnected
     or is blocked is a need, not a line. The apps no name knew come last: `not_read` has a line
-    for each that was sorted `other` (work of a kind setup does not read yet; its `why`) and for
-    each in `unsorted` (the sorting run gave no answer), `nothing_to_read` names the ones sorted
-    `none`. `sorted_apps` is what `sort` gave. Nothing is copied before `starts_after`."""
+    for each that was sorted `other` (work of a kind setup does not read yet; its `why`, or the
+    bare name when the run gave none), for each in `unreadable` (sorted as a kind setup reads, but
+    no tool of it only reads: NO_READ_TOOL) and for each in `unsorted` (the sorting run gave no
+    answer), `nothing_to_read` names the ones sorted `none`. `sorted_apps` is what `sort` gave.
+    Nothing is copied before `starts_after`."""
     lines = {"read": [], "skip": []}
     for v in verdicts:
         who = f"{v['app']}{SEP}{v['account'] or 'unknown account'}{SEP}{v['verdict']}"
@@ -427,9 +451,11 @@ def card(verdicts: list, now: dt.datetime, unsigned=(), sorted_apps: dict | None
             lines["read"].append(who)
         elif v["verdict"] in SKIP:
             lines["skip"].append(who + (f", {v['why']}" if v["why"] else ""))
-    others = [f"{app}{SEP}{s['why']}" for app, s in (sorted_apps or {}).items() if s["kind"] == "other"]
+    others = [f"{app}{SEP}{s['why']}" if s["why"].strip() else app
+              for app, s in (sorted_apps or {}).items() if s["kind"] == "other"]
     return {**lines, "not_signed_in": [f"{app}{SEP}not signed in" for app in unsigned],
-            "not_read": others + [f"{app}{SEP}{NOT_LOOKED}" for app in unsorted],
+            "not_read": others + [f"{app}{SEP}{NO_READ_TOOL}" for app in unreadable]
+            + [f"{app}{SEP}{NOT_LOOKED}" for app in unsorted],
             "nothing_to_read": [app for app, s in (sorted_apps or {}).items() if s["kind"] == "none"],
             "starts_after": (now + dt.timedelta(minutes=HEAD_START)).isoformat(timespec="seconds")}
 

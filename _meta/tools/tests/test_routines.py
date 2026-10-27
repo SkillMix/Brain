@@ -1363,6 +1363,9 @@ CALLWISP = {"app": "Callwisp", "kinds": ["calls"], "read": [CALLWISP_READ], "wri
             "verdict": "work", "why": "Lantern Works calls."}
 QUILL = {"app": "Quillmail", "kinds": ["mail"], "read": [QUILL_READ], "write": [], "send": [QUILL_SEND], "account": ADA,
          "verdict": "work", "why": "A mailbox of Lantern Works."}
+TASKO_READ, TASKO_WRITE = "mcp__claude_ai_Tasko__list_tasks", "mcp__claude_ai_Tasko__create_task"
+TASKO = {"app": "Tasko", "kinds": ["tracker"], "read": [TASKO_READ], "write": [TASKO_WRITE], "send": [], "account": ADA,
+         "verdict": "work", "why": "The team's tasks."}   # a tampered row: a sorted app's write is the group's, none
 
 
 PROVEN = object()   # the shell the probe proved the send guard in: this machine's own
@@ -1876,16 +1879,16 @@ def test_the_mailbox_that_sends_is_the_persons_own_whatever_it_holds(tmp_path):
 
 def test_a_sorted_app_is_granted_its_read_tools_and_nothing_that_acts(tmp_path):
     """An app no name knows, that setup's sorting step gave a kind, is read by the routines. It only reads,
-    whatever kind it was sorted as: a sorted mailbox whose file names a send tool (a tampered file) sends
-    nothing, while the mail app the name knows still sends."""
+    whatever kind it was sorted as: a sorted mailbox whose file names a send tool, or a sorted tracker whose file
+    names a tool that creates (tampered files), sends and writes nothing, while the apps the name knows still do."""
     servers = [*SERVERS, {"name": "claude.ai Callwisp", "status": "connected"},
-               {"name": "claude.ai Quillmail", "status": "connected"}]
-    ws = granted(tmp_path, verdicts=[GMAIL, CALLWISP, QUILL], tools=[*TOOLS, CALLWISP_READ, QUILL_READ, QUILL_SEND],
-                 servers=servers)
+               {"name": "claude.ai Quillmail", "status": "connected"}, {"name": "claude.ai Tasko", "status": "connected"}]
+    ws = granted(tmp_path, verdicts=[GMAIL, CALLWISP, QUILL, TASKO, LINEAR],
+                 tools=[*TOOLS, CALLWISP_READ, QUILL_READ, QUILL_SEND, TASKO_READ, TASKO_WRITE], servers=servers)
     read, write, send = routine.read_grant(ws)
-    assert CALLWISP_READ in read and QUILL_READ in read
+    assert CALLWISP_READ in read and QUILL_READ in read and TASKO_READ in read
     assert QUILL_SEND not in send and GMAIL_SEND in send
-    assert write == [] and send == [GMAIL_SEND]
+    assert TASKO_WRITE not in write and write == [LINEAR_WRITE] and send == [GMAIL_SEND]   # the known tracker still writes
 
 
 def test_without_a_mailbox_of_the_persons_there_is_no_send_and_one_plain_line_says_so(tmp_path):

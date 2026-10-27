@@ -123,15 +123,15 @@ Phase 5. With no journal, start at Phase 0.
    Show `apps` when the first is done and `company` when the second is. Research answers
    `waiting` for its documents step in two cases, and its `why` says which: the documents app has
    not been judged yet (the apps are still being read, or their reading stopped at a limit before
-   it): run research again once the apps answer `done`; or the app card has not been shown for
+   it): run research again once the apps answer; or the app card has not been shown for
    ten minutes (`why` names the time): run it again then, or with `--wait` so it stays until
    then. Sources already read are not read again. A colleague's research is
-   `skipped: colleague` (the brain holds the profile): no `company` message. An app whose name
-   setup does not know is looked at by one short run that sees only its name and its tools'
-   names; it is read only for what it holds, never to send or change anything.
-2. This computer's checks run inside the build (phase 2): nothing in chat unless a sign-in
+   `skipped: colleague` (the brain holds the profile): no `company` message.
+2. An app whose name setup does not know is looked at by one short run that sees only its name
+   and its tools' names; it is read only for what it holds, never to send or change anything.
+3. This computer's checks run inside the build (phase 2): nothing in chat unless a sign-in
    from phase 0 is still open.
-3. A `waiting` answer at a usage limit says so in its `why`: show it once, plainly, and run the
+4. A `waiting` answer at a usage limit says so in its `why`: show it once, plainly, and run the
    phase again after the reset it names. What finished is kept: an app that already has a
    verdict is not read again, so the run after the reset reads only the apps without one and
    any connected since.
@@ -139,7 +139,11 @@ Phase 5. With no journal, start at Phase 0.
    `waiting` with the app under `unfinished`, and its `why` says so and offers to skip it. Show it
    once and run the phase again; a slow app is read again, never an IT question. "Skip <app>"
    leaves it out instead.
-4. An app to sign in to again (`reconnect`) or one the organisation's IT must allow
+   An app no name knows that could not be looked at yet is under `unsorted` in a `waiting`
+   answer, whose `why` says so and offers to skip it. Show it once and do not run the phase again
+   for it now: it is looked at the next time the apps are read (when the person comes back, or
+   says the sentence again). "Skip <app>" leaves it out instead.
+5. An app to sign in to again (`reconnect`) or one the organisation's IT must allow
    (`it-admin`) is a need on the `apps` message's Waiting line; the other apps go on.
 
 ## Phase 4. Build the spaces

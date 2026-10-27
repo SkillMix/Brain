@@ -736,7 +736,7 @@ def _found_rows(ws, journal, now) -> list:
     unsigned = [parts[0] for parts in _card_names(card.get("not_signed_in")) if parts[0]]
     if unsigned:
         rows.append(_fact("Not signed in", ", ".join(unsigned)))
-    seen = [f"{parts[0]}: {', '.join(parts[1:])}" if len(parts) > 1 else parts[0]
+    seen = [f"{parts[0]}: {', '.join(p for p in parts[1:] if p)}" if any(parts[1:]) else parts[0]   # no why: the name
             for parts in _card_names(card.get("not_read")) if parts[0]]
     if seen:
         rows.append(_fact("Seen, not read yet", "; ".join(seen)))
