@@ -126,7 +126,9 @@ Phase 5. With no journal, start at Phase 0.
    it): run research again once the apps answer `done`; or the app card has not been shown for
    ten minutes (`why` names the time): run it again then, or with `--wait` so it stays until
    then. Sources already read are not read again. A colleague's research is
-   `skipped: colleague` (the brain holds the profile): no `company` message.
+   `skipped: colleague` (the brain holds the profile): no `company` message. An app whose name
+   setup does not know is looked at by one short run that sees only its name and its tools'
+   names; it is read only for what it holds, never to send or change anything.
 2. This computer's checks run inside the build (phase 2): nothing in chat unless a sign-in
    from phase 0 is still open.
 3. A `waiting` answer at a usage limit says so in its `why`: show it once, plainly, and run the
