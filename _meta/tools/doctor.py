@@ -1,14 +1,14 @@
 """doctor: what onboarding needs on this machine, checked before anything is created.
 
-What can be fixed without a password is fixed: the GitHub CLI (and on Windows a minimal Git)
-from their official releases, pinned and checked against their SHA-256 before anything is
-unpacked, into `~/.spaces/tools/` (no admin rights); git's identity and its credential helper
-from the person's GitHub account; long paths on Windows; a pending organization invitation
-(the person's sentence asked to join). Homebrew or apt are used only when already there and
-no password is needed. Everything else is one plain sentence for the person with the exact
-command (`! <command>` in Claude Code) and the check that proves it: the GitHub sign-in in the
-browser, a password, a dialog, an access grant only an owner can give. The agent never types
-a password.
+What can be fixed without a password is fixed: the GitHub CLI, Claude Code's command line (and
+on Windows a minimal Git) from their official releases, pinned and checked against their SHA-256
+before anything is unpacked or made executable, into `~/.spaces/tools/` (no admin rights); git's
+identity and its credential helper from the person's GitHub account; long paths on Windows; a
+pending organization invitation (the person's sentence asked to join). Homebrew or apt are used
+only when already there and no password is needed. Everything else is one plain sentence for the
+person with the exact command (`! <command>` in Claude Code) and the check that proves it: the
+GitHub sign-in in the browser, a password, a dialog, an access grant only an owner can give. The
+agent never types a password.
 
 Standard library only: start.py runs it before PyYAML exists.
 
@@ -36,11 +36,13 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable
 
-VERSIONS = {"gh": "2.101.0", "uv": "0.12.18", "git": "2.56.0"}
+VERSIONS = {"gh": "2.101.0", "uv": "0.12.18", "git": "2.56.0", "claude": "2.1.303"}
 _GH = "https://github.com/cli/cli/releases/download/v2.101.0/gh_2.101.0_"
 _UV = "https://github.com/astral-sh/uv/releases/download/0.12.18/uv-"
 _GIT = "https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.1/MinGit-2.56.0-"
-# (system, arch) -> (url, sha256), from each release's published asset digests.
+_CLAUDE = "https://downloads.claude.ai/claude-code-releases/2.1.303/"
+# (system, arch) -> (url, sha256), from each release's published asset digests (claude's: from the
+# release's signed manifest.json, a bare executable and not an archive).
 ASSETS = {
     "gh": {
         ("Linux", "x86_64"): (_GH + "linux_amd64.tar.gz", "9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8"),
@@ -62,17 +64,33 @@ ASSETS = {
         ("Windows", "x86_64"): (_GIT + "64-bit.zip", "064b440ff870ed5198527e8f3a92cdf5bd2fd0fedf5e718af95e3fdaddeff718"),
         ("Windows", "arm64"): (_GIT + "arm64.zip", "cb3b0f2d486ea52673227151a5baf5bc13861ff80e74e94e46d614d1bfcd5c06"),
     },
+    "claude": {
+        ("Linux", "x86_64"): (_CLAUDE + "linux-x64/claude", "375988f457756524234695cf2d8f64ace99c5f68682e47ea24862a843c191450"),
+        ("Linux", "arm64"): (_CLAUDE + "linux-arm64/claude", "f384f49826336d4ac0484ac6ac9d8d16f64d244d186ce227cbd7cc088c03315d"),
+        ("Darwin", "x86_64"): (_CLAUDE + "darwin-x64/claude", "6c5d63b43568c5d60963d40f05b0087cb03ba44a90740d27adc505f4157806db"),
+        ("Darwin", "arm64"): (_CLAUDE + "darwin-arm64/claude", "d2da3b003dc08b88b7230469014fe3e1dc6fe94bc8f648e89b34175d30269370"),
+        ("Windows", "x86_64"): (_CLAUDE + "win32-x64/claude.exe", "1787c60619bad78543c67e4d9d8a868869c35a904f2a85eb9ea46c4808af196b"),
+        ("Windows", "arm64"): (_CLAUDE + "win32-arm64/claude.exe", "a5d5b594a639dab03da1ea0e1a1aedc1885284cc42e14cb65b7527250bc7ea90"),
+    },
 }
+# musl Linux (Alpine), for when the doctor can tell (see _musl).
+CLAUDE_MUSL = {
+    ("Linux", "x86_64"): (_CLAUDE + "linux-x64-musl/claude", "8dfd02ad4590c6f4c419ec73af4f5462223a07f64495e2c2fce45990faf1ede6"),
+    ("Linux", "arm64"): (_CLAUDE + "linux-arm64-musl/claude", "a0d9d4dcb99a1782cdfc332fed8510467e99efc7ff2f3d7443fea27d9af55e7e"),
+}
+BARE = ("claude",)   # releases that are the program itself: there is nothing to unpack
 ARCH = {"amd64": "x86_64", "x86_64": "x86_64", "x64": "x86_64", "arm64": "arm64", "aarch64": "arm64"}
 MIN_FREE = 1 << 30
 PROTECTED = ("Documents", "Desktop", "Downloads", "Library/Mobile Documents")
 
 
-def run_cmd(argv, cwd=None, input=None) -> subprocess.CompletedProcess:
+def run_cmd(argv, cwd=None, input=None, env=None) -> subprocess.CompletedProcess:
+    """Run a command and keep its output; one that cannot be started or runs over ten minutes is
+    exit 127. `env` is the whole environment it runs in (None: this process's own)."""
     argv = [str(a) for a in argv]
     try:
         return subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                              check=False, cwd=cwd, input=input, timeout=600)
+                              check=False, cwd=cwd, input=input, env=env, timeout=600)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return subprocess.CompletedProcess(argv, 127, "", str(exc))
 
@@ -115,7 +133,7 @@ def free_bytes(path) -> int:
 @dataclass
 class Machine:
     """Everything the doctor touches, so a test can stand in for any machine."""
-    run: Callable = run_cmd
+    run: Callable = run_cmd   # (argv, cwd=None, input=None); a caller that needs an env passes env= as well
     system: str = field(default_factory=platform.system)
     arch: str = field(default_factory=platform.machine)
     home: Path = field(default_factory=Path.home)
@@ -155,7 +173,7 @@ def bin_dirs(home=None) -> list:
     """The installed tools' directories that hold their programs."""
     base = tools_home(home)
     found = []
-    for tool, rel in (("gh", "bin"), ("git", "cmd"), ("uv", "")):
+    for tool, rel in (("gh", "bin"), ("git", "cmd"), ("uv", ""), ("claude", "")):
         folder = base / tool / rel if rel else base / tool
         if folder.is_dir() and any((folder / n).exists() for n in (tool, tool + ".exe")):
             found.append(folder)
@@ -203,13 +221,41 @@ def _safe_extract(archive: Path, dest: Path) -> None:
             t.extractall(dest)
 
 
+def _sha256(path: Path) -> str:
+    """The file's SHA-256, read in pieces: Claude's program alone is over 200 MB."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for piece in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(piece)
+    return digest.hexdigest()
+
+
+def _musl_loader() -> bool:
+    """Whether this machine has musl's loader (the tests replace this: it is the real file system's)."""
+    return any(Path(p).exists() for p in ("/lib/libc.musl-x86_64.so.1", "/lib/libc.musl-aarch64.so.1"))
+
+
+def _musl(m: Machine) -> bool:
+    """Whether this Linux runs on musl, as the official Claude installer asks: its loader file,
+    else what `ldd` says about a program every system has."""
+    if m.system != "Linux":
+        return False
+    if _musl_loader():
+        return True
+    res = m.run(["ldd", "/bin/ls"])
+    return "musl" in f"{res.stdout or ''}{res.stderr or ''}".lower()
+
+
 def install(tool: str, m: Machine) -> tuple:
     """Download the pinned release of `tool`, check its SHA-256, unpack it to
-    ~/.spaces/tools/<tool>/ and put it on PATH. Returns (bin dir or None, what happened)."""
+    ~/.spaces/tools/<tool>/ (a bare program is only copied there, once the checksum matched) and
+    put it on PATH. Returns (bin dir or None, what happened)."""
+    # (an x64 Python on an arm64 machine gets the x64 build, which runs emulated)
     key = (m.system, ARCH.get(str(m.arch).lower(), str(m.arch).lower()))
-    if key not in ASSETS.get(tool, {}):
+    table = CLAUDE_MUSL if tool == "claude" and _musl(m) else ASSETS.get(tool, {})
+    if key not in table:
         return None, f"no pinned {tool} for {key[0]} on {key[1]}"
-    url, sha = ASSETS[tool][key]
+    url, sha = table[key]
     target = tools_home(m.home) / tool
     with tempfile.TemporaryDirectory() as tmp:
         archive = Path(tmp) / url.rsplit("/", 1)[1]
@@ -217,22 +263,24 @@ def install(tool: str, m: Machine) -> tuple:
             m.download(url, archive)
         except Exception as exc:   # the network, a proxy, a full disk
             return None, f"the download of {tool} failed ({type(exc).__name__})"
-        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-        if digest != sha:
+        if _sha256(archive) != sha:
             return None, f"the {tool} download did not match its published checksum, so nothing was installed"
         unpacked = Path(tmp) / "unpacked"
         unpacked.mkdir()
-        try:
-            _safe_extract(archive, unpacked)
-        except (ValueError, OSError, zipfile.BadZipFile, tarfile.TarError) as exc:
-            return None, f"the {tool} archive could not be unpacked ({exc})"
+        if tool in BARE:
+            shutil.move(str(archive), unpacked / _exe(tool, m.system))
+        else:
+            try:
+                _safe_extract(archive, unpacked)
+            except (ValueError, OSError, zipfile.BadZipFile, tarfile.TarError) as exc:
+                return None, f"the {tool} archive could not be unpacked ({exc})"
         tops = [p for p in unpacked.iterdir()]
         root = tops[0] if len(tops) == 1 and tops[0].is_dir() else unpacked
         if target.exists():
             shutil.rmtree(target)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(root, target)
-    rel = {"gh": "bin", "git": "cmd", "uv": ""}[tool]
+    rel = {"gh": "bin", "git": "cmd", "uv": "", "claude": ""}[tool]
     folder = target / rel if rel else target
     exe = folder / _exe(tool, m.system)
     if exe.exists() and m.system != "Windows":
@@ -297,6 +345,22 @@ def _gh(m: Machine, fix: bool) -> Row:
         "then say the sentence again")
 
 
+def _claude(m: Machine, fix: bool) -> Row:
+    check = "claude --version"
+    res = m.run(["claude", "--version"])
+    if res.returncode == 0:
+        return Row("claude command line", True, res.stdout.strip().splitlines()[0] if res.stdout.strip() else "claude", check)
+    note = ""
+    if fix:
+        folder, note = install("claude", m)
+        if folder and m.ok("claude", "--version"):
+            return Row("claude command line", True, f"claude {VERSIONS['claude']}", check, fixed=note)
+    how = ('run `! powershell -NoProfile -Command "irm https://claude.ai/install.ps1 | iex"`' if m.system == "Windows"
+           else "run `! curl -fsSL https://claude.ai/install.sh | bash`")
+    return Row("claude command line", False, "not found", check, yours=(
+        f"{note}; " if note else "") + f"install Claude Code's command line once: {how}, then say the sentence again")
+
+
 def _identity(m: Machine, fix: bool) -> Row:
     check = "git config user.name && git config user.email"
     name, email = m.out("git", "config", "user.name"), m.out("git", "config", "user.email")
@@ -341,10 +405,14 @@ def _long_paths(m: Machine, fix: bool) -> Row:
 def _scheduler(m: Machine) -> Row:
     if m.system == "Windows":
         return Row("scheduler", True, "Task Scheduler", "schtasks /Query /TN space-sync-<name> /XML")
-    if m.run(["crontab", "-l"]).returncode != 127:
-        return Row("scheduler", True, "cron", "crontab -l")
+    # the scheduler the work runs under (onboard.register_task): launchd on a Mac, systemd user timers on a
+    # Linux where the user manager works, else cron, which does not catch up after sleep
+    if m.system == "Darwin":
+        return Row("scheduler", True, "launchd", "launchctl print gui/$(id -u)")
     if m.system == "Linux" and m.ok("systemctl", "--user", "show-environment"):
-        return Row("scheduler", True, "systemd user timers (no cron)", "systemctl --user show-environment")
+        return Row("scheduler", True, "systemd user timers", "systemctl --user show-environment")
+    if m.run(["crontab", "-l"]).returncode != 127:
+        return Row("scheduler", True, "cron (does not catch up after sleep)", "crontab -l")
     return Row("scheduler", False, "no cron", "crontab -l", yours=(
         "install cron once so your work lands every 15 minutes: run `! sudo apt install cron` "
         "(Fedora: `! sudo dnf install cronie`), then say the sentence again"))
@@ -383,6 +451,27 @@ def _rate_limit(m: Machine) -> Row | None:
                yours="GitHub's hourly request limit is used up; it resets within the hour: say the sentence again then")
 
 
+def _network(m: Machine) -> Row:
+    if m.reach():
+        return Row("network", True, "github.com reachable", "https://api.github.com")
+    return Row("network", False, "github.com unreachable", "https://api.github.com",
+               yours="there is no connection to github.com: reconnect, then say the sentence again")
+
+
+TOOL_ROWS = {"gh": _gh, "claude command line": _claude}
+
+
+def tool_row(name: str, m: Machine | None = None, fix: bool = True) -> Row:
+    """One tool's row on its own (`gh` or `claude command line`), as `diagnose` makes it: the
+    installed tools first on PATH, and with `fix` the tool installed when it is missing. For a
+    step that needs one tool now and should not wait for the whole walk. With no network the row
+    is the network's."""
+    m = m or Machine()
+    use_tools(m.home)
+    network = _network(m)
+    return TOOL_ROWS[name](m, fix) if network.ok else network
+
+
 def diagnose(m: Machine | None = None, fix: bool = True, orgs=(), repos=(), offline: bool = False,
              spaces=None) -> list:
     """Every prerequisite as a Row, in order; with `fix`, what needs no password is fixed on the
@@ -403,13 +492,12 @@ def diagnose(m: Machine | None = None, fix: bool = True, orgs=(), repos=(), offl
                 f"choose a folder outside {guarded[0]}: the default ~/spaces needs no permission dialog")))
     if offline:
         return rows
-    if not m.reach():
-        rows.append(Row("network", False, "github.com unreachable", "https://api.github.com",
-                        yours="there is no connection to github.com: reconnect, then say the sentence again"))
+    network = _network(m)
+    rows.append(network)
+    if not network.ok:
         return rows
-    rows.append(Row("network", True, "github.com reachable", "https://api.github.com"))
     git, gh = _git(m, fix), _gh(m, fix)
-    rows += [git, gh]
+    rows += [git, gh, _claude(m, fix)]
     if git.ok and m.system == "Windows":
         rows.append(_long_paths(m, fix))
     rows.append(_scheduler(m))

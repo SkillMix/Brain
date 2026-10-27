@@ -3,14 +3,24 @@
     python _meta/tools/onboard.py [root] [--answers FILE] [--brain URL|PATH] [--seed PATH]
                                   [--offline] [--org ORG] [--home DIR]
                                   [--user-instructions PATH] [--check] [--fixture DIR] [--dry-run]
+    python _meta/tools/onboard.py <workspace> --routines-here | --pause [--until ISO] | --resume
 
 Cases: no brain in reach, a company (this repository becomes the brain and the top
 owner's workspace is created); a brain in reach, a person (this repository becomes their
 workspace); a desk seed, a project (handed to `mint.py`). `--check` re-runs only the
 read-back checks and changes nothing. `--fixture DIR` onboards the fixture company
 offline and runs the chain and the tests over it. Offline mode never runs gh, git,
-schtasks, crontab or systemctl; online, every such call goes through `run_cmd`. Nothing is deleted,
-nothing is signed, `main` is pushed only for a repository created seconds earlier.
+schtasks, launchctl, crontab or systemctl; online, every such call goes through `run_cmd`. Nothing is
+deleted, nothing is signed, `main` is pushed only for a repository created seconds earlier. The OS tasks it
+registers are named `space-sync-<name>` and `space-<routine>-<name>`; an isolated test run sets
+SPACES_TASK_PREFIX=space-test-<id>- so that its tasks, and only those, carry that prefix instead. Each
+runs through the scheduler of the system that catches up after sleep: the Task Scheduler on Windows, a
+launch agent (`com.spaces.<task>`) on macOS, a systemd user timer on a Linux that has one, else cron,
+which does not catch up and says so.
+
+A workspace's routines run on one computer through one scheduler (`routine.HOST`): the build registers
+them only where nothing else runs them, `--routines-here` moves them to this computer once the probe
+passed there, and `--pause` (until 06:00 the next morning, or `--until`) and `--resume` hold them.
 """
 from __future__ import annotations
 
@@ -20,11 +30,13 @@ import getpass
 import json
 import os
 import platform
+import plistlib
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from xml.sax.saxutils import escape as xml_escape
@@ -115,7 +127,7 @@ class Report:
 
 # ----- the one door to the outside -----------------------------------------
 def run_cmd(argv, dry_run=False, cwd=None) -> subprocess.CompletedProcess:
-    """gh, git, schtasks, crontab and systemctl all pass through here. Offline mode never calls it."""
+    """gh, git, schtasks, launchctl, crontab and systemctl all pass through here. Offline mode never calls it."""
     argv = [str(a) for a in argv]
     if dry_run:
         print("dry-run:", " ".join(argv))
@@ -124,6 +136,21 @@ def run_cmd(argv, dry_run=False, cwd=None) -> subprocess.CompletedProcess:
         return subprocess.run(argv, capture_output=True, text=True, check=False, cwd=cwd)
     except OSError as exc:
         return subprocess.CompletedProcess(argv, 127, "", str(exc))
+
+
+def spawn_cmd(argv, dry_run=False, env=None) -> int | None:
+    """The other door to the outside: start a command and leave it running on its own, in a session of its
+    own (it outlives whoever asked), its output nowhere. Returns its process id, or None when it would not
+    start. Only cron has no `start` of its own and needs it (`run_now`)."""
+    argv = [str(a) for a in argv]
+    if dry_run:
+        print("dry-run:", " ".join(argv))
+        return 0
+    try:
+        return subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                env=env, start_new_session=True).pid
+    except OSError:
+        return None
 
 
 # ----- small helpers ---------------------------------------------------------
@@ -220,15 +247,30 @@ def minutes_of(value) -> int:
 
 
 # ----- the tree ----------------------------------------------------------------
+def _checkout_files(src: Path) -> list | None:
+    """What a fresh clone of `src` holds plus what is not committed yet: the files git lists as
+    tracked, or untracked and not ignored. None when `src` is not a git checkout (a plain copy)."""
+    try:
+        res = subprocess.run(["git", "-C", str(src), "ls-files", "-z", "-co", "--exclude-standard"],
+                             capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if res.returncode != 0:
+        return None
+    return [src / name for name in dict.fromkeys(res.stdout.decode("utf-8", "replace").split("\0")) if name]
+
+
 def copy_template(src, dst) -> bool:
-    """Copy the machinery and the empty skeleton of `src` to `dst`; never its content."""
+    """Copy the machinery and the empty skeleton of `src` to `dst`; never its content. In a git
+    checkout, never what its git ignores either (a tool's scratch folder, a worktree)."""
     src, dst = Path(src), Path(dst)
     if (dst / "space.yaml").exists():
         return False
-    for path in src.rglob("*"):
+    listed = _checkout_files(src)
+    for path in (src.rglob("*") if listed is None else listed):
         rel = path.relative_to(src)
         posix = rel.as_posix()
-        if path.is_dir() or any(p in SKIP_DIRS for p in rel.parts):
+        if not path.is_file() or any(p in SKIP_DIRS for p in rel.parts):
             continue
         if rel.parts[0] in MOUNT_DIRS:  # another space's checkout: never copied as files
             continue
@@ -549,15 +591,102 @@ def write_identity(root, company, owner, domains, never_leaves, now) -> None:
 
 
 def write_needs_you(root, skipped, path="_inbound/needs-you/onboard.yaml", prefix="onboard") -> None:
+    """One item a question: `key`, `ask` and `default` (the recommendation); `if_nothing` says what happens
+    when the person does nothing, when that is not the generic "the default stays". A file of its own and
+    no question empties the file: an item an earlier run left is withdrawn."""
     target = Path(root) / path
     existing = (read_yaml(target, {}) or {}).get("items") or []
     kept = [i for i in existing if not str(i.get("id", "")).startswith(prefix + "-")]
     items = kept + [{"id": f"{prefix}-{q['key']}", "kind": "question", "text": q["ask"],
                      "recommendation": joiner(q).join(map(str, q["default"])) if isinstance(q["default"], list)
-                     else str(q["default"]), "default": "the default stays", "deadline": None,
+                     else str(q["default"]), "default": q.get("if_nothing") or "the default stays", "deadline": None,
                      "depends": 1, "payload": "space.yaml", "fingerprint": ""} for q in skipped]
     if items or target.exists():
         write_yaml(target, {"items": items})
+
+
+# The company profile: what the research read about the company, drafted for the owner to correct and sign.
+PROFILE_TITLES = {"company": "The company", "offering": "What we offer", "vision": "Vision", "locations": "Locations",
+                  "people": "People", "clients": "Clients", "brand": "Brand", "tools": "Tools",
+                  "signs_for": "Who signs for the company"}
+PROFILE_ASK = "Correct any line of your company profile, or sign it"
+PROFILE_ITEMS = "_inbound/needs-you/onboard-profile.yaml"   # its own file: onboard.yaml is rewritten by every run
+
+
+def _own_draft(path) -> bool:
+    """Whether a page is absent or still the draft onboard wrote: a signed page, or one that
+    someone else wrote, is never overwritten (the rule `write_identity` keeps)."""
+    fm = pages.read(path)[0] if Path(path).exists() else {}
+    return not (fm.get("status") == "stable" or (fm and (fm.get("generated") or {}).get("by") != "onboard"))
+
+
+def fill_what_we_do(root, bullets, now) -> bool:
+    """Put the profile's offering lines under "What we do" in the spine, in place of the placeholder
+    (or of an earlier fill). The spine must still be onboard's draft."""
+    path = Path(root) / "identity" / "spine.md"
+    if not bullets or not path.exists() or not _own_draft(path):
+        return False
+    fm, body = pages.read(path)
+    filled, n = re.subn(r"(## What we do\n\n).*?(?=\n\n## |\Z)", lambda m: m.group(1) + "\n".join(f"- {b}" for b in bullets),
+                        body, count=1, flags=re.S)
+    if not n:
+        return False
+    pages.write(path, {**fm, "generated": pages.generated("onboard", now)}, filled)
+    return True
+
+
+def write_profile(root, profile: dict, now) -> Path | None:
+    """Draft `identity/profile.md` from the research: `profile` is {section: [{"text", "source",
+    "at"}]} (`research.PROFILE_SECTIONS`), and each line becomes one bullet ending ` (source:
+    <source>, <date>)`; a line without text or a source is left out, and so is a section without a
+    line. The offering lines also fill the spine's "What we do". One item on Needs you (id
+    `onboard-profile`, in its own file: `onboard.yaml` is rewritten by every run) asks the owner to
+    correct any line or sign. A signed page, or one someone else wrote, is never overwritten, and
+    asks nothing: an item an earlier run left is emptied. Returns the page's path; None when there
+    was no line to write."""
+    import research
+    today = f"{now:%Y-%m-%d}"
+    sections = {}
+    for section in research.PROFILE_SECTIONS:
+        bullets = []
+        for line in (profile or {}).get(section) or []:
+            text, source = " ".join(str(line.get("text") or "").split()), " ".join(str(line.get("source") or "").split())
+            if text and source:
+                bullets.append(f"{text} (source: {source}, {str(line.get('at') or '')[:10] or today})")
+        if bullets:
+            sections[section] = bullets
+    path = Path(root) / "identity" / "profile.md"
+    if not _own_draft(path):   # signed (or someone's own): the question to sign it is withdrawn, not left to be asked
+        write_needs_you(root, [], path=PROFILE_ITEMS, prefix="onboard")
+        return path
+    if not sections:
+        return None
+    body = ("# Company profile\n\nDrafted from the company's own sources: its site, the business register, its code "
+            "organisation, its documents and files. Every line says where it comes from. Correct any line, then sign "
+            "the page.\n")
+    for section, bullets in sections.items():
+        body += f"\n## {PROFILE_TITLES[section]}\n\n" + "\n".join(f"- {b}" for b in bullets) + "\n"
+    fm = pages.read(path)[0] if path.exists() else {}
+    pages.write(path, {"id": fm.get("id") or pages.new_id(), "type": "concept", "title": "Company profile",
+                       "status": "draft", "generated": pages.generated("onboard", now)}, body)
+    fill_what_we_do(root, sections.get("offering"), now)
+    write_needs_you(root, [{"key": "profile", "ask": PROFILE_ASK, "default": "sign it when it reads right"}],
+                    path=PROFILE_ITEMS, prefix="onboard")
+    return path
+
+
+BRIEFING_ITEMS = "_inbound/needs-you/onboard-briefing.yaml"   # its own file, like the profile's
+
+
+def briefing_item(workspace, address: str) -> None:
+    """The morning briefing goes to the address in the workspace's space.yaml, and every notice the
+    agents queue for the person with it. With none, one plain item asks for it; once there is one, the
+    item an earlier run left is withdrawn."""
+    asked = [] if "@" in str(address) else [{
+        "key": "briefing-address", "default": "your work email address",
+        "ask": "Which email address should your morning briefing go to? It is sent from your own mailbox to you alone.",
+        "if_nothing": "no morning briefing is sent"}]
+    write_needs_you(workspace, asked, path=BRIEFING_ITEMS, prefix="onboard")
 
 
 # ----- the personal instruction ---------------------------------------------
@@ -689,11 +818,40 @@ WINDOWS_TASK = {"<DisallowStartIfOnBatteries>false": "starts on battery",
                 "conhost.exe": "runs without a window"}
 
 
+TASK_PREFIX = "space-"
+TASK_PREFIX_ENV = "SPACES_TASK_PREFIX"
+LAUNCHD_PREFIX = "com.spaces."   # a launch agent's label is this and the task's name
+# Cron runs a routine only at its time: one due while the computer slept or was off is lost. Said once,
+# in plain words, as a step that blocks nothing, and kept on the task's record for the progress page.
+CRON_STEP = "routines missed in sleep are not made up"   # begins "routine": the progress page files it under Routines
+CRON_WAITING = ("This computer's scheduler does not catch up on runs it missed while the computer was off or asleep, "
+                "so a routine can skip a day.")
+_sleep = time.sleep   # the tests stand in for it
+
+
+def task_prefix() -> str:
+    """The start of every OS task name onboard registers: `space-` (`space-sync-ada`,
+    `space-sweep-chain-ada`). An isolated test run sets SPACES_TASK_PREFIX to `space-test-<id>-`, so
+    it registers, reads back and removes tasks of its own and never touches a person's. A value
+    that is not `space-` and lower-case letters, digits and hyphens is refused, never replaced by the
+    default: a typo must not register tasks under the person's own names."""
+    prefix = os.environ.get(TASK_PREFIX_ENV) or TASK_PREFIX
+    if not re.fullmatch(r"space-[a-z0-9-]*", prefix):
+        raise ValueError(f"{TASK_PREFIX_ENV} must start with space- and use only lower-case letters, digits and "
+                         f"hyphens, not {prefix!r}")
+    return prefix
+
+
 def python_cmd() -> str:
     """The interpreter that runs onboarding, for unattended text: absolute (macOS has no bare
     `python`), quoted when its path has a space."""
     path = Path(sys.executable).as_posix()
     return f'"{path}"' if " " in path else path
+
+
+def user_id() -> int:
+    """The person's numeric user id: launchd's per-user domain is `gui/<uid>`."""
+    return os.getuid()
 
 
 def daily_times(schedule: str):
@@ -708,9 +866,36 @@ def daily_times(schedule: str):
     return sorted((h, m) for h in hours for m in minutes)
 
 
-def _argline(py, args) -> str:
-    """The interpreter and its arguments, every value quoted, every flag bare."""
-    return " ".join([f'"{py}"'] + [str(a) if str(a).startswith("-") else f'"{a}"' for a in args])
+def _argline(py, args, quote=None) -> str:
+    """The interpreter and its arguments, every value quoted, every flag bare. `quote` is the way of the
+    system that reads the line: plain double quotes (Windows paths hold none), else `_sh` or `_unit_word`."""
+    quote = quote or (lambda value: f'"{value}"')
+    return " ".join([quote(py)] + [str(a) if str(a).startswith("-") else quote(a) for a in args])
+
+
+def _sh(value) -> str:
+    """One word for `sh` in double quotes, where only a backslash, a quote, `$` and a backtick mean anything:
+    each is escaped, so a folder name is never read as a command, a variable or the end of the word."""
+    return '"' + re.sub(r'([\\"$`])', r"\\\1", str(value)) + '"'
+
+
+def _unit_word(value) -> str:
+    """One argument of a systemd command line in double quotes: a backslash and a quote are escaped, and `%`
+    (a specifier) and `$` (a variable) doubled."""
+    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%").replace("$", "$$") + '"'
+
+
+def _exec_start(py, args) -> str:
+    """The ExecStart= line of a unit. Its program (the first word) is read differently from its arguments,
+    as systemd's own parser showed: `%` is still a specifier, but `$` is no variable there (`$$` would stay
+    two dollar signs), and a program path holding a backslash or a quote is refused outright ("special
+    characters"). Such a program is started by `sh`, to which it is an argument like any other."""
+    program = str(py)
+    if any(ch in program for ch in "\\\"'"):
+        words = ['/bin/sh -c "exec \\"$$0\\" \\"$$@\\""', _unit_word(program)]
+    else:
+        words = ['"' + program.replace("%", "%%") + '"']
+    return " ".join(words + [str(a) if str(a).startswith("-") else _unit_word(a) for a in args])
 
 
 def task_xml(arguments: str, minutes: int | None = None, times=None) -> str:
@@ -762,9 +947,16 @@ def cron_entry(when: str, root, py, args, task, path) -> str:
     """One crontab line: it runs in the checkout with the PATH onboarding saw (cron's own lacks
     gh and often git), logs instead of mailing, and ends in `# <task>`, the marker by which
     onboard replaces it and offboard removes it. cron reads `%` as a newline: escaped."""
-    command = (f'cd "{root}" && PATH="{path}" {_argline(py, args)} '
+    command = (f'cd {_sh(root)} && PATH={_sh(path)} {_argline(py, args, _sh)} '
                f'>> "$HOME/.spaces/logs/{task}.log" 2>&1  # {task}')
     return f"{when} " + command.replace("%", "\\%")
+
+
+def cron_command(line: str) -> str | None:
+    """The command of a crontab line of ours, as cron hands it to `sh`: after the five time fields, with
+    `\\%` read as `%`. None for a line that has no command."""
+    parts = str(line).split(None, 5)
+    return parts[5].replace("\\%", "%") if len(parts) == 6 else None
 
 
 def cron_line(minutes, py, script, root, task, path) -> str:
@@ -772,34 +964,143 @@ def cron_line(minutes, py, script, root, task, path) -> str:
 
 
 def is_task_line(text, task, root) -> bool:
-    """A crontab line of this task: its marker, or for a sync task written before the marker
-    existed, sync.py and this root on one line."""
-    text = text.rstrip()
-    return text.endswith(f"# {task}") or (task.startswith("space-sync-") and "sync.py" in text and str(root) in text)
+    """A crontab line of this task: its marker, or, for a sync task written before the marker existed, exactly
+    `<python> <root>/_meta/tools/sync.py --root <root> --release-leg` after its five time fields. Nothing looser:
+    another space's line (a root that only begins like this one), a line that has another task's marker and a
+    line the person wrote by hand are not this task's."""
+    return text.rstrip().endswith(f"# {task}") or is_legacy_sync_line(text, task, root)
+
+
+def is_legacy_sync_line(text, task, root) -> bool:
+    """The sync task's crontab line as the template's first version wrote it, before there was a marker: exactly
+    `<python> <root>/_meta/tools/sync.py --root <root> --release-leg` after the five time fields, for this root."""
+    words = text.split()
+    return (task.startswith("space-sync-") and len(words) == 10 and words[7] == "--root" and words[9] == "--release-leg"
+            and Path(words[6]) == Path(root) / "_meta" / "tools" / "sync.py" and Path(words[8]) == Path(root))
+
+
+def is_own_cron_line(text, task, root) -> bool:
+    """The line `cron_entry` wrote for this task in this folder: its marker and, as the folder it starts in, this
+    root as a whole word. Never a line without the marker, never the same marker from another folder."""
+    command = cron_command(text)
+    return (text.rstrip().endswith(f"# {task}") and command is not None
+            and any(command.startswith(f"cd {_sh(folder)} && ") for folder in {str(root), str(Path(root).resolve())}))
+
+
+def read_crontab(dry_run=False, run=None) -> tuple:
+    """(lines, state, why) of the crontab, read before anything is written over it. state is `read` (a person with
+    no crontab has an empty one: `crontab -l` fails and says "no crontab for <user>"), `missing` (no crontab
+    command here) or `failed` (lines is None, why says what went wrong): any other failure is not an empty
+    crontab, and a rewrite from it would drop the person's own lines."""
+    res = (run or run_cmd)(["crontab", "-l"], dry_run)
+    said = f"{res.stderr or ''} {res.stdout or ''}".strip()
+    if res.returncode == 127:
+        return None, "missing", ""
+    if res.returncode == 0:
+        return (res.stdout or "").splitlines(), "read", ""
+    if "no crontab for" in said.lower():
+        return [], "read", ""
+    return None, "failed", (said or "no reason given")[:80]
+
+
+def write_crontab(lines, dry_run=False, run=None) -> subprocess.CompletedProcess:
+    """Install `lines` as the crontab: the one place a crontab is written (a file handed to `crontab`, which is
+    removed after). `run` is the door to use; offboard has its own."""
+    run = run or run_cmd
+    with tempfile.NamedTemporaryFile("w", suffix=".cron", delete=False, encoding="utf-8", newline="\n") as tmp:
+        tmp.write("\n".join(lines) + ("\n" if lines else ""))
+    try:
+        return run(["crontab", tmp.name], dry_run)
+    finally:
+        os.unlink(tmp.name)
 
 
 def systemd_units(task, root, py, args, path, calendars) -> tuple:
-    """A systemd user service and its timer, for a Linux without cron. `Persistent=true` runs
-    a start missed while the machine slept. `%` is a specifier in unit files: doubled."""
-    def esc(value):
+    """A systemd user service and its timer. `Persistent=true` runs a start missed while the machine slept.
+    `%` is a specifier in unit files and `$` a variable in the arguments of ExecStart=: both doubled;
+    `Environment=` and `ExecStart=` words are double quoted with their backslashes and quotes escaped."""
+    def pct(value):
         return str(value).replace("%", "%%")
-    service = (f"[Unit]\nDescription={task}\n\n[Service]\nType=oneshot\nWorkingDirectory={esc(root)}\n"
-               f"Environment=\"PATH={esc(path)}\"\nExecStart={esc(_argline(py, args))}\n")
-    timer = (f"[Unit]\nDescription={task}\n\n[Timer]\n" + "".join(f"OnCalendar={c}\n" for c in calendars)
+    env = str(path).replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
+    service = (f"[Unit]\nDescription={pct(task)}\n\n[Service]\nType=oneshot\nWorkingDirectory={pct(root)}\n"
+               f"Environment=\"PATH={env}\"\nExecStart={_exec_start(py, args)}\n")
+    timer = (f"[Unit]\nDescription={pct(task)}\n\n[Timer]\n" + "".join(f"OnCalendar={c}\n" for c in calendars)
              + "Persistent=true\n\n[Install]\nWantedBy=timers.target\n")
     return service, timer
 
 
+def launch_agent(task: str, root, py: str, args: list, times: list | None, minutes: int | None,
+                 path: str | None = None) -> str:
+    """A macOS launch agent for one task, as a property list: it runs `py args` in `root` at the daily
+    `times` ((hour, minute) pairs) or every `minutes`, with the PATH onboarding saw (launchd's own lacks gh
+    and often git), and logs to `~/.spaces/logs/<task>.log`. `ProgramArguments` is an array, one string per
+    word: no shell reads it, so a folder name is never parsed. launchd runs a calendar start it missed while
+    the Mac slept as soon as the Mac wakes."""
+    log = str(Path.home() / ".spaces" / "logs" / f"{task}.log")
+    path = os.environ.get("PATH", "") if path is None else path
+    agent = {"Label": LAUNCHD_PREFIX + task, "ProgramArguments": [str(py)] + [str(a) for a in args],
+             "WorkingDirectory": str(root), "EnvironmentVariables": {"PATH": path},
+             "StandardOutPath": log, "StandardErrorPath": log}
+    if minutes:
+        agent["StartInterval"] = int(minutes) * 60
+    else:
+        agent["StartCalendarInterval"] = [{"Hour": h, "Minute": m} for h, m in times]
+    return plistlib.dumps(agent).decode("utf-8")
+
+
+def control_trouble(root, py, path, args) -> str | None:
+    """Why these words cannot be scheduled on this computer if one holds a control character (a tab, say), in
+    plain words that name what holds it, else None. A unit file is made of lines and systemd refuses a program
+    path with one; a property list cannot carry most of them (`plistlib` raises). Refused, never escaped."""
+    words = (("the folder name", "rename the folder", root),
+             ("the location of the Python program", "move Python to a folder without it", py),
+             ("the list of folders this computer searches for programs", "take it out of that list", path),
+             *(("the name of a file the task uses", "rename it", arg) for arg in args))
+    for what, fix, word in words:
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in str(word)):
+            return (f"a control character (a tab, say) in {what} cannot be scheduled on this computer: "
+                    f"{fix} and run onboard again")
+    return None
+
+
+def unit_trouble(root, py, path, args) -> str | None:
+    """Why a systemd unit file cannot carry these words, in plain words, else None: a control character (systemd
+    refuses a program path with one, and a unit file is made of lines) and a folder name that ends in a
+    backslash (`WorkingDirectory=` would go on in the next line). Refused, never escaped: neither has an escape
+    that systemd's own parser was seen to honour."""
+    trouble = control_trouble(root, py, path, args)
+    if trouble is None and str(root).endswith("\\"):
+        trouble = ("a folder name that ends in a backslash cannot be scheduled on this computer: rename the folder "
+                   "and run onboard again")
+    return trouble
+
+
+def windows_expands(text: str) -> bool:
+    """Whether Windows would swap a `%NAME%` in `text` for a variable's value. The Task Scheduler is not known to
+    leave it alone in a task's arguments and has no escape for a percent sign, so such a name is refused, not
+    escaped. Every word between two percent signs counts, at either alignment (`%A%B%` holds A and B), and
+    names are compared without case, as Windows does. A lone `100%` is nothing."""
+    names = {name.upper() for name in os.environ}
+    return any(name.upper() in names for name in re.findall(r"(?=%([^%]+)%)", text))
+
+
 def register_task(report, label, task, root, args, minutes=None, times=None, cron=None, dry_run=False) -> dict:
-    """Register one OS task that runs this interpreter with `args` in `root`, every `minutes`
-    or daily at `times` (`cron` is the same schedule in cron's words): a task XML on Windows, a
-    cron line on macOS and Linux, a systemd user timer on a Linux without cron."""
+    """Register one OS task that runs this interpreter with `args` in `root`, every `minutes` or daily at
+    `times` (`cron` is the same schedule in cron's words), through the scheduler that catches up after sleep:
+    a task XML on Windows, a launch agent on macOS, a systemd user timer on a Linux where
+    `systemctl --user` works, else a cron line, which does not catch up (one plain line says so). A task runs
+    through one scheduler: moving to another takes it out of the rest (`retire_others`)."""
     root, py, path = Path(root), sys.executable, os.environ.get("PATH", "")
     if SYSTEM == "Windows":
         arguments = f"--headless {_argline(py, args)}"
         record = {"name": task, "kind": "schtasks", "line": f"{CONHOST} {arguments}",
                   "create": ["schtasks", "/Create", "/F", "/TN", task, "/XML", f"{task}.xml"],
                   "check": ["schtasks", "/Query", "/TN", task, "/XML"], "root": str(root)}
+        if windows_expands(arguments):
+            report.add(label, False, " ".join(record["check"]), "a folder name with a word between percent signs "
+                       "that Windows would swap for something else (%TEMP% is one) cannot be scheduled: rename "
+                       "the folder and run onboard again")
+            return record
         fd, xml_path = tempfile.mkstemp(suffix=".xml")
         os.close(fd)
         Path(xml_path).write_text(task_xml(arguments, minutes, times), encoding="utf-16")
@@ -816,50 +1117,239 @@ def register_task(report, label, task, root, args, minutes=None, times=None, cro
     when = cron or f"*/{minutes} * * * *"
     record = {"name": task, "kind": "cron", "line": cron_entry(when, root, py, args, task, path),
               "create": ["crontab", "-"], "check": ["crontab", "-l"], "root": str(root)}
-    listed = run_cmd(["crontab", "-l"], dry_run)
-    if listed.returncode == 127:   # no cron on this machine
-        if SYSTEM == "Linux" and run_cmd(["systemctl", "--user", "show-environment"], dry_run).returncode == 0:
-            calendars = [f"*:0/{minutes}"] if minutes else [f"*-*-* {h:02d}:{m:02d}:00" for h, m in times]
-            return register_systemd(report, label, record, root, py, args, path, calendars, dry_run)
+    if any(ch in str(word) for word in (root, py, path, *args) for ch in "\r\n"):   # a unit or crontab line is one line
+        report.add(label, False, " ".join(record["check"]), "a folder name with a line break in it cannot be "
+                   "scheduled: rename the folder and run onboard again")
+        return record
+    if SYSTEM == "Darwin":
+        trouble = control_trouble(root, py, path, args)
+        if trouble:
+            report.add(label, False, f"launchctl print gui/{user_id()}/{LAUNCHD_PREFIX}{task}", trouble)
+            return record
+        return register_launchd(report, label, record, root, py, args, times, minutes, dry_run)
+    if SYSTEM == "Linux" and run_cmd(["systemctl", "--user", "show-environment"], dry_run).returncode == 0:
+        trouble = unit_trouble(root, py, path, args)
+        if trouble:
+            report.add(label, False, "systemctl --user show-environment", trouble)
+            return record
+        calendars = [f"*:0/{minutes}"] if minutes else [f"*-*-* {h:02d}:{m:02d}:00" for h, m in times]
+        return register_systemd(report, label, record, root, py, args, path, calendars, dry_run)
+    lines, state, why = read_crontab(dry_run)
+    if state == "missing":   # neither a systemd user session nor cron on this machine
         report.add(label, False, "crontab -l", "cron is not installed: install it once (Debian or Ubuntu "
                    "`sudo apt install cron`, Fedora `sudo dnf install cronie`) and run onboard again", needs_owner=True)
         return record
+    if state == "failed":
+        report.add(label, False, "crontab -l", f"this computer's scheduler could not be read ({why}), so nothing was "
+                   "changed: set up again once it can be read")
+        return record
+    gone, stuck, _ = retire_others(task, root, "cron", dry_run)   # first: one that cannot be stopped keeps cron out
+    if stuck:
+        report.add(label, False, " ".join(record["check"]), "; ".join(stuck), needs_owner=True)
+        return record
+    # what `run_now` rebuilds the line from, so it never runs text it did not build
+    record.update({"python": py, "args": [str(a) for a in args], "path": path, "when": when})
     if not dry_run:
         (Path.home() / ".spaces" / "logs").mkdir(parents=True, exist_ok=True)
-    lines = (listed.stdout or "").splitlines() if listed.returncode == 0 else []
     wanted = [line for line in lines if not is_task_line(line, task, root)] + [record["line"]]
     res = subprocess.CompletedProcess(record["create"], 0, "", "")
     if wanted != lines:
-        with tempfile.NamedTemporaryFile("w", suffix=".cron", delete=False, encoding="utf-8", newline="\n") as tmp:
-            tmp.write("\n".join(wanted) + "\n")
-        res = run_cmd(["crontab", tmp.name], dry_run)
-        os.unlink(tmp.name)
+        res = write_crontab(wanted, dry_run)
     verify = run_cmd(record["check"], dry_run)
     ok = res.returncode == 0 and verify.returncode == 0 and (dry_run or record["line"] in verify.stdout)
-    report.add(label, ok, " ".join(record["check"]),
-               f"{task}: {when} (cron)" if ok else (res.stderr or verify.stderr).strip()[:200])
+    report.add(label, ok, " ".join(record["check"]), f"{task}: {when} (cron)" + _removed(gone) if ok
+               else (res.stderr or verify.stderr).strip()[:200])
+    if ok:
+        record["waiting"] = CRON_WAITING
+        if not any(step.name == CRON_STEP for step in report.steps):
+            report.add(CRON_STEP, True, "systemctl --user show-environment", CRON_WAITING)
     return record
+
+
+def _removed(gone: list) -> str:
+    return "; " + " and ".join(gone) + " removed" if gone else ""
+
+
+# What an owner-facing line says without naming a tool: the earlier schedule of a task that is in the way.
+NOT_STOPPED = ("this task's earlier schedule could not be stopped from here, because this computer's scheduler did not "
+               "answer: set up again once it does")
+
+
+def _retire_cron(task, root) -> tuple:
+    """(gone, stuck, note) of taking the task's own line out of the crontab: this folder's line with its marker and,
+    for the sync task, its exact pre-marker line; each is a sentence or None. A crontab that cannot be read is
+    stuck, never empty. A line marked for this task that stays (another folder, another spelling of this one)
+    is a note: it may be a copy, and then the task runs twice."""
+    lines, state, why = read_crontab()
+    if state == "missing":
+        return None, None, None
+    if state == "failed":
+        return None, (f"this computer's scheduler could not be read ({why}), so an older job for this task may still "
+                      "be in it, and the task would run twice: set up again once it can be read"), None
+    keep = [line for line in lines if not (is_own_cron_line(line, task, root) or is_legacy_sync_line(line, task, root))]
+    note = None
+    if any(line.rstrip().endswith(f"# {task}") for line in keep):
+        note = ("another job in this computer's scheduler is marked as this task's but starts in a different folder: "
+                "if it is a copy of this one, the task runs twice")
+    if len(keep) == len(lines):
+        return None, None, note
+    res = write_crontab(keep)
+    if res.returncode == 0:
+        return "its old cron line", None, note
+    why = (res.stderr or res.stdout or "no reason given").strip()[:80]
+    return None, (f"the older scheduled job for this task could not be removed ({why}), so the task runs twice until "
+                  f"it is: remove the job whose note says {task}"), note
+
+
+def _retire_timer(task) -> tuple:
+    timer = Path.home() / ".config" / "systemd" / "user" / f"{task}.timer"
+    if not timer.exists():
+        return None, None, None
+    stopped = (run_cmd(["systemctl", "--user", "disable", "--now", timer.name]).returncode == 0
+               and run_cmd(["systemctl", "--user", "is-enabled", timer.name]).returncode != 0)
+    if not stopped:   # no user session to ask just now: its files are left, and it stays the one scheduler
+        return None, NOT_STOPPED, None
+    timer.unlink()
+    timer.with_suffix(".service").unlink(missing_ok=True)
+    run_cmd(["systemctl", "--user", "daemon-reload"])
+    return "its old systemd timer", None, None
+
+
+def _retire_agent(task) -> tuple:
+    ident = LAUNCHD_PREFIX + task
+    agent = Path.home() / "Library" / "LaunchAgents" / f"{ident}.plist"
+    if not agent.exists():
+        return None, None, None
+    loaded = f"gui/{user_id()}/{ident}"
+    run_cmd(["launchctl", "bootout", loaded])
+    if run_cmd(["launchctl", "print", loaded]).returncode == 0:
+        return None, NOT_STOPPED, None
+    agent.unlink()
+    return "its old launch agent", None, None
+
+
+def retire_others(task, root, keep, dry_run=False) -> tuple:
+    """A task runs through one scheduler. Take it out of the others (`keep` names the one it stays in: cron,
+    systemd or launchd), only its own entries: the cron line `cron_entry` wrote for this folder, the timer and
+    agent of this task's name. Returns (gone, stuck, notes): what went, what could not be removed or read, and what
+    stays that the person should know, each a list of sentences."""
+    gone, stuck, notes = [], [], []
+    if dry_run:
+        return gone, stuck, notes
+    for kept, retire in (("cron", lambda: _retire_cron(task, root)), ("systemd", lambda: _retire_timer(task)),
+                         ("launchd", lambda: _retire_agent(task))):
+        if kept != keep:
+            for found, sentence in zip((gone, stuck, notes), retire()):
+                found += [sentence] if sentence else []
+    return gone, stuck, notes
+
+
+def _after_move(report, label, record, task, root, keep, ok, said, failure, dry_run) -> None:
+    """The step of a task registered with its new scheduler. Once that reads back, the old ones are cleared of it;
+    one that could not be is a step only the person can finish, since the task would run twice, and its words
+    name no tool."""
+    gone, stuck, notes = retire_others(task, root, keep, dry_run) if ok else ([], [], [])
+    if stuck:
+        text = f"{task} is scheduled; " + "; ".join(stuck)
+    else:
+        text = said + _removed(gone) + "".join(f"; {note}" for note in notes) if ok else failure
+    report.add(label, ok and not stuck, " ".join(record["check"]), text, needs_owner=bool(stuck))
 
 
 def register_systemd(report, label, record, root, py, args, path, calendars, dry_run) -> dict:
-    """The fallback on a Linux without cron: a systemd user timer that catches up after sleep."""
+    """A Linux with a systemd user session: a timer that runs a start it missed while the machine slept. The same
+    units already in place with the timer running are left alone: nothing is reloaded, enabled or started."""
     task = record["name"]
     units = Path.home() / ".config" / "systemd" / "user"
     service, timer = systemd_units(task, root, py, args, path, calendars)
-    if not dry_run:
-        write_text(units / f"{task}.service", service)
-        write_text(units / f"{task}.timer", timer)
+    files = ((units / f"{task}.service", service), (units / f"{task}.timer", timer))
     enable = ["systemctl", "--user", "enable", "--now", f"{task}.timer"]
-    run_cmd(["systemctl", "--user", "daemon-reload"], dry_run)
-    res = run_cmd(enable, dry_run)
     record.update({"kind": "systemd", "line": None, "create": enable,
                    "check": ["systemctl", "--user", "is-active", f"{task}.timer"],
-                   "units": [str(units / f"{task}.service"), str(units / f"{task}.timer")]})
-    verify = run_cmd(record["check"], dry_run)
-    ok = res.returncode == 0 and verify.returncode == 0
-    report.add(label, ok, " ".join(record["check"]), f"{task}.timer (systemd; no cron here)" if ok
-               else (res.stderr or verify.stderr).strip()[:200])
+                   "units": [str(files[0][0]), str(files[1][0])]})
+    res = verify = None
+    if not dry_run and all(f.is_file() and f.read_text(encoding="utf-8") == text for f, text in files):
+        verify = run_cmd(record["check"])
+        res = subprocess.CompletedProcess(enable, 0, "", "") if verify.returncode == 0 else None
+    if res is None:
+        if not dry_run:
+            for f, text in files:
+                write_text(f, text)
+        run_cmd(["systemctl", "--user", "daemon-reload"], dry_run)
+        res = run_cmd(enable, dry_run)
+        verify = run_cmd(record["check"], dry_run)
+    _after_move(report, label, record, task, root, "systemd", res.returncode == 0 and verify.returncode == 0,
+                f"{task}.timer (systemd; catches up after sleep)", (res.stderr or verify.stderr).strip()[:200], dry_run)
     return record
+
+
+def register_launchd(report, label, record, root, py, args, times, minutes, dry_run) -> dict:
+    """macOS: a launch agent in the person's own login session, loaded now and at every login. The plist is
+    written, any copy launchd already has is let go (`bootout`: none loaded is no error), and the new one
+    loaded (`bootstrap`; the first try right after a `bootout` can lose a race with it, so it is tried up to
+    three times); `launchctl print` reads it back. The same plist with the agent loaded is left alone: a job
+    that is mid-run is not booted out."""
+    task = record["name"]
+    ident, domain = LAUNCHD_PREFIX + task, f"gui/{user_id()}"
+    plist = Path.home() / "Library" / "LaunchAgents" / f"{ident}.plist"
+    text = launch_agent(task, root, py, args, times, minutes)
+    bootstrap = ["launchctl", "bootstrap", domain, str(plist)]
+    record.update({"kind": "launchd", "line": None, "label": ident, "create": bootstrap,
+                   "check": ["launchctl", "print", f"{domain}/{ident}"], "plist": str(plist)})
+    if not dry_run:
+        (Path.home() / ".spaces" / "logs").mkdir(parents=True, exist_ok=True)   # launchd does not make the log folder
+    res = verify = None
+    if not dry_run and plist.is_file() and plist.read_text(encoding="utf-8") == text:
+        verify = run_cmd(record["check"])
+        res = subprocess.CompletedProcess(bootstrap, 0, "", "") if verify.returncode == 0 else None
+    if res is None:
+        if not dry_run:
+            write_text(plist, text)
+        run_cmd(["launchctl", "bootout", f"{domain}/{ident}"], dry_run)
+        for attempt in range(3):
+            res = run_cmd(bootstrap, dry_run)
+            if res.returncode == 0 or attempt == 2:
+                break
+            _sleep(1)
+        verify = run_cmd(record["check"], dry_run)
+    _after_move(report, label, record, task, root, "launchd", res.returncode == 0 and verify.returncode == 0,
+                f"{task}: launch agent (catches up after sleep)", (res.stderr or verify.stderr).strip()[:200], dry_run)
+    return record
+
+
+def cron_line_of(record: dict) -> str | None:
+    """The crontab line a cron record stands for, rebuilt from the fields it was made from. None when it lacks
+    them, or when its own `line` is not exactly that: the record is read from a file a merge can change."""
+    try:
+        line = cron_entry(record["when"], record["root"], record["python"], record["args"], record["name"],
+                          record["path"])
+    except (KeyError, TypeError):
+        return None
+    return line if record.get("line") == line else None
+
+
+def run_now(record: dict, dry_run: bool = False) -> bool:
+    """Start a registered task at once, without waiting for its time and without waiting for it to end:
+    the Windows task, the launch agent, the systemd service (`--no-block`: a oneshot service's `start`
+    would otherwise wait for the whole run), or, for cron, the command rebuilt from the record's fields
+    (`cron_line_of`: text that is not what registration built is refused), started on its own in the
+    environment cron gives it, writing to the log the line itself writes to. True when it was started;
+    nothing here says it succeeded."""
+    kind, name = record.get("kind"), record.get("name") or ""
+    if not (name or record.get("label")):
+        return False
+    if kind == "schtasks":
+        return run_cmd(["schtasks", "/Run", "/TN", name], dry_run).returncode == 0
+    if kind == "launchd":
+        label = record.get("label") or LAUNCHD_PREFIX + name
+        return run_cmd(["launchctl", "kickstart", f"gui/{user_id()}/{label}"], dry_run).returncode == 0
+    if kind == "systemd":
+        return run_cmd(["systemctl", "--user", "start", "--no-block", f"{name}.service"], dry_run).returncode == 0
+    line = cron_line_of(record) if kind == "cron" else None
+    if line is None:
+        return False
+    env = {"HOME": str(Path.home()), "LOGNAME": getpass.getuser(), "SHELL": "/bin/sh", "PATH": "/usr/bin:/bin"}
+    return spawn_cmd(["sh", "-c", cron_command(line)], dry_run, env=env) is not None
 
 
 MACHINE_SPACES = Path(".spaces") / "spaces.yaml"
@@ -896,20 +1386,31 @@ def forget_space(root) -> bool:
 
 
 def register_sync(report, root, name, minutes, offline, dry_run) -> dict:
-    """Register `sync.py` every `minutes`. Offline: recorded, not registered."""
+    """Register `sync.py` every `minutes`. Offline: recorded, not registered (the command of this system's
+    scheduler; a Linux is recorded with cron, since whether it has a systemd user session is only found by
+    asking systemctl, which offline mode never does)."""
     root = Path(root)
-    script, task = root / "_meta" / "tools" / "sync.py", f"space-sync-{name}"
+    script, task = root / "_meta" / "tools" / "sync.py", f"{task_prefix()}sync-{name}"
     args = [script, "--root", root, "--release-leg"]
     if offline:
-        line = (f"{CONHOST} --headless {_argline(sys.executable, args)}" if SYSTEM == "Windows"
-                else cron_line(minutes, sys.executable, script, root, task, os.environ.get("PATH", "")))
-        create = ["schtasks", "/Create", "/F", "/TN", task, "/XML", f"{task}.xml"] if SYSTEM == "Windows" \
-            else ["crontab", "-"]
-        check = ["schtasks", "/Query", "/TN", task, "/XML"] if SYSTEM == "Windows" else ["crontab", "-l"]
+        kind = {"Windows": "schtasks", "Darwin": "launchd"}.get(SYSTEM, "cron")
+        if kind == "schtasks":
+            line = f"{CONHOST} --headless {_argline(sys.executable, args)}"
+            create = ["schtasks", "/Create", "/F", "/TN", task, "/XML", f"{task}.xml"]
+            check = ["schtasks", "/Query", "/TN", task, "/XML"]
+        elif kind == "launchd":
+            ident, domain = LAUNCHD_PREFIX + task, f"gui/{user_id()}"
+            line = launch_agent(task, root, sys.executable, args, None, minutes)   # the file launchd would be given
+            plist = Path.home() / "Library" / "LaunchAgents" / f"{ident}.plist"
+            create = ["launchctl", "bootstrap", domain, str(plist)]
+            check = ["launchctl", "print", f"{domain}/{ident}"]
+        else:
+            line = cron_line(minutes, sys.executable, script, root, task, os.environ.get("PATH", ""))
+            create, check = ["crontab", "-"], ["crontab", "-l"]
         write_text(root / "_meta" / "state" / "sync-task.txt",
                    " ".join(create) + "\n" + line + "\n" + "check: " + " ".join(check) + "\n")
         report.add(f"sync task {name}", True, "cat _meta/state/sync-task.txt", "offline: command recorded")
-        return {"name": task, "kind": "schtasks" if SYSTEM == "Windows" else "cron", "line": line,
+        return {"name": task, "kind": kind, "line": None if kind == "launchd" else line,
                 "create": create, "check": check, "root": str(root)}
     record = register_task(report, f"sync task {name}", task, root, args, minutes=minutes, dry_run=dry_run)
     if not dry_run:
@@ -918,27 +1419,79 @@ def register_sync(report, root, name, minutes, offline, dry_run) -> dict:
 
 
 ROUTINE_PROMPTS = Path("_meta") / "state" / "routines"
+ELSEWHERE_STEP = "routines on this computer"   # begins "routine": the progress page files it under Routines
+ELSEWHERE = "Your routines run on {name}; say 'run my routines here' to move them"
+IN_THE_APP = ("Your routines run as scheduled tasks in the Claude app, so this computer's scheduler runs none of them; "
+              "say 'run my routines here' to move them to it")
+UNCLEAR_HOST = ("Which computer runs your routines is unclear, so none of them runs; say 'run my routines here' on the "
+                "computer that should run them")
 
 
-def register_routines(report, workspace, offline=False, dry_run=False) -> list:
+def _onboard_state(workspace) -> dict:
+    """onboard.yaml as a mapping; {} when there is none or it cannot be read."""
+    try:
+        state = read_yaml(Path(workspace) / "_meta" / "state" / "onboard.yaml", {})
+    except (OSError, yaml.YAMLError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def _harness_checks(workspace) -> list:
+    rows = _onboard_state(workspace).get("routine_checks")
+    return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+
+def routines_elsewhere(workspace) -> Step | None:
+    """Why this computer's scheduler runs none of the routines, as a step under Routines that fails nothing: another
+    computer runs them, the app's own scheduled tasks do (so recorded, or read back as `routine_checks` while nothing
+    is recorded), or which computer does is unclear (`routine.host`). None when they run here, or nothing says where."""
+    import routine
+    record = routine.host(workspace)
+    check = f"cat {(Path(workspace) / routine.HOST).as_posix()}"
+    if record is None:
+        return Step(ELSEWHERE_STEP, True, check, IN_THE_APP) if _harness_checks(workspace) else None
+    if record.get("unclear"):
+        return Step(ELSEWHERE_STEP, True, check, UNCLEAR_HOST)
+    if record["machine"] != routine.this_machine():
+        return Step(ELSEWHERE_STEP, True, check, ELSEWHERE.format(name=record["name"] or "another computer"))
+    return Step(ELSEWHERE_STEP, True, check, IN_THE_APP) if record["runner"] != "os" else None
+
+
+def _no_claude(report) -> bool:
+    """Whether this machine lacks the `claude` command the OS tasks would start (the desktop app alone installs
+    none); a failed step says so."""
+    import routine
+    if routine.find_claude() is not None:
+        return False
+    report.add("routines as OS tasks", False, "claude --version",
+               "no `claude` command on this machine, so OS tasks would never run: schedule the "
+               "routines with the app's own scheduled tasks if they persist, and record them "
+               "with --routines-scheduled")
+    return True
+
+
+def register_routines(report, workspace, offline=False, dry_run=False, here=False) -> list:
     """The routines' schedule that outlives the session: each routine rendered under
     `_meta/state/routines/` becomes an OS task that runs `routine.py <prompt>` at the routine's
-    times, which hands the prompt to `claude -p`. Recorded as `routine_tasks` for `--check`."""
+    times, which hands the prompt to `claude -p`. Recorded as `routine_tasks` for `--check`.
+    One computer runs them, through one scheduler: where another computer or the app's own scheduled
+    tasks run them, nothing is registered and one step says where (`routines_elsewhere`); with nothing
+    recorded, this computer claims them once their tasks are registered (`routine.claim_host`). `here`
+    (`--routines-here`) registers them whatever is recorded and claims nothing: the routines move only
+    once the probe has passed."""
     workspace = Path(workspace).resolve()
     name = spaceyaml.load(workspace).name
     records = []
-    if not offline:
-        import routine
-        if routine.find_claude() is None:   # the desktop app alone installs no `claude` command
-            report.add("routines as OS tasks", False, "claude --version",
-                       "no `claude` command on this machine, so OS tasks would never run: schedule the "
-                       "routines with the app's own scheduled tasks if they persist, and record them "
-                       "with --routines-scheduled")
-            return records
+    elsewhere = None if here else routines_elsewhere(workspace)
+    if elsewhere is not None:
+        report.add(elsewhere.name, elsewhere.done, elsewhere.check, elsewhere.result)
+        return records
+    if not offline and _no_claude(report):
+        return records
     for prompt in sorted((workspace / "_meta" / "state" / "routines").glob("*.md")):
         meta = yaml.safe_load(prompt.read_text(encoding="utf-8").split("---")[1]) or {}
         routine, schedule = meta.get("name") or prompt.stem, str(meta.get("schedule") or "")
-        task, times = f"space-{routine}-{name}", daily_times(schedule)
+        task, times = f"{task_prefix()}{routine}-{name}", daily_times(schedule)
         label = f"routine task {task}"
         if offline:
             report.add(label, True, f"cat {prompt}", "offline: not registered")
@@ -946,15 +1499,157 @@ def register_routines(report, workspace, offline=False, dry_run=False) -> list:
         if times is None:
             report.add(label, False, f"cat {prompt}", f"schedule {schedule!r} is not a list of daily times")
             continue
-        records.append(register_task(report, label, task, workspace,
-                                     [workspace / "_meta" / "tools" / "routine.py", prompt],
-                                     times=times, cron=schedule, dry_run=dry_run))
+        record = register_task(report, label, task, workspace, [workspace / "_meta" / "tools" / "routine.py", prompt],
+                               times=times, cron=schedule, dry_run=dry_run)
+        record["log"] = f"{routine}-{name}"   # routine.py's log, whatever prefix the task has
+        records.append(record)
     if records and not dry_run:
         path = workspace / "_meta" / "state" / "onboard.yaml"
         state = read_yaml(path, {}) or {}
         state["routine_tasks"] = records
         write_yaml(path, state)
+        import routine
+        if not here and routine.host(workspace) is None:
+            routine.claim_host(workspace, "os", dt.datetime.now().astimezone())
     return records
+
+
+def _task_file(check: str) -> str:
+    """The file a harness task's read-back names (`test -f <path>`, `grep -c '<text>' <path>`), else the read-back."""
+    words = check.split(None, 2)
+    if len(words) == 3 and words[0] == "test" and words[1] in ("-s", "-f", "-d"):
+        return words[2].strip("'\"")
+    grep = re.match(r"grep -c '[^']+' (.+)$", check)
+    return grep.group(1).strip().strip("'\"") if grep else check
+
+
+def routines_here(report, workspace) -> list:
+    """`--routines-here`: the routines move to this computer's scheduler, in an order that leaves the old runner as
+    it is until this one is proved. The probe runs first, through its own one-shot task, twice, as the build proves
+    the routines (`start.prove_routines`): a probe that fails registers nothing and changes no record. Then this
+    computer's OS tasks are registered; a registration that fails takes back what it did (`_take_back`). Only then is
+    this computer the host (`routine.claim_host`, `os`), when every other computer's runs stop by themselves, and the
+    app's scheduled tasks the routines ran as are no longer read back (`routine_checks` goes). Returns those tasks to
+    turn off (the file each read-back named), else []."""
+    import routine
+    import start
+    workspace = Path(workspace).resolve()
+    if not any((workspace / ROUTINE_PROMPTS).glob("*.md")) or _no_claude(report):
+        return []
+    if not start.prove_routines(report, workspace).get("ok"):
+        return []
+    before, failed = _onboard_state(workspace), len(report.failed())
+    harness = _harness_checks(workspace)
+    records = register_routines(report, workspace, here=True)
+    if not records or len(report.failed()) > failed:
+        _take_back(report, workspace, records, before)
+        return []
+    record = routine.claim_host(workspace, "os", dt.datetime.now().astimezone())
+    state = _onboard_state(workspace)
+    if state.pop("routine_checks", None) is not None:
+        write_yaml(workspace / "_meta" / "state" / "onboard.yaml", state)
+    report.add(ELSEWHERE_STEP, True, f"cat {(workspace / routine.HOST).as_posix()}",
+               f"your routines run on {record['name']} from now on")
+    return list(dict.fromkeys(_task_file(str(r.get("check") or "")) for r in harness if r.get("check")))
+
+
+def _take_back(report, workspace: Path, records: list, before: dict) -> None:
+    """A move whose registration failed after the probe passed: the tasks it registered on this computer are removed
+    again (not when this computer already ran the routines through them), and the task records it replaced come back,
+    so the old runner and its records stay as they were."""
+    import offboard
+    import routine
+    record = routine.host(workspace) or {}
+    if not (record.get("machine") == routine.this_machine() and record.get("runner") == "os"):
+        for task in records:
+            if isinstance(task, dict) and task.get("name"):
+                offboard.remove_sync_task(report, workspace, {"routine_tasks": [task]}, task["name"], False,
+                                          label=f"routine task {task['name']} taken back")
+    state = _onboard_state(workspace)
+    if "routine_tasks" in before:
+        state["routine_tasks"] = before["routine_tasks"]
+    else:
+        state.pop("routine_tasks", None)
+    write_yaml(workspace / "_meta" / "state" / "onboard.yaml", state)
+
+
+PAUSE_HOUR = 6   # a pause without an end lasts until this hour the next morning
+PAUSE_ELSEWHERE = ("None of your routines' tasks is on this computer, so nothing was paused. Say 'pause my routines' "
+                   "on the computer that runs them.")
+
+
+def _runs_here(workspace) -> str | None:
+    """Which scheduler of this computer holds the routines, read back now: "os" when every recorded routine task
+    reads back here, "harness" when every recorded read-back of the app's own tasks passes here, else None."""
+    state = _onboard_state(workspace)
+    tasks = [t for t in state.get("routine_tasks") or [] if isinstance(t, dict) and t.get("check")]
+    try:
+        if tasks and all(task_step(f"routine task {t.get('name')}", t).done for t in tasks):
+            return "os"
+    except (IndexError, KeyError, TypeError, OSError):   # a record a merge changed is one that does not read back
+        pass
+    checks = _harness_checks(workspace)
+    if checks and all(readback(str(r.get("check") or "")) is True for r in checks):
+        return "harness"
+    return None
+
+
+def pause_end(until: str | None, now: dt.datetime) -> dt.datetime:
+    """When a pause ends: `until` (ISO; a time without a zone is this computer's own, a date alone that day at
+    PAUSE_HOUR), else PAUSE_HOUR the next morning. ValueError, in plain words, for what is no moment or has passed."""
+    now = now.astimezone()
+    if until is None:
+        end = dt.datetime.combine(now.date(), dt.time(PAUSE_HOUR)).astimezone()
+        return end if end > now else dt.datetime.combine(now.date() + dt.timedelta(days=1), dt.time(PAUSE_HOUR)).astimezone()
+    text = str(until).strip()
+    try:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+            end = dt.datetime.combine(dt.date.fromisoformat(text), dt.time(PAUSE_HOUR))
+        else:
+            end = dt.datetime.fromisoformat(text[:-1] + "+00:00" if text[-1:] in ("Z", "z") else text)
+    except ValueError:
+        raise ValueError(f'"{text[:40]}" is not a date or a time: give one like 2026-11-02 or 2026-11-02T09:00') from None
+    end = end if end.tzinfo else end.astimezone()
+    if end <= now:
+        raise ValueError("that time has passed: give one still to come")
+    return end
+
+
+def pause_routines(workspace, until: str | None = None, now=None, resume: bool = False) -> tuple:
+    """`--pause` and `--resume`: (done, what to say). A pause sets the record's `paused_until` (`pause_end`), which
+    every computer's runs read before they start; resuming clears it. With nothing recorded yet, this computer is
+    recorded as the one that runs them first, as the build would record it, but only when their tasks read back here
+    (`_runs_here`); else nothing is paused and the line says to pause them where they run. A record that is not one
+    is not touched."""
+    import onboarding_page
+    import routine
+    workspace = Path(workspace).resolve()
+    now = (now or dt.datetime.now()).astimezone()
+    record = routine.host(workspace)
+    if record is not None and record.get("unclear"):
+        return False, UNCLEAR_HOST
+    if resume:
+        if record is None or routine.paused_until(record, now) is None:
+            return True, "Your routines are not paused."
+        routine.set_pause(workspace, None)
+        return True, "Your routines run again from their next time."
+    try:
+        end = pause_end(until, now)
+    except ValueError as exc:
+        return False, str(exc)
+    if record is None:   # nothing says where they run: here only when their tasks read back on this computer
+        runner = _runs_here(workspace)
+        if runner is None:
+            return False, PAUSE_ELSEWHERE
+        record = routine.claim_host(workspace, runner, now)
+    routine.set_pause(workspace, end)
+    said = f"Your routines are paused until {onboarding_page.words(end, now)}, the history's reading with them."
+    if record["machine"] != routine.this_machine():
+        said += f" {record['name'] or 'The other computer'} hears of it at its next sync."
+    if record["runner"] != "os":
+        said += (" They run as scheduled tasks in the Claude app, which this pause does not stop; say 'run my routines "
+                 "here' first.")
+    return True, said
 
 
 def record_routine_checks(report, workspace, checks) -> list:
@@ -1046,6 +1741,30 @@ def platform_settings(report, root, repo, org, dry_run) -> None:
     # pull requests). The platform's own first pull request is the read-back check.
 
 
+MEMBERS_READ = ("read", "write", "admin")   # the base permissions that let every member read all the organisation's repositories
+MEMBERS_ITEMS = "_inbound/needs-you/onboard-org.yaml"   # its own file: onboard.yaml is rewritten by every run
+
+
+def org_members_item(workspace, org: str) -> None:
+    """The workspace is private, but it lives in the brain's account (decision A). When that account
+    is an organisation whose base permission lets every member read all its repositories, they can
+    read it: one item on the person's list gives the click path to "No permission". Agents change no
+    organisation setting. A personal account has no such organisation (GitHub answers with an error)
+    and a setting that cannot be read says nothing: neither raises an item. A later run withdraws the
+    item once the permission reads `none`."""
+    res = run_cmd(["gh", "api", f"orgs/{org}", "-q", ".default_repository_permission"]) if org else None
+    permission = (res.stdout or "").strip() if res is not None and res.returncode == 0 else ""
+    if permission in MEMBERS_READ:
+        ask = (f"Everyone in {org} can read all of its repositories on GitHub, your workspace included. To keep it to "
+               f"you and the people you choose: on GitHub open {org}, then Settings > Member privileges > "
+               "Base permissions: No permission.")
+        write_needs_you(workspace, [{"key": "org-members", "ask": ask, "default": "set it to No permission",
+                                     "if_nothing": f"every member of {org} can read your workspace"}],
+                        path=MEMBERS_ITEMS, prefix="onboard")
+    elif permission == "none":
+        write_needs_you(workspace, [], path=MEMBERS_ITEMS, prefix="onboard")
+
+
 def _lazy(report, name, module, call, check, gate=True) -> None:
     """Run a sibling tool that another task may not have written yet."""
     try:
@@ -1096,14 +1815,35 @@ def own_rows(report, dst, repo) -> list:
 
 
 def write_state(dst, case, offline, ui, workspace, task, repo, report, full=True) -> None:
-    """The onboarding root records the whole report; every other space only its own part."""
+    """The onboarding root records the whole report; every other space only its own part. A probe task a
+    build recorded and has not removed yet (`probe_task`) stays recorded, so the next build finds it."""
     dst = Path(dst)
     spaces = {k: str(v) for k, v in report.spaces.items() if full or Path(v) == dst}
     steps = [s.row() for s in report.steps] if full else own_rows(report, dst, repo)
-    write_yaml(dst / "_meta" / "state" / "onboard.yaml",
+    path = dst / "_meta" / "state" / "onboard.yaml"
+    stray = (read_yaml(path, {}) or {}).get("probe_task") if path.exists() else None
+    write_yaml(path,
                {"case": case, "at": pages.iso(spaceyaml.load(dst).now()), "offline": offline, "repo": repo,
                 "workspace": str(workspace) if workspace else None, "user_instructions": str(ui),
-                "sync_task": task, "spaces": spaces, "steps": steps})
+                "sync_task": task, "spaces": spaces, "steps": steps, **({"probe_task": stray} if stray else {})})
+
+
+def record_probe_task(root, record: dict) -> None:
+    """The routines' probe task in onboard.yaml (`probe_task`), written before the task is registered: a build
+    stopped before it removed the task leaves the record the next build, `--check` and offboard remove it by
+    (`offboard.remove_probe_task`)."""
+    path = Path(root) / "_meta" / "state" / "onboard.yaml"
+    state = read_yaml(path, {}) or {}
+    state["probe_task"] = dict(record)
+    write_yaml(path, state)
+
+
+def forget_probe_task(root) -> None:
+    """The probe task is gone: its record goes too."""
+    path = Path(root) / "_meta" / "state" / "onboard.yaml"
+    state = read_yaml(path, {}) or {}
+    if state.pop("probe_task", None) is not None:
+        write_yaml(path, state)
 
 
 # ----- detect, interview, run ------------------------------------------------------
@@ -1194,7 +1934,8 @@ def scan_codebases(report, root, now, offline) -> None:
 
 
 def run(root, answers, offline=False, org=None, dry_run=False, home=None, user_instructions=None,
-        brain=None, everyone=False, with_projects=False, progress=None) -> Report:
+        brain=None, everyone=False, with_projects=False, progress=None, connected=()) -> Report:
+    task_prefix()   # a name that is not ours stops the run here, before it creates a space it would then register
     root = Path(root).resolve()
     answers = dict(answers or {})
     skipped = answers.pop("_skipped", [])
@@ -1346,8 +2087,11 @@ def run(root, answers, offline=False, org=None, dry_run=False, home=None, user_i
                            else pins.stderr.strip()[:200])
             commit_fill(report, dst, True, dry_run)
     for feed in feeds:
-        report.add(f"connect {feed['name']}", False,
-                   f"test -s {workspace or root}/_meta/state/feed/{feed['name']}.jsonl",
+        check = f"test -s {workspace or root}/_meta/state/feed/{feed['name']}.jsonl"
+        if feed["name"] in connected:   # the apps step signed in to it and read it: nothing is the person's
+            report.add(f"connect {feed['name']}", True, check, "connected: the apps step read it")
+            continue
+        report.add(f"connect {feed['name']}", False, check,
                    "sign in with `/mcp` in Claude Code, or Settings, Connectors on claude.ai",
                    needs_owner=True)
     write_needs_you(root, skipped)
@@ -1553,11 +2297,21 @@ def prune_offboarded(root) -> list:
 
 def check(root) -> list:
     """Re-run only the read-back checks, the doctor's included (read only); print nothing here.
-    The one write: an onboarding root forgets spaces that were offboarded (`prune_offboarded`)."""
+    Two writes: an onboarding root forgets spaces that were offboarded (`prune_offboarded`), and a probe
+    task a build left behind is removed (`offboard.remove_probe_task`), with its step; not while a setup
+    holds this computer's start lock, since its probe task is then the one it is running. Routines that
+    another computer runs are one row that says so: its tasks are not this computer's to read back."""
+    import onboarding_page
+    import routine
     root = Path(root).resolve()
     prune_offboarded(root)
     state = read_yaml(root / "_meta" / "state" / "onboard.yaml", {}) or {}
     steps = []
+    if state.get("probe_task") and not onboarding_page.setup_running():
+        import offboard
+        removed = Report(case="check")
+        offboard.remove_probe_task(removed, root, state)
+        steps.extend(removed.steps)
     errs = [e for e in validate.validate(root) if not e.startswith("warning:")]
     steps.append(Step("space.yaml validates", not errs, f"python _meta/tools/validate.py {root}",
                       "; ".join(errs)[:200] or "clean"))
@@ -1577,11 +2331,15 @@ def check(root) -> list:
                           "cat _meta/state/sync-task.txt", "offline: recorded, not registered"))
     elif task.get("check"):
         steps.append(task_step("sync task", task))
-    scheduled = routine_schedule(root)
-    if not scheduled and not state.get("offline") and any((root / ROUTINE_PROMPTS).glob("*.md")):
-        scheduled = [unscheduled_step(root)]   # rendered is not scheduled: done only once it reads back
-    steps.extend(scheduled)
-    steps.extend(routine_run_step(t["name"]) for t in state.get("routine_tasks") or [] if t.get("name"))
+    record = routine.host(root)
+    if record and not record.get("unclear") and record["machine"] != routine.this_machine():
+        steps.append(routines_elsewhere(root))
+    else:
+        scheduled = routine_schedule(root)
+        if not scheduled and not state.get("offline") and any((root / ROUTINE_PROMPTS).glob("*.md")):
+            scheduled = [unscheduled_step(root)]   # rendered is not scheduled: done only once it reads back
+        steps.extend(scheduled)
+        steps.extend(routine_run_step(t["name"], t.get("log")) for t in state.get("routine_tasks") or [] if t.get("name"))
     if state and not state.get("offline"):
         # this machine's prerequisites, read only: what broke since onboarding is named with its fix
         for r in doctor.diagnose(doctor.Machine(run=run_cmd, reach=lambda: True), fix=False,
@@ -1613,10 +2371,12 @@ def check(root) -> list:
     return steps
 
 
-def routine_run_step(task: str) -> Step:
-    """An OS routine's last run, from the log routine.py keeps: a task can be registered and still
-    fail every time (no `claude` command, a sign-in gone)."""
-    log = Path.home() / ".spaces" / "logs" / f"{task.removeprefix('space-')}.log"
+def routine_run_step(task: str, stem: str | None = None) -> Step:
+    """An OS routine's last run, from the log routine.py keeps (`<routine>-<space>.log`, the `log` the
+    task was recorded with, here `stem`; a record from before that was kept has the default prefix): a task can be
+    registered and still fail every time (no `claude` command, a sign-in gone). Never read from the
+    environment: the check runs where the task was not registered."""
+    log = Path.home() / ".spaces" / "logs" / f"{stem or task.removeprefix(TASK_PREFIX)}.log"
     lines = log.read_text(encoding="utf-8", errors="replace").splitlines() if log.exists() else []
     exits = [i for i, line in enumerate(lines) if line.startswith("exit ")]
     if not exits:
@@ -1803,8 +2563,16 @@ def company_answers(data) -> dict:
             "time_scale": data.get("time_scale") or 1440, "feeds": "mail: owner, calls: owner"}
 
 
-def fixture_spaces(target, company_yaml=None) -> Report:
-    """Offline company onboard of the fixture: brain, every workspace and every project as siblings."""
+def _feed_lines(path) -> dict:
+    """A fixture person's records by the feed file they are exported to: calls to `calls`, the rest to `mail`."""
+    lines = [l for l in Path(path).read_text(encoding="utf-8").splitlines() if l.strip()]
+    return {"mail": [l for l in lines if json.loads(l).get("kind") != "call"],
+            "calls": [l for l in lines if json.loads(l).get("kind") == "call"]}
+
+
+def fixture_spaces(target, company_yaml=None, hold=()) -> Report:
+    """Offline company onboard of the fixture: brain, every workspace and every project as siblings. The
+    feed of a person in `hold` is not copied: their history is read in parts (`staged_history`)."""
     target = Path(target).resolve()
     company_yaml = Path(company_yaml) if company_yaml else FIXTURE / "company.yaml"
     answers = company_answers(read_yaml(company_yaml, {}) or {})
@@ -1813,11 +2581,9 @@ def fixture_spaces(target, company_yaml=None) -> Report:
     report = run(brain, answers, offline=True, home=target, everyone=True)
     for person in people_of(answers):
         ws, src = report.spaces.get(person["slug"]), company_yaml.parent / "feed" / f"{person['slug']}.jsonl"
-        if ws is None or not src.exists():
+        if ws is None or not src.exists() or person["slug"] in hold:
             continue
-        lines = [l for l in src.read_text(encoding="utf-8").splitlines() if l.strip()]
-        for feed, mine in (("mail", [l for l in lines if json.loads(l).get("kind") != "call"]),
-                           ("calls", [l for l in lines if json.loads(l).get("kind") == "call"])):
+        for feed, mine in _feed_lines(src).items():
             if mine:
                 write_text(ws / "_meta" / "state" / "feed" / f"{feed}.jsonl", "\n".join(mine) + "\n")
     data = read_yaml(company_yaml, {}) or {}
@@ -1903,10 +2669,65 @@ def _late_feeds(spaces: dict):
     return inject
 
 
+STAGED = ("ada",)   # whose history the fixture reads in three parts: her records are dated 1 to 3 October
+STAGED_NOW = dt.datetime(2026, 10, 4, tzinfo=dt.timezone.utc)   # the day after the last of them
+STAGED_BATCH = 1     # records a batch; a real run appends at most 50
+STAGED_TOKENS = 120_000
+
+
+def staged_history(spaces: dict, slugs=STAGED):
+    """The history of each person in `slugs`, read oldest first in three paced parts on the fixture's fast clock
+    (Task 11). The plan is made at once; then one run a scaled day, at night, reads the part `backfill.due`
+    names: its records per feed, oldest first, in batches with a checkpoint after each. The first run of part 2
+    ends at a usage limit that names no reset time; the next run goes on from its checkpoint. Part 1, through,
+    is measured. Returns the `inject` for `chain.virtual`: it runs at the start of a scaled day, before the
+    chains, as the routines run before the sweep they feed."""
+    import backfill
+    held = {slug: _feed_lines(FIXTURE / "feed" / f"{slug}.jsonl") for slug in slugs}
+    for slug in held:
+        backfill.plan(spaces[slug], {"2026-10": 4}, STAGED_NOW, window_days=3, first_part_max=1)
+
+    def read(slug: str, part: dict, root: Path) -> str:
+        """Append the part's records per feed from where the last run stopped; the outcome of the run."""
+        limited = part["id"] == "p2" and not part.get("runs")
+        for feed, lines in held[slug].items():
+            marked = (part.get("checkpoints") or {}).get(feed)   # the last record read; else the part's first day
+            low, high = pages.parse_iso(backfill.export_mark(root, feed)), pages.parse_iso(part["to"])
+            todo = [rec for rec in map(json.loads, lines)
+                    if (pages.parse_iso(rec["at"]) > low if marked else pages.parse_iso(rec["at"]) >= low)
+                    and pages.parse_iso(rec["at"]) < high]
+            for number in range(0, len(todo), STAGED_BATCH):
+                batch = todo[number:number + STAGED_BATCH]
+                target = root / "_meta" / "state" / "feed" / f"{feed}.jsonl"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with target.open("a", encoding="utf-8", newline="\n") as fh:
+                    fh.write("".join(json.dumps({**rec, "backfill": True}) + "\n" for rec in batch))
+                backfill.checkpoint(root, part["id"], feed, batch[-1]["at"])
+                if limited:
+                    return "limit"
+        backfill.range_read(root, part["id"])   # every feed's range is read to its end: the run says so (R45, I-4)
+        return "finished"
+
+    def inject(day: int, at) -> None:
+        night = at.replace(hour=1, minute=0, second=0, microsecond=0)
+        for slug in held:
+            root = Path(spaces[slug])
+            part = backfill.due(root, night)
+            if part is None:
+                continue
+            backfill.begin(root, part["id"])
+            outcome = read(slug, part, root)
+            backfill.after_run(root, part["id"], {"outcome": outcome, "why": "", "resets_at": None,
+                                                  "usage": {"input_tokens": STAGED_TOKENS}}, now=at)
+            if part["id"] == "p1":
+                backfill.calibrate(root, 2, 14, backfill.load(root)["parts"][0]["tokens"], now=at)
+    return inject
+
+
 def fixture(target) -> int:
     """Onboard the fixture company, run the chain over it and the tests; 1 on any failure. Ends
     with one line, `fixture: passed` or `fixture: failed (what)`."""
-    report = fixture_spaces(target)
+    report = fixture_spaces(target, hold=STAGED)
     print_steps([s for s in report.steps if not s.needs_owner])   # sign-ins belong to a real setup
     import onboarding_page   # the page as the top owner sees it when setup finishes, before the week
     print(f"page: {onboarding_page.write(Path(target) / 'onboarding.html', report.steps, report.spaces)}")
@@ -1916,13 +2737,20 @@ def fixture(target) -> int:
     # corridors carry requests; they run no chain of their own
     unique = [p for p in dict.fromkeys(roots.values()) if spaceyaml.load(p).profile != "channel"]
     try:
+        import backfill
         import chain
+        history, late = staged_history(report.spaces), _late_feeds(report.spaces)
         chain.virtual(unique, days=7, steps_per_day=3, persons=persons, offline_roots=roots,
                       verdicts_after_day=2, verdicts=chain.load_verdicts(FIXTURE / "verdicts.yaml", unique),
-                      inject=_late_feeds(report.spaces),
+                      inject=lambda day, at: (history(day, at), late(day, at)),
                       by={str(p): persons[p.name] for p in unique if p.name in persons})
-    except ImportError:
-        missing.append("chain")
+        for slug in STAGED:
+            left = backfill.active(report.spaces[slug])
+            print(f"history: {slug} read in {len(backfill.load(report.spaces[slug]).get('parts') or [])} parts"
+                  + ("" if left else ", all done"))
+            problems += [f"{slug}'s history is not all read"] if left else []
+    except ImportError as exc:
+        missing.append(exc.name or "chain")
     try:  # the walk-and-search probe at the end of the fixture's week, every space that has questions
         import tests_run as _probe
         for path in unique:
@@ -2002,7 +2830,33 @@ def main(argv=None) -> int:
     ap.add_argument("--routines-scheduled", nargs="+", metavar="CHECK",
                     help="the harness's own scheduled tasks hold the routines and persist: one read-back per "
                          "routine (test -f <path>, grep -c '<text>' <path>, or a gh command)")
+    ap.add_argument("--routines-here", action="store_true", dest="routines_here",
+                    help="run this workspace's routines on this computer: its OS tasks, proved by the probe; then "
+                         "every other computer's stop, and the app's scheduled tasks to turn off are printed")
+    ap.add_argument("--pause", action="store_true", help="pause the routines, on every computer, until --until "
+                    "(default 06:00 the next morning)")
+    ap.add_argument("--until", metavar="ISO", help="with --pause: a date (06:00 that day) or a time, this computer's "
+                    "own when it names no zone")
+    ap.add_argument("--resume", action="store_true", help="end a pause of the routines")
     args = ap.parse_args(argv)
+    if (args.until and not args.pause) or sum(map(bool, (args.pause, args.resume, args.routines_here))) > 1:
+        print("onboard: --until goes with --pause only, and --pause, --resume and --routines-here are given one at a time")
+        return 2
+    if args.pause or args.resume:   # they register no task
+        done, said = pause_routines(Path(args.root), until=args.until, resume=args.resume)
+        print(said)
+        import onboarding_page   # the progress page shows the pause at once, not at the next sync
+        try:
+            onboarding_page.refresh(Path(args.root).resolve())
+        except OSError:
+            pass
+        return 0 if done else 1
+    if not (args.check or args.connect or args.invite or args.routines_scheduled):   # the others register no task
+        try:
+            task_prefix()
+        except ValueError as exc:
+            print(f"onboard: {exc}")
+            return 1
     if args.fixture:
         return fixture(args.fixture)
     root = Path(args.root).resolve()
@@ -2026,6 +2880,18 @@ def main(argv=None) -> int:
         register_sync(report, root, spaceyaml.load(root).name, 15, args.offline, args.dry_run)
         print_steps(report.steps)
         return 1 if report.failed() else 0
+    if args.routines_here:
+        report = Report(case="routines")
+        to_turn_off = routines_here(report, root)
+        print_steps(report.steps or [Step("routines", False, "ls _meta/state/routines", "none rendered yet: run start.py")])
+        for task in to_turn_off:   # the app's own scheduled tasks that still run them: the agent turns each off
+            print(f"turn off: {task}")
+        import onboarding_page
+        try:
+            onboarding_page.refresh(root)
+        except OSError:
+            pass
+        return 1 if report.failed() or not report.steps else 0
     if args.os_routines or args.routines_scheduled:
         report = Report(case="routines")
         if args.os_routines:

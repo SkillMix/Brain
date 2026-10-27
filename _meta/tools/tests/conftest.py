@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import subprocess
 import sys
 from pathlib import Path
 
@@ -22,7 +23,9 @@ NOW = dt.datetime(2026, 10, 12, 9, 0, tzinfo=dt.timezone.utc)
 def _machine_home(tmp_path, monkeypatch):
     """No test touches the real `~/.spaces/` (the machine's list of spaces, logs, tools): the
     home folder is a temporary one; git keeps the real global config for its identity. The start
-    lock lives in the test's folder too, so a killed run never blocks a real start."""
+    lock lives in the test's folder too, so a killed run never blocks a real start, and so does
+    the setup journal, so no test can write the person's real one (a command a test starts
+    inherits both)."""
     import os
     real = Path.home()
     gitconfig = os.environ.get("GIT_CONFIG_GLOBAL") or str(real / ".gitconfig")
@@ -31,6 +34,7 @@ def _machine_home(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake))
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", gitconfig)
     monkeypatch.setenv("SPACES_START_LOCK", str(fake / "spaces-start.lock"))
+    monkeypatch.setenv("SPACES_SETUP_JOURNAL", str(fake / ".spaces" / "setup.yaml"))
 
 
 def write_page(root: Path, rel: str, body: str = "Body.\n", **fm) -> Path:
@@ -85,6 +89,17 @@ def make_space(root: Path, profile: str = "personal", mode: str = "live",
     return root
 
 
+def fake_run(seen: dict | None = None, stdout: str = "", stderr: str = "", code: int = 0):
+    """A `subprocess.run` stand-in for a test: records what it was called with (`argv`, and the
+    keywords: `env`, `cwd`, `input`, `timeout`) in `seen`, then returns a finished process with
+    this output. No test starts the real claude."""
+    def run(argv, **kw):
+        if seen is not None:
+            seen.update(argv=list(argv), **kw)
+        return subprocess.CompletedProcess(argv, code, stdout, stderr)
+    return run
+
+
 def mount_brain(space_root: Path, brain_root: Path) -> None:
     """Point a space's `brain` mount at a brain root (absolute path, read-only by convention)."""
     data = yaml.safe_load((space_root / "space.yaml").read_text(encoding="utf-8"))
@@ -104,3 +119,52 @@ def space_factory(tmp_path):
     def _make(name="ada", **kwargs):
         return make_space(tmp_path / name, **kwargs)
     return _make
+
+
+# ----- the build's arguments, shared by the tests of start.py and of the routines (Task 8, moved here) ---
+TEMPLATE = Path(__file__).resolve().parents[3]
+SLIM = None   # set by the slim_template fixture, once a session
+
+
+@pytest.fixture(scope="session")
+def slim_template(tmp_path_factory):
+    """One template copy for every build of the session, without what only a working copy has (the
+    session's notes under .superpowers, the tool tests): a build copies from it twice (the brain and the
+    workspace) and never writes into it. A copy per test cost most of the suite's time."""
+    global SLIM
+    import onboard
+    tpl = tmp_path_factory.mktemp("template") / "tpl"
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(onboard, "SKIP_DIRS", onboard.SKIP_DIRS | {".superpowers"})
+        mp.setattr(onboard, "SKIP_PATHS", onboard.SKIP_PATHS + ("_meta/tools/tests",))
+        onboard.copy_template(TEMPLATE, tpl)
+    SLIM = tpl
+    yield tpl
+
+
+@pytest.fixture(autouse=True)
+def _here_is_restored(monkeypatch):
+    """`args` points start.HERE at the session's template copy; the end of the test puts it back."""
+    import start
+    monkeypatch.setattr(start, "HERE", start.HERE)
+
+
+def args(tmp_path, **more):
+    """The build's arguments as the command line gives them, offline: the spaces go under
+    `tmp_path/spaces`, made from the session's template copy that start.HERE is pointed at (a test
+    that calls this asks for the `slim_template` fixture)."""
+    import start
+    assert SLIM is not None, "ask for the slim_template fixture"
+    start.HERE = SLIM
+    given = start.parser().parse_args(["build", "--offline", "--home", str(tmp_path / "spaces"), "--template", str(SLIM),
+                                       "--name", "Ada Okafor", "--user-instructions", str(tmp_path / "CLAUDE.md"),
+                                       "--json"])
+    for key, value in more.items():
+        setattr(given, key, value)
+    return given
+
+
+def last_report():
+    """The report the build kept on start.LAST_REPORT."""
+    import start
+    return start.LAST_REPORT

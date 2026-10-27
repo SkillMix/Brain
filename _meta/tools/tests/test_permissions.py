@@ -40,6 +40,10 @@ def profile() -> dict:
     return json.loads(PROFILE.read_text(encoding="utf-8"))["permissions"]
 
 
+# The sweep skill has a session check the lock with `routine.py --locked`; a routine holds it and never runs it.
+NOT_FOR_ROUTINES["routine.py"] = "a session checks the lock; a routine holds it"
+
+
 def named_tools(*paths) -> set:
     """Every tool script the given files name, as long as it exists in `_meta/tools/`."""
     text = "\n".join(Path(p).read_text(encoding="utf-8") for p in paths)
@@ -106,6 +110,15 @@ def test_the_routine_profile_refuses_edits_to_the_machinery_in_every_space(tmp_p
     for root in (REPO, other):
         assert f"Edit(/{routine.rule_path(root)}/identity/**)" in data["deny"]
     assert not [r for r in data["deny"] + data["allow"] if re.match(r"(Write|MultiEdit|NotebookEdit)\(", r)]
+
+
+def test_the_routine_profile_refuses_edits_to_the_local_instructions_and_the_git_attributes_at_any_depth(tmp_path):
+    """I-9 and Minor 8: Claude Code loads CLAUDE.local.md beside CLAUDE.md (in a folder outside git too, dry run A),
+    and .gitattributes (the merge rules) and .gitignore decide what the sync script lands: no routine writes them."""
+    other = make_space(tmp_path / "brain")
+    data = routine.routine_settings(REPO, "", roots=[REPO, other])["permissions"]
+    for pattern in ("CLAUDE.local.md", ".gitattributes", ".gitignore"):
+        assert pattern in routine.PROTECTED_EDITS and f"Edit(//**/{pattern})" in data["deny"]
 
 
 def test_a_windows_drive_is_matched_the_way_claude_code_spells_it():

@@ -1,0 +1,48 @@
+# The release: a pushed tag `v*` builds the template as one zip with its checksum
+# (`_meta/tools/template_archive.py`) and attaches both to the GitHub release, so a setup can
+# download the template, check it and unpack it without git or GitHub's tool. The job holds the
+# write token, so it runs only the tagged commit's own archive tool and nothing from a pull request.
+# The tag reaches the shell through `env`, never inside a `run:` line: a tag name can hold shell
+# syntax. Runs only in the repository with GitHub's template flag (template sync copies this file
+# into every space, where the job is skipped before a runner starts).
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    if: github.event.repository.is_template
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Build the archive and its checksum
+        env:
+          TAG: ${{ github.ref_name }}
+        run: python _meta/tools/template_archive.py build . dist "$TAG"
+
+      # The release may exist already (drafted by hand, or this run is a retry): it is created only
+      # when `gh release view` fails, and the files replace any earlier upload.
+      - name: Attach both files to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! gh release view "$TAG" > /dev/null 2>&1; then
+            gh release create "$TAG" --verify-tag --title "$TAG" --notes ""
+          fi
+          gh release upload "$TAG" "dist/brain-template-${TAG}.zip" dist/SHA256SUMS --clobber

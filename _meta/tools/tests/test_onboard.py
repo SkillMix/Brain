@@ -11,10 +11,11 @@ import yaml
 
 import link
 import onboard
+import pages
 import registry
 import spaceyaml
 import validate
-from conftest import make_space
+from conftest import NOW, make_space
 
 TEMPLATE = Path(__file__).resolve().parents[3]
 FIXTURE_COMPANY = TEMPLATE / "_meta" / "tests" / "fixture" / "company.yaml"
@@ -332,12 +333,23 @@ def test_existing_space_repository_is_adopted(tmp_path, monkeypatch):
     assert report.steps[-1].done and "adopted" in report.steps[-1].result
 
 
-def test_sync_task_runs_the_release_leg(tmp_path):
+@pytest.mark.parametrize("system", ["Windows", "Darwin", "Linux"])
+def test_sync_task_runs_the_release_leg(tmp_path, monkeypatch, system):
+    """On every system the scheduler runs the release leg. launchd's bootstrap line names only the agent's
+    file, so on macOS the leg is in that file's ProgramArguments."""
+    import plistlib
+    monkeypatch.setattr(onboard, "SYSTEM", system)
+    monkeypatch.setattr(onboard, "user_id", lambda: 501)
     root = make_space(tmp_path / "ada")
     report = onboard.Report("person")
     rec = onboard.register_sync(report, root, "ada", 15, offline=True, dry_run=False)
     text = (root / "_meta" / "state" / "sync-task.txt").read_text(encoding="utf-8")
-    assert "--release-leg" in text and "--release-leg" in " ".join(rec["create"]) + (rec["line"] or "")
+    if system == "Darwin":
+        agent = text[text.index("<?xml"):text.index("</plist>") + len("</plist>")]
+        launched = " ".join(plistlib.loads(agent.encode("utf-8"))["ProgramArguments"])
+    else:
+        launched = " ".join(rec["create"]) + (rec["line"] or "")
+    assert "--release-leg" in text and "--release-leg" in launched
 
 
 def test_check_reruns_owner_read_backs(tmp_path):
@@ -707,6 +719,302 @@ def test_inviting_someone_not_yet_registered_registers_them_or_says_how(tmp_path
     assert registry.Registry(brain, spaceyaml.load(brain)).check() == []
 
 
+# ----- the company profile: a cited draft, never over a signed page -------------------------------------
+LINE = {"text": "Wayfinding and signage for ports and transit", "source": "site, About", "at": "2026-10-24"}
+
+
+def test_the_profile_page_cites_every_line_and_skips_a_signed_page(tmp_path):
+    brain = make_space(tmp_path / "brain", profile="brain", name="brain")
+    onboard.write_profile(brain, {"offering": [{"text": "Wayfinding and signage for ports and transit", "source": "site, About", "at": "2026-10-24"}]}, NOW)
+    text = (brain / "identity" / "profile.md").read_text(encoding="utf-8")
+    assert "Wayfinding and signage for ports and transit (source: site, About, 2026-10-24)" in text
+    fm, _ = pages.read(brain / "identity" / "profile.md")
+    assert fm["status"] == "draft" and fm["type"] == "concept" and fm["generated"]["by"] == "onboard"
+    # signed by the owner: never overwritten, whatever the research finds later
+    signed = {**fm, "status": "stable", "signed_by": "Ada Okafor", "signed_at": "2026-10-25T08:00:00Z"}
+    signed["fingerprint"] = pages.fingerprint("# Company profile\n\nSigned text.\n")
+    pages.write(brain / "identity" / "profile.md", signed, "# Company profile\n\nSigned text.\n")
+    before = (brain / "identity" / "profile.md").read_text(encoding="utf-8")
+    onboard.write_profile(brain, {"offering": [{**LINE, "text": "Something new"}]}, NOW)
+    assert (brain / "identity" / "profile.md").read_text(encoding="utf-8") == before
+    assert [e for e in validate.validate(brain) if not e.startswith("warning:")] == []
+
+
+def test_a_profile_page_that_someone_else_wrote_is_left_alone_too(tmp_path):
+    brain = make_space(tmp_path / "brain", profile="brain", name="brain")
+    pages.write(brain / "identity" / "profile.md", {"id": pages.new_id(), "type": "concept", "title": "Company profile",
+                "status": "draft", "generated": pages.generated("ada", NOW)}, "# Company profile\n\nMine.\n")
+    onboard.write_profile(brain, {"offering": [LINE]}, NOW)
+    assert "Mine." in (brain / "identity" / "profile.md").read_text(encoding="utf-8")
+
+
+def test_the_profile_lists_the_sections_in_order_one_cited_bullet_a_line_and_drops_what_has_no_source(tmp_path):
+    brain = make_space(tmp_path / "brain", profile="brain", name="brain")
+    profile = {"people": [{"text": "Ada Okafor, founder", "source": "file, Pitch deck.pdf", "at": "2026-08-01"}],
+               "company": [{"text": "A signage studio", "source": "register, Entry", "at": "2026-10-01"}],
+               "offering": [LINE, {"text": "No source for this", "source": "", "at": "2026-10-24"}, {"text": "", "source": "x", "at": "2026-10-24"}],
+               "brand": [], "invented": [{"text": "Not a section", "source": "x", "at": "2026-10-24"}],
+               "clients": [{"text": "A line with no date", "source": "documents, Brand book"}]}
+    onboard.write_profile(brain, profile, NOW)
+    text = (brain / "identity" / "profile.md").read_text(encoding="utf-8")
+    bullets = [l for l in text.splitlines() if l.startswith("- ")]
+    assert bullets == ["- A signage studio (source: register, Entry, 2026-10-01)",
+                       f"- {LINE['text']} (source: site, About, 2026-10-24)",
+                       "- Ada Okafor, founder (source: file, Pitch deck.pdf, 2026-08-01)",
+                       "- A line with no date (source: documents, Brand book, 2026-10-12)"]   # the day it was drafted
+    assert "No source for this" not in text and "Not a section" not in text
+    headings = [l for l in text.splitlines() if l.startswith("## ")]
+    assert len(headings) == 4 and "## Brand" not in text   # a section with no line has no heading
+
+
+def test_the_profile_fills_what_we_do_in_the_spine_and_nothing_else_of_it(tmp_path):
+    brain = make_space(tmp_path / "brain", profile="brain", name="brain")
+    onboard.write_identity(brain, "Lantern Works", "Ada Okafor", [], [], NOW)
+    before = (brain / "identity" / "spine.md").read_text(encoding="utf-8")
+    assert "(to be confirmed by the owner)" in before
+    onboard.write_profile(brain, {"offering": [LINE, {**LINE, "text": "Maps for clinics"}], "company": [LINE]}, NOW)
+    fm, body = pages.read(brain / "identity" / "spine.md")
+    assert fm["status"] == "draft" and "(to be confirmed by the owner)" not in body
+    assert (f"## What we do\n\n- {LINE['text']} (source: site, About, 2026-10-24)\n"
+            "- Maps for clinics (source: site, About, 2026-10-24)\n\n## What we never do") in body
+    assert body.startswith("# Spine") and "- We never send, post, spend or delete" in body
+    # new research later: the section is made again from the new lines, not added to
+    onboard.write_profile(brain, {"offering": [{**LINE, "text": "Signs only"}]}, NOW)
+    body = pages.read(brain / "identity" / "spine.md")[1]
+    assert "Signs only" in body and "Maps for clinics" not in body and body.count("## What we do") == 1
+    # no offering: the spine stays as it was
+    onboard.write_identity(brain, "Lantern Works", "Ada Okafor", [], [], NOW)
+    onboard.write_profile(brain, {"company": [LINE]}, NOW)
+    assert (brain / "identity" / "spine.md").read_text(encoding="utf-8").count("(to be confirmed by the owner)") == 1
+
+
+def test_a_signed_spine_is_never_filled(tmp_path):
+    brain = make_space(tmp_path / "brain", profile="brain", name="brain")
+    onboard.write_identity(brain, "Lantern Works", "Ada Okafor", [], [], NOW)
+    fm, body = pages.read(brain / "identity" / "spine.md")
+    pages.write(brain / "identity" / "spine.md", {**fm, "status": "stable", "signed_by": "Ada Okafor",
+                "signed_at": "2026-10-25T08:00:00Z", "fingerprint": pages.fingerprint(body)}, body)
+    before = (brain / "identity" / "spine.md").read_text(encoding="utf-8")
+    onboard.write_profile(brain, {"offering": [LINE]}, NOW)
+    assert (brain / "identity" / "spine.md").read_text(encoding="utf-8") == before
+    assert (brain / "identity" / "profile.md").exists()   # the profile is its own page
+
+
+def test_the_profile_is_one_needs_you_item_in_its_own_file_and_no_other_item_is_touched(tmp_path):
+    brain = make_space(tmp_path / "brain", profile="brain", name="brain")
+    onboard.write_needs_you(brain, [{"key": "identity", "ask": "Sign the identity", "default": "sign it"},
+                                    {"key": "domains", "ask": "Which domains?", "default": "none"}])
+    onboard.write_profile(brain, {"offering": [LINE]}, NOW)
+    onboard.write_profile(brain, {"offering": [LINE, {**LINE, "text": "More"}]}, NOW)   # again
+    own = yaml.safe_load((brain / "_inbound" / "needs-you" / "onboard-profile.yaml").read_text(encoding="utf-8"))["items"]
+    assert len(own) == 1 and own[0]["id"] == "onboard-profile" and own[0]["kind"] == "question"
+    assert own[0]["text"] == "Correct any line of your company profile, or sign it"
+    assert own[0]["recommendation"] and own[0]["default"] == "the default stays" and own[0]["depends"] == 1
+    assert set(own[0]) == {"id", "kind", "text", "recommendation", "default", "deadline", "depends", "payload", "fingerprint"}
+    first = yaml.safe_load((brain / "_inbound" / "needs-you" / "onboard.yaml").read_text(encoding="utf-8"))["items"]
+    assert [i["id"] for i in first] == ["onboard-identity", "onboard-domains"]   # the other writer's file is as it was
+    import needs_you
+    assert {"onboard-identity", "onboard-domains", "onboard-profile"} <= {i.id for i in needs_you.collect(brain, online=False)}
+    # and the onboard run's own rewrite of its file keeps the profile item, which is in another file
+    onboard.write_needs_you(brain, [{"key": "identity", "ask": "Sign the identity", "default": "sign it"}])
+    assert [i["id"] for i in yaml.safe_load((brain / "_inbound" / "needs-you" / "onboard-profile.yaml").read_text(encoding="utf-8"))["items"]] == ["onboard-profile"]
+
+
+def test_a_signed_profile_asks_nothing_and_a_profile_with_no_lines_writes_nothing(tmp_path):
+    brain = make_space(tmp_path / "brain", profile="brain", name="brain")
+    assert onboard.write_profile(brain, {}, NOW) is None and onboard.write_profile(brain, {"offering": [{"text": "x", "source": ""}]}, NOW) is None
+    assert not (brain / "identity" / "profile.md").exists()
+    assert not list((brain / "_inbound" / "needs-you").glob("onboard-profile.yaml"))
+    path = onboard.write_profile(brain, {"offering": [LINE]}, NOW)
+    assert path == brain / "identity" / "profile.md" and path.exists()
+    fm, body = pages.read(path)
+    pages.write(path, {**fm, "status": "stable", "signed_by": "Ada Okafor", "signed_at": "2026-10-25T08:00:00Z",
+                       "fingerprint": pages.fingerprint(body)}, body)
+    item = brain / "_inbound" / "needs-you" / "onboard-profile.yaml"
+    import needs_you
+    assert "onboard-profile" in {i.id for i in needs_you.collect(brain, online=False)}   # the draft asked to be signed
+    assert onboard.write_profile(brain, {"offering": [LINE]}, NOW) == path               # the owner signed it, and research ran again
+    assert yaml.safe_load(item.read_text(encoding="utf-8")) == {"items": []}             # the question is withdrawn, not left to be asked
+    assert "onboard-profile" not in {i.id for i in needs_you.collect(brain, online=False)}
+    assert onboard.write_profile(brain, {}, NOW) == path and yaml.safe_load(item.read_text(encoding="utf-8")) == {"items": []}   # no line either
+    item.unlink()
+    assert onboard.write_profile(brain, {"offering": [LINE]}, NOW) == path and not item.exists()   # and none is written for a signed page
+
+
+# ----- one computer, one runner, and a pause (Task 14) ------------------------------------------------
+import datetime as dt   # noqa: E402
+
+import routine   # noqa: E402
+import start   # noqa: E402
+
+LOCAL = dt.datetime(2026, 10, 24, 23, 10).astimezone()   # late evening on this computer's own clock
+
+
+def schtasks(monkeypatch, present: set) -> list:
+    """schtasks as --check meets it: the `present` tasks answer /Query until they are deleted."""
+    monkeypatch.setattr(onboard, "SYSTEM", "Windows")
+    monkeypatch.setattr(onboard.doctor, "diagnose", lambda *a, **k: [])
+    deleted = []
+
+    def fake(argv, dry_run=False, cwd=None):
+        argv = [str(a) for a in argv]
+        if argv[:2] == ["schtasks", "/Delete"]:
+            deleted.append(argv[-1])
+        name = argv[argv.index("/TN") + 1] if "/TN" in argv else ""
+        gone = argv[:2] == ["schtasks", "/Query"] and (name in deleted or name not in present)
+        return subprocess.CompletedProcess(argv, 1 if gone else 0, "", "")
+    monkeypatch.setattr(onboard, "run_cmd", fake)
+    import offboard
+    monkeypatch.setattr(offboard, "run_cmd", fake)
+    return deleted
+
+
+def test_check_leaves_the_probe_task_alone_while_a_setup_is_running(tmp_path, monkeypatch):
+    ada = make_space(tmp_path / "ada", name="ada")
+    onboard.write_yaml(ada / "_meta" / "state" / "onboard.yaml", {"case": "person", "probe_task": {"name": "space-probe-ada"}})
+    deleted = schtasks(monkeypatch, {"space-probe-ada"})
+    lock = start.take_lock()   # a build is proving the routines with that task right now
+    assert lock is not None
+    assert not [s for s in onboard.check(ada) if "probe" in s.name] and deleted == []
+    assert onboard.read_yaml(ada / "_meta" / "state" / "onboard.yaml")["probe_task"] == {"name": "space-probe-ada"}
+    lock.unlink()
+    assert [s.name for s in onboard.check(ada) if "probe" in s.name] == ["routine probe task space-probe-ada removed"]
+    assert deleted == ["space-probe-ada"]
+
+
+def test_check_on_a_computer_that_does_not_run_the_routines_says_where_they_run(tmp_path, monkeypatch):
+    ada = make_space(tmp_path / "ada", name="ada")
+    onboard.write_yaml(ada / "_meta" / "state" / "onboard.yaml", {"case": "person", "routine_tasks": [
+        {"name": "space-daily-chain-ada", "kind": "schtasks", "check": ["schtasks", "/Query", "/TN", "space-daily-chain-ada", "/XML"]}]})
+    monkeypatch.setattr(routine, "this_machine", lambda: "m-desktop")
+    monkeypatch.setattr(routine, "machine_name", lambda: "ADA-DESKTOP")
+    routine.claim_host(ada, "os", NOW)
+    monkeypatch.setattr(routine, "this_machine", lambda: "m-laptop")
+    schtasks(monkeypatch, set())   # the desktop's task is not on the laptop
+    rows = [s for s in onboard.check(ada) if s.name.startswith("routine")]
+    assert [(s.name, s.done) for s in rows] == [("routines on this computer", True)]
+    assert "ADA-DESKTOP" in rows[0].result and "run my routines here" in rows[0].result
+
+
+def test_a_pause_ends_at_six_the_next_morning_or_when_the_person_says():
+    assert onboard.pause_end(None, LOCAL) == dt.datetime(2026, 10, 25, 6, 0).astimezone()
+    small_hours = dt.datetime(2026, 10, 24, 2, 0).astimezone()
+    assert onboard.pause_end(None, small_hours) == dt.datetime(2026, 10, 24, 6, 0).astimezone()   # this morning's six
+    assert onboard.pause_end("2026-11-02", LOCAL) == dt.datetime(2026, 11, 2, 6, 0).astimezone()
+    assert onboard.pause_end("2026-11-02T09:30", LOCAL) == dt.datetime(2026, 11, 2, 9, 30).astimezone()   # local time
+    zoned = onboard.pause_end("2026-11-02T09:30Z", LOCAL)
+    assert zoned == dt.datetime(2026, 11, 2, 9, 30, tzinfo=dt.timezone.utc)
+    for said in ("2026-10-20", "next week", "2026-13-01"):
+        with pytest.raises(ValueError):
+            onboard.pause_end(said, LOCAL)
+
+
+def cron_tasks(ada, monkeypatch, here: bool) -> None:
+    """Ada's routines recorded as cron lines; `here`: this computer's crontab holds them."""
+    line = "33 3 * * * routine.py daily-chain"
+    onboard.write_yaml(ada / "_meta" / "state" / "onboard.yaml", {"routine_tasks": [
+        {"name": "space-daily-chain-ada", "kind": "cron", "check": ["crontab", "-l"], "line": line}]})
+    monkeypatch.setattr(onboard, "run_cmd", lambda argv, *a, **k: subprocess.CompletedProcess(
+        argv, 0 if here else 1, f"{line}\n" if here else "", "" if here else "no crontab for ada"))
+
+
+def test_pausing_with_nothing_recorded_records_this_computer_and_resuming_clears_it(tmp_path, monkeypatch, capsys):
+    ada = make_space(tmp_path / "ada", name="ada")
+    cron_tasks(ada, monkeypatch, here=True)
+    assert onboard.main([str(ada), "--pause", "--until", "2099-01-02"]) == 0
+    said = capsys.readouterr().out
+    assert said.startswith("Your routines are paused until") and "2 January" in said
+    record = routine.host(ada)
+    assert record["machine"] == routine.this_machine() and record["runner"] == "os"
+    assert routine.gate(ada, NOW).startswith("paused until 2099-01-02 06:00")
+    assert onboard.main([str(ada), "--resume"]) == 0 and routine.gate(ada, NOW) is None
+    assert onboard.main([str(ada), "--resume"]) == 0 and "not paused" in capsys.readouterr().out.splitlines()[-1]
+
+
+def test_a_pause_says_the_apps_own_tasks_are_not_paused_by_it(tmp_path, capsys):
+    ada = make_space(tmp_path / "ada", name="ada")
+    task = tmp_path / "scheduled-tasks" / "daily" / "SKILL.md"
+    task.parent.mkdir(parents=True)
+    task.write_text("the routine\n", encoding="utf-8")
+    onboard.write_yaml(ada / "_meta" / "state" / "onboard.yaml", {"routine_checks": [
+        {"name": "routine scheduled 1", "check": f"test -f {task.as_posix()}"}]})
+    assert onboard.main([str(ada), "--pause"]) == 0
+    assert "does not stop" in capsys.readouterr().out and routine.host(ada)["runner"] == "harness"
+
+
+def test_a_pause_in_the_past_or_on_a_record_that_is_not_one_changes_nothing(tmp_path, capsys):
+    ada = make_space(tmp_path / "ada", name="ada")
+    assert onboard.main([str(ada), "--pause", "--until", "2020-01-01"]) == 1
+    assert "passed" in capsys.readouterr().out and routine.host(ada) is None
+    (ada / routine.HOST).write_text("machine: [\n", encoding="utf-8")
+    assert onboard.main([str(ada), "--pause"]) == 1
+    assert "unclear" in capsys.readouterr().out and (ada / routine.HOST).read_text(encoding="utf-8") == "machine: [\n"
+
+
+def test_a_pause_with_nothing_recorded_is_made_on_the_computer_that_runs_them(tmp_path, monkeypatch, capsys):
+    """Nothing recorded and none of the routines' tasks here: pausing here would move them here, where none runs."""
+    ada = make_space(tmp_path / "ada", name="ada")
+    cron_tasks(ada, monkeypatch, here=False)
+    assert onboard.main([str(ada), "--pause"]) == 1
+    said = capsys.readouterr().out
+    assert "computer that runs them" in said and "pause my routines" in said
+    assert routine.host(ada) is None and routine.gate(ada, NOW) is None   # the computer that runs them goes on
+
+
+@pytest.mark.parametrize("flags", [["--until", "2099-01-02"], ["--pause", "--resume"], ["--resume", "--until", "2099-01-02"],
+                                   ["--routines-here", "--pause"], ["--routines-here", "--resume"]])
+def test_flags_that_do_not_go_together_are_refused_plainly(tmp_path, capsys, flags):
+    ada = make_space(tmp_path / "ada", name="ada")
+    assert onboard.main([str(ada), *flags]) == 2
+    said = capsys.readouterr().out.strip()
+    assert len(said.splitlines()) == 1 and "--pause" in said and "one at a time" in said
+    assert routine.host(ada) is None
+
+
+SKILL = TEMPLATE / ".claude" / "skills" / "onboard"
+PHRASES = ("pause my routines", "resume my routines", "run my routines here")
+
+
+def test_the_three_routine_phrases_reach_the_onboard_skill():
+    description = (SKILL / "SKILL.md").read_text(encoding="utf-8").split("---")[1]
+    instruction = " ".join((TEMPLATE / "_meta" / "templates" / "personal-instruction.md").read_text(encoding="utf-8").split())
+    routing = instruction[instruction.index("The toolbox is in"):]
+    to_onboard = routing[routing.index("(sign)"):routing.index("(onboard)")]
+    for phrase in PHRASES:
+        assert f'"{phrase}"' in description and f'"{phrase}"' in to_onboard
+
+
+def test_a_second_computers_built_message_says_where_the_routines_run():
+    built = (SKILL / "messages.md").read_text(encoding="utf-8").split("## built\n")[1].split("\n## ")[0]
+    assert "routines_where" in built and "{routines_where}" in built
+
+
+def test_the_skill_turns_the_apps_tasks_off_by_a_path_in_any_slash_and_case():
+    text = " ".join((SKILL / "SKILL.md").read_text(encoding="utf-8").split())
+    section = text[text.index('"Pause my routines", "resume my routines", "run my routines here"'):]
+    section = section[:section.index("## ")]
+    assert "slash" in section and "case" in section and "another computer" in section and "enabled" in section
+
+
+def test_copy_template_leaves_what_the_checkouts_git_ignores(tmp_path):
+    """A tool's scratch folder, a worktree, anything the template checkout's git ignores is not in a
+    fresh clone, so it never travels into a new space; files not committed yet still do."""
+    src = make_space(tmp_path / "tpl", profile="template")
+    for rel in ("_meta/tools/x.py", "_meta/tools/new_tool.py", ".superpowers/sdd/notes.md",
+                ".claude/worktrees/w1/README.md", "_meta/tools/cache.tmp"):
+        (src / rel).parent.mkdir(parents=True, exist_ok=True)
+        (src / rel).write_text("x\n", encoding="utf-8")
+    (src / ".superpowers" / "sdd" / ".gitignore").write_text("*\n", encoding="utf-8")
+    (src / ".gitignore").write_text("*.tmp\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(src)], check=True, capture_output=True)
+    (src / ".git" / "info").mkdir(parents=True, exist_ok=True)
+    (src / ".git" / "info" / "exclude").write_text(".claude/worktrees/\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(src), "add", "_meta/tools/x.py"], check=True, capture_output=True)
+    dst = tmp_path / "new"
+    assert onboard.copy_template(src, dst)
+    assert (dst / "_meta" / "tools" / "x.py").exists() and (dst / "_meta" / "tools" / "new_tool.py").exists()
+    assert not (dst / ".superpowers").exists() and not (dst / ".claude" / "worktrees").exists()
+    assert not (dst / "_meta" / "tools" / "cache.tmp").exists()
 def test_instruction_carries_the_four_rules(tmp_path):
     """Working in a codebase (docs/design/2026-10-22-codebase-link-design.md 4.3): triggers, three
     rings, writing by readers, capture with a pointer; Needs you once a day."""

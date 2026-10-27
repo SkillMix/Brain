@@ -10,7 +10,9 @@ routines only edit files. Each run:
   3. scan the staged paths; unstage every file with a finding (count recorded, never
      the match); commit `chore: sync`
   4. advance the pin of every clean mount to its remote branch; commit `chore: pins`
-  5. fetch origin and merge origin/main in (append-only files by union); a conflict
+  5. fetch origin and merge origin/main in (append-only files by union, and the record of which
+     computer runs the routines: `MERGE_RULES` is written into the space's own git first, so a
+     space whose .gitattributes is older has it too); a conflict
      where origin holds only an earlier copy of this checkout's own change keeps ours
      (the rebuilt commits of step 6 share no history with it); any other conflict is
      aborted and recorded
@@ -33,6 +35,9 @@ routines only edit files. Each run:
      nobody watching the repository gets a pull request (and a paid check) every 15 minutes
   7. append one run line to _meta/state/runs.jsonl when something happened, plus at
      most one heartbeat a day; the line rides along in the next run's commit
+  8. after the lock is released: rewrite the progress page (`~/.spaces/onboarding.html`, outside the
+     repository) from the workspace, without the model (`onboarding_page.refresh`); not for a dry
+     run or `--only`
 
     python sync.py [--root R] [--dry-run] [--no-push] [--release-leg]
                    [--min-age-minutes N] [--only PATH ...] [--message TEXT]
@@ -76,6 +81,11 @@ NOTABLE = ("committed", "pins", "conflict", "scan_hits", "errors", "held_tests",
            "healing", "healed", "pr_red")
 HEAL_STATE = "sync-heal.json"   # in the git dir: the repair waiting to be seen merged
 CHAINS = {"sweep_chain": "sweep-chain", "daily": "daily-chain"}   # run line routine: its routine prompt
+
+
+# Merged by union in every space, whatever its .gitattributes says: two computers that claim the routines before
+# either synced leave a record that reads as unclear (nobody runs) instead of a conflict that wedges the sync.
+MERGE_RULES = ("_meta/state/routine-host.yaml merge=union",)
 
 
 def git(root, *args, check: bool = False, input: str | None = None, env: dict | None = None) -> subprocess.CompletedProcess:
@@ -367,7 +377,8 @@ class Run:
         if rels:
             self.pathspec("add", "-A", rels=rels)
         self.scan_staged()
-        real = [rel for rel in self.staged() if rel != RUNS_PATH.as_posix()]
+        # a routine run's own line and its meter row alone are no commit worth a run line (R43)
+        real = [rel for rel in self.staged() if rel not in (RUNS_PATH.as_posix(), "_meta/state/routine-limits.jsonl")]
         message = getattr(self.args, "message", None) or (
             "chore: structure" if getattr(self.args, "only", None) else "chore: sync")
         if self.commit(message) and real:
@@ -493,6 +504,7 @@ class Run:
         if self.dry:
             print("would fetch origin and merge origin/main")
             return
+        self.merge_rules()
         if git(self.root, "fetch", "--quiet", "--prune", "--no-recurse-submodules", "origin").returncode != 0:
             self.error("fetch failed")
             return
@@ -507,6 +519,26 @@ class Run:
             return
         if git(self.root, "rev-parse", "HEAD").stdout.strip() != before:
             print("merge: origin/main brought in")
+
+    def merge_rules(self) -> None:
+        """The rules of `MERGE_RULES` in this space's own git (`info/attributes`, which outranks .gitattributes):
+        each one missing is appended; a line already there is left as it is."""
+        done = git(self.root, "rev-parse", "--git-path", "info/attributes")
+        if done.returncode != 0:
+            return
+        path = Path(done.stdout.strip())
+        path = path if path.is_absolute() else self.root / path
+        try:
+            # a byte that is not UTF-8 in the person's own lines stays as it is: this only appends
+            text = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+            have = {line.strip() for line in text.splitlines()}
+            missing = [rule for rule in MERGE_RULES if rule not in have]
+            if missing:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("a", encoding="utf-8", newline="\n") as fh:
+                    fh.write(("\n" if text and not text.endswith("\n") else "") + "".join(f"{rule}\n" for rule in missing))
+        except OSError as exc:
+            self.error(f"merge rule not written: {type(exc).__name__}")
 
     def keep_ours(self) -> bool:
         """Finish a conflicted merge when every conflict is origin holding an earlier copy of this
@@ -663,9 +695,10 @@ class Run:
         self.open_pr(branch)
 
     def waits(self, paths: list) -> bool:
-        """A change that is only run lines and mount pins waits QUIET_HOURS since the last push,
+        """A change that is only run lines, the meter and mount pins waits QUIET_HOURS since the last push,
         one that is only journal lines and run logs BATCH_HOURS; anything else goes out now."""
-        housekeeping = {RUNS_PATH.as_posix(), *self.submodules()}
+        # routine.py writes its meter line with every run, as it writes a run line
+        housekeeping = {RUNS_PATH.as_posix(), "_meta/state/routine-limits.jsonl", *self.submodules()}
         if paths and all(p in housekeeping for p in paths):
             hours, what = QUIET_HOURS, "run lines and pins only"
         elif paths and all(p in housekeeping or p in RUN_LOGS or p.startswith("journal/") for p in paths):
@@ -745,6 +778,17 @@ class Run:
             fh.write(json.dumps(line, ensure_ascii=False, default=str) + "\n")
 
 
+def refresh_page(root: Path) -> None:
+    """The progress page (`~/.spaces/onboarding.html`, outside every repository) is rewritten from the workspace
+    after every ordinary run, once the lock is gone, so it is never older than the last sync. It reads files and
+    starts nothing; a page that cannot be written is one plain line here, never a failed sync."""
+    try:
+        import onboarding_page
+        onboarding_page.refresh(root)
+    except Exception as exc:
+        print(f"sync: the progress page could not be updated ({type(exc).__name__})")
+
+
 def parse(argv) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--root", default=".")
@@ -794,7 +838,10 @@ def main(argv=None) -> int:
         if not run.dry:
             run.record()
         run.unlock()
-    return ERROR if run.notes.get("errors") else OK
+    code = ERROR if run.notes.get("errors") else OK
+    if not args.only and not run.dry:
+        refresh_page(root)
+    return code
 
 
 if __name__ == "__main__":

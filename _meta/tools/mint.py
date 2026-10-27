@@ -437,6 +437,12 @@ def main(argv=None) -> int:
     ap.add_argument("--home")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
+    if not args.mount:   # every other verb registers a sync task: a prefix that is not ours stops it before it makes a space
+        try:
+            onboard.task_prefix()
+        except ValueError as exc:
+            print(f"mint: {exc}")
+            return 1
     if args.mount:
         name, url = args.mount
         added = mount_space(args.root, name, url, online=not args.offline, dry_run=args.dry_run)

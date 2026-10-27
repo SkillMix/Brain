@@ -159,6 +159,92 @@ repositories it made and repairs what is missing.
 
 Say the sentence again: every step that is done is kept, the rest runs. A failed row names its fix.
 
+## Reading the progress page's Waiting lines
+
+The progress page, which setup opens in your browser, lists under Waiting everything that holds
+something up, on the person or on someone else, each with the one thing that clears it. The sync
+task rewrites the page every 15 minutes without the model, so it stays true when a routine or
+the model has stopped. Saying the setup sentence again is always safe: setup continues where it
+stopped and repeats nothing that is done.
+
+### "Sign in to GitHub" or "Sign in to Claude"
+
+A sign-in from the first two minutes is still open, with its link (and GitHub's one-time code).
+Looking at the apps and researching the company go on; the build waits for both. Open the link,
+finish in the browser, then say the sentence again. A GitHub code expires after 15 minutes;
+saying the sentence again shows a new one.
+
+### "Choose where your repositories live"
+
+You belong to GitHub organisations and none matches the company clearly. Answer the question
+in the chat (your own account, or one of the organisations); the build uses the answer.
+
+### "Connect an app"
+
+No app is connected to Claude yet. Connect your mail, calendar and chat in Claude's connector
+settings (the line links there). Claude may only see a new connector in a new chat: say the
+sentence there. The build goes on; the reading waits for the first app.
+
+### "Sign in to an app again"
+
+An app's sign-in ran out. Its records wait; the other apps go on. Sign in to it again in
+Claude's connector settings, and its reading continues from where it stopped.
+
+### "Ask your IT administrator"
+
+An app could not be read, usually because the organisation limits which apps Claude may use.
+The other apps go on. Ask your IT administrator to allow that app for Claude.
+
+### "Needs you"
+
+Things wait for your yes on your Needs-you list. Say "what needs me" in any session.
+
+### "Paused": a part of your history
+
+The part stopped at your Claude plan's usage limit, or before it would have drawn on extra,
+paid usage (routines never do). It saved as it read, so nothing is lost: it goes on by itself
+from where it stopped, after the reset time the line shows. When the plan gave no reset time,
+the line says so, and the part tries again at its next run (the night part at 01:00, or a day
+sweep when there is room). Nothing to do.
+
+### "Stopped": a routine
+
+- At your Claude limit: it runs again after the reset the line shows. Nothing to do.
+- Before extra, paid usage: routines never start into it; it runs again once the limit resets.
+- Claude needs you to sign in again: the command line's sign-in ran out. The step is on your
+  Needs-you list; routines stop cleanly until you sign in.
+- Ran longer than an hour: it was stopped and tries again at its next time.
+
+### "Not started"
+
+The sync task saw a routine not start at its time, so a briefing or a sweep was missed. The
+computer was off, or its scheduler is no longer running the task. Say "schedule my routines":
+the agent reads each task back and registers what is missing.
+
+### "This computer's scheduler does not catch up on runs it missed"
+
+Seen on a Linux computer without a systemd user session, where the routines run from cron. A
+run that was due while the computer was off or asleep is skipped, so a routine can skip a day.
+Once the computer runs systemd for your user (whoever looks after the computer can turn it on;
+"No cron" above says more), say "schedule my routines": the routines move to systemd timers,
+which catch up: a routine missed while you were logged out runs when you log in again. Keeping
+them running while nobody is logged in is the computer owner's choice.
+
+### "Waiting for your word": your history
+
+The plan for reading your history is made, and nothing of it is read until you say so. On an
+API key, a cloud provider or a gateway, setup builds everything and writes the plan but starts
+no part on its own: per-token billing has no plan limit to pace against. A plan made again
+because its notes could not be read waits the same way. Until then your routines read only what
+is new. Say "start reading my history" when you want it to begin.
+
+### "This app and your routines use different Claude accounts"
+
+Said once, when part 1 of your history is read. The desktop app's usage reading describes the
+app's account; the routines draw on the command line's sign-in. Setup compares the two after
+part 1: when the times your limits reset differ, the app's readings are no longer used, and the
+history paces itself from what the routines' own runs report, mostly at night. Nothing is lost
+and there is nothing to do; the history may be current later than first said.
 ### Cloud sessions
 
 Plain coding works; brainstorm and write specs in a local session for now, because a cloud
