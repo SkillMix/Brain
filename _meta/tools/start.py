@@ -1332,10 +1332,16 @@ def _read_company(args, card: dict, prior: dict, journal: dict, reading: _Readin
     sources = []
 
     def site() -> list:
-        answer = ask(research.site_prompt(card), rules, research.WEB_SCHEMA)
+        answer = ask(research.site_prompt(card), rules, research.SITE_SCHEMA)
+        hosts = research.hosts_of(rules)
+        moved = research.moved_host(answer, card["domain"])
+        if moved:   # the domain redirects to a host the reader may not fetch: read once more there
+            there = research.web_rules(moved)
+            answer = ask(research.site_prompt(card, moved), there, research.WEB_SCHEMA)
+            hosts += research.hosts_of(there)
         if not args.company and answer.get("name"):
             card["name"] = " ".join(str(answer["name"]).split())[:80]
-        found = research.web_records(answer, "site", research.hosts_of(rules), now, taken)
+        found = research.web_records(answer, "site", hosts, now, taken)
         if not found:   # pages fetched and nothing kept: not read, and read again next time (R45, Minor 14)
             raise _Empty(EMPTY_SITE_WHY)
         return found

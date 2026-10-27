@@ -444,3 +444,35 @@ def test_while_main_is_still_the_template_s_the_sync_sends_the_whole_fill_as_one
     guarded = sync_git(repo, "diff", "--name-only", "origin/main", f"origin/sync/{host}-protected").stdout.split()
     assert sorted(guarded) == ["space.yaml", "work/notes.md"]
 
+
+# ----- the company's site: a site that moved to another host is read there -----------------------------------
+from test_research import Readers, journal as research_journal, phase, records_on_disk, the_apps, the_home  # noqa: E402,F401
+from test_research import run as research_run  # noqa: E402
+
+MOVED = {"records": [], "moved_to": "https://lanternworks.test/"}   # what WebFetch says of a redirect to another host
+THERE = {"name": "Lantern Works", "records": [
+    {"title": "What we do", "url": "https://lanternworks.test/", "about": "identity", "text": "Wayfinding for ports."}]}
+
+
+def test_a_site_that_moved_to_another_host_is_read_on_that_host(phase, capsys, tmp_path):
+    the_home(tmp_path)
+    the_apps()
+    readers = Readers(phase, {"site": lambda prompt: THERE if "https://lanternworks.test/" in prompt else MOVED})
+    code, _ = research_run(capsys)
+    first, second = readers.asked("site")
+    assert first["tools"] == ["WebFetch(domain:lanternworks.example)", "WebFetch(domain:www.lanternworks.example)"]
+    assert "moved_to" in first["schema"]["properties"] and "moved_to" in first["prompt"]
+    assert second["tools"] == ["WebFetch(domain:lanternworks.test)", "WebFetch(domain:www.lanternworks.test)"]
+    assert code == 0 and "site" in research_journal()["sources_done"]
+    assert [r["url"] for r in records_on_disk() if r["id"].startswith("site")] == ["https://lanternworks.test/"]
+    assert research_journal()["company"]["domain"] == "lanternworks.example"   # the register is still the .example one
+
+
+def test_a_site_that_says_it_moved_to_itself_or_to_no_host_is_read_once(phase, capsys, tmp_path):
+    the_home(tmp_path)
+    the_apps()
+    for moved in ("https://www.lanternworks.example/", "not a host", "file:///etc/passwd", ""):
+        readers = Readers(phase, {"site": {"records": [], "moved_to": moved}})
+        research_run(capsys)
+        assert len(readers.asked("site")) == 1, moved
+

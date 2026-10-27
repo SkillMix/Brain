@@ -165,6 +165,11 @@ back to back, and nothing a record or the person settled is asked again.
   a brain or project that did not mount is a failed step too. While `main` is still the
   template's, the sync sends everything as one protected pull request, checked as one tree, so the
   owner merges once instead of a protected half that fails on a tree without the folders.
+- **A company site that moved is read where it moved to.** The site's reader may fetch only the
+  company's domain and its `www.` twin, so a domain that redirects to another host (a `.nl` that
+  moved to a `.com`) came back with nothing and the build said the site gave nothing to keep. The
+  reader now says where the site sent it, and the research reads once more on that host; the
+  company's domain stays the one given.
 
 **Migration.** After upgrading, run `python _meta/tools/distill.py <root> prepare` once and
 follow distill's Recheck and Ask steps for each page it lists.
