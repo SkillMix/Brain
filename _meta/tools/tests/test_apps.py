@@ -68,8 +68,8 @@ def test_an_app_is_named_by_the_probes_server_names_else_by_its_tool_prefix():
 
 def test_only_claude_ai_connectors_of_a_known_kind_with_a_read_tool_are_apps():
     tools = ["mcp__plugin_azure_azure__list_things", "mcp__claude_ai_Weather__get_forecast",
-             "mcp__claude_ai_Notetaker__notetaker_get_transcripts", "mcp__claude_ai_Linear__save_issue", "Read"]
-    assert [g["app"] for g in apps.group(tools)] == ["Notetaker"]   # a plugin, an unknown kind, nothing to read
+             "mcp__claude_ai_Zoom__zoom_get_transcripts", "mcp__claude_ai_Linear__save_issue", "Read"]
+    assert [g["app"] for g in apps.group(tools)] == ["Zoom"]   # a plugin, an unknown kind, nothing to read
 
 
 def test_one_classifier_decides_what_reads_and_everything_else_is_in_no_list():
@@ -303,7 +303,7 @@ def verdict(app, kinds, kind, account=ADA, why="a reason", **more):
 
 MIXED = [verdict("Gmail", ["mail"], "work"), verdict("Google Calendar", ["calendar"], "mixed"),
          verdict("Slack", ["chat"], "someone-else", account="office@lanternworks.example", why="shared"),
-         verdict("Notetaker", ["calls"], "personal", why="family calls"),
+         verdict("Zoom", ["calls"], "personal", why="family calls"),
          verdict("Notion", ["documents"], "reconnect", account="", why="sign in again"),
          verdict("Linear", ["tracker"], "blocked", account="", why="stopped after 15 minutes")]
 
@@ -312,7 +312,7 @@ def test_the_card_reads_work_and_mixed_skips_the_rest_and_leaves_failures_to_the
     card = apps.card(MIXED, NOW)
     assert card["read"] == [f"Gmail · {ADA} · work", f"Google Calendar · {ADA} · mixed"]
     assert card["skip"] == ["Slack · office@lanternworks.example · someone-else, shared",
-                            f"Notetaker · {ADA} · personal, family calls"]
+                            f"Zoom · {ADA} · personal, family calls"]
     assert card["not_signed_in"] == []   # nothing was given
 
 
@@ -323,7 +323,7 @@ def test_the_card_lists_connectors_that_need_a_sign_in_as_plain_information():
 
 def test_the_feeds_are_the_kinds_of_apps_that_are_read_in_the_order_of_kinds():
     assert apps.feeds(MIXED) == "mail: owner, calendar: owner"
-    every = [verdict(a, [k], "work") for a, k in (("Linear", "tracker"), ("Notion", "documents"), ("Notetaker", "calls"),
+    every = [verdict(a, [k], "work") for a, k in (("Linear", "tracker"), ("Notion", "documents"), ("Zoom", "calls"),
                                                   ("Slack", "chat"), ("Google Calendar", "calendar"), ("Gmail", "mail"))]
     assert apps.feeds(every) == "mail: owner, calendar: owner, chat: owner, calls: owner, documents: owner, tracker: owner"
     assert apps.feeds([]) == ""

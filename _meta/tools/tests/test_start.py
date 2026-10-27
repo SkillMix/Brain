@@ -689,7 +689,7 @@ def test_an_app_the_person_skipped_is_not_read_again_and_a_skip_before_any_verdi
 
 # ----- Task 13 fix round 3 (Ruling R43): a skip holds wherever it lands -------------------------------------------
 def six_apps(n=6) -> list:
-    names = ["Gmail", "Google Calendar", "Slack", "Notetaker", "Linear", "Notion"][:n]
+    names = ["Gmail", "Google Calendar", "Slack", "Zoom", "Linear", "Notion"][:n]
     kinds = ["mail", "calendar", "chat", "calls", "tracker", "documents"][:n]
     return [{"app": a, "kinds": [k], "read": [f"mcp__claude_ai_{a.replace(' ', '_')}__read"], "write": [], "send": []}
             for a, k in zip(names, kinds)]

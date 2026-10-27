@@ -104,7 +104,7 @@ claude.ai connectors are in both. Run 3, the command in section 1. Excerpt of th
   {"name": "claude.ai Google Drive", "status": "connected", "source": "claudeai"},
   {"name": "claude.ai Slack", "status": "connected", "source": "claudeai"},
   {"name": "claude.ai Notion", "status": "connected", "source": "claudeai"},
-  {"name": "claude.ai Notetaker", "status": "connected", "source": "claudeai"},
+  {"name": "claude.ai Zoom", "status": "connected", "source": "claudeai"},
   {"name": "claude.ai Microsoft 365", "status": "needs-auth", "source": "claudeai"},
   {"name": "claude.ai Linear", "status": "needs-auth", "source": "claudeai"},
   {"name": "plugin:azure:azure", "status": "connected", "source": "plugin"},

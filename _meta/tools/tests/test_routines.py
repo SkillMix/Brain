@@ -399,6 +399,8 @@ def argv_of_registered_task(system, root, monkeypatch) -> tuple:
 @pytest.mark.parametrize("folder", FOLDERS)
 @pytest.mark.parametrize("system", ["Windows", "Darwin", "Linux systemd", "Linux cron"])
 def test_paths_with_spaces_and_accents_survive_every_scheduler(tmp_path, monkeypatch, system, folder):
+    if system == "Windows" and '"' in folder:   # on any machine: a Windows path never holds one (`onboard._argline`)
+        pytest.skip("Windows allows no quote in a name, so its scheduler never meets one")
     root = tmp_path / folder / "spaces" / "ada-okafor-workspace"
     argv, cwd, path = argv_of_registered_task(system, root, monkeypatch)
     assert argv == [sys.executable, str(root / "_meta" / "tools" / "routine.py"),

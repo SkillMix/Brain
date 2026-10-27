@@ -54,7 +54,7 @@ APP_WORDS = {
     "mail": ("gmail", "outlook", "mail", "email", "fastmail", "superhuman", "proton"),
     "calendar": ("calendar", "calendly"),
     "chat": ("slack", "teams", "discord", "telegram", "whatsapp", "mattermost", "chat"),
-    "calls": ("notetaker", "granola", "otter", "fathom", "gong", "zoom", "tldv", "avoma", "grain"),
+    "calls": ("granola", "otter", "fathom", "gong", "zoom", "tldv", "avoma", "grain"),
     "documents": ("drive", "notion", "dropbox", "box", "confluence", "sharepoint", "onedrive", "docs", "coda", "evernote"),
     "tracker": ("linear", "jira", "asana", "monday", "clickup", "trello", "shortcut", "basecamp"),
 }

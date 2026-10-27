@@ -139,7 +139,7 @@ def test_which_connector_tools_read():
              "mcp__claude_ai_Google_Calendar__list_events", "mcp__claude_ai_Slack__slack_read_channel",
              "mcp__claude_ai_Notion__notion-fetch", "mcp__claude_ai_Notion__notion-query-data-sources",
              "mcp__claude_ai_Google_Drive__read_file_content", "mcp__claude_ai_Google_Drive__download_file_content",
-             "mcp__claude_ai_Notetaker__notetaker_get_transcript", "mcp__claude_ai_Microsoft_365__list_mail",
+             "mcp__claude_ai_Zoom__zoom_get_transcript", "mcp__claude_ai_Microsoft_365__list_mail",
              "mcp__claude_ai_Gmail__get_shared_files"]   # files shared with the person: a thing it lists, not an act
     acts = ["mcp__claude_ai_Gmail__send_message", "mcp__claude_ai_Gmail__reply", "mcp__claude_ai_Gmail__forward",
             "mcp__claude_ai_Gmail__trash_thread", "mcp__claude_ai_Gmail__create_draft", "mcp__claude_ai_Gmail__update_draft",
@@ -880,7 +880,7 @@ def test_the_real_tool_names_read_or_not_as_they_should():
             + named("claude_ai_Google_Drive", ["share_file", "trash_file", "update_file", "create_file", "getSharedLink",
                                                 "get_shared_link"])
             + named("claude_ai_Linear", ["share_issue", "unshare_issue", "save_issue_label", "create_issue_label"])
-            + named("claude_ai_Notetaker", ["notetaker_share_meeting"])
+            + named("claude_ai_Zoom", ["zoom_share_meeting"])
             + named("claude_ai_Notion", ["notion-create-pages", "notion-move-pages", "notion-update-page"]))
     assert [t for t in reads if not reader.is_read_tool(t)] == []
     assert [t for t in acts if reader.is_read_tool(t)] == []

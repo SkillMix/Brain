@@ -333,12 +333,23 @@ def test_existing_space_repository_is_adopted(tmp_path, monkeypatch):
     assert report.steps[-1].done and "adopted" in report.steps[-1].result
 
 
-def test_sync_task_runs_the_release_leg(tmp_path):
+@pytest.mark.parametrize("system", ["Windows", "Darwin", "Linux"])
+def test_sync_task_runs_the_release_leg(tmp_path, monkeypatch, system):
+    """On every system the scheduler runs the release leg. launchd's bootstrap line names only the agent's
+    file, so on macOS the leg is in that file's ProgramArguments."""
+    import plistlib
+    monkeypatch.setattr(onboard, "SYSTEM", system)
+    monkeypatch.setattr(onboard, "user_id", lambda: 501)
     root = make_space(tmp_path / "ada")
     report = onboard.Report("person")
     rec = onboard.register_sync(report, root, "ada", 15, offline=True, dry_run=False)
     text = (root / "_meta" / "state" / "sync-task.txt").read_text(encoding="utf-8")
-    assert "--release-leg" in text and "--release-leg" in " ".join(rec["create"]) + (rec["line"] or "")
+    if system == "Darwin":
+        agent = text[text.index("<?xml"):text.index("</plist>") + len("</plist>")]
+        launched = " ".join(plistlib.loads(agent.encode("utf-8"))["ProgramArguments"])
+    else:
+        launched = " ".join(rec["create"]) + (rec["line"] or "")
+    assert "--release-leg" in text and "--release-leg" in launched
 
 
 def test_check_reruns_owner_read_backs(tmp_path):
