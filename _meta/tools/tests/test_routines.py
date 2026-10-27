@@ -1356,6 +1356,13 @@ OUTLOOK = {"app": "Microsoft 365", "kinds": ["mail"], "read": [MS_READ], "write"
            "account": "ada.private@example.org", "verdict": "personal", "why": "Private matters only."}
 LINEAR = {"app": "Linear", "kinds": ["tracker"], "read": [LINEAR_READ], "write": [LINEAR_WRITE], "send": [], "account": ADA,
           "verdict": "work", "why": "The team's issues."}
+# two apps no name word knows, that setup's sorting step gave a kind
+CALLWISP_READ = "mcp__claude_ai_Callwisp__get_transcripts"
+QUILL_READ, QUILL_SEND = "mcp__claude_ai_Quillmail__search_messages", "mcp__claude_ai_Quillmail__send_message"
+CALLWISP = {"app": "Callwisp", "kinds": ["calls"], "read": [CALLWISP_READ], "write": [], "send": [], "account": ADA,
+            "verdict": "work", "why": "Lantern Works calls."}
+QUILL = {"app": "Quillmail", "kinds": ["mail"], "read": [QUILL_READ], "write": [], "send": [QUILL_SEND], "account": ADA,
+         "verdict": "work", "why": "A mailbox of Lantern Works."}
 
 
 PROVEN = object()   # the shell the probe proved the send guard in: this machine's own
@@ -1865,6 +1872,20 @@ def test_the_mailbox_that_sends_is_the_persons_own_whatever_it_holds(tmp_path):
     assert send == [MS_SEND] and MS_READ not in read
     ws = granted(tmp_path / "b", verdicts=[dict(GMAIL, verdict="someone-else", account=ADA)])
     assert routine.read_grant(ws)[2] == []
+
+
+def test_a_sorted_app_is_granted_its_read_tools_and_nothing_that_acts(tmp_path):
+    """An app no name knows, that setup's sorting step gave a kind, is read by the routines. It only reads,
+    whatever kind it was sorted as: a sorted mailbox whose file names a send tool (a tampered file) sends
+    nothing, while the mail app the name knows still sends."""
+    servers = [*SERVERS, {"name": "claude.ai Callwisp", "status": "connected"},
+               {"name": "claude.ai Quillmail", "status": "connected"}]
+    ws = granted(tmp_path, verdicts=[GMAIL, CALLWISP, QUILL], tools=[*TOOLS, CALLWISP_READ, QUILL_READ, QUILL_SEND],
+                 servers=servers)
+    read, write, send = routine.read_grant(ws)
+    assert CALLWISP_READ in read and QUILL_READ in read
+    assert QUILL_SEND not in send and GMAIL_SEND in send
+    assert write == [] and send == [GMAIL_SEND]
 
 
 def test_without_a_mailbox_of_the_persons_there_is_no_send_and_one_plain_line_says_so(tmp_path):

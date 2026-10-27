@@ -686,6 +686,8 @@ def grant(workspace, probe: dict | None = None, shell: str | None = None) -> dic
 
     - An app read as work or mixed gives the read tools its verdict names that the probe lists and that
       only read, and, for a tracker, the tools that create, update or save (apps.group decides both).
+      An app no name knows, that setup's sorting step gave a kind (the verdict's `kinds`), gives its
+      read tools only, whatever kind it was sorted as.
     - The mail app whose account is the person's own (`owner_email`, `Name <address>` read, without
       regard to case) gives the send tools the probe lists for it, whatever its verdict but
       someone-else's (Ruling R19): the briefing goes from the person's own mailbox to the person.
@@ -702,14 +704,16 @@ def grant(workspace, probe: dict | None = None, shell: str | None = None) -> dic
     proven = probe.get("hook_shell") if shell is None else shell
     proven = proven if isinstance(proven, str) and proven and Path(proven).is_file() else ""
     servers = [s for s in probe.get("mcp_servers") or [] if isinstance(s, dict)]
-    groups = {g["app"]: g for g in apps.group(_strings(probe.get("tools")), servers)}
+    verdicts = _verdicts(workspace)
+    sorted_kinds = {v["app"]: v["kinds"] for v in verdicts if isinstance(v.get("kinds"), list)}
+    groups = {g["app"]: g for g in apps.group(_strings(probe.get("tools")), servers, sorted_kinds=sorted_kinds)}
     signed_out = set(apps.not_signed_in(servers))
     try:
         person = guardable(spaceyaml.load(workspace).owner_email)
     except Exception:
         person = None
     read, write, send, reconnect, mailbox_out = [], [], [], [], []
-    for verdict in _verdicts(workspace):
+    for verdict in verdicts:
         app, kind = verdict["app"], verdict.get("verdict")
         group = None if app in signed_out else groups.get(app)
         if kind in apps.READ:
