@@ -110,6 +110,14 @@ def test_every_milestone_has_a_message_and_no_message_names_a_tool():
     assert not re.search(r"\.py\b|--[a-z]|mcp__|_meta/", msgs)
 
 
+def test_the_apps_message_shows_what_was_seen_and_not_read():
+    msgs = (SKILLS / "onboard" / "messages.md").read_text(encoding="utf-8")
+    apps = msgs[msgs.index("## apps\n"):msgs.index("## company\n")]
+    assert "{card.not_read}" in apps and "{card.nothing_to_read}" in apps
+    assert "`card.not_read`" in apps and "`card.nothing_to_read`" in apps   # the intro names them, as it names the others
+    assert not re.search(r"\.py\b|--[a-z]|mcp__|_meta/|~/|[A-Za-z]:\\", apps)
+
+
 @template_only
 def test_the_first_read_window_is_the_plans_everywhere():
     for name in ("onboard", "sweep", "seed"):

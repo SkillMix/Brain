@@ -112,9 +112,11 @@ When a sign-in is still open (one line per open item of `needs`):
 
 ## apps
 
-Shown when looking at the apps is done, from its answer: `card.read`, `card.skip` and
-`card.not_signed_in` (one line each), `card.starts_after`, and the open `needs` (an app to sign
-in to again, or one the organisation's IT must allow).
+Shown when looking at the apps is done, from its answer: `card.read`, `card.skip`,
+`card.not_signed_in`, `card.not_read` and `card.nothing_to_read` (one line each),
+`card.starts_after`, and the open `needs` (an app to sign in to again, or one the
+organisation's IT must allow). The lines for `card.not_signed_in`, `card.not_read` and
+`card.nothing_to_read` are shown only when their list is not empty.
 
 > **I've looked at your apps.**
 >
@@ -125,6 +127,10 @@ in to again, or one the organisation's IT must allow).
 > - {card.skip}
 >
 > **Not signed in, so not read:** {card.not_signed_in}
+>
+> **Seen, not read yet:** {card.not_read}
+>
+> **Connected, nothing to read:** {card.nothing_to_read}
 >
 > Want one left out? Say "skip" and the app's name, and I won't copy anything more from it.
 > Nothing is copied before {card.starts_after}. Your mail, chat, calls and calendar land in your

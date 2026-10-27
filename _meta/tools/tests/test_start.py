@@ -796,6 +796,349 @@ def test_a_skip_said_as_the_apps_phase_finishes_never_puts_back_its_old_state(mo
     assert said["skipped"] == ["Google Calendar"] and record["state"] == "done" and record["feeds"] == "mail: owner"
     assert next(v for v in record["verdicts"] if v["app"] == "Google Calendar")["verdict"] == "skip"
 
+
+# ----- the apps no name knows: sorted once, kept, and shown on the card ------------------------------------------
+UNKNOWN_PARTS = {"Callwisp": ["get_transcripts", "search_meetings", "delete_meeting"],   # a call recorder no word knows
+                 "Dealbook": ["list_deals", "get_contact", "create_deal"],               # a CRM
+                 "Pictoria": ["generate_image", "list_styles"],                          # makes images
+                 "Quillmail": ["search_messages", "get_message", "send_message"],        # a mailbox no word knows
+                 "Tasko": ["list_tasks", "create_task"]}                                 # a task app no word knows
+SORTED_AS = {"Callwisp": {"kind": "calls", "why": "Call transcripts."},
+             "Dealbook": {"kind": "other", "why": "A CRM: deals and contacts."},
+             "Pictoria": {"kind": "none", "why": "Makes images."},
+             "Tasko": {"kind": "tracker", "why": "A task list."}}
+
+
+def probed_unknown(monkeypatch, *unknown, gmail=True):
+    """Claude reaches Gmail and the apps named (default: Callwisp, Dealbook and Pictoria, which no name word knows),
+    as the probe lists them; the command line is found. Returns the probe's tools."""
+    names = unknown or ("Callwisp", "Dealbook", "Pictoria")
+    tools = (["mcp__claude_ai_Gmail__search_threads", "mcp__claude_ai_Gmail__send_message"] if gmail else [])
+    servers = [{"name": "claude.ai Gmail", "status": "connected"}] if gmail else []
+    for app in names:
+        tools += [f"mcp__claude_ai_{app}__{part}" for part in UNKNOWN_PARTS[app]]
+        servers.append({"name": f"claude.ai {app}", "status": "connected"})
+    monkeypatch.setattr(routine, "probe_tools", lambda *a, **k: {"tools": tools, "mcp_servers": servers})
+    monkeypatch.setattr(routine, "find_claude", lambda: "/bin/claude")
+    return tools
+
+
+def sorting(monkeypatch, answers=SORTED_AS) -> list:
+    """`apps.sort` as a recorder: each call's apps are appended to the list returned, and what `answers` holds for
+    them is given back (`{}` is a sorting run that gave no answer). It never reaches the reader."""
+    asked = []
+
+    def sort(found, cwd, **k):
+        asked.append([u["app"] for u in found])
+        assert k["claude"] == "/bin/claude" and k["known_tools"]   # the reader denies every tool the probe lists
+        return {u["app"]: answers[u["app"]] for u in found if u["app"] in answers}
+    monkeypatch.setattr(apps, "sort", sort)
+    return asked
+
+
+def reading(monkeypatch) -> list:
+    """`apps.analyse` as a recorder that finds every app it is given to be work: the groups it got, in the list."""
+    got = []
+
+    def analyse(groups, *a, **k):
+        got.extend(groups)
+        return [{**g, **WORK} for g in groups]
+    monkeypatch.setattr(apps, "analyse", analyse)
+    return got
+
+
+def run_apps(capsys, *argv) -> dict:
+    assert start.main(["apps", *argv, "--json"]) == 0
+    return json.loads(capsys.readouterr().out)
+
+
+def needs_of(kind) -> list:
+    return [n for n in setup_journal.open_needs(setup_journal.load()) if n.get("kind") == kind]
+
+
+def first_full_run(monkeypatch, capsys) -> tuple:
+    """Gmail, Callwisp, Dealbook and Pictoria: the first look, then the full run. (answer, sort's asks, analyse's groups)"""
+    no_outside(monkeypatch)
+    probed_unknown(monkeypatch)
+    asked, got = sorting(monkeypatch), reading(monkeypatch)
+    assert run_apps(capsys, "--probe")["state"] == "pending" and asked == []   # the first look never sorts
+    return run_apps(capsys), asked, got
+
+
+def test_the_apps_phase_sorts_what_no_name_knows_once_and_reads_it(tmp_path, monkeypatch, capsys):
+    out, asked, got = first_full_run(monkeypatch, capsys)
+    assert [g["app"] for g in got] == ["Gmail", "Callwisp"] and got[1]["kinds"] == ["calls"]   # Dealbook, Pictoria: not read
+    assert got[1]["write"] == [] and got[1]["send"] == [] and "mcp__claude_ai_Callwisp__delete_meeting" not in got[1]["read"]
+    assert out["state"] == "done" and out["apps"] == ["Gmail", "Callwisp"] and "calls: owner" in out["feeds"]
+    assert out["card"]["not_read"] == ["Dealbook · A CRM: deals and contacts."] and out["card"]["nothing_to_read"] == ["Pictoria"]
+    record = setup_journal.load()["apps"]
+    assert record["sorted"] == {a: SORTED_AS[a] for a in ("Callwisp", "Dealbook", "Pictoria")} and record["unsorted"] == []
+    assert record["card"]["not_read"] == out["card"]["not_read"] and record["feeds"] == out["feeds"]
+    assert asked == [["Callwisp", "Dealbook", "Pictoria"]]                         # one run for the three
+
+
+def test_a_second_run_sorts_only_what_is_new(tmp_path, monkeypatch, capsys):
+    first_full_run(monkeypatch, capsys)
+    probed_unknown(monkeypatch, "Callwisp", "Dealbook", "Tasko")                     # Tasko connected, Pictoria gone
+    asked, got = sorting(monkeypatch), reading(monkeypatch)
+    assert run_apps(capsys, "--probe")["state"] == "pending" and asked == []             # a look sorts nothing, forgets nothing
+    assert list(setup_journal.load()["apps"]["sorted"]) == ["Callwisp", "Dealbook", "Pictoria"]
+    out = run_apps(capsys)
+    assert asked == [["Tasko"]] and [g["app"] for g in got] == ["Tasko"]               # Gmail and Callwisp are kept
+    record = setup_journal.load()["apps"]
+    assert list(record["sorted"]) == ["Callwisp", "Dealbook", "Tasko"] and "Pictoria" not in record["sorted"]
+    assert out["card"]["nothing_to_read"] == [] and out["card"]["not_read"] == ["Dealbook · A CRM: deals and contacts."]
+    assert out["feeds"] == "mail: owner, calls: owner, tracker: owner"
+    run_apps(capsys)
+    assert asked == [["Tasko"]]                                                       # nothing new: nothing is asked
+
+
+def test_a_failed_sort_leaves_the_apps_to_look_at_next_time(tmp_path, monkeypatch, capsys):
+    no_outside(monkeypatch)
+    probed_unknown(monkeypatch)
+    asked, got = sorting(monkeypatch, answers={}), reading(monkeypatch)
+    out = run_apps(capsys)
+    assert asked == [["Callwisp", "Dealbook", "Pictoria"]]
+    assert out["state"] == "waiting" and [g["app"] for g in got] == ["Gmail"]         # the known app is read all the same
+    assert out["unsorted"] == ["Callwisp", "Dealbook", "Pictoria"] and out["unfinished"] == []
+    assert out["why"] == ("I could not look at Callwisp, Dealbook, Pictoria yet. I try again the next time your apps are "
+                          "read; say \"skip\" and the app's name to leave one out.")
+    assert out["card"]["not_read"] == [f"{a} · {apps.NOT_LOOKED}" for a in ("Callwisp", "Dealbook", "Pictoria")]
+    assert out["card"]["nothing_to_read"] == [] and "calls" not in out["feeds"]
+    record = setup_journal.load()["apps"]
+    assert record["unsorted"] == ["Callwisp", "Dealbook", "Pictoria"] and record["sorted"] == {}
+    assert needs_of("connect-app") == []
+    asked, got = sorting(monkeypatch), reading(monkeypatch)                           # the next run, the sorting works
+    out = run_apps(capsys)
+    assert asked == [["Callwisp", "Dealbook", "Pictoria"]] and [g["app"] for g in got] == ["Callwisp"]   # Gmail is kept
+    assert setup_journal.load()["apps"]["unsorted"] == [] and "calls: owner" in out["feeds"]
+    assert out["state"] == "done" and out["unsorted"] == [] and "why" not in out
+
+
+def test_a_sort_at_the_limit_starts_no_reader_and_keeps_what_it_answered(tmp_path, monkeypatch, capsys):
+    """Extra usage started while the apps no name knows were sorted: what the run answered is kept, no reader starts
+    (each would run on paid usage before it noticed), and the phase waits for the limit to reset (R5)."""
+    no_outside(monkeypatch)
+    probed_unknown(monkeypatch)
+    real, runs = apps.sort, []
+
+    def limit(prompt, tools, schema, cwd, **k):
+        runs.append(prompt)
+        raise reader.ReaderError("limit", "resets 03:00", answer={"apps": [{"app": "Callwisp", **SORTED_AS["Callwisp"]}]})
+    monkeypatch.setattr(apps, "sort", lambda found, cwd, **k: real(found, cwd, reader=limit, **k))
+    monkeypatch.setattr(apps, "analyse", lambda *a, **k: pytest.fail("no reader starts at the limit"))
+    out = run_apps(capsys)
+    assert len(runs) == 1 and out["state"] == "waiting" and out["apps"] == ["Gmail", "Callwisp"]
+    assert out["why"] == ("Your Claude limit was reached before your apps were read (resets 03:00). Say the sentence "
+                          "again once it resets: they are read then.")
+    record = setup_journal.load()["apps"]
+    assert record["state"] == "waiting" and record["sorted"] == {"Callwisp": SORTED_AS["Callwisp"]}   # paid for: kept
+    assert record["unsorted"] == ["Dealbook", "Pictoria"] and "verdicts" not in record and needs_of("connect-app") == []
+    asked, got = sorting(monkeypatch), reading(monkeypatch)                           # once it resets
+    out = run_apps(capsys)
+    assert asked == [["Dealbook", "Pictoria"]] and [g["app"] for g in got] == ["Gmail", "Callwisp"]
+    assert out["state"] == "done" and "calls: owner" in out["feeds"]
+
+
+def test_with_only_apps_no_name_knows_a_failed_sort_waits_and_names_them(tmp_path, monkeypatch, capsys):
+    """No app a name knows and a sort that gave nothing: the phase waits with the apps on the card, starts no reader
+    and asks nothing of the person; it never ends `done` having read nothing (R5)."""
+    no_outside(monkeypatch)
+    probed_unknown(monkeypatch, "Callwisp", "Dealbook", gmail=False)
+    sorting(monkeypatch, answers={})
+    monkeypatch.setattr(reader, "read", lambda *a, **k: pytest.fail("no reader starts"))
+    out = run_apps(capsys)
+    assert out["state"] == "waiting" and out["apps"] == [] and out["unsorted"] == ["Callwisp", "Dealbook"]
+    assert out["why"] == ("I could not look at Callwisp, Dealbook yet. I try again the next time your apps are read; "
+                          "say \"skip\" and the app's name to leave one out.")
+    assert out["card"]["not_read"] == [f"{a} · {apps.NOT_LOOKED}" for a in ("Callwisp", "Dealbook")]
+    assert out["feeds"] == "" and needs_of("connect-app") == [] and setup_journal.load()["apps"]["state"] == "waiting"
+
+
+def test_an_app_the_card_could_not_look_at_can_be_skipped_and_is_never_looked_at_again(tmp_path, monkeypatch, capsys):
+    """The card names Callwisp under "Seen, not read yet" and offers a skip: "skip Callwisp" is accepted, its line
+    becomes a skip line, and it is neither sorted nor read again (R6)."""
+    no_outside(monkeypatch)
+    probed_unknown(monkeypatch, "Callwisp")
+    sorting(monkeypatch, answers={})
+    reading(monkeypatch)
+    out = run_apps(capsys)
+    assert out["state"] == "waiting" and out["card"]["not_read"] == [f"Callwisp · {apps.NOT_LOOKED}"]
+    said = run_apps(capsys, "--skip", "Callwisp")
+    assert said["skipped"] == ["Callwisp"] and said["state"] == "done" and "There is no app called" not in said["why"]
+    record = setup_journal.load()["apps"]
+    assert record["state"] == "done" and record["person_skips"] == ["Callwisp"]
+    for card in (said["card"], record["card"]):
+        assert card["not_read"] == [] and card["read"] == ["Gmail · ada@lanternworks.example · work"]
+        assert card["skip"] == ["Callwisp · unknown account · skip, you asked me to skip it"]
+    asked, got = sorting(monkeypatch), reading(monkeypatch)                           # the next run, the sorting works
+    out = run_apps(capsys)
+    assert asked == [] and got == [] and out["state"] == "done" and out["feeds"] == "mail: owner"
+    assert out["unsorted"] == [] and out["card"]["not_read"] == [] and out["card"]["skip"] == card["skip"]
+    assert "Callwisp" not in setup_journal.load()["apps"]["sorted"]
+
+
+def test_a_sorted_app_the_person_skips_is_named_once_as_skipped(tmp_path, monkeypatch, capsys):
+    """Skipping an app sorted `other` or `none` takes its line from "Seen, not read yet" or "Connected, nothing to read"
+    to the skipped ones, on this run and the next (R6)."""
+    first_full_run(monkeypatch, capsys)
+    said = run_apps(capsys, "--skip", "Dealbook, Pictoria")
+    assert said["skipped"] == ["Dealbook", "Pictoria"] and said["state"] == "done"
+    skipped = [f"{a} · unknown account · skip, you asked me to skip it" for a in ("Dealbook", "Pictoria")]
+    assert said["card"]["not_read"] == [] == said["card"]["nothing_to_read"] and said["card"]["skip"] == skipped
+    asked, got = sorting(monkeypatch), reading(monkeypatch)
+    out = run_apps(capsys)
+    assert asked == [] and got == [] and out["state"] == "done" and out["card"]["skip"] == skipped
+    assert out["card"]["not_read"] == [] == out["card"]["nothing_to_read"] and "calls: owner" in out["feeds"]
+
+
+def test_a_sorted_app_with_no_tool_that_only_reads_is_named_on_the_card(tmp_path, monkeypatch, capsys):
+    """Callwisp sorted `calls`, but none of its tools is named as one that only reads: no reader is given it, and the
+    card says why instead of dropping it (M1). The journal keeps the kind the run gave."""
+    no_outside(monkeypatch)
+    monkeypatch.setitem(UNKNOWN_PARTS, "Callwisp", ["transcribe_call", "meeting_summary"])
+    probed_unknown(monkeypatch, "Callwisp")
+    sorting(monkeypatch)
+    got = reading(monkeypatch)
+    out = run_apps(capsys)
+    assert [g["app"] for g in got] == ["Gmail"] and out["state"] == "done" and out["apps"] == ["Gmail"]
+    assert out["card"]["not_read"] == ["Callwisp · it has no tool that only reads, and I only read"]
+    assert setup_journal.load()["apps"]["sorted"] == {"Callwisp": SORTED_AS["Callwisp"]}
+
+
+def test_the_first_look_applies_the_kept_sort_and_an_app_sorted_none_asks_to_connect_one(tmp_path, monkeypatch, capsys):
+    """The first look sorts nothing, but it uses the sort the journal keeps: an account whose only app was sorted as
+    holding nothing is asked to connect one, and the need's own check does not clear it (R7, M2)."""
+    no_outside(monkeypatch)
+    probed_unknown(monkeypatch, "Pictoria", gmail=False)
+    sorting(monkeypatch)
+    assert run_apps(capsys)["state"] == "waiting" and len(needs_of("connect-app")) == 1
+    monkeypatch.setattr(apps, "sort", lambda *a, **k: pytest.fail("the first look never sorts"))
+    out = run_apps(capsys, "--probe")                                                  # the need's check
+    assert out["state"] == "waiting" and out["why"] == start.NOTHING_READABLE_WHY and len(needs_of("connect-app")) == 1
+    record = setup_journal.load()["apps"]
+    assert record["to_sort"] == [] and record["groups"] == [] and record["sorted"] == {"Pictoria": SORTED_AS["Pictoria"]}
+    setup_journal.clear_need("connect-app")                                            # a fresh first look raises it too
+    assert run_apps(capsys, "--probe")["state"] == "waiting" and len(needs_of("connect-app")) == 1
+
+
+def test_the_first_look_counts_the_apps_left_to_sort_and_keeps_a_sorted_one_among_the_groups(tmp_path, monkeypatch, capsys):
+    """`to_sort` holds the apps no name knows that the journal has not sorted and the person did not skip; the full
+    run's early write empties it. A sorted app of a kind setup reads is one of the first look's groups (R7)."""
+    first_full_run(monkeypatch, capsys)
+    assert setup_journal.load()["apps"]["to_sort"] == [] and start._apps_judged(setup_journal.load())
+    probed_unknown(monkeypatch, "Callwisp", "Dealbook", "Tasko")                     # Tasko connected since
+    out = run_apps(capsys, "--probe")
+    record = setup_journal.load()["apps"]
+    assert out["state"] == "pending" and out["apps"] == ["Gmail", "Callwisp"] and record["to_sort"] == ["Tasko"]
+    assert record["groups"][1]["kinds"] == ["calls"] and record["groups"][1]["write"] == [] == record["groups"][1]["send"]
+    assert not start._apps_judged(setup_journal.load())                                # Tasko could hold documents
+    sorting(monkeypatch, answers={})
+    assert run_apps(capsys)["unsorted"] == ["Tasko"] and setup_journal.load()["apps"]["to_sort"] == []
+    assert run_apps(capsys, "--skip", "Tasko")["skipped"] == ["Tasko"]
+    assert run_apps(capsys, "--probe")["state"] == "pending" and setup_journal.load()["apps"]["to_sort"] == []   # skipped
+    probed_unknown(monkeypatch, "Callwisp", gmail=False)
+    before = setup_journal.load()
+    out = run_apps(capsys, "--dry-run")                                                # a dry run applies it too
+    assert out["apps"] == ["Callwisp"] and setup_journal.load() == before              # and writes nothing
+
+
+def test_the_first_look_never_asks_to_connect_when_an_unknown_app_is_there(tmp_path, monkeypatch, capsys):
+    no_outside(monkeypatch)
+    probed_unknown(monkeypatch, "Callwisp", gmail=False)
+    monkeypatch.setattr(apps, "sort", lambda *a, **k: pytest.fail("the first look never sorts"))
+    out = run_apps(capsys, "--probe")
+    assert out["state"] == "pending" and out["apps"] == [] and "why" not in out
+    assert needs_of("connect-app") == [] and setup_journal.load()["apps"]["state"] == "pending"
+
+
+def test_only_apps_with_nothing_to_read_ask_to_connect_one(tmp_path, monkeypatch, capsys):
+    no_outside(monkeypatch)
+    probed_unknown(monkeypatch, "Pictoria", gmail=False)
+    asked = sorting(monkeypatch)
+    out = run_apps(capsys)
+    assert out["state"] == "waiting" and "None of your connected apps" in out["why"] and asked == [["Pictoria"]]
+    assert len(needs_of("connect-app")) == 1 and setup_journal.load()["apps"]["sorted"] == {"Pictoria": SORTED_AS["Pictoria"]}
+    out = run_apps(capsys)                                                             # said again: Pictoria stays sorted
+    assert out["state"] == "waiting" and asked == [["Pictoria"]]
+
+
+def test_with_no_app_connected_the_why_stays_as_it_was(tmp_path, monkeypatch, capsys):
+    no_outside(monkeypatch)
+    monkeypatch.setattr(routine, "probe_tools", lambda *a, **k: {"tools": [], "mcp_servers": []})
+    monkeypatch.setattr(routine, "find_claude", lambda: "/bin/claude")
+    monkeypatch.setattr(apps, "sort", lambda *a, **k: pytest.fail("nothing to sort"))
+    out = run_apps(capsys)
+    assert out["state"] == "waiting" and out["why"] == "No app is connected to Claude yet." and len(needs_of("connect-app")) == 1
+
+
+def test_skip_works_for_a_sorted_app(tmp_path, monkeypatch, capsys):
+    first_full_run(monkeypatch, capsys)
+    monkeypatch.setattr(routine, "probe_tools", lambda *a, **k: pytest.fail("a skip asks Claude nothing"))
+    out = run_apps(capsys, "--skip", "Callwisp")
+    assert out["skipped"] == ["Callwisp"] and out["state"] == "done" and "calls" not in out["feeds"]
+    record = setup_journal.load()["apps"]
+    assert next(v for v in record["verdicts"] if v["app"] == "Callwisp")["verdict"] == "skip"
+    for card in (out["card"], record["card"]):
+        assert card["not_read"] == ["Dealbook · A CRM: deals and contacts."] and card["nothing_to_read"] == ["Pictoria"]
+        assert any(line.startswith("Callwisp") and "you asked me to skip it" in line for line in card["skip"])
+    assert record["sorted"]["Callwisp"] == SORTED_AS["Callwisp"] and record["unsorted"] == []
+
+
+def test_a_skip_of_a_sorted_app_said_while_the_apps_are_read_wins(tmp_path, monkeypatch, capsys):
+    """The first look knew Gmail only. The sort's result is written before the readers start, so Callwisp is one of the
+    person's apps while they run: "skip Callwisp" is accepted, wins, and the app is no feed (R40, R47)."""
+    no_outside(monkeypatch)
+    probed_unknown(monkeypatch)
+    sorting(monkeypatch)
+    assert run_apps(capsys, "--probe")["state"] == "pending"
+    said = []
+
+    def analyse(groups, *a, **k):
+        said.append(run_apps(capsys, "--skip", "Callwisp"))
+        assert setup_journal.load()["apps"]["state"] == "running"                  # the skip leaves the state alone
+        return [{**g, **WORK} for g in groups]
+    monkeypatch.setattr(apps, "analyse", analyse)
+    out = run_apps(capsys)
+    assert said[0]["skipped"] == ["Callwisp"] and "There is no app called" not in said[0].get("why", "")
+    record = setup_journal.load()["apps"]
+    callwisp = next(v for v in record["verdicts"] if v["app"] == "Callwisp")
+    assert callwisp["verdict"] == "skip" and record["person_skips"] == ["Callwisp"] and record["state"] == "done"
+    assert out["feeds"] == "mail: owner" == record["feeds"] and "calls" not in out["feeds"]
+    assert out["card"]["not_read"] == ["Dealbook · A CRM: deals and contacts."] and out["card"]["nothing_to_read"] == ["Pictoria"]
+
+
+def test_a_sort_is_kept_although_the_reading_of_the_apps_fails(tmp_path, monkeypatch, capsys):
+    """The sort costs a run of Claude: a fault in the readers' phase afterwards does not lose it."""
+    no_outside(monkeypatch)
+    probed_unknown(monkeypatch)
+    asked = sorting(monkeypatch)
+
+    def analyse(groups, *a, **k):
+        raise RuntimeError("unexpected")
+    monkeypatch.setattr(apps, "analyse", analyse)
+    with pytest.raises(RuntimeError):
+        start.main(["apps", "--json"])
+    capsys.readouterr()
+    record = setup_journal.load()["apps"]
+    assert record["state"] == "failed" and record["sorted"] == {a: SORTED_AS[a] for a in ("Callwisp", "Dealbook", "Pictoria")}
+    assert record["unsorted"] == [] and [g["app"] for g in record["groups"]] == ["Gmail", "Callwisp"]
+    reading(monkeypatch)
+    assert run_apps(capsys)["state"] == "done" and asked == [["Callwisp", "Dealbook", "Pictoria"]]   # said again: not sorted again
+
+
+def test_an_app_sorted_as_mail_still_sends_nothing(tmp_path, monkeypatch, capsys):
+    """An answer is a kind and nothing more: whatever Quillmail's tools are called, the sorted app only reads."""
+    no_outside(monkeypatch)
+    probed_unknown(monkeypatch, "Quillmail", gmail=False)
+    sorting(monkeypatch, answers={"Quillmail": {"kind": "mail", "why": "A mailbox."}})
+    got = reading(monkeypatch)
+    out = run_apps(capsys)
+    assert out["state"] == "done" and [g["kinds"] for g in got] == [["mail"]] and got[0]["send"] == [] == got[0]["write"]
+    assert "mcp__claude_ai_Quillmail__send_message" not in got[0]["read"]
+    assert setup_journal.load()["apps"]["groups"][0]["send"] == []
+
+
 # ----- the briefing address: one the person is known to have, never a reader's word alone --------
 def _person(email=None, domain=None, offline=True):
     return types.SimpleNamespace(email=email, name="Ada Okafor", domain=domain, offline=offline)
@@ -830,6 +1173,15 @@ def test_only_a_mail_app_read_as_work_gives_the_work_mailbox():
                                      {**GMAIL, "app": "Fastmail", "account": " ben@lanternworks.example "}, GMAIL]}}
     assert start.work_mailbox(journal, known, domains) == "ben@lanternworks.example"
     assert start.work_mailbox({}, known, domains) == "" and start.work_mailbox({"apps": "pending"}, known, domains) == ""
+
+
+def test_the_work_mailbox_is_one_the_routines_can_send_from_before_one_setup_only_reads():
+    """A mailbox no name knows was sorted, so setup only reads it: listed ahead of the known mailbox, it is not where
+    the briefing goes (M3). Alone, it still is the work mailbox."""
+    known, domains = {"ada@lanternworks.example"}, {"lanternworks.example"}
+    quill = {**GMAIL, "app": "Quillmail", "account": "ben@lanternworks.example", "send": []}
+    assert start.work_mailbox({"apps": {"verdicts": [quill, GMAIL]}}, known, domains) == "ada@lanternworks.example"
+    assert start.work_mailbox({"apps": {"verdicts": [quill]}}, known, domains) == "ben@lanternworks.example"
 
 
 def test_a_mail_provider_is_never_a_companys_domain():

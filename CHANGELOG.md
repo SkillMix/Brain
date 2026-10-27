@@ -77,6 +77,12 @@ the shape and ships its migration. Each choice behind a change has a line in
   The decisions log records what the launch supersedes: "Export watermark" for
   the backfill, "Workspace owner on the platform", and "Connector permissions stay per person"
   for routines.
+- **Setup reads the apps it does not know by name.** One short run sees only each such app's
+  name and its tools' names and sorts it: a kind setup reads, work of a kind setup does not read
+  yet (a CRM, say), or nothing to read (an image maker). A sorted app gets its read tools and
+  nothing that acts. The app card, the chat and the progress page name the apps it saw but did
+  not read and the ones that hold nothing to read; an app the run could not look at is looked at
+  the next time. Known apps are read as before.
 
 The sign sitting: a page's questions are ready before the person sits down, they are answered
 back to back, and nothing a record or the person settled is asked again.

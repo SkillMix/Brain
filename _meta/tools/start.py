@@ -826,6 +826,13 @@ def _slow_why(names: list) -> str:
             f"you say the sentence again. Say \"skip {names[0]}\" to leave {'it' if one else 'one'} out instead.")
 
 
+def _unsorted_why(names: list) -> str:
+    """Why the apps phase waits on apps no name knows that the sorting run could not look at yet (R5): plain, and it
+    offers to skip one."""
+    return (f"I could not look at {', '.join(names)} yet. I try again the next time your apps are read; say \"skip\" "
+            "and the app's name to leave one out.")
+
+
 def _app_needs(verdicts: list) -> None:
     """An app to sign in to again is a `reconnect` need, one that cannot be read an `it-admin`
     need; both wait on the person and the rest of the setup goes on. A run replaces the needs of
@@ -848,7 +855,10 @@ def _read_apps(args, groups: list, unsigned: list, tools: list, claude: str, cwd
     an app to reconnect, a blocked one and a slow one are read again. A slow app (its reader ran out of turns or
     time) has no verdict: the phase waits, with a plain line that offers to skip it, and needs nothing of the IT
     administrator (I-3). A skip saved while the verdicts were written is on the card, the stored feeds and the
-    answer too (R47, N3-2)."""
+    answer too (R47, N3-2). The card also says what the sorting run made of the apps no name knew (`facts`: `sorted`,
+    `unsorted`), whichever of its two writes it is (`_app_card`). An app the sorting run could not look at yet that
+    the person did not skip keeps the phase waiting too, like a slow app, also when there is no app to read at all:
+    the answer names them (`unsorted`), and its why offers to skip one (R5)."""
     journal = setup_journal.load()
     who = identity(args.name, args.email, offline=True)
     emails = [e for e in dict.fromkeys([args.email, (journal.get("signins") or {}).get("claude_email"), who["email"]]) if e]
@@ -856,6 +866,7 @@ def _read_apps(args, groups: list, unsigned: list, tools: list, claude: str, cwd
               **apps.company_of(journal, args.company, emails)}
     limit = None
     record = journal.get("apps") if isinstance(journal.get("apps"), dict) else {}
+    sorted_apps, unsorted = facts.get("sorted") or {}, facts.get("unsorted") or []
     before = [str(s) for s in record.get("person_skips") or []]
     kept = [v for v in apps.kept(record, groups) if v["app"] not in before]   # what finished before is kept (R45, I-2)
     have = {v["app"] for v in kept}
@@ -872,10 +883,12 @@ def _read_apps(args, groups: list, unsigned: list, tools: list, claude: str, cwd
     read = {v["app"] for v in verdicts}
     verdicts += [_skipped(g) for g in groups if g["app"] in skips and g["app"] not in read]
     unfinished = [g["app"] for g in groups if g["app"] not in read and g["app"] not in skips]
+    looking = [a for a in unsorted if a not in skips]   # not looked at yet, and not skipped: the phase waits for them
     verdicts = _person_skips(verdicts, skips)   # the person's word stays
     now = dt.datetime.now().astimezone()
-    card, feeds = _skip_lines(apps.card(verdicts, now, unsigned), verdicts), apps.feeds(verdicts)
-    state = "waiting" if limit or unfinished else "done"
+    card = _app_card(verdicts, now, unsigned, sorted_apps, groups, unsorted, skips)
+    feeds = apps.feeds(verdicts)
+    state = "waiting" if limit or unfinished or looking else "done"
     setup_journal.set_phase("apps", state, **facts, verdicts=verdicts, card=card, feeds=feeds, unfinished=unfinished)
     after = setup_journal.load().get("apps")   # a skip saved between the reload above and this write (R47, N3-2)
     late = [str(s) for s in (after if isinstance(after, dict) else {}).get("person_skips") or [] if str(s) not in skips]
@@ -883,11 +896,14 @@ def _read_apps(args, groups: list, unsigned: list, tools: list, claude: str, cwd
         skips += late
         verdicts = apps_verdicts(setup_journal.load())
         unfinished = [a for a in unfinished if a not in late]
-        state = "waiting" if limit or unfinished else "done"
-        card, feeds = _skip_lines(apps.card(verdicts, now, unsigned), verdicts), apps.feeds(verdicts)
+        looking = [a for a in looking if a not in late]
+        state = "waiting" if limit or unfinished or looking else "done"
+        card = _app_card(verdicts, now, unsigned, sorted_apps, groups, unsorted, skips)
+        feeds = apps.feeds(verdicts)
         setup_journal.set_phase("apps", state, verdicts=verdicts, card=card, feeds=feeds, unfinished=unfinished)
     _app_needs(verdicts)
-    result = {"state": state, "apps": [g["app"] for g in groups], "card": card, "feeds": feeds, "unfinished": unfinished}
+    result = {"state": state, "apps": [g["app"] for g in groups], "card": card, "feeds": feeds, "unfinished": unfinished,
+              "unsorted": looking}
     if limit:
         read_now = [v for v in verdicts if v.get("verdict") != "skip"]   # the apps actually read (R43, N2-4)
         result["why"] = (f"Your Claude limit was reached with {len(read_now)} of "
@@ -896,6 +912,8 @@ def _read_apps(args, groups: list, unsigned: list, tools: list, claude: str, cwd
                          + ". Say the sentence again once it resets: the others are read then.")
     elif unfinished:   # no limit: what has no verdict ran out of turns or time (R45, I-3)
         result["why"] = _slow_why(unfinished)
+    elif looking:      # nothing else waits: the apps the sorting run could not look at yet (R5)
+        result["why"] = _unsorted_why(looking)
     return result
 
 
@@ -935,11 +953,38 @@ def _skipped(app: dict) -> dict:
             "verdict": "skip", "why": SKIPPED_WHY}
 
 
-def _skip_lines(card: dict, verdicts: list) -> dict:
-    """The app card with a line for each app the person skipped, among the skipped ones."""
+def _skip_lines(card: dict, verdicts: list, others=()) -> dict:
+    """The app card with a line for each app the person skipped, among the skipped ones: each verdict `skip`, and each
+    of `others`, skipped apps that have no verdict because they are no group (R6)."""
     lines = [f"{v['app']}{apps.SEP}{v.get('account') or 'unknown account'}{apps.SEP}skip, {SKIPPED_WHY}"
              for v in verdicts if isinstance(v, dict) and v.get("verdict") == "skip"]
-    return {**card, "skip": [*card.get("skip", []), *[line for line in lines if line not in card.get("skip", [])]]}
+    lines += [f"{app}{apps.SEP}unknown account{apps.SEP}skip, {SKIPPED_WHY}" for app in others]
+    return {**card, "skip": [*card.get("skip", []), *[line for line in dict.fromkeys(lines) if line not in card.get("skip", [])]]}
+
+
+def _app_card(verdicts: list, now: dt.datetime, unsigned, sorted_apps: dict, groups: list, unsorted: list, skips) -> dict:
+    """The app card (`apps.card`) with the person's word on it (`_skip_lines`). An app the person skipped that is no
+    group (sorted `other` or `none`, one with no tool that only reads, one not looked at yet) is named only among the
+    skipped ones, never under `not_read` or `nothing_to_read` (R6). A sorted app of a kind setup reads that `apps.group`
+    kept no group of has no tool that only reads: the card says so rather than leave it out (M1)."""
+    skips, grouped = {str(s) for s in skips}, {g["app"] for g in groups if isinstance(g, dict)}
+    shown = {app: s for app, s in sorted_apps.items() if app not in skips}
+    card = apps.card(verdicts, now, unsigned, sorted_apps=shown, unsorted=[a for a in unsorted if a not in skips],
+                     unreadable=[app for app, s in shown.items() if s["kind"] in apps.KINDS and app not in grouped])
+    return _skip_lines(card, verdicts, [a for a in dict.fromkeys([*sorted_apps, *unsorted]) if a in skips and a not in grouped])
+
+
+def _skips_in(record: dict) -> list:
+    """The apps the person skipped, as the journal's `apps` record keeps them (`person_skips`)."""
+    said = record.get("person_skips") if isinstance(record, dict) else None
+    return [str(s) for s in said] if isinstance(said, list) else []
+
+
+def _unsorted_in(record: dict) -> list:
+    """The apps the sorting run could not look at yet, as the journal's `apps` record keeps them (`unsorted`): the
+    names of a list; anything else counts as none."""
+    said = record.get("unsorted") if isinstance(record, dict) else None
+    return [s for s in said if isinstance(s, str)] if isinstance(said, list) else []
 
 
 def skip_apps(args) -> dict:
@@ -947,16 +992,25 @@ def skip_apps(args) -> dict:
     skipped ones and the feeds are those of the apps still read; the card's start time stays. Once the build has
     kept the verdicts in a workspace (`routine.APPS_FILE`), that file says it too, so the routines are not granted the
     app's tools from their next run on. An app that is not among the person's apps changes nothing, and why names
-    them. The phase keeps the state its record shows (`run_phase` has marked it running meanwhile)."""
+    them. The person's apps are those the card names: the groups and verdicts, and the apps no name knows that were
+    sorted or could not be looked at yet; one of the last that is no group is never sorted or read again, and the card
+    names it among the skipped ones only (R6). The phase keeps the state its record shows (`run_phase` has marked it
+    running meanwhile) until the readers have written theirs; after, it waits only while an app is unfinished or one
+    not looked at yet is not skipped."""
     journal = setup_journal.load()
     record = journal.get("apps") if isinstance(journal.get("apps"), dict) else {}
     verdicts = [v for v in record.get("verdicts") or [] if isinstance(v, dict)]
+    judged = isinstance(record.get("verdicts"), list)   # the readers wrote theirs: none when no app was read (R5)
     groups = [g for g in record.get("groups") or [] if isinstance(g, dict) and g.get("app")]
-    known = list(dict.fromkeys([v["app"] for v in verdicts] + [g["app"] for g in groups]))
+    unsorted = _unsorted_in(record)
+    known = list(dict.fromkeys([v["app"] for v in verdicts] + [g["app"] for g in groups] + list(_sorted_in(record))
+                               + unsorted))
     asked = [n.strip() for item in args.skip for n in str(item).split(",") if n.strip()]
     found = [a for a in known if a.lower() in {n.lower() for n in asked}]
     # Before any verdict the phase keeps its state: its readers may be running (R40); a skip changes no state then.
-    state = ("waiting" if record.get("unfinished") else "done") if verdicts else str(record.get("state") or "pending")
+    before = _skips_in(record)
+    state = (("waiting" if record.get("unfinished") or [a for a in unsorted if a not in before] else "done") if judged
+             else str(record.get("state") or "pending"))
     missing = [n for n in asked if n.lower() not in {a.lower() for a in found}]
     if missing:
         return {"state": state, "skipped": [], "why": (f"There is no app called {', '.join(missing)} among your apps"
@@ -964,18 +1018,18 @@ def skip_apps(args) -> dict:
     skipped = list(dict.fromkeys([*(record.get("person_skips") or []), *found]))
     facts = {"person_skips": skipped}
     result = {"state": state, "skipped": found}
-    if not verdicts and not getattr(args, "again", False):   # the readers may have written theirs since: the skip
-        latest = setup_journal.load().get("apps")                   # goes onto them, the state is theirs; asked once only,
-        if isinstance(latest, dict) and any(isinstance(v, dict) for v in latest.get("verdicts") or []):   # (R47, N3-3)
+    if not judged and not getattr(args, "again", False):   # the readers may have written theirs since: the skip
+        latest = setup_journal.load().get("apps")                 # goes onto them, the state is theirs; asked once only,
+        if isinstance(latest, dict) and isinstance(latest.get("verdicts"), list):   # (R47, N3-3)
             return skip_apps(argparse.Namespace(**{**vars(args), "again": True}))
-    if verdicts:   # an app not read yet (stopped at a limit) is not read at all: its verdict is the person's word
+    if judged:   # an app not read yet (stopped at a limit) is not read at all: its verdict is the person's word
         have = {v["app"] for v in verdicts}
         verdicts = _person_skips(verdicts, skipped) + [_skipped(g) for g in groups if g["app"] in found and g["app"] not in have]
         unfinished = [a for a in record.get("unfinished") or [] if a not in found]
-        state = result["state"] = "waiting" if unfinished else "done"
+        state = result["state"] = "waiting" if unfinished or [a for a in unsorted if a not in skipped] else "done"
         facts["unfinished"] = unfinished
         old = record.get("card") if isinstance(record.get("card"), dict) else {}
-        card = _skip_lines(apps.card(verdicts, _now(), record.get("not_signed_in") or []), verdicts)
+        card = _app_card(verdicts, _now(), record.get("not_signed_in") or [], _sorted_in(record), groups, unsorted, skipped)
         card["starts_after"] = old.get("starts_after") or card["starts_after"]
         facts.update(verdicts=verdicts, card=card, feeds=apps.feeds(verdicts))
         result.update(card=card, feeds=facts["feeds"])
@@ -994,18 +1048,58 @@ def skip_apps(args) -> dict:
     return result
 
 
+NOTHING_READABLE_WHY = ("None of your connected apps holds mail, a calendar, chat, calls, documents or tasks I can "
+                        "read yet.")
+SORT_LIMIT_WHY = ("Your Claude limit was reached before your apps were read{text}. Say the sentence again once it "
+                  "resets: they are read then.")
+
+
+def _sorted_in(record: dict) -> dict:
+    """What the sorting run made of the apps no name knows, as the journal's `apps` record keeps it
+    ({app: {"kind", "why"}}): the entries that are one, so a damaged journal gives fewer, never a fault."""
+    said = record.get("sorted") if isinstance(record, dict) else None
+    return {str(app): s for app, s in (said.items() if isinstance(said, dict) else ())
+            if isinstance(s, dict) and s.get("kind") in apps.SORT_KINDS and isinstance(s.get("why"), str)}
+
+
+def _sort_unknown(record: dict, found: list, cwd: Path, claude: str, tools: list) -> tuple:
+    """(sorted, unsorted, limit) for the apps no name knows (`apps.unknown`): one sorting run for those the journal's
+    `apps` record has not sorted yet, so an app sorted before is not sorted again and one the probe no longer sees
+    drops out. An app the person skipped (`person_skips`) is not sorted: it is neither sorted nor read again (R6). An
+    app the run gave no answer for is `unsorted`: the card says it is not looked at yet, and the next run asks about
+    it. The run fails into nothing (`apps.sort`), never into a failed phase; `limit` is the limit's text when the run
+    stopped at the plan's limit (an answer that came with it is kept), else None (R5)."""
+    before, skips = _sorted_in(record), set(_skips_in(record))
+    kept = {u["app"]: before[u["app"]] for u in found if u["app"] in before}
+    todo = [u for u in found if u["app"] not in kept and u["app"] not in skips]
+    limits: list = []
+    fresh = apps.sort(todo, cwd, claude=claude, known_tools=tools, limits=limits) if todo else {}
+    sorted_ = {**kept, **fresh}
+    return sorted_, [u["app"] for u in found if u["app"] not in sorted_], (limits[0] if limits else None)
+
+
 def phase_apps(args) -> dict:
     """Which apps hold work, and the app card. Claude's command line is asked which apps it
     reaches (`routine.probe_tools`; a probe that fails is `failed`, never "no apps"), and every
-    claude.ai connector of a known kind with a tool that reads is an app (`apps.group`). With
-    none, the one need is to connect one (`connect-app`, and the phase `waiting`). `--probe` stops
-    there, having recorded the groups and the connectors that need a sign-in. Else one reader per
+    claude.ai connector of a known kind, or one the sorting run gave a kind, with a tool that reads
+    is an app (`apps.group`). A connector no name knows (`apps.unknown`) is sorted once by a run that sees
+    names only (`apps.sort`): the journal's `apps` record keeps `sorted` ({app: {kind, why}}) and `unsorted`
+    (no answer yet: the next run asks again), written before any reader starts, and empties `to_sort`. A sorted
+    app only reads, and one sorted `other` or `none` is not read: the card says so (`not_read`,
+    `nothing_to_read`). A sort stopped at the plan's limit starts no reader (each would run on paid usage before
+    it noticed): the phase waits for the limit to reset, the sort's answer kept (R5). With no app to read and none
+    left to sort, the one need is to connect one (`connect-app`, and the phase `waiting`). `--probe` and a dry run
+    never sort, but apply the sort the journal keeps to the apps the probe still sees (R7, M2): `--probe` stops
+    after asking Claude, having recorded the groups, the connectors that need a sign-in and `to_sort` (the apps no
+    name knows not sorted yet and not skipped: research's documents step waits while there is one), and an account
+    holding an app not sorted yet is not asked to connect one, while one whose apps were all sorted as holding
+    nothing is. Else one reader per
     app decides whose account it is, whether it holds work and how much per month
     (`apps.analyse`): the journal's `apps` record keeps `verdicts` (with `per_month`), `card`
-    (read, skip, not_signed_in, starts_after), `feeds` and `unfinished`. The state is `done` when
-    every app has a verdict (an app to reconnect or one that is blocked is a need, not a stop),
-    `waiting` when the plan's limit stopped the readers. A dry run only asks the question. `--skip <app>`
-    asks nothing: the person's word becomes that app's verdict (`skip_apps`)."""
+    (read, skip, not_signed_in, not_read, nothing_to_read, starts_after), `feeds` and `unfinished`. The state is
+    `done` when every app has a verdict (an app to reconnect or one that is blocked is a need, not a stop),
+    `waiting` when the plan's limit stopped the readers, or an app is unfinished or not looked at yet. A dry run only
+    asks the question. `--skip <app>` asks nothing: the person's word becomes that app's verdict (`skip_apps`)."""
     if getattr(args, "skip", None):
         return skip_apps(args)
     if args.offline:
@@ -1020,15 +1114,37 @@ def phase_apps(args) -> dict:
     if not args.dry_run:
         apps.keep_probe(probe)   # the research beside it reads this one instead of asking again (dry run B N-4)
     tools, servers = probe.get("tools") or [], probe.get("mcp_servers") or []
-    groups, unsigned = apps.group(tools, servers), apps.not_signed_in(servers)
+    unsigned, unknown = apps.not_signed_in(servers), apps.unknown(tools, servers)
+    record = setup_journal.load().get("apps")
+    record = record if isinstance(record, dict) else {}
+    skips, limit = set(_skips_in(record)), None
+    if args.dry_run or getattr(args, "probe", False):   # the first look runs in the first two minutes: it never sorts,
+        before = _sorted_in(record)                       # but the sort the journal keeps holds (R7, M2)
+        kinds = {u["app"]: [before[u["app"]]["kind"]] for u in unknown
+                 if u["app"] in before and before[u["app"]]["kind"] in apps.KINDS}
+        groups = apps.group(tools, servers, sorted_kinds=kinds)
+        to_sort = [u["app"] for u in unknown if u["app"] not in before and u["app"] not in skips]
+        facts, readable = {"groups": groups, "not_signed_in": unsigned, "to_sort": to_sort}, bool(groups or to_sort)
+    else:
+        sorted_, unsorted, limit = _sort_unknown(record, unknown, cwd, claude, tools)
+        kinds = {app: [s["kind"]] for app, s in sorted_.items() if s["kind"] in apps.KINDS}
+        groups = apps.group(tools, servers, sorted_kinds=kinds)
+        facts = {"groups": groups, "not_signed_in": unsigned, "sorted": sorted_, "unsorted": unsorted, "to_sort": []}
+        # kept before anything reads: a skip said for a sorted app while the readers run finds it among the groups, and a
+        # fault later does not lose the sort (it cost a run of Claude)
+        setup_journal.set_phase("apps", "running", **facts)
+        # an app not sorted yet may hold work: the card says it is not looked at yet, unless the person skipped it
+        readable = bool(groups or [a for a in unsorted if a not in skips])
     found = {"apps": [g["app"] for g in groups], "not_signed_in": unsigned}
     if args.dry_run:
         return {"state": "pending", **found}
-    facts = {"groups": groups, "not_signed_in": unsigned}
-    if not groups:
+    if limit is not None:   # the sort stopped at the plan's limit: no reader starts before it resets (R5)
+        setup_journal.set_phase("apps", "waiting", **facts)
+        return {"state": "waiting", **found, "why": SORT_LIMIT_WHY.format(text=f" ({limit})" if limit else "")}
+    if not readable:
         setup_journal.set_phase("apps", "waiting", **facts)
         setup_journal.need("connect-app", CONNECT_NEED, APPS_CHECK, link=apps.CONNECTORS_LINK)
-        return {"state": "waiting", **found, "why": "No app is connected to Claude yet."}
+        return {"state": "waiting", **found, "why": NOTHING_READABLE_WHY if unknown else "No app is connected to Claude yet."}
     setup_journal.clear_need("connect-app")
     if getattr(args, "probe", False):
         setup_journal.set_phase("apps", "pending", **facts)
@@ -1085,10 +1201,15 @@ def _apps_judged(journal: dict) -> bool:
     (none, or no probe at all). Research runs beside the apps phase, and a documents app the probe found has no
     verdict until the apps are read: without one it is not known whether it is read (Ruling R38, I-11). An apps phase
     stopped at a limit with a documents app among `unfinished` has not judged it either (R40, N-4); one the person
-    skipped holds nothing."""
+    skipped holds nothing. Nor has a first look that saw an app no name knows and that is not sorted yet (`to_sort`):
+    it may hold documents (R7)."""
     record = journal.get("apps") if isinstance(journal.get("apps"), dict) else {}
+    skips = set(_skips_in(record))
+    to_sort = record.get("to_sort")
+    if isinstance(to_sort, list) and [a for a in to_sort if str(a) not in skips]:
+        return False
     docs = {g.get("app") for g in record.get("groups") or [] if isinstance(g, dict) and "documents" in (g.get("kinds") or [])}
-    docs -= set(record.get("person_skips") or [])
+    docs -= skips
     if "verdicts" in record:
         return not docs & set(record.get("unfinished") or [])
     return not docs
@@ -1226,6 +1347,7 @@ def _read_company(args, card: dict, prior: dict, journal: dict, reading: _Readin
                                   if own_account else "no code organisation of the company is known")
     sources += [("files", files), ("notes", notes)]
     reading.run(sources)
+    journal = setup_journal.load()   # the apps phase runs beside this one: its sort and verdicts as they are now (R7)
     waiting, judged = None, _apps_judged(journal)
     docs = [v for v in _documents_apps(journal) if f"documents:{v['app']}" not in reading.done]
     if not judged and not reading.stop:   # the documents app has no verdict yet: its step waits for the apps phase
@@ -1407,14 +1529,16 @@ def work_mailbox(journal: dict, known=(), domains=()) -> str:
     when that is an address the briefing may go to. The account is a reader's free-text answer, written
     after reading mail anyone can write, and the briefing address is the only one agents may mail: so it
     counts only when it is one the person is known to have (`known`, exactly), or sits on a domain of the
-    company that did not come from a reader (`domains`; a mail provider's never does). "" otherwise."""
+    company that did not come from a reader (`domains`; a mail provider's never does). "" otherwise. A mailbox
+    the routines can send from (`send`) comes before one setup only reads, as it reads a sorted one (M3)."""
+    found = []
     for v in apps_verdicts(journal):
         if v.get("verdict") == "work" and "mail" in (v.get("kinds") or []):
             account = address_in(v.get("account"))
             domain = account.rpartition("@")[2]
             if account and (account in known or (domain in domains and not research.is_provider(domain))):
-                return account
-    return ""
+                found.append((bool(v.get("send")), account))
+    return next((account for sends, account in found if sends), found[0][1] if found else "")
 
 
 def briefing_address(args, journal: dict) -> tuple:
