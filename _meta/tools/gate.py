@@ -4,8 +4,10 @@ section 8), plus the signature check on changed pages (hard rule 3).
 classify(root, changed_files, base_ref=None) -> ("protected" | "auto-mergeable", reasons)
     A change under any `protected:` prefix of space.yaml waits for the owner's one
     click; everything else lands when the checks pass. In the template repository
-    itself (`.github/template-marker` present) every pull request is auto-mergeable:
-    the template is a code repository, not a space (docs/decisions.md). Given the
+    itself every pull request is auto-mergeable: the template is a code repository,
+    not a space (docs/decisions.md). In the checks GitHub's own setting says which
+    repository that is (`spaceyaml.is_template_repo`): a copy keeps the marker file
+    until onboarding's first commit lands, never the setting. Given the
     base branch, the rules are read as they stand there, never as the pull request
     has them, and a change to the template's name is protected by itself. A protected
     change still lands when it is a template release its owner approved and every
@@ -60,7 +62,7 @@ def _under(rel: str, prefix: str) -> bool:
 
 
 def is_template(root) -> bool:
-    return (Path(root) / spaceyaml.TEMPLATE_MARKER).exists()
+    return spaceyaml.is_template_repo(root)
 
 
 def protected_prefixes(root) -> tuple[list[str], str | None]:
@@ -120,8 +122,10 @@ def rules_at(root, ref: str) -> dict:
     if not isinstance(protected, list):
         protected = spaceyaml.DEFAULTS["protected"]
     prov = _yaml_at(root, ref, PROVENANCE)
+    said = os.environ.get(spaceyaml.TEMPLATE_REPO_ENV, "").strip().lower()   # GitHub's setting, which a copy never has
     return {"protected": [str(p) for p in protected],
-            "template": _show(root, ref, spaceyaml.TEMPLATE_MARKER.as_posix()) is not None,
+            "template": said == "true" if said in ("true", "false")
+            else _show(root, ref, spaceyaml.TEMPLATE_MARKER.as_posix()) is not None,
             "owner": str(data.get("owner") or ""),
             "repo": prov.get("repo"), "release": str(prov.get("release") or "")}
 

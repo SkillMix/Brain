@@ -46,6 +46,7 @@ REQUEST_DEFAULTS = {
 }
 AUDIENCE_WORDS = ("owner", "crew", "everyone")
 TEMPLATE_MARKER = Path(".github") / "template-marker"
+TEMPLATE_REPO_ENV = "SPACES_TEMPLATE_REPO"   # the checks set it from GitHub's own setting (is_template_repo)
 PRIVATE_STATE = Path("_meta") / "state" / "private"   # never staged (sync.PRIVATE_ZONES)
 SLUG = re.compile(r"^[a-z][a-z0-9-]*$")
 
@@ -481,6 +482,17 @@ def load(root) -> Space:
     if not isinstance(data, dict):
         raise ValueError(f"{path}: space.yaml must be a mapping")
     return Space(root=root, data=data)
+
+
+def is_template_repo(root) -> bool:
+    """Whether `root` is the template repository itself. In the checks, GitHub's own setting answers
+    (`SPACES_TEMPLATE_REPO`, from `github.event.repository.is_template`): a repository made from the
+    template never has it, though it keeps the marker file until onboarding's first commit lands.
+    Elsewhere the marker (`.github/template-marker`) does."""
+    said = os.environ.get(TEMPLATE_REPO_ENV, "").strip().lower()
+    if said in ("true", "false"):
+        return said == "true"
+    return (Path(root) / TEMPLATE_MARKER).exists()
 
 
 def keeps_run_state(root) -> bool:

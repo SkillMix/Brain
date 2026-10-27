@@ -141,6 +141,12 @@ back to back, and nothing a record or the person settled is asked again.
   is copied there). The probe task writes what it printed to `~/.spaces/logs/`, so a Python that
   cannot start fails the build at once with its own words instead of after four silent minutes, and
   the probe checks that a scheduled run can use the GitHub sign-in.
+- **A copy of the template is no longer the template.** The checks ask GitHub's own
+  `is_template` setting, which a repository made from the template never has, instead of the
+  marker file it keeps until onboarding's first commit lands: a workspace's sync pull requests no
+  longer run the template's own tests, and the gate no longer lets a protected change in such a
+  workspace merge without the owner. The sync reruns a failed check at most three times a day, and
+  not at all when the same checks failed again after a rerun.
 
 **Migration.** After upgrading, run `python _meta/tools/distill.py <root> prepare` once and
 follow distill's Recheck and Ask steps for each page it lists.

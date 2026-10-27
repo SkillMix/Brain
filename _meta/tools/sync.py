@@ -80,6 +80,7 @@ RUN_LOGS = {"_meta/state/tests.jsonl", "_meta/state/probe.jsonl"}
 NOTABLE = ("committed", "pins", "conflict", "scan_hits", "errors", "held_tests", "restored_tests",
            "healing", "healed", "pr_red")
 HEAL_STATE = "sync-heal.json"   # in the git dir: the repair waiting to be seen merged
+HEAL_RERUNS = 3   # reruns of one sync pull request's failed checks a day, at most
 CHAINS = {"sweep_chain": "sweep-chain", "daily": "daily-chain"}   # run line routine: its routine prompt
 
 
@@ -437,7 +438,9 @@ class Run:
         """Read this checkout's sync pull request. When its checks failed: answer tests the
         failed log names are set aside for CI (`held: {by: ci}`, which only a person brings
         back, since a pass here does not prove a pass there) and land with this run's push; any
-        other failure is rerun once per head, as a flaky one. A repair counts once the pull
+        other failure is rerun once per head, as a flaky one, unless the same checks failed on the
+        head rerun before (a failure with a cause: the next push would only fail it again), and
+        HEAL_RERUNS times a day at most. A repair counts once the pull
         request merges: the run line says `healed` and the briefing lists it. What is still red
         after a rerun stays in the run line (`pr_red`) for the maintenance agent, not the owner."""
         state = self.heal_state()
@@ -465,17 +468,22 @@ class Run:
         import tests_run
         held = tests_run.hold(self.root, tests_run.failures_in("".join(d.stdout for d in logs if d), self.root),
                               "ci", self.now)
+        names, day = sorted({str(c.get("name")) for c in failed}), self.now.date().isoformat()
+        mine = state.get("pr") == pr
+        again = mine and state.get("failing") == names   # what failed after the last rerun failed once more
+        today = int(state.get("count") or 0) if mine and state.get("day") == day else 0
         if held:
             git(self.root, "add", "--", tests_run.ANSWERS_PATH.as_posix())
             self.commit("chore: sync")
             self.notes["healing"] = {"pr": pr, "held_tests": held}
             self.heal_state({"pr": pr, "what": f"set aside {len(held)} answer test(s) the checks could not "
                                                f"pass: {'; '.join(held)}"})
-        elif runs and state.get("rerun") != head:
+        elif runs and state.get("rerun") != head and not again and today < HEAL_RERUNS:
             for run in runs:
                 self.gh("run", "rerun", run, "--failed")
             self.notes["healing"] = {"pr": pr, "rerun": runs}
-            self.heal_state({"pr": pr, "rerun": head, "what": "reran a failed check"})
+            self.heal_state({"pr": pr, "rerun": head, "failing": names, "day": day, "count": today + 1,
+                             "what": "reran a failed check"})
         else:
             self.notes["pr_red"] = {"pr": pr, "checks": [c.get("name") for c in failed]}
 

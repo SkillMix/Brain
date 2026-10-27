@@ -11,9 +11,14 @@ import time
 from pathlib import Path
 
 import doctor
+import gate
 import onboard
 import routine
+import spaceyaml
 import start
+import sync
+from conftest import make_space
+from test_sync import FakeGh, repo, run_lines, write  # noqa: F401 (repo is a fixture)
 from test_sync_task import world
 
 
@@ -149,3 +154,94 @@ def test_the_probe_proves_the_scheduler_s_runs_can_use_the_github_sign_in(monkey
     check = routine.github_check(run=lambda argv, **kw: subprocess.CompletedProcess(argv, 1, "", out))
     assert not check["ok"] and "not logged into any GitHub hosts" in check["why"] and check["name"] == routine.GITHUB_CHECK
 
+
+# ----- #11: a copy of the template is not the template ------------------------------------------------------
+CHECKS = ROOT / ".github" / "workflows" / "checks.yml"
+
+
+def test_github_s_own_setting_says_template_in_ci_and_the_marker_only_elsewhere(tmp_path, monkeypatch):
+    copy = make_space(tmp_path / "ada", profile="template")   # a repository made from the template keeps the marker
+    monkeypatch.setenv(spaceyaml.TEMPLATE_REPO_ENV, "false")
+    assert not spaceyaml.is_template_repo(copy) and not gate.is_template(copy)
+    monkeypatch.setenv(spaceyaml.TEMPLATE_REPO_ENV, "true")
+    assert spaceyaml.is_template_repo(tmp_path)
+    monkeypatch.delenv(spaceyaml.TEMPLATE_REPO_ENV)
+    assert spaceyaml.is_template_repo(copy) and not spaceyaml.is_template_repo(tmp_path)
+
+
+def test_the_checks_ask_github_whether_this_is_the_template_never_the_marker():
+    import yaml
+    text = CHECKS.read_text(encoding="utf-8")
+    steps = {s.get("name"): s for job in yaml.safe_load(text)["jobs"].values() for s in job["steps"]}
+    told = sorted(n for n, s in steps.items()
+                  if (s.get("env") or {}).get(spaceyaml.TEMPLATE_REPO_ENV) == "${{ github.event.repository.is_template }}")
+    assert told == ["Gate (protected paths and signatures)", "Gate (signatures)", "Unit tests", "What changed"]
+    for name in ("The forbidden names list", "Validate as the template", "Build and run the fixture"):
+        assert steps[name]["if"].startswith("github.event.repository.is_template"), name   # the fixture's own spaces: no word
+    lines = [line for line in text.splitlines() if not line.strip().startswith("#")]
+    assert not [line for line in lines if "template-marker" in line]   # no step decides by the file a copy inherits
+
+
+def git(root, *args):
+    return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, check=True)
+
+
+def test_a_protected_change_in_a_copy_that_still_has_the_marker_waits_for_the_owner(tmp_path, monkeypatch):
+    root = make_space(tmp_path / "ada")
+    (root / ".github").mkdir(exist_ok=True)
+    (root / ".github" / "template-marker").write_text("", encoding="utf-8")   # onboarding's first commit never landed
+    git(root, "init", "-q", "--initial-branch=main")
+    git(root, "-c", "user.name=t", "-c", "user.email=t@example.test", "add", "-A")
+    git(root, "-c", "user.name=t", "-c", "user.email=t@example.test", "commit", "-q", "-m", "base")
+    monkeypatch.setenv(spaceyaml.TEMPLATE_REPO_ENV, "false")
+    cls, reasons = gate.classify(root, ["space.yaml"], base_ref="HEAD")
+    assert cls == gate.PROTECTED and not any("template repository" in r for r in reasons)
+    monkeypatch.setenv(spaceyaml.TEMPLATE_REPO_ENV, "true")   # the template itself still lands on green
+    assert gate.classify(root, ["space.yaml"], base_ref="HEAD")[0] == gate.AUTO
+
+
+class MovingGh(FakeGh):
+    """A sync pull request that gets a new head every run, red on the checks named in `failing`."""
+
+    def __init__(self, failing):
+        super().__init__("checks\tUnit tests\t2026-10-27T10:44:00Z FAILED test_onboard.py::test_x\n")
+        self.failing, self.head = list(failing), 0
+
+    def __call__(self, *args):
+        if args[:2] == ("pr", "list"):
+            self.head += 1
+            self.calls.append(args)
+            return subprocess.CompletedProcess(["gh", *args], 0, json.dumps([{"number": 7, "headRefOid": f"h{self.head}"}]), "")
+        if args[:2] == ("pr", "checks"):
+            self.calls.append(args)
+            names = self.failing[min(self.head, len(self.failing)) - 1]
+            return subprocess.CompletedProcess(["gh", *args], 1, json.dumps(
+                [{"name": n, "bucket": "fail", "link": f"https://github.com/o/r/actions/runs/{100 + self.head}/job/1"}
+                 for n in names]), "")
+        return super().__call__(*args)
+
+
+def reruns(gh) -> int:
+    return len([c for c in gh.calls if c[:2] == ("run", "rerun")])
+
+
+def sync_again(repo, n: int) -> None:
+    write(repo / "work" / "notes.md", f"# Notes\n\nline {n}\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+
+
+def test_a_check_that_fails_again_after_its_rerun_is_not_rerun_on_the_next_head(repo, monkeypatch):
+    gh = MovingGh([["checks"]])
+    monkeypatch.setattr(sync.Run, "gh", gh)
+    sync_again(repo, 1)
+    assert reruns(gh) == 1
+    sync_again(repo, 2)   # a new head, the same check red: it fails for a reason, not by chance
+    assert reruns(gh) == 1 and run_lines(repo)[-1]["notes"]["pr_red"] == {"pr": 7, "checks": ["checks"]}
+
+
+def test_a_sync_pull_request_is_rerun_three_times_a_day_at_most(repo, monkeypatch):
+    gh = MovingGh([["a"], ["b"], ["c"], ["d"]])   # a different check each time: each could be chance
+    monkeypatch.setattr(sync.Run, "gh", gh)
+    for n in range(4):
+        sync_again(repo, n)
+    assert reruns(gh) == sync.HEAL_RERUNS == 3 and "pr_red" in run_lines(repo)[-1]["notes"]

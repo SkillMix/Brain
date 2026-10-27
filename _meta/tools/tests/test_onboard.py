@@ -21,7 +21,7 @@ TEMPLATE = Path(__file__).resolve().parents[3]
 FIXTURE_COMPANY = TEMPLATE / "_meta" / "tests" / "fixture" / "company.yaml"
 # Template sync installs these tests in every space; a test that copies the whole repository
 # as the template runs in the template only.
-template_only = pytest.mark.skipif(not (TEMPLATE / ".github" / "template-marker").exists(),
+template_only = pytest.mark.skipif(not spaceyaml.is_template_repo(TEMPLATE),
                                    reason="copies the repository as the template")
 
 MINIMAL = {

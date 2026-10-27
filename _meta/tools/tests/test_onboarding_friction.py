@@ -13,6 +13,7 @@ import pytest
 import doctor
 import onboard
 import routine
+import spaceyaml
 import start
 from conftest import make_space
 
@@ -20,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[3]
 SKILLS = ROOT / ".claude" / "skills"
 # A space keeps its own README, has no decision log (template sync never carries it) and fills its own friction
 # log, and its checks run these tests after every template sync: the tests of those files run in the template only.
-template_only = pytest.mark.skipif(not (ROOT / ".github" / "template-marker").exists(),
+template_only = pytest.mark.skipif(not spaceyaml.is_template_repo(ROOT),
                                    reason="runs in the template only (.github/template-marker): a space keeps its own "
                                           "README, decision log and friction log")
 

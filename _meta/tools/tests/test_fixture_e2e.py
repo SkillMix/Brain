@@ -12,8 +12,10 @@ import yaml
 
 import onboard
 import pages
+import spaceyaml
 
 TEMPLATE_ROOT = Path(__file__).resolve().parents[3]
+IN_TEMPLATE = spaceyaml.is_template_repo(TEMPLATE_ROOT)   # read before the tests clear the checks' word
 
 
 OUTPUT = {}   # what the fixture run printed
@@ -21,7 +23,7 @@ OUTPUT = {}   # what the fixture run printed
 
 @pytest.fixture(scope="module")
 def fixture_dir(tmp_path_factory):
-    if not (TEMPLATE_ROOT / ".github" / "template-marker").exists():
+    if not IN_TEMPLATE:
         pytest.skip("the fixture company is the template's own gate; instances run their answer, "
                     "leak and behaviour tests instead")
     # A fresh interpreter, exactly as a newcomer runs it: no state from other tests (clock
@@ -32,7 +34,7 @@ def fixture_dir(tmp_path_factory):
     res = subprocess.run([sys.executable, str(TEMPLATE_ROOT / "_meta" / "tools" / "onboard.py"),
                           "--fixture", str(target)], capture_output=True, text=True,
                          cwd=str(TEMPLATE_ROOT), env={k: v for k, v in __import__("os").environ.items()
-                                                      if k != "SPACE_NOW"})
+                                                      if k not in ("SPACE_NOW", spaceyaml.TEMPLATE_REPO_ENV)})
     if res.returncode != 0:
         print(res.stdout[-3000:], res.stderr[-2000:])
     OUTPUT["stdout"] = res.stdout

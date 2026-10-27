@@ -76,14 +76,18 @@ jobs:
 
       # The tool tests read only the machinery. They run when it changed, always in the template,
       # and whenever the diff cannot be read (a new branch, a force-push that dropped `before`).
+      # Whether this is the template comes from GitHub's own setting (SPACES_TEMPLATE_REPO): a repository
+      # made from it never has the setting, though it keeps the marker file until onboarding's first
+      # commit lands. The steps that ask get it; the fixture's own spaces never do.
       - name: What changed
         id: scope
         env:
+          SPACES_TEMPLATE_REPO: ${{ github.event.repository.is_template }}
           BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
         run: |
           tools=true
           case "$BASE" in ""|0000000000000000000000000000000000000000) BASE="" ;; esac
-          if [ -n "$BASE" ] && [ ! -f .github/template-marker ] && changed=$(git diff --name-only "$BASE...HEAD" --); then
+          if [ -n "$BASE" ] && [ "$SPACES_TEMPLATE_REPO" != "true" ] && changed=$(git diff --name-only "$BASE...HEAD" --); then
             machinery='^(_meta/tools/|_meta/tests/|_meta/templates/|\.github/|\.claude/|space\.yaml$|_meta/state/template-version\.yaml$)'
             grep -qE "$machinery" <<< "$changed" || tools=false
           fi
@@ -102,6 +106,7 @@ jobs:
       - name: Gate (signatures)
         if: github.event_name == 'pull_request'
         env:
+          SPACES_TEMPLATE_REPO: ${{ github.event.repository.is_template }}
           BASE_REF: ${{ github.base_ref }}
         run: |
           set -o pipefail
@@ -113,7 +118,7 @@ jobs:
       # repository (docs/decisions.md, 2026-10-21). Without the secret the check has no list to
       # compare against. In a space the step is skipped.
       - name: The forbidden names list
-        if: hashFiles('.github/template-marker') != ''
+        if: github.event.repository.is_template
         env:
           FORBIDDEN_NAMES_SHA256: ${{ secrets.FORBIDDEN_NAMES_SHA256 }}
         run: |
@@ -127,6 +132,7 @@ jobs:
       - name: Unit tests
         if: steps.scope.outputs.tools == 'true'
         env:
+          SPACES_TEMPLATE_REPO: ${{ github.event.repository.is_template }}
           GIT_CONFIG_GLOBAL: /dev/null
           GIT_TERMINAL_PROMPT: "0"
         run: python -m pytest _meta/tools/tests -q
@@ -135,7 +141,7 @@ jobs:
         run: python _meta/tools/validate.py .
 
       - name: Validate as the template
-        if: hashFiles('.github/template-marker') != ''
+        if: github.event.repository.is_template
         run: python _meta/tools/validate.py . --template
 
       - name: Secrets scan on what changed
@@ -154,7 +160,7 @@ jobs:
 
       # The template proves itself on the fixture company; in a space this step is skipped.
       - name: Build and run the fixture
-        if: hashFiles('.github/template-marker') != '' && hashFiles('_meta/tools/onboard.py') != ''
+        if: github.event.repository.is_template && hashFiles('_meta/tools/onboard.py') != ''
         env:
           GIT_CONFIG_GLOBAL: /dev/null
         run: python _meta/tools/onboard.py --fixture "$RUNNER_TEMP/fixture"
@@ -207,6 +213,7 @@ jobs:
       # (gate.py exits 1) fails this job too, so nothing is armed.
       - name: Gate (protected paths and signatures)
         env:
+          SPACES_TEMPLATE_REPO: ${{ github.event.repository.is_template }}
           BASE_REF: ${{ github.base_ref }}
           TEMPLATE_TOKEN: ${{ secrets.TEMPLATE_READ_TOKEN || secrets.BRAIN_READ_TOKEN || secrets.MOUNT_READ_TOKEN }}
         run: |
