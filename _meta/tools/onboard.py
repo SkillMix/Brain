@@ -451,11 +451,28 @@ def commit_fill(report, dst, push, dry_run) -> None:
     run_cmd(["git", "add", "-A"], dry_run, cwd=dst)
     res = run_cmd(["git", "commit", "-q", "-m", "chore: onboard"], dry_run, cwd=dst)
     note = "committed; the sync script lands it"
+    done = res.returncode == 0 or "nothing to commit" in (res.stdout + res.stderr)
     if push and unconfigured_remote(dst, dry_run):
         out = run_cmd(["git", "push", "-q", "origin", "HEAD:main"], dry_run, cwd=dst)
-        note = "bootstrap push to main" if out.returncode == 0 else out.stderr.strip()[:200]
-    done = res.returncode == 0 or "nothing to commit" in (res.stdout + res.stderr)
+        said = " ".join(((out.stderr or "") + (out.stdout or "")).split())[:300]
+        if out.returncode != 0:   # main stays the template's: the build is not done (rc1 run, issue 12)
+            done, note = False, f"the first push to main failed, so main is still the template's: {said or 'git gave no reason'}"
+        elif not dry_run and unconfigured_remote(dst, dry_run):
+            done, note = False, "the first push to main went through, but main is still the template's"
+        else:
+            note = "bootstrap push to main"
     report.add(f"commit {Path(dst).name}", done, f"git -C {dst} status --short", note)
+
+
+def add_mount(report, root, repo, path, dry_run) -> None:
+    """Mount `repo` at `path` (a submodule on its `main`), as one step: a mount that did not come says so with git's
+    own words, since a workspace without its brain has no company layer to read (rc1 run, issue 14)."""
+    res = run_cmd(["git", "submodule", "add", "-b", "main", repo, str(path)], dry_run, cwd=root)
+    there = dry_run or (Path(root) / path / "space.yaml").exists()
+    said = " ".join(((res.stderr or "") + (res.stdout or "")).split())[:300]
+    report.add(f"mount {path} in {Path(root).name}", res.returncode == 0 and there,
+               f"test -f {Path(root).name}/{path}/space.yaml",
+               "mounted" if res.returncode == 0 and there else f"not mounted: {said or 'git gave no reason'}")
 
 
 # ----- content written by onboard --------------------------------------------
@@ -2027,15 +2044,14 @@ def run(root, answers, offline=False, org=None, dry_run=False, home=None, user_i
                 if not offline:
                     for mount in mounts:
                         if mount.get("repo") and not (dst / mount["path"] / "space.yaml").exists():
-                            run_cmd(["git", "submodule", "add", "-b", "main", mount["repo"], mount["path"]],
-                                    dry_run, cwd=dst)
+                            add_mount(report, dst, mount["repo"], mount["path"], dry_run)
             else:
                 crew = [names.get(s, humanize(s)) for s in item.get("crew") or []]
                 values = space_values(answers, slugify(item["id"]), crew[0] if crew else top["name"],
                                       top["email"], crew, "brain", brain_repo, path)
                 setup_space(report, dst, "project", values, [])
             if not offline and brain_repo and not (dst / "brain" / "space.yaml").exists():
-                run_cmd(["git", "submodule", "add", "-b", "main", brain_repo, "brain"], dry_run, cwd=dst)
+                add_mount(report, dst, brain_repo, "brain", dry_run)
             report.spaces[spaceyaml.load(dst).name] = dst
     else:
         name = slugify(answers.get("slug") or answers.get("name") or answers.get("owner") or root.name)
@@ -2057,7 +2073,7 @@ def run(root, answers, offline=False, org=None, dry_run=False, home=None, user_i
                               mounts=crew_mounts)
         setup_space(report, root, "personal", values, feeds)
         if not offline and brain_repo and not (root / "brain" / "space.yaml").exists():
-            run_cmd(["git", "submodule", "add", "-b", "main", brain_repo, "brain"], dry_run, cwd=root)
+            add_mount(report, root, brain_repo, "brain", dry_run)
         try:   # the brain learns this is the person's workspace: late checks find it
             import classify
             sent = classify.announce(root, now)
@@ -2067,7 +2083,7 @@ def run(root, answers, offline=False, org=None, dry_run=False, home=None, user_i
             report.add("workspace announced", False, "python _meta/tools/classify.py . pending", str(exc)[:200])
         for mount in crew_mounts:
             if not offline and mount.get("repo") and not (root / mount["path"] / "space.yaml").exists():
-                run_cmd(["git", "submodule", "add", "-b", "main", mount["repo"], mount["path"]], dry_run, cwd=root)
+                add_mount(report, root, mount["repo"], mount["path"], dry_run)
             report.add(f"mount {mount['name']}", offline or (root / mount["path"] / "space.yaml").exists() or dry_run,
                        f"test -f {root / mount['path'] / 'space.yaml'}", "crew project mounted read-only")
         scan_codebases(report, root, now, offline)

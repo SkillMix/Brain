@@ -345,3 +345,102 @@ def test_a_probe_with_nothing_connecting_asks_once_and_a_failed_second_look_keep
     run, asked, _ = answering(monkeypatch, init_with("connected", "pending"), subprocess.TimeoutExpired("claude", 1))
     assert routine.probe_tools("claude", tmp_path, run=run)["tools"] == ["mcp__claude_ai_App0__list"]
 
+
+# ----- #12 and #14: the first push and the brain mount say when they did not happen ------------------------
+def test_git_signs_in_to_github_through_gh_in_what_the_tools_start(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name in ("gh", "gh.exe"):
+        (bin_dir / name).write_text("", encoding="utf-8")
+        os.chmod(bin_dir / name, 0o755)
+    env = {**os.environ, "PATH": str(bin_dir) + os.pathsep + os.environ.get("PATH", ""), "GIT_CONFIG_COUNT": "1",
+           "GIT_CONFIG_KEY_0": "user.name", "GIT_CONFIG_VALUE_0": "Ada Okafor"}
+    env.pop("GH_CONFIG_DIR", None)
+    doctor.use_tools(tmp_path / "home", env=env, windows=False)
+    doctor.use_tools(tmp_path / "home", env=env, windows=False)   # once is enough
+    helpers = subprocess.run(["git", "config", "--get-all", "credential.https://github.com.helper"], env=env,
+                             capture_output=True, text=True).stdout.splitlines()
+    assert helpers[-1].endswith("auth git-credential") and helpers.count(helpers[-1]) == 1   # after any others
+    assert env["GIT_CONFIG_COUNT"] == "2" and env["GIT_CONFIG_VALUE_0"] == "Ada Okafor"
+    assert env["GCM_INTERACTIVE"] == "never"   # a credential manager with nothing stored opens no window
+    assert all(value for key, value in env.items() if key.startswith("GIT_CONFIG_"))   # Windows drops an empty one
+
+
+def outside(answers: dict):
+    """onboard's run_cmd, answering a command that starts with a key with (code, stdout, stderr)."""
+    calls = []
+
+    def fake(argv, dry_run=False, cwd=None):
+        argv = [str(a) for a in argv]
+        calls.append(argv)
+        for prefix, (code, out, err) in answers.items():
+            if " ".join(argv).startswith(prefix):
+                return subprocess.CompletedProcess(argv, code, out, err)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+    return fake, calls
+
+
+def test_a_first_push_that_fails_is_a_failed_step_with_git_s_own_words(tmp_path, monkeypatch):
+    fake, _ = outside({"git show origin/main:space.yaml": (0, "profile: template\n", ""),
+                       "git push": (128, "", "remote: Permission to ada/ada-workspace.git denied to ada.\n"
+                                             "fatal: unable to access 'https://github.com/ada/ada-workspace.git/'")})
+    monkeypatch.setattr(onboard, "run_cmd", fake)
+    report = onboard.Report("person")
+    onboard.commit_fill(report, tmp_path / "ada-workspace", True, False)
+    step = report.steps[-1]
+    assert not step.done and "Permission to ada/ada-workspace.git denied" in step.result
+    assert "main" in step.result and "chore: onboard" not in step.result
+
+
+def test_a_push_that_leaves_main_unconfigured_is_not_done(tmp_path, monkeypatch):
+    fake, calls = outside({"git show origin/main:space.yaml": (0, "profile: template\n", "")})
+    monkeypatch.setattr(onboard, "run_cmd", fake)
+    report = onboard.Report("person")
+    onboard.commit_fill(report, tmp_path / "ada-workspace", True, False)
+    assert ["git", "push", "-q", "origin", "HEAD:main"] in calls and not report.steps[-1].done
+    fake, _ = outside({"git show origin/main:space.yaml": (0, "profile: template\n", ""),
+                       "git push": (0, "", "")})
+    shown = iter([(0, "profile: template\n"), (0, "profile: personal\n")])   # before the push, and after it
+
+    def after(argv, dry_run=False, cwd=None):
+        if argv[:2] == ["git", "show"]:
+            code, out = next(shown)
+            return subprocess.CompletedProcess(argv, code, out, "")
+        return fake(argv, dry_run, cwd)
+    monkeypatch.setattr(onboard, "run_cmd", after)
+    report = onboard.Report("person")
+    onboard.commit_fill(report, tmp_path / "ada-workspace", True, False)
+    assert report.steps[-1].done and report.steps[-1].result == "bootstrap push to main"
+
+
+def test_a_brain_that_did_not_mount_is_a_failed_step(tmp_path, monkeypatch):
+    fake, _ = outside({"git submodule add": (128, "", "fatal: could not read Username for 'https://github.com'")})
+    monkeypatch.setattr(onboard, "run_cmd", fake)
+    report = onboard.Report("person")
+    onboard.add_mount(report, tmp_path / "ada-workspace", "https://github.com/lantern/lantern-brain.git", "brain", False)
+    step = report.steps[-1]
+    assert not step.done and "could not read Username" in step.result and "brain" in step.name
+    monkeypatch.setattr(onboard, "run_cmd", outside({})[0])
+    (tmp_path / "ada-workspace" / "brain").mkdir(parents=True)
+    (tmp_path / "ada-workspace" / "brain" / "space.yaml").write_text("profile: brain\n", encoding="utf-8")
+    report = onboard.Report("person")
+    onboard.add_mount(report, tmp_path / "ada-workspace", "https://github.com/lantern/lantern-brain.git", "brain", False)
+    assert report.steps[-1].done
+
+
+def test_while_main_is_still_the_template_s_the_sync_sends_the_whole_fill_as_one_protected_pull_request(repo, monkeypatch):
+    from test_sync import git as sync_git
+    monkeypatch.setattr(sync.Run, "gh", lambda self, *args: None)
+    filled = (repo / "space.yaml").read_text(encoding="utf-8")
+    write(repo / "space.yaml", filled.replace("profile: personal", "profile: template"))
+    sync_git(repo, "commit", "-q", "-am", "Initial commit")   # what "use this template" put on main
+    sync_git(repo, "push", "-q", "origin", "main")
+    write(repo / "space.yaml", filled, minutes_old=20)         # onboarding's fill, never pushed
+    write(repo / "work" / "notes.md", "# Notes\n\nline one\nline two\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    host = sync.hostname()
+    sync_git(repo, "fetch", "-q", "origin")
+    assert sync_git(repo, "rev-parse", "-q", "--verify", f"origin/sync/{host}", check=False).returncode != 0
+    guarded = sync_git(repo, "diff", "--name-only", "origin/main", f"origin/sync/{host}-protected").stdout.split()
+    assert sorted(guarded) == ["space.yaml", "work/notes.md"]
+

@@ -205,7 +205,35 @@ def use_tools(home=None, env=None, windows=None) -> list:
     if added:
         env["PATH"] = os.pathsep.join(added + [p for p in current if p])
     use_gh_config(home, env, windows)
+    use_gh_for_git(env)
     return added
+
+
+GITHUB_HELPER = "credential.https://github.com.helper"
+
+
+def use_gh_for_git(env=None) -> bool:
+    """git can sign in to github.com through gh (`gh auth git-credential`) in this process and what it starts,
+    as gh's own clone does: the account the doctor checked. Set in git's environment (`GIT_CONFIG_COUNT`), never
+    in a config file, after the helpers other config gives (Windows cannot hold the empty value that would clear
+    them); git asks each in turn, and a credential manager is told never to open a window no one sees
+    (`GCM_INTERACTIVE`: a scheduled task, the desktop app's shell), so one with nothing stored falls through to
+    gh. False when gh is not found."""
+    env = os.environ if env is None else env
+    gh = shutil.which("gh", path=env.get("PATH"))
+    if not gh:
+        return False
+    env.setdefault("GCM_INTERACTIVE", "never")
+    try:
+        count = int(env.get("GIT_CONFIG_COUNT") or 0)
+    except ValueError:
+        count = 0
+    if any(env.get(f"GIT_CONFIG_KEY_{i}") == GITHUB_HELPER for i in range(count)):
+        return True
+    env[f"GIT_CONFIG_KEY_{count}"] = GITHUB_HELPER
+    env[f"GIT_CONFIG_VALUE_{count}"] = f'!"{Path(gh).as_posix()}" auth git-credential'
+    env["GIT_CONFIG_COUNT"] = str(count + 1)
+    return True
 
 
 def use_gh_config(home=None, env=None, windows=None) -> Path | None:

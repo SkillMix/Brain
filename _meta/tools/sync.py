@@ -576,7 +576,9 @@ class Run:
 
     def split(self) -> tuple[list, list] | None:
         """The paths this checkout changes against origin/main, as (plain, protected); None
-        when nothing is protected (or in the template, whose pull requests land on green)."""
+        when nothing is protected (or in the template, whose pull requests land on green). While
+        origin/main still holds the template's own space.yaml (onboarding's first push never landed),
+        every path is protected: the fill goes as one pull request, checked as one tree, merged once."""
         try:
             import gate
         except ImportError:
@@ -588,7 +590,10 @@ class Run:
         changed = [p for p in out.split("\x00") if p]
         prefixes, _ = gate.protected_prefixes(self.root)
         managed = self.template_managed()   # a template update lands as one unit, with its tools
-        guarded = [p for p in changed if p in managed or any(gate._under(gate._posix(p), pre) for pre in prefixes)]
+        shown = git(self.root, "show", "origin/main:space.yaml")
+        unconfigured = shown.returncode != 0 or "profile: template" in shown.stdout
+        guarded = [p for p in changed if unconfigured or p in managed
+                   or any(gate._under(gate._posix(p), pre) for pre in prefixes)]
         if not guarded:
             return None
         return [p for p in changed if p not in guarded], guarded
