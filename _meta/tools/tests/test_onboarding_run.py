@@ -476,3 +476,136 @@ def test_a_site_that_says_it_moved_to_itself_or_to_no_host_is_read_once(phase, c
         research_run(capsys)
         assert len(readers.asked("site")) == 1, moved
 
+
+# ----- #6: task names another account on the computer holds -------------------------------------------------
+def test_the_task_prefix_this_computer_saved_is_used_and_the_test_setting_still_wins(monkeypatch):
+    assert onboard.task_prefix() == "space-"
+    onboard.save_task_prefix("space-ada-")
+    assert onboard.task_prefix() == "space-ada-"
+    assert yaml_load(Path.home() / ".spaces" / "settings.yaml") == {"task_prefix": "space-ada-"}
+    monkeypatch.setenv(onboard.TASK_PREFIX_ENV, "space-test-1-")
+    assert onboard.task_prefix() == "space-test-1-"
+
+
+def test_a_task_prefix_that_is_not_ours_is_never_saved():
+    for bad in ("ada-", "space-Ada-", "space-ada ", "space-ada-\n"):
+        try:
+            onboard.save_task_prefix(bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(bad)
+    assert not (Path.home() / ".spaces" / "settings.yaml").exists()
+
+
+def test_the_build_saves_the_task_prefix_it_was_given(tmp_path):
+    start.use_task_prefix(start.parser().parse_args(["build", "--task-prefix", "space-ada-", "--dry-run", "--json"]))
+    assert onboard.task_prefix() == "space-"   # a dry run changes nothing
+    given = start.parser().parse_args(["build", "--task-prefix", "space-ada-", "--json"])
+    start.use_task_prefix(given)
+    assert onboard.task_prefix() == "space-ada-"
+    start.use_task_prefix(start.parser().parse_args(["build", "--json"]))   # none given: the saved one stays
+    assert onboard.task_prefix() == "space-ada-"
+
+
+def test_a_task_name_another_account_holds_says_so_with_the_way_out(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "SYSTEM", "Windows")
+
+    def run_cmd(argv, dry_run=False, cwd=None):
+        if argv[:2] == ["schtasks", "/Create"]:
+            return subprocess.CompletedProcess(argv, 1, "", "ERROR: Access is denied.\r\n")
+        return subprocess.CompletedProcess(argv, 1, "", "ERROR: The system cannot find the file specified.\r\n")
+    monkeypatch.setattr(onboard, "run_cmd", run_cmd)
+    report = onboard.Report("person")
+    onboard.register_task(report, "sync task registered", "space-sync-ada", tmp_path / "ada",
+                          [tmp_path / "ada" / "sync.py"], minutes=15)
+    step = report.steps[-1]
+    assert not step.done and step.needs_owner
+    assert "another account" in step.result and "schtasks /Delete /F /TN space-sync-ada" in step.result
+    assert "--task-prefix" in step.result and "Access is denied" not in step.result
+
+
+def yaml_load(path: Path):
+    import yaml
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+# ----- #9: one mailbox counted once, and a skip that can be taken back ---------------------------------------
+from test_start import CALENDAR, GMAIL, finished_setup, no_outside  # noqa: E402
+import setup_journal  # noqa: E402
+
+ATTACHMENTS = {"app": "Mail Attachments", "kinds": ["mail"], "read": ["mcp__claude_ai_Mail_Attachments__read"],
+               "write": [], "send": [], "account": "ADA@lanternworks.example", "verdict": "work",
+               "per_month": {"2026-10": 180, "2026-08": 3}, "why": "The same mailbox's attachments."}
+
+
+def test_two_apps_on_one_mailbox_count_its_mail_once():
+    journal = {"apps": {"verdicts": [dict(GMAIL), dict(ATTACHMENTS), dict(CALENDAR)]}}
+    assert start.history_counts(journal) == {"2026-10": 212 + 40, "2026-09": 187, "2026-08": 3}
+
+
+def test_a_skipped_app_is_read_again_when_the_person_takes_the_skip_back(monkeypatch, capsys):
+    no_outside(monkeypatch)
+    finished_setup()
+    assert start.main(["apps", "--skip", "Google Calendar", "--json"]) == 0
+    capsys.readouterr()
+    assert start.main(["apps", "--unskip", "google calendar", "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    record = setup_journal.load()["apps"]
+    calendar = next(v for v in record["verdicts"] if v["app"] == "Google Calendar")
+    assert out["unskipped"] == ["Google Calendar"] and record["person_skips"] == []
+    assert calendar["verdict"] == "work" and "was" not in calendar and calendar["why"] == CALENDAR["why"]
+    assert "calendar: owner" in out["feeds"] and not any("Google Calendar" in line for line in record["card"]["skip"])
+    assert start.history_counts(setup_journal.load()) == {"2026-10": 252, "2026-09": 187}
+
+
+def test_taking_back_a_skip_of_an_app_that_was_never_skipped_changes_nothing(monkeypatch, capsys):
+    no_outside(monkeypatch)
+    finished_setup()
+    before = setup_journal.load()["apps"]
+    assert start.main(["apps", "--unskip", "Gmail", "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["unskipped"] == [] and "Gmail" in out["why"] and setup_journal.load()["apps"] == before
+
+
+# ----- #4 and #15: Claude's own connectors are not the person's apps ----------------------------------------
+def test_a_claude_connector_is_not_an_app_and_is_not_sorted():
+    tools = ["mcp__claude_ai_Claude_Docs__search_docs", "mcp__claude_ai_Claude_Docs__read_doc",
+             "mcp__claude_ai_Gmail__search_threads"]
+    servers = [{"name": "claude.ai Claude Docs", "status": "connected"}, {"name": "claude.ai Gmail", "status": "connected"},
+               {"name": "claude.ai Claude Calendar", "status": "needs-auth"}]
+    assert [g["app"] for g in apps.group(tools, servers)] == ["Gmail"]
+    assert apps.unknown(tools, servers) == [] and apps.not_signed_in(servers) == []
+
+
+# ----- #15: the card's ten minutes start again only for an app it did not read before ----------------------
+from test_start import probed_apps  # noqa: E402
+
+SHOWN = "2026-10-27T09:00:00+00:00"
+
+
+def shown_at(when: str) -> None:
+    record = setup_journal.load()["apps"]
+    setup_journal.set_phase("apps", "done", card={**record["card"], "starts_after": when})
+
+
+def test_reading_the_same_apps_again_keeps_the_time_the_card_was_first_shown(monkeypatch, capsys):
+    no_outside(monkeypatch)
+    finished_setup()
+    shown_at(SHOWN)
+    probed_apps(monkeypatch)
+    monkeypatch.setattr(apps, "analyse", lambda groups, *a, **k: [dict(GMAIL), dict(CALENDAR)])
+    assert start.main(["apps", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["card"]["starts_after"] == SHOWN
+    assert setup_journal.load()["apps"]["card"]["starts_after"] == SHOWN
+
+
+def test_an_app_read_for_the_first_time_starts_the_ten_minutes_again(monkeypatch, capsys):
+    no_outside(monkeypatch)
+    finished_setup([GMAIL])
+    shown_at(SHOWN)
+    probed_apps(monkeypatch)
+    monkeypatch.setattr(apps, "analyse", lambda groups, *a, **k: [dict(GMAIL), dict(CALENDAR)])
+    assert start.main(["apps", "--json"]) == 0
+    later = dt.datetime.fromisoformat(json.loads(capsys.readouterr().out)["card"]["starts_after"])
+    assert later > dt.datetime.fromisoformat(SHOWN)

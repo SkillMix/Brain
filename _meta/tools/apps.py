@@ -42,6 +42,9 @@ import research
 # A claude.ai connector named "claude.ai <Name>" gives tools "mcp__" + reader.server_part(name) + "__<tool>".
 SERVER_PREFIX = "mcp__claude_ai_"
 CLAUDE_AI = "claude.ai "
+# Claude's own connectors (`claude.ai Claude Docs`) hold what was made in Claude, not the person's work history:
+# never an app, never sorted, never a sign-in to ask for.
+FIRST_PARTY = "Claude "
 KINDS = ("mail", "calendar", "chat", "calls", "documents", "tracker")
 # What the sorting run may answer for an app no name knows: a kind setup reads, `other` (work records of a
 # kind setup does not read yet: a CRM's deals and contacts, an accounting app's invoices) or `none` (no
@@ -155,7 +158,7 @@ def _display_names(servers) -> dict:
 def _connectors(tools: list, servers: list | None) -> dict:
     """The claude.ai connectors among the probe's tools as {app: [(full tool name, tool part)]}, in
     the order they appear. `servers` are the probe's `mcp_servers`: they give the app its name (else
-    the server part of its tools, the underscores read as spaces)."""
+    the server part of its tools, the underscores read as spaces). Claude's own (FIRST_PARTY) are left out."""
     names, head = _display_names(servers), SERVER_PREFIX[len("mcp__"):]
     by_app: dict = {}
     for tool in dict.fromkeys(tools or []):
@@ -163,7 +166,8 @@ def _connectors(tools: list, servers: list | None) -> dict:
         if match:
             server = match.group("server")
             app = names.get(server) or server[len(head):].replace("_", " ")
-            by_app.setdefault(app, []).append((tool, match.group("tool")))
+            if not app.startswith(FIRST_PARTY):
+                by_app.setdefault(app, []).append((tool, match.group("tool")))
     return by_app
 
 
@@ -201,7 +205,7 @@ def not_signed_in(servers: list | None) -> list:
             continue
         app = name[len(CLAUDE_AI):]
         kinds, suite = _name_kinds(app)
-        if (kinds or suite) and app not in found:
+        if (kinds or suite) and app not in found and not app.startswith(FIRST_PARTY):
             found.append(app)
     return found
 

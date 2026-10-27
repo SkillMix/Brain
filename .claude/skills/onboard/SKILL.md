@@ -271,6 +271,13 @@ fresh usage.
 - **Send my briefing to <address>** (the app card names where the briefing goes): run the build
   with that address, `start.py build --email <address> --json`, now or when the running build is
   done. The address given always wins over the one the card named.
+- **Read <app> again** (the person takes a skip back): `start.py apps --unskip "<app>" --json`.
+  The reader's own verdict comes back, and the feeds and the routines follow; an app skipped before
+  it was read is read the next time the sentence is said. Show its `why`.
+- **Use other task names** (a task row says another account on this computer holds the name): run
+  the build again with `start.py build --task-prefix space-<their initials>- --json`. The prefix is
+  kept for this computer, so later builds and the probe use it too. Removing the other account's
+  task is for an administrator; the row has the line, and agents never run it.
 
 ## "Invite <colleague>"
 

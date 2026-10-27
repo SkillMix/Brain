@@ -13,7 +13,8 @@ offline and runs the chain and the tests over it. Offline mode never runs gh, gi
 schtasks, launchctl, crontab or systemctl; online, every such call goes through `run_cmd`. Nothing is
 deleted, nothing is signed, `main` is pushed only for a repository created seconds earlier. The OS tasks it
 registers are named `space-sync-<name>` and `space-<routine>-<name>`; an isolated test run sets
-SPACES_TASK_PREFIX=space-test-<id>- so that its tasks, and only those, carry that prefix instead. Each
+SPACES_TASK_PREFIX=space-test-<id>- so that its tasks, and only those, carry that prefix instead, and a
+computer where another account holds those names keeps its own (`~/.spaces/settings.yaml`). Each
 runs through the scheduler of the system that catches up after sleep: the Task Scheduler on Windows, a
 launch agent (`com.spaces.<task>`) on macOS, a systemd user timer on a Linux that has one, else cron,
 which does not catch up and says so.
@@ -850,14 +851,50 @@ _sleep = time.sleep   # the tests stand in for it
 def task_prefix() -> str:
     """The start of every OS task name onboard registers: `space-` (`space-sync-ada`,
     `space-sweep-chain-ada`). An isolated test run sets SPACES_TASK_PREFIX to `space-test-<id>-`, so
-    it registers, reads back and removes tasks of its own and never touches a person's. A value
-    that is not `space-` and lower-case letters, digits and hyphens is refused, never replaced by the
-    default: a typo must not register tasks under the person's own names."""
-    prefix = os.environ.get(TASK_PREFIX_ENV) or TASK_PREFIX
-    if not re.fullmatch(r"space-[a-z0-9-]*", prefix):
+    it registers, reads back and removes tasks of its own and never touches a person's. Without it, this
+    computer's `task_prefix` (`~/.spaces/settings.yaml`, saved by `start.py build --task-prefix` where another
+    account holds the names). A value that is not `space-` and lower-case letters, digits and hyphens is
+    refused, never replaced by the default: a typo must not register tasks under the person's own names."""
+    prefix = os.environ.get(TASK_PREFIX_ENV) or _saved_settings().get("task_prefix") or TASK_PREFIX
+    if not re.fullmatch(r"space-[a-z0-9-]*", str(prefix)):
         raise ValueError(f"{TASK_PREFIX_ENV} must start with space- and use only lower-case letters, digits and "
                          f"hyphens, not {prefix!r}")
     return prefix
+
+
+def _settings_path() -> Path:
+    return Path.home() / ".spaces" / "settings.yaml"
+
+
+def _saved_settings() -> dict:
+    try:
+        data = yaml.safe_load(_settings_path().read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def check_task_prefix(prefix: str) -> None:
+    """A ValueError for a task-name prefix task_prefix would refuse."""
+    if not re.fullmatch(r"space-[a-z0-9-]*", str(prefix)):
+        raise ValueError(f"a task-name prefix starts with space- and uses only lower-case letters, digits and "
+                         f"hyphens, not {prefix!r}")
+
+
+def save_task_prefix(prefix: str) -> None:
+    """Keep `prefix` as this computer's task-name prefix, refused as task_prefix refuses it."""
+    check_task_prefix(prefix)
+    path = _settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump({**_saved_settings(), "task_prefix": prefix}, sort_keys=False), encoding="utf-8")
+
+
+def task_taken(task: str) -> str:
+    """What a Windows task row says when the name is another account's task, which this account can neither
+    read nor replace: schtasks only says "Access is denied"."""
+    return (f"a scheduled task named {task} already exists and belongs to another account on this computer, so this "
+            f"account cannot replace it: an administrator removes it with `schtasks /Delete /F /TN {task}`, or set up "
+            "again with names of your own (`start.py build --task-prefix space-<your initials>-`)")
 
 
 def python_cmd() -> str:
@@ -1140,6 +1177,9 @@ def register_task(report, label, task, root, args, minutes=None, times=None, cro
         verify = run_cmd(record["check"], dry_run)
         missing = [] if dry_run else windows_task_missing(verify.stdout or "")
         ok = res.returncode == 0 and verify.returncode == 0 and not missing
+        if not ok and "access is denied" in f"{res.stderr} {verify.stderr}".lower():
+            report.add(label, False, " ".join(record["check"]), task_taken(task), needs_owner=True)
+            return record
         report.add(label, ok, " ".join(record["check"]), f"{task}: hidden, on battery too, catches up" if ok
                    else (res.stderr or verify.stderr).strip()[:200] or "registered without: " + ", ".join(missing))
         return record

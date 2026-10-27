@@ -170,6 +170,20 @@ back to back, and nothing a record or the person settled is asked again.
   moved to a `.com`) came back with nothing and the build said the site gave nothing to keep. The
   reader now says where the site sent it, and the research reads once more on that host; the
   company's domain stays the one given.
+- **Task names another Windows account holds.** Where another account on the computer already has
+  the space's task names, Windows said only "Access is denied". The row now says the name is
+  another account's, with the line an administrator runs to remove it, and
+  `start.py build --task-prefix space-<letters>-` gives this computer names of its own, kept in
+  `~/.spaces/settings.yaml`.
+- **The app card.** "Read <app> again" (`start.py apps --unskip <app>`) takes a skip back, with
+  the reader's own verdict. Two apps on one mailbox (a mailbox and a reader of its attachments)
+  count its mail once in the history's estimate. Claude's own connectors (`Claude …`) are not the
+  person's apps: they are neither read nor sorted. The card's ten minutes start again only when an
+  app is read that the card did not read before.
+- **What the sentence allows, and who else reads the workspace.** The README says what the
+  sentence is the go-ahead for; `docs/data-protection.md` says what a code-review app installed on
+  the Git account reads; troubleshooting covers a task name another account holds, Python under
+  the desktop app, and an app the command line reports as not signed in.
 
 **Migration.** After upgrading, run `python _meta/tools/distill.py <root> prepare` once and
 follow distill's Recheck and Ask steps for each page it lists.

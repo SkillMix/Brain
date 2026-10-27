@@ -915,7 +915,7 @@ def _read_apps(args, groups: list, unsigned: list, tools: list, claude: str, cwd
     looking = [a for a in unsorted if a not in skips]   # not looked at yet, and not skipped: the phase waits for them
     verdicts = _person_skips(verdicts, skips)   # the person's word stays
     now = dt.datetime.now().astimezone()
-    card = _app_card(verdicts, now, unsigned, sorted_apps, groups, unsorted, skips)
+    card = _held(record, verdicts, _app_card(verdicts, now, unsigned, sorted_apps, groups, unsorted, skips))
     feeds = apps.feeds(verdicts)
     state = "waiting" if limit or unfinished or looking else "done"
     setup_journal.set_phase("apps", state, **facts, verdicts=verdicts, card=card, feeds=feeds, unfinished=unfinished)
@@ -927,7 +927,7 @@ def _read_apps(args, groups: list, unsigned: list, tools: list, claude: str, cwd
         unfinished = [a for a in unfinished if a not in late]
         looking = [a for a in looking if a not in late]
         state = "waiting" if limit or unfinished or looking else "done"
-        card = _app_card(verdicts, now, unsigned, sorted_apps, groups, unsorted, skips)
+        card = _held(record, verdicts, _app_card(verdicts, now, unsigned, sorted_apps, groups, unsorted, skips))
         feeds = apps.feeds(verdicts)
         setup_journal.set_phase("apps", state, verdicts=verdicts, card=card, feeds=feeds, unfinished=unfinished)
     _app_needs(verdicts)
@@ -946,6 +946,16 @@ def _read_apps(args, groups: list, unsigned: list, tools: list, claude: str, cwd
     return result
 
 
+def _held(record: dict, verdicts: list, card: dict) -> dict:
+    """The card with the time its ten minutes end: they start again only when an app is read that the card shown
+    before did not read; reading the same apps again, or fewer, keeps the time the person was first shown them."""
+    old = record.get("card") if isinstance(record.get("card"), dict) else {}
+    read = lambda found: {v.get("app") for v in found if isinstance(v, dict) and v.get("verdict") in apps.READ}  # noqa: E731
+    if old.get("starts_after") and read(verdicts) <= read(record.get("verdicts") or []):
+        return {**card, "starts_after": old["starts_after"]}
+    return card
+
+
 SKIPPED_WHY = "you asked me to skip it"
 
 
@@ -954,8 +964,17 @@ def _person_skips(verdicts: list, skipped: list) -> list:
     verdict kept as `was`. Not `work` or `mixed`, so the grant, the feeds, the history's counts and the research's
     documents leave the app out."""
     names = {str(s) for s in skipped}
-    return [{**v, "verdict": "skip", "was": v.get("verdict"), "why": SKIPPED_WHY}
+    return [{**v, "verdict": "skip", "was": v.get("verdict"), "was_why": v.get("why"), "why": SKIPPED_WHY}
             if isinstance(v, dict) and v.get("app") in names and v.get("verdict") != "skip" else v for v in verdicts]
+
+
+def _unskipped(verdict: dict) -> dict | None:
+    """A skipped app's verdict with the skip taken back: the reader's own (`was`, `was_why`), or None for an app no
+    reader looked at before it was skipped."""
+    if not verdict.get("was"):
+        return None
+    kept = {k: v for k, v in verdict.items() if k not in ("was", "was_why")}
+    return {**kept, "verdict": verdict["was"], "why": verdict.get("was_why") or ""}
 
 
 def _skips_now() -> set:
@@ -1077,6 +1096,57 @@ def skip_apps(args) -> dict:
     return result
 
 
+def unskip_apps(args) -> dict:
+    """"Read <app> again": the person takes a skip back. The app leaves `person_skips`; the verdict a reader gave it
+    before the skip is its verdict again, and the card and the feeds follow (the card's start time stays: the person
+    asked for it); an app skipped before any reader looked at it is `unfinished`, read the next time the phase runs.
+    Once the build has kept the verdicts in a workspace (`routine.APPS_FILE`), that file follows too. An app that was
+    not skipped changes nothing, and why names the skipped ones."""
+    journal = setup_journal.load()
+    record = journal.get("apps") if isinstance(journal.get("apps"), dict) else {}
+    before = _skips_in(record)
+    asked = [n.strip() for item in args.unskip for n in str(item).split(",") if n.strip()]
+    found = [a for a in before if a.lower() in {n.lower() for n in asked}]
+    judged = isinstance(record.get("verdicts"), list)   # as skip_apps: the readers' state, else the record's
+    state = (("waiting" if record.get("unfinished") or [a for a in _unsorted_in(record) if a not in before] else "done")
+             if judged else str(record.get("state") or "pending"))
+    if not found:
+        return {"state": state, "unskipped": [], "why": f"{', '.join(asked)}: not among the apps you skipped"
+                + (f" ({', '.join(before)})." if before else "; you skipped none.")}
+    keep = [a for a in before if a not in found]
+    facts = {"person_skips": keep}
+    result = {"state": state, "unskipped": found}
+    if judged:
+        verdicts, unread = [], []
+        for v in (v for v in record["verdicts"] if isinstance(v, dict)):
+            back = _unskipped(v) if v.get("app") in found and v.get("verdict") == "skip" else v
+            verdicts += [back] if back else []
+            unread += [] if back else [v["app"]]
+        unfinished = list(dict.fromkeys([*(record.get("unfinished") or []), *unread]))
+        groups = [g for g in record.get("groups") or [] if isinstance(g, dict) and g.get("app")]
+        unsorted = _unsorted_in(record)
+        state = result["state"] = "waiting" if unfinished or [a for a in unsorted if a not in keep] else "done"
+        old = record.get("card") if isinstance(record.get("card"), dict) else {}
+        card = _app_card(verdicts, _now(), record.get("not_signed_in") or [], _sorted_in(record), groups, unsorted, keep)
+        card["starts_after"] = old.get("starts_after") or card["starts_after"]
+        facts.update(verdicts=verdicts, card=card, feeds=apps.feeds(verdicts), unfinished=unfinished)
+        result.update(card=card, feeds=facts["feeds"])
+    setup_journal.set_phase("apps", state, **facts)
+    why = f"{', '.join(found)}: read again."
+    workspace = _history_workspace(args, journal)
+    kept = Path(workspace) / routine.APPS_FILE if workspace else None
+    if kept and kept.exists():
+        try:
+            rows = [r for r in (yaml.safe_load(kept.read_text(encoding="utf-8")) or {}).get("apps") or [] if isinstance(r, dict)]
+            rows = [(_unskipped(r) or r) if r.get("app") in found and r.get("verdict") == "skip" else r for r in rows]
+            onboard.write_yaml(kept, {"apps": rows})
+            why += " Your routines read it again from their next run."
+        except (OSError, yaml.YAMLError, AttributeError):
+            why += " Your routines could not be told yet: say it again."
+    result["why"] = why
+    return result
+
+
 NOTHING_READABLE_WHY = ("None of your connected apps holds mail, a calendar, chat, calls, documents or tasks I can "
                         "read yet.")
 SORT_LIMIT_WHY = ("Your Claude limit was reached before your apps were read{text}. Say the sentence again once it "
@@ -1131,6 +1201,8 @@ def phase_apps(args) -> dict:
     asks the question. `--skip <app>` asks nothing: the person's word becomes that app's verdict (`skip_apps`)."""
     if getattr(args, "skip", None):
         return skip_apps(args)
+    if getattr(args, "unskip", None):
+        return unskip_apps(args)
     if args.offline:
         return {"state": "done", "why": "offline: no app to read"}
     cwd = Path(tempfile.gettempdir()) if args.dry_run else apps.scratch()   # never the person's home or a repository
@@ -1819,6 +1891,16 @@ TASK_PREFIX_WHY = ("This computer is set to name the routines' scheduled tasks i
                    "created. Your agent has the details.")
 
 
+def use_task_prefix(args) -> None:
+    """`--task-prefix`: keep it as this computer's task-name prefix (a ValueError when it is not ours); a dry run
+    only checks it."""
+    if getattr(args, "task_prefix", None):
+        if getattr(args, "dry_run", False):
+            onboard.check_task_prefix(args.task_prefix)
+        else:
+            onboard.save_task_prefix(args.task_prefix)
+
+
 def phase_build(args) -> dict:
     """Everything start did before there were phases: the spaces, the personal instruction, the
     routines. It builds from what the earlier phases left in the journal (`found_by_setup`) and
@@ -1833,6 +1915,7 @@ def phase_build(args) -> dict:
     on `LAST_REPORT`."""
     global LAST_REPORT
     try:
+        use_task_prefix(args)
         onboard.task_prefix()
     except ValueError as exc:
         if not args.json:
@@ -1929,13 +2012,20 @@ NO_WORKSPACE = ("Your workspace was not found on this computer, so there is no h
 
 def history_counts(journal: dict) -> dict:
     """Records a month in the apps that are read (`apps.READ`): the journal's verdicts with the person's word applied
-    (`apps_verdicts`), `per_month` summed."""
-    counts: dict = {}
+    (`apps_verdicts`), `per_month` summed. Apps of the same kinds on one account (a mailbox and a reader of its
+    attachments) are one source, counted once: its larger number each month."""
+    sources: dict = {}
     for verdict in apps_verdicts(journal):
         if verdict.get("verdict") in apps.READ and isinstance(verdict.get("per_month"), dict):
+            account = str(verdict.get("account") or "").strip().lower()
+            months = sources.setdefault((tuple(verdict.get("kinds") or ()), account) if account else (verdict.get("app"),), {})
             for month, number in verdict["per_month"].items():
                 if isinstance(number, int) and not isinstance(number, bool) and number > 0:
-                    counts[str(month)] = counts.get(str(month), 0) + number
+                    months[str(month)] = max(months.get(str(month), 0), number)
+    counts: dict = {}
+    for months in sources.values():
+        for month, number in months.items():
+            counts[month] = counts.get(month, 0) + number
     return counts
 
 
@@ -2162,7 +2252,8 @@ def run_phase(args) -> dict:
     running after it finished (F-4). A dry run changes nothing, the journal included."""
     global _HELD
     name, journal = args.phase, not args.dry_run
-    offline, skip = bool(getattr(args, "offline", False)), name == "apps" and bool(getattr(args, "skip", None))
+    offline = bool(getattr(args, "offline", False))
+    skip = name == "apps" and bool(getattr(args, "skip", None) or getattr(args, "unskip", None))
     held, before = None, LAST_REPORT
     if name == "build" and journal:
         held = take_lock()
@@ -2277,6 +2368,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--feeds", help="the connectors to read: mail, calendar, chat, calls, tracker (default: "
                     "the apps the apps step read)")
     ap.add_argument("--org")
+    ap.add_argument("--task-prefix", dest="task_prefix", help="build: start this computer's scheduled task names with "
+                    "this (space-<letters>-), kept for later builds; for a computer where another account holds the names")
     ap.add_argument("--home", help="where the spaces are cloned (default ~/spaces)")
     ap.add_argument("--template", help="the template repository (default: where this copy came from)")
     ap.add_argument("--user-instructions", help="the user-level instruction file (default ~/.claude/CLAUDE.md)")
@@ -2287,6 +2380,8 @@ def parser() -> argparse.ArgumentParser:
                     help="apps: stop after asking Claude which apps it reaches (no content is read)")
     ap.add_argument("--skip", action="append", metavar="APP",
                     help="apps: the person said skip this app; it is not read (its verdict is `skip`)")
+    ap.add_argument("--unskip", action="append", metavar="APP",
+                    help="apps: the person takes a skip back; the app is read again")
     ap.add_argument("--reading", help="history: the usage tool's reading, five_hour=<pct>,week=<pct>,five_hour_resets="
                     "<iso>,week_resets=<iso>,extra=<0|1>,confirmed=0; not_applicable for a paid account")
     ap.add_argument("--wait-part", dest="wait_part", metavar="PART",
