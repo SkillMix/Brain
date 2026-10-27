@@ -153,6 +153,11 @@ back to back, and nothing a record or the person settled is asked again.
   ten minutes and can say "send my briefing to" another address; the build takes it before git's
   address. The morning-view skill says that having the send tool is the mailbox check, so a
   routine no longer holds the briefing because Claude is signed in on another domain.
+- **An app still connecting is not taken for one that is not connected.** When Claude's command
+  line starts, connected apps can still be `pending` for a few seconds. The probe that the apps
+  step, the research and the routines' proof use looks again while one is (three looks in about
+  a minute at most) and keeps the look with the fewest still connecting, so the first apps step no
+  longer finds no apps and the routines' proof no longer fails an app that was only slow.
 
 **Migration.** After upgrading, run `python _meta/tools/distill.py <root> prepare` once and
 follow distill's Recheck and Ask steps for each page it lists.

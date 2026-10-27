@@ -298,3 +298,50 @@ def test_the_morning_view_says_the_send_tool_is_the_mailbox_check():
     assert "only for the mailbox whose account is the briefing address" in flat
     assert "the address claude itself is signed in with is not part of that check" in flat
 
+
+# ----- #3 and #8: apps still connecting when they are looked at ----------------------------------------
+def init_with(*statuses) -> str:
+    servers = [{"name": f"claude.ai App{i}", "status": s} for i, s in enumerate(statuses)]
+    tools = [f"mcp__claude_ai_App{i}__list" for i, s in enumerate(statuses) if s == "connected"]
+    return json.dumps({"type": "system", "subtype": "init", "cwd": "x", "model": "claude-haiku-5-5",
+                       "apiKeySource": "none", "tools": tools, "mcp_servers": servers}) + "\n"
+
+
+def answering(monkeypatch, *outputs):
+    """A claude that answers each probe with the next init (an exception is raised instead), on a clock
+    that only the waits move."""
+    asked, clock = [], [0.0]
+    monkeypatch.setattr(routine, "_sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    monkeypatch.setattr(routine, "_clock", lambda: clock[0])
+    outputs = list(outputs)
+
+    def run(argv, **kw):
+        asked.append(argv)
+        said = outputs.pop(0)
+        if isinstance(said, Exception):
+            raise said
+        return subprocess.CompletedProcess(argv, 0, said, "")
+    return run, asked, clock
+
+
+def test_the_probe_looks_again_while_an_app_is_still_connecting(tmp_path, monkeypatch):
+    run, asked, clock = answering(monkeypatch, init_with("connected", "pending"), init_with("connected", "connected"))
+    seen = routine.probe_tools("claude", tmp_path, run=run)
+    assert len(asked) == 2 and seen["tools"] == ["mcp__claude_ai_App0__list", "mcp__claude_ai_App1__list"]
+    assert 0 < clock[0] <= routine.PENDING_BUDGET
+
+
+def test_the_probe_keeps_the_look_with_the_fewest_apps_still_connecting(tmp_path, monkeypatch):
+    run, asked, _ = answering(monkeypatch, init_with("pending", "pending"), init_with("connected", "pending"),
+                              init_with("pending", "pending"))
+    seen = routine.probe_tools("claude", tmp_path, run=run)
+    assert len(asked) == routine.PENDING_LOOKS == 3 and seen["tools"] == ["mcp__claude_ai_App0__list"]
+    assert [s["status"] for s in seen["mcp_servers"]] == ["connected", "pending"]
+
+
+def test_a_probe_with_nothing_connecting_asks_once_and_a_failed_second_look_keeps_the_first(tmp_path, monkeypatch):
+    run, asked, _ = answering(monkeypatch, init_with("connected", "needs-auth"))
+    assert routine.probe_tools("claude", tmp_path, run=run)["tools"] == ["mcp__claude_ai_App0__list"] and len(asked) == 1
+    run, asked, _ = answering(monkeypatch, init_with("connected", "pending"), subprocess.TimeoutExpired("claude", 1))
+    assert routine.probe_tools("claude", tmp_path, run=run)["tools"] == ["mcp__claude_ai_App0__list"]
+

@@ -209,6 +209,10 @@ class ProbeError(RuntimeError):
 
 PROBE_PROMPT = "Reply OK."
 PROBE_SECONDS = 180
+# A connector still connecting when the command line starts is `pending` in its init and brings no tools yet: the
+# probe looks again, PENDING_WAIT seconds apart, at most PENDING_LOOKS times and not after PENDING_BUDGET seconds.
+PENDING_LOOKS, PENDING_WAIT, PENDING_BUDGET = 3, 20, 60
+_sleep, _clock = time.sleep, time.monotonic   # the tests stand in for them
 
 
 def probe_path() -> Path:
@@ -216,13 +220,37 @@ def probe_path() -> Path:
     return Path.home() / ".spaces" / "probe.json"
 
 
+def _pending(seen: dict) -> int:
+    return sum(1 for s in seen["mcp_servers"] if s.get("status") == "pending")
+
+
 def probe_tools(claude: str, cwd: Path, extra_dirs=(), run=subprocess.run) -> dict:
     """What `claude -p` itself sees, read from the `init` event of a one-turn run started as a
     routine starts (REFUSE, the environment without a key or token): `tools` (connectors
     included, only the connected ones), `mcp_servers` (name and status of each), `cwd`, `model`
     (the probe's own: the cheap one) and `auth` (`apiKeySource`: "none" for a claude.ai sign-in,
-    else what took over). `extra_dirs` are the folders a routine adds (`--add-dir`). Raises
-    ProbeError when the run reports no init."""
+    else what took over). `extra_dirs` are the folders a routine adds (`--add-dir`). While a
+    connector is still `pending` it looks again (PENDING_LOOKS), and keeps the look with the fewest
+    pending: an app that was still connecting is not taken for one that is not connected. Raises
+    ProbeError when the first run reports no init; a later look that fails keeps the best one so far."""
+    began, best = _clock(), None
+    for look in range(PENDING_LOOKS):
+        try:
+            seen = _probe_once(claude, cwd, extra_dirs, run)
+        except ProbeError:
+            if best is None:
+                raise
+            break
+        if best is None or _pending(seen) < _pending(best):
+            best = seen
+        if not _pending(best) or look == PENDING_LOOKS - 1 or _clock() - began + PENDING_WAIT > PENDING_BUDGET:
+            break
+        _sleep(PENDING_WAIT)
+    return best
+
+
+def _probe_once(claude: str, cwd: Path, extra_dirs, run) -> dict:
+    """One look of `probe_tools`."""
     argv = [claude, "-p", *REFUSE, *JSON_OUT, "--tools", *ROUTINE_BUILTINS]   # what a run has (F-8): its init lists those
     for folder in extra_dirs:
         argv += ["--add-dir", str(folder)]
