@@ -296,7 +296,12 @@ person. So the task carries the computer's routine profile, in four layers:
    `main` past the checks or merges a red pull request. The gate's protected list always includes
    a minimum, whatever `space.yaml` says: the machinery, `CLAUDE.md`, `AGENTS.md`, `.gitignore`,
    `.gitattributes`, `.gitmodules`, `_meta/templates/` and `_meta/plugins/`. A change there waits
-   for the person's click.
+   for the person's click. Two consequences are settled so nothing lands half-done or waits for
+   no reason:
+   - A new or re-addressed mount waits as one unit with its `.gitmodules` entry. A pin move of a
+     mount already on `main` still lands on green.
+   - An `AGENTS.md` that is exactly what `agents_md.py` renders from the same checkout counts as
+     part of a template release, so a release still lands on its own.
 
 The grant is the computer's, read from the same verdicts (`apps.yaml`) when the tasks are made:
 read tools for read apps; the tracker's create and update tools; for mail, `send_message` and

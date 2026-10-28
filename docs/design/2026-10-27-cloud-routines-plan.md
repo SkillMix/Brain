@@ -44,7 +44,7 @@ A: 1, 6, 9. B: 2, 3, 5, 15, 16, 17. C: 4 (after 2), 8, 12 (after 5). D: 14 (afte
 **Interfaces:**
 - Produces (every `gh` argument is a callable `gh(*args) -> subprocess.CompletedProcess | None`, None when `gh` is not installed, so tests inject a fake):
   - `repo_slug(root: Path) -> str | None`: `owner/name` from `git remote get-url origin`, last two path segments, `.git` stripped; None without an origin.
-  - `runner(cwd: Path) -> Callable`: the real `gh`, utf-8, `errors="replace"`, timeout 60 s, None on `FileNotFoundError`.
+  - `runner(cwd: Path) -> Callable`: the real `gh`, utf-8, `errors="replace"`, timeout 60 s, None only when `gh` itself is missing (a `FileNotFoundError` that names `gh`); any other launch failure is a failed call.
   - `open_pulls(gh, slug: str, head: str | None = None) -> list[dict] | None`: `GET repos/{slug}/pulls?state=open&per_page=100` (plus `&head={owner}:{head}`). Each dict: `number:int, head_ref:str, head_sha:str, title:str, url:str, draft:bool, auto_merge:bool, cross_repo:bool, created_at:str`. `cross_repo` is True when `head.repo` is null or its `full_name` differs from `base.repo.full_name`. None on a non-zero exit or output that is not a JSON list.
   - `create_pull(gh, slug: str, head: str, title: str, body: str) -> int | None`: `api -X POST repos/{slug}/pulls -f title=… -f head=… -f base=main -f body=…`; the new number.
   - `pull_state(gh, slug: str, number: int) -> dict | None`: `GET repos/{slug}/pulls/{number}` as `{merged: bool, state: str, mergeable_state: str | None, head_sha: str}`.
@@ -641,6 +641,7 @@ Tree message: `feat: cloud.py starts a cloud run under the computer's guard and 
   - Every file in `_meta/templates/routines/` gains a step 0: `python <tools>/chain.py gate <workspace>`; on exit 3 the task stops and writes nothing.
   - The sweep, distill and owner-email skills: when `routine-host.yaml` says `runner: cloud`, a session on the computer leaves the sweep, the distill and the queued owner notices to the cloud (a notice it queued itself it still sends). The sweep skill's repository feed reads pull requests through REST only.
   - `routine.ROUTINE_TOOLS` gains `"cloud.py"`.
+  - The sweep skill and the cloud sweep prompt call `sweep.py <root> --attachment-unread <record id> <name>` for an attachment the run could not read, and `--attachment-read <record id> <name>` for one read with no text. They say that `--attachments` prints tab-separated rows whose subject may be empty (`<id>\t\t<name>`). The guard profile allows these shapes (Task 17).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -826,6 +827,7 @@ Tree message: `feat: sync.py --cloud lands a cloud run once, leased, without a p
   - `gate.MINIMUM_PROTECTED = ("identity/", "rules.md", "space.yaml", ".claude/", "_meta/tools/", ".github/", "CLAUDE.md", "AGENTS.md", ".gitignore", ".gitattributes", ".gitmodules", "_meta/templates/", "_meta/plugins/", ".claude-plugin/")`.
   - `gate.protected_prefixes(root) -> tuple`: the space's own list, then every entry of `MINIMUM_PROTECTED` it lacks, in that order, no duplicates. A `space.yaml` that names fewer can never shrink the minimum.
   - `spaceyaml.DEFAULTS["protected"]` and the template's `space.yaml` list the same entries.
+  - Settled after review (spec 4.7 layer 4): `Run.split` holds a new or re-addressed mount's gitlink back with `.gitmodules`, and the gate counts an `AGENTS.md` that equals `agents_md.py`'s render of the same checkout as part of a template release.
 
 - [ ] **Step 1: Write the failing tests**
 
