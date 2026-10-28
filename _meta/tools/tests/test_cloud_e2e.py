@@ -357,13 +357,14 @@ def test_cloud_sweeps_and_a_daily_land_end_to_end(world, capsys, monkeypatch):
     assert platform.open(SPACE) == [] and platform.pulls[stuck]["merged"]
 
     # 7. Main holds every run line once, every witness page once, the latest mark, no feed and no protected change.
+    # Two runs in the same second can write the same line (a fast machine does): each is held as often as written.
     on_main = lines_on(world, SPACE)
     for line in written:
         if line["space"] == "ada-space":
-            assert on_main.count(line) == 1, line
+            assert on_main.count(line) == written.count(line), line
         else:   # the brain's sweeps change only run lines and marks: quiet, each carried by the next, no pull request
             assert lines_on(world, BRAIN, "main" if line["routine"] == "daily-chain" else "cloud/sweep").count(line) \
-                == 1, line
+                == written.count(line), line
     assert [platform.pulls[n]["branch"] for n in platform.posts(BRAIN)] == ["cloud/daily"]
     counted = {name: sum(1 for line in on_main if line.get("routine") == name)
                for name in ("sweep-chain", "daily-chain", "sweep_chain", "daily")}

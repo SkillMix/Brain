@@ -18,7 +18,7 @@
 - The template carries no company, client or person names: fixtures use `Ada Okafor`, `ada`, `example.test` (CI runs `no_company_names.py`).
 - Messages a person reads are plain sentences in the house voice of the file they sit in (look at the neighbouring messages). No jargon in Needs-you text.
 - Tests: `python -m pytest _meta/tools/tests -q` from the repository root, with `GIT_CONFIG_GLOBAL` pointing at an empty file as CI does. Git-touching tests use a throwaway bare origin like `test_sync.py`'s `repo` fixture. Baseline before this branch: 2500 passed, 15 skipped.
-- This session cannot commit (its deny rules refuse `git commit`). The controller stages each task's files with `git add` and records `git write-tree` with the task's message in `C:/Users/maintainer/.wt/cloud-routines-land/trees.txt`, outside the worktree (one line: `<tree><TAB><message>`), which the owner's land script turns into one commit per task. Implementers never stage.
+- This session cannot commit (its deny rules refuse `git commit`). The controller stages each task's files with `git add` and records `git write-tree` with the task's message in a file outside the worktree (one line: `<tree><TAB><message>`), which the owner's land script turns into one commit per task. Implementers never stage.
 
 ## Execution order
 
