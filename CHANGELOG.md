@@ -165,9 +165,10 @@ back to back, and nothing a record or the person settled is asked again.
   through gh in everything the tools start, as gh's own clone does, so a credential manager that
   would ask in a window no one sees no longer stops it. A first push to `main` that fails, or that
   leaves `main` the template's, is a failed step with git's own words, and the build is not done;
-  a brain or project that did not mount is a failed step too. While `main` is still the
-  template's, the sync sends everything as one protected pull request, checked as one tree, so the
-  owner merges once instead of a protected half that fails on a tree without the folders.
+  a brain or project that did not mount is a failed step too, one for each mount. While `main` is
+  still the template's, the sync sends everything as one protected pull request, checked as one
+  tree, so the owner merges once instead of a protected half that fails on a tree without the
+  folders.
 - **A company site that moved is read where it moved to.** The site's reader may fetch only the
   company's domain and its `www.` twin, so a domain that redirects to another host (a `.nl` that
   moved to a `.com`) came back with nothing and the build said the site gave nothing to keep. When

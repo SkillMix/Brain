@@ -2147,11 +2147,12 @@ def run(root, answers, offline=False, org=None, dry_run=False, home=None, user_i
                        "a note names this workspace to the brain" if sent else "the brain knows it, or has no entry yet")
         except Exception as exc:
             report.add("workspace announced", False, "python _meta/tools/classify.py . pending", str(exc)[:200])
-        for mount in crew_mounts:
+        for mount in crew_mounts:   # one row a mount: add_mount's when it mounts one (the review of #61)
             if not offline and mount.get("repo") and not (root / mount["path"] / "space.yaml").exists():
                 add_mount(report, root, mount["repo"], mount["path"], dry_run)
-            report.add(f"mount {mount['name']}", offline or (root / mount["path"] / "space.yaml").exists() or dry_run,
-                       f"test -f {root / mount['path'] / 'space.yaml'}", "crew project mounted read-only")
+            else:
+                report.add(f"mount {mount['name']}", offline or (root / mount["path"] / "space.yaml").exists() or dry_run,
+                           f"test -f {root / mount['path'] / 'space.yaml'}", "crew project mounted read-only")
         scan_codebases(report, root, now, offline)
         report.spaces[name] = root
     ui = Path(user_instructions) if user_instructions else default_user_instructions(root, offline, home)

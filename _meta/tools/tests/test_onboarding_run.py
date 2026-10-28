@@ -487,6 +487,26 @@ def test_a_brain_that_did_not_mount_is_a_failed_step(tmp_path, monkeypatch):
     assert report.steps[-1].done
 
 
+def test_a_crew_project_that_did_not_mount_is_one_failed_step(tmp_path, monkeypatch):
+    # the review of #61: add_mount's row and a second "crew project mounted read-only" row named the same mount
+    import yaml
+    brain = make_space(tmp_path / "brain", profile="brain", name="lantern", subjects=[
+        {"id": "ben", "kind": "people", "title": "Ben Liu"}])
+    harbor = make_space(tmp_path / "harbor", profile="project", name="harbor", audience=["Ada Okafor", "Ben Liu"])
+    onboard.write_yaml(brain / "_meta" / "state" / "onboard.yaml", {
+        "case": "company", "repo": "lantern-org/brain", "spaces": {"lantern": str(brain), "harbor": str(harbor)}})
+    monkeypatch.setattr(onboard, "run_cmd", lambda argv, *a, **k: subprocess.CompletedProcess(argv, 1, "", ""))
+    answers = yaml.safe_load(onboard.invite(brain, "ben").read_text(encoding="utf-8"))
+    answers["crew_projects"][0]["repo"] = "https://github.com/lantern-org/harbor.git"
+    fake, _ = outside({"git submodule add": (128, "", "fatal: repository 'lantern-org/harbor' not found")})
+    monkeypatch.setattr(onboard, "run_cmd", fake)
+    ws = tmp_path / "ben-workspace"
+    onboard.copy_template(onboard.TEMPLATE_ROOT, ws)
+    report = onboard.run(ws, answers, brain=str(brain), home=tmp_path, user_instructions=str(tmp_path / "CLAUDE.md"))
+    rows = [s for s in report.steps if s.name.startswith("mount") and "harbor" in s.name]
+    assert len(rows) == 1 and not rows[0].done and "not found" in rows[0].result, [s.row() for s in rows]
+
+
 def test_while_main_is_still_the_template_s_the_sync_sends_the_whole_fill_as_one_protected_pull_request(repo, monkeypatch):
     from test_sync import git as sync_git
     monkeypatch.setattr(sync.Run, "gh", lambda self, *args: None)
