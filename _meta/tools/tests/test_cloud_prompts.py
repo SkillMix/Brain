@@ -15,6 +15,7 @@ import cloud
 import onboard
 import routine
 import start
+import sweep
 from conftest import make_space
 
 TEMPLATE = Path(__file__).resolve().parents[3]
@@ -272,6 +273,9 @@ def test_the_cloud_sweep_names_the_attachment_commands_and_the_rows_they_read():
         assert "`'\"'\"'`" in said, path.name
         assert "line break" in said and "left unmarked" in said and "run line" in said, path.name
         assert "double quotes" not in said and "cannot be written" not in said, path.name
+        # sweep.py takes a value that starts with `--` for a flag and refuses it: that name is not marked either.
+        assert "starts with `--`" in said and said.count("left unmarked") == 2, path.name
+    assert sweep._flag(["--attachment-read", "gmail-1a2b", "--draft.pdf"], "--attachment-read", 2) == []
 
 
 def test_an_attachment_name_with_quotes_and_a_dollar_reaches_sweep_py_whole(tmp_path, machine):
@@ -305,12 +309,12 @@ def test_a_kept_codebase_file_is_read_from_its_clone_as_it_is_now():
 
 
 def test_the_sweep_skill_says_how_a_cloud_sweep_differs():
-    """Where the skill says when it runs, a session learns what a cloud sweep does its own way: every feed through a
-    connector, an attachment marked with the two commands, codebase files from their clones, and GitHub through REST,
-    one endpoint word a call."""
+    """Where the skill says when it runs, a session learns what a cloud sweep does its own way: every feed but the
+    repository's through a connector, and the steps that say the rest (GitHub and a codebase's files in step 1, the
+    attachments in step 2), pointed to rather than said twice."""
     when = text(SKILLS / "sweep" / "SKILL.md").split("\n## When\n", 1)[1].split("\n## ", 1)[0]
     said = " ".join(next(b for b in when.split("\n- ") if b.startswith("In the cloud")).split())
-    for part in ("connector", "--attachment-unread", "--attachment-read", "clone", "REST", "one endpoint word"):
+    for part in ("every feed but the repository's comes through a connector", "step 1", "step 2"):
         assert part in said, part
 
 

@@ -540,7 +540,6 @@ def test_a_grant_without_a_proof_refuses_the_run_and_writes_nothing(ada, capsys)
     assert "proof" in capsys.readouterr().out
     with pytest.raises(ValueError):
         cloud.begin(ada, "sweep", now=NOW, grant=GRANT)
-    (ada / routine.HOST).unlink()
     assert untouched(ada)
 
 
@@ -557,7 +556,6 @@ def test_a_proofs_grant_is_refused_while_the_record_is_unclear(ada, capsys):
     assert said == f"cloud: {cloud.UNCLEAR_GRANT}" and said.count(".") == 1 and said.endswith(".")
     with pytest.raises(ValueError, match="unclear"):
         cloud.begin(ada, "daily", proof=True, now=NOW, grant=cloud.task_grant(GRANT, "daily"))
-    path.unlink()
     assert untouched(ada)
 
 

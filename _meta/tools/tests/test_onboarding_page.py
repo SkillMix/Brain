@@ -1009,7 +1009,8 @@ def proved(ws, chain, at, **seen) -> None:
 def test_routines_the_cloud_stopped_are_said_stopped_and_offered_here(tmp_path, monkeypatch):
     """The record says cloud, so this computer's own tasks step aside, and a proof showed a refusal missing, so the
     cloud's two tasks stay off: the routines run nowhere. The page says so where it says where they run, with what
-    the cloud no longer refuses and 'run my routines here', and no line that they run in the cloud or missed a run."""
+    the cloud no longer refuses and 'run my routines here', and no line that they run in the cloud or missed a run.
+    Paused as well, the pause goes unsaid: resuming starts nothing while the cloud's tasks stay off."""
     assert page.HOST_STOPPED == ("Your routines are stopped: the cloud no longer refuses {what}, so its two scheduled "
                                  "tasks stay off. Say 'run my routines here' to run them on this computer.")
     said = page.HOST_STOPPED.format(what="a change to a protected file")
@@ -1024,9 +1025,9 @@ def test_routines_the_cloud_stopped_are_said_stopped_and_offered_here(tmp_path, 
 
     def paused(ws, journal):
         stopped(ws, journal)
-        routine.set_pause(ws, "2026-10-25T06:00:00+02:00")
-    texts = [r["text"] for r in rows_of(tmp_path / "paused", "waiting", paused)]
-    assert texts == ["Routines paused until tomorrow at 06:00. Say 'resume my routines' to start them sooner.", said]
+        assert routine.set_pause(ws, "2026-10-25T06:00:00+02:00")["paused_until"]
+        assert routine.paused_until(routine.host(ws), NOW) is not None   # the pause holds, and goes unsaid
+    assert [r["text"] for r in rows_of(tmp_path / "paused", "waiting", paused)] == [said]
 
     def mended(ws, journal):
         stopped(ws, journal)

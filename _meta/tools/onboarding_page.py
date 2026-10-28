@@ -942,8 +942,9 @@ def _host_rows(ws, now) -> list:
     them not start, since when they have not. The cloud is no computer, so it is never named as one: they run there as
     two scheduled tasks, or have not since when. Stopped (`onboard.cloud_stopped`: in the cloud, whose two tasks stay
     off once a proof showed a refusal missing): that they are, what the cloud no longer refuses, and 'run my routines
-    here', in place of both. A routine paused, or one nobody may run, is not one the scheduler failed to start, so
-    then no `not started` line; with nothing recorded, those lines are as the sync script wrote."""
+    here', in place of both, and of the pause, since resuming starts nothing while the cloud's tasks stay off. A
+    routine paused, or one nobody may run, is not one the scheduler failed to start, so then no `not started` line;
+    with nothing recorded, those lines are as the sync script wrote."""
     import onboard
     import routine
     until, away, cloud, stopped = None, "", False, {}
@@ -960,12 +961,12 @@ def _host_rows(ws, now) -> list:
         return _missed_rows(ws, now)
     if record.get("unclear"):
         return [_fact("Routines", HOST_UNCLEAR)]
+    if stopped:   # nothing runs them, so neither a run the sync script saw not start nor a pause says anything more
+        return [_fact("Routines", HOST_STOPPED.format(what=onboard.unrefused_words(stopped)))]
     rows = [_fact("Routines", f"Routines paused until {words(until, now)}. Say 'resume my routines' to start them "
                               "sooner.")] if until else []
     if not (away or cloud):
         return rows or _missed_rows(ws, now)
-    if stopped:   # nothing runs them, so a run the sync script saw not start says nothing more
-        return rows + [_fact("Routines", HOST_STOPPED.format(what=onboard.unrefused_words(stopped)))]
     there = HOST_CLOUD if cloud else HOST_ELSEWHERE.format(name=away)
     return rows + (([] if until else _missed_rows(ws, now, away, cloud)) or [_fact("Routines", there)])
 

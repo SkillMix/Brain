@@ -1883,7 +1883,8 @@ def phase_history(args) -> dict:
     are kept where the routines run, and the phase is done here (R45, I-1). While they run in the cloud it writes
     nothing either: with no plan ever made it says the history is read only on a computer, so the routines come
     back to one first; a plan made before the move is said as it stands, as for any record (`_history_state`), and
-    so are notes on one that cannot be read."""
+    so are notes on one that cannot be read; while it runs (neither read nor waiting), its `why` is that same
+    sentence, since only a computer reads the parts left."""
     import backfill
     journal, now = setup_journal.load(), _now()
     counts = history_counts(journal)
@@ -1896,8 +1897,8 @@ def phase_history(args) -> dict:
     made = backfill.load(workspace) if elsewhere == backfill.CLOUD_WHY else {}   # a plan made before the move
     if made.get("broken"):
         return {"phase": "history", "state": "waiting", "why": backfill.BROKEN_WHY, "counts": counts}
-    if made.get("parts"):
-        return {"phase": "history", **_history_state(workspace, counts)}
+    if made.get("parts"):   # only a computer reads what is left, so the cloud's sentence is the why while it runs
+        return {"phase": "history", **_history_state(workspace, counts, backfill.CLOUD_WHY)}
     if elsewhere:   # two computers writing the history's notes would stop this one's sync; the cloud reads none of it
         return {"phase": "history", "state": "done", "counts": counts, "why": elsewhere}
     text = (getattr(args, "reading", None) or "").strip()

@@ -1650,7 +1650,13 @@ def pause_end(until: str | None, now: dt.datetime) -> dt.datetime:
             end = dt.datetime.fromisoformat(text[:-1] + "+00:00" if text[-1:] in ("Z", "z") else text)
     except ValueError:
         raise ValueError(f'"{text[:40]}" is not a date or a time: give one like 2026-11-02 or 2026-11-02T09:00') from None
-    end = end if end.tzinfo else end.astimezone()
+    if not end.tzinfo:
+        try:
+            end = end.astimezone()
+        except (OSError, OverflowError):   # past what this computer's own time can say (Windows: 9999, before 1970)
+            if end <= now.replace(tzinfo=None):
+                raise ValueError("that time has passed: give one still to come") from None
+            raise ValueError("that time is too far ahead: give one in the next few years") from None
     if end <= now:
         raise ValueError("that time has passed: give one still to come")
     return end

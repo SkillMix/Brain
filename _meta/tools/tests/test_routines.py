@@ -2799,6 +2799,30 @@ def test_a_pause_past_what_this_computers_clock_can_say_still_holds_the_run(tmp_
     assert called == [] and line["outcome"] == "paused" and line["why"] == "paused until 3001-01-02 06:30"
 
 
+@pytest.mark.parametrize("error", [OSError(22, "Invalid argument"), OverflowError("date value out of range")])
+def test_a_pause_without_a_zone_this_computers_clock_cannot_place_reads_as_unclear(tmp_path, monkeypatch, error):
+    """A moment written without a zone is this computer's own time, and its clock may not place one (Windows raises
+    OSError for 9999-12-31T00:00:00): that pause is no moment, so the record reads as unclear and holds every run,
+    never a crash in reading the record or in the hold."""
+    import types
+
+    class Unplaced(dt.datetime):
+        def astimezone(self, tz=None):
+            if tz is None and self.tzinfo is None:
+                raise error
+            return super().astimezone(tz)
+    ws = workspace(tmp_path)
+    routine.claim_host(ws, "os", NOW)
+    path = ws / routine.HOST
+    naive = path.read_text(encoding="utf-8").replace("paused_until: null", 'paused_until: "9999-12-31T00:00:00"')
+    path.write_text(naive, encoding="utf-8")
+    monkeypatch.setattr(routine, "dt", types.SimpleNamespace(**{**vars(dt), "datetime": Unplaced}))
+    assert routine._moment("9999-12-31T00:00:00") is None
+    assert routine._moment("9999-12-31T00:00:00+00:00") is not None   # a moment with its zone needs no clock
+    assert routine.host(ws) == {"unclear": True}
+    assert routine._held(ws, NOW) == ("away", routine.UNCLEAR)
+
+
 def test_the_record_is_one_line_per_key_with_the_claim_apart_from_the_pause(tmp_path, monkeypatch):
     ws = workspace(tmp_path)
     monkeypatch.setattr(routine, "machine_name", lambda: "Ada's \"desk\" PC: 100% \\ yes")

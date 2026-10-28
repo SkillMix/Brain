@@ -909,6 +909,27 @@ def test_a_pause_ends_at_six_the_next_morning_or_when_the_person_says():
             onboard.pause_end(said, LOCAL)
 
 
+@pytest.mark.parametrize("error", [OSError(22, "Invalid argument"), OverflowError("date value out of range")])
+def test_a_pause_this_computers_clock_cannot_place_is_a_plain_line(monkeypatch, error):
+    """Windows' clock places no moment without a zone past 3000 or before 1970 (OSError): `--pause 9999-12-31` says
+    so in a plain line, never a traceback."""
+    import types
+
+    class Unplaced(dt.datetime):
+        def astimezone(self, tz=None):
+            if tz is None and self.tzinfo is None and not 1970 < self.year < 3000:
+                raise error
+            return super().astimezone(tz)
+    monkeypatch.setattr(onboard, "dt", types.SimpleNamespace(**{**vars(dt), "datetime": Unplaced}))
+    now = Unplaced(2026, 10, 24, 18, 0).astimezone()
+    with pytest.raises(ValueError, match="too far ahead"):
+        onboard.pause_end("9999-12-31", now)
+    with pytest.raises(ValueError, match="too far ahead"):
+        onboard.pause_end("9999-12-31T00:00:00", now)
+    with pytest.raises(ValueError, match="has passed"):
+        onboard.pause_end("1960-01-01", now)
+
+
 def cron_tasks(ada, monkeypatch, here: bool) -> None:
     """Ada's routines recorded as cron lines; `here`: this computer's crontab holds them."""
     line = "33 3 * * * routine.py daily-chain"

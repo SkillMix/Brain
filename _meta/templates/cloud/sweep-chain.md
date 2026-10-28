@@ -65,7 +65,8 @@ Then, for each root, the workspace first:
    `python3 /home/user/<root>/_meta/tools/sweep.py /home/user/<root> --attachment-read <record id> <name>`.
    A name holding anything but letters, digits, `.`, `-` and `_` goes in single quotes, each single quote in it
    written as `'"'"'`: `Ada's "final" $5.pdf` is `'Ada'"'"'s "final" $5.pdf'`. A name holding a line break is left
-   unmarked: name it in your run line.
+   unmarked: name it in your run line. A name that starts with `--` is left unmarked and named there too: sweep.py
+   reads it as a flag.
 3. **Sweep and route.** `python3 /home/user/<root>/_meta/tools/sweep.py /home/user/<root>`. When `space.yaml`
    has `routing:`, route as `/home/user/<root>/.claude/skills/route/SKILL.md` says: understand each subject first
    (its brief, built when missing), research what the records leave open (what a search finds is exported too),

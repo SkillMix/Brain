@@ -839,17 +839,12 @@ def _lock_data(raw: bytes) -> dict | None:
         return None
     if not isinstance(data, dict):
         return None
-    pid, started = data.get("pid"), data.get("started")
-    if isinstance(started, str):
-        try:
-            started = dt.datetime.fromisoformat(started)
-        except ValueError:
-            return None
+    pid, started = data.get("pid"), _moment(data.get("started"))   # one this computer cannot place is no lock
     if not (isinstance(pid, int) and not isinstance(pid, bool) and pid > 0 and isinstance(started, dt.datetime)):
         return None
     mark = data.get("pid_started")
     return {"pid": pid, "routine": str(data.get("routine") or ""),
-            "started": started if started.tzinfo else started.astimezone(), "part": str(data.get("part") or ""),
+            "started": started, "part": str(data.get("part") or ""),
             "pid_started": str(mark) if isinstance(mark, (str, int)) and not isinstance(mark, bool) and str(mark) else ""}
 
 
@@ -1583,7 +1578,8 @@ def _now() -> dt.datetime:
 
 def _moment(value) -> dt.datetime | None:
     """A moment as the record holds it (ISO; one written without a zone is this computer's own time); None for
-    anything else."""
+    anything else, and for a moment without a zone this computer's clock cannot place (Windows: 9999-12-31T00:00:00),
+    so a record that holds one reads as unclear."""
     if isinstance(value, str):
         text = value.strip()
         try:
@@ -1592,7 +1588,12 @@ def _moment(value) -> dt.datetime | None:
             return None
     if not isinstance(value, dt.datetime):
         return None
-    return value if value.tzinfo else value.astimezone()
+    if value.tzinfo:
+        return value
+    try:
+        return value.astimezone()
+    except (OSError, OverflowError):   # past what this computer's own time can say
+        return None
 
 
 class _OneRecord(yaml.SafeLoader):
@@ -1740,11 +1741,14 @@ def claim_cloud(workspace, tasks: dict, timezone: str, roots: list, grant: dict,
 
 def set_pause(workspace, until) -> dict | None:
     """The record, every key of it kept, with its pause set to `until` (a moment; None resumes); None when there is no
-    record to set it in."""
+    record to set it in. ValueError for an `until` that is no moment this computer can place (`_moment`), so that
+    one is never written as a resume."""
     record = host(workspace)
     if record is None or record.get("unclear"):
         return None
     when = _moment(until) if until is not None else None
+    if until is not None and when is None:
+        raise ValueError(f"{until!r} is no moment this computer can place")
     return _write_host(workspace, {**record, "paused_until": when.isoformat(timespec="seconds") if when else None})
 
 
