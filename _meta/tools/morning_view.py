@@ -10,9 +10,9 @@ payload to its mail connector. In the shadow the subject and title say so.
     python morning_view.py [root] sent-today        exit 0 when today's briefing was sent
     python morning_view.py [root] record-send --id <message id> [--to <address> ...] | --failed <reason>
 
-`record-send --to` takes the recipients read back from the sent message. Any address but the
-owner's makes the line a failed send and puts one security item on Needs you; no address is
-written into the space.
+`record-send --to` takes the recipients read back from the sent message, all after one `--to` or
+one `--to` each; every one is kept. Any address but the owner's makes the line a failed send
+and puts one security item on Needs you; no address is written into the space.
 """
 from __future__ import annotations
 
@@ -577,7 +577,8 @@ def _guard_cli(argv: list):
     ap.add_argument("--id", dest="message_id")
     ap.add_argument("--failed")
     ap.add_argument("--cost", type=int, default=0)
-    ap.add_argument("--to", nargs="+", help="each recipient read back from the sent message")
+    ap.add_argument("--to", nargs="+", action="extend",
+                    help="each recipient read back from the sent message: all after one --to, or one --to each")
     opts = ap.parse_args(rest)
     if not opts.message_id and not opts.failed:
         ap.error("give --id <message id> or --failed <reason>")

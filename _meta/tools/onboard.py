@@ -1880,10 +1880,23 @@ def _admins_held(gh, slug: str, what: str) -> str | None:
         slug=slug, what=what)
 
 
+def cloud_grant(workspace) -> dict:
+    """The apps a move to the cloud grants the routines, {"read", "write", "send"}: what this computer's verdicts and
+    probe give (`routine.grant`). A computer with no probe of its own, while the routines run in the cloud, takes the
+    grant the record kept at the move instead: there the build proves nothing, so a computer that replaced the one
+    they moved from has never probed, and it moves them again on what they were moved with."""
+    import routine
+    record = routine.host(workspace) or {}
+    if not routine.read_probe() and record.get("runner") == "cloud" and isinstance(record.get("grant"), dict):
+        return {part: list(record["grant"].get(part) or []) for part in routine.GRANT_KEYS}
+    got = routine.grant(workspace)
+    return {part: list(got.get(part) or []) for part in routine.GRANT_KEYS}
+
+
 def cloud_blockers(workspace, gh=None) -> list:
     """`--routines-cloud --check`: what keeps the routines from moving to the cloud, one sentence each, in this order:
     the history still being read (only a computer reads it, `backfill.active`); no app granted to the routines
-    (`routine.grant`); a space the routines run over, or a space one of them mounts, with no repository on GitHub
+    (`cloud_grant`); a space the routines run over, or a space one of them mounts, with no repository on GitHub
     (the cloud attaches GitHub repositories only); a repository whose `main` lets the person's own account past the
     checks (`enforce_admins` off, or no protection at all), or that could not be read. `gh` is the GitHub command line
     (`ghrest.runner`), asked through REST only. [] when nothing does. Writes nothing."""
@@ -1894,8 +1907,7 @@ def cloud_blockers(workspace, gh=None) -> list:
     said = []
     if backfill.active(workspace):
         said.append(CLOUD_HISTORY)
-    got = routine.grant(workspace)
-    if not any(got.get(part) for part in routine.GRANT_KEYS):
+    if not any(cloud_grant(workspace).values()):
         said.append(CLOUD_NO_GRANT)
     repos, missing = _cloud_repositories(workspace)
     said += missing
@@ -2013,12 +2025,13 @@ def routines_cloud(workspace, tasks: dict, timezone: str, now=None) -> tuple:
     read on a computer only), when each task's newest proof run from the last PROOF_HOURS showed every refusal
     (`cloud_proofs`), and when both were rendered here: the record keeps the space repositories the tasks attach
     (their roots, never the codebases the sweep task also attaches) and the apps either was given, as `cloud.py
-    trigger` kept them (`_rendered`). Then the cloud is the host (`routine.claim_cloud`, a pause still to come kept):
-    every computer's runs stop by themselves, and the app's scheduled tasks the routines ran as are no longer read
-    back (`routine_checks` goes; their files are returned, as `--routines-here` returns them). A move from the cloud
-    to new tasks (moving again, for a space made since) says which of the earlier tasks still run: the cloud's gate
-    cannot tell one task from another, so they run beside the new ones until they are turned off. Nothing is written
-    when the move is refused."""
+    trigger` kept them (`_rendered`); the two must grant one app tool at least, or the move is refused
+    (CLOUD_NO_GRANT). Then the cloud is the host (`routine.claim_cloud`, a pause still to come kept): every
+    computer's runs stop by themselves, and the app's scheduled tasks the routines ran as are no longer read back
+    (`routine_checks` goes; their files are returned, as `--routines-here` returns them). A move from the cloud to
+    new tasks (moving again, for a space made since) says which of the earlier tasks still run: the cloud's gate
+    cannot tell one task from another, so they run beside the new ones until they are turned off. Nothing is
+    written when the move is refused."""
     import backfill
     import routine
     workspace = Path(workspace).resolve()
@@ -2051,6 +2064,8 @@ def routines_cloud(workspace, tasks: dict, timezone: str, now=None) -> tuple:
     roots = list(dict.fromkeys(root for chain in CLOUD_CHAINS for root in renders[chain]["roots"]))
     grant = {part: list(dict.fromkeys(tool for chain in CLOUD_CHAINS for tool in renders[chain]["grant"].get(part, [])))
              for part in routine.GRANT_KEYS}
+    if not any(grant.values()):   # tasks that may call no app would read nothing and send nothing
+        return False, CLOUD_NO_GRANT, []
     earlier = _cloud_tasks(workspace) or {}
     try:
         record = routine.claim_cloud(workspace, tasks, timezone, roots, grant, now)

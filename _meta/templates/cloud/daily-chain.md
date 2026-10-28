@@ -51,7 +51,8 @@ Then, for the workspace only:
    briefing went out today already: skip the send. Otherwise send
    `/home/user/<workspace>/_meta/state/private/morning-payload.json` exactly as rendered (its to, subject and body)
    with the mail connector's send tool, from the person's own mailbox to that same address; read the sent message
-   back with `get_message`; then record it with each recipient the read-back shows, its address alone:
+   back with `get_message`; then record it with every recipient the read-back shows, each address alone, all after
+   the one `--to` with a space between them:
    `python3 /home/user/<workspace>/_meta/tools/morning_view.py /home/user/<workspace> record-send --id <message id> --to <address>`.
    One briefing a day, sent even when the list is empty.
 

@@ -265,6 +265,18 @@ def test_record_send_takes_the_recipients_on_the_command_line(tmp_path, monkeypa
     assert line["notes"] == {"step": "send", "failed": "recipient", "email": "m9", "others": 1}
 
 
+def test_a_repeated_to_keeps_every_recipient(tmp_path, monkeypatch):
+    """`--to` given once per recipient keeps them all: a second recipient, the person's address last, still fails
+    the check."""
+    space = make_space(tmp_path / "ada", owner_email="ada@example.test")
+    monkeypatch.setenv("SPACE_NOW", "2026-10-12T09:00:00Z")
+    assert morning_view.main([str(space), "record-send", "--id", "m9", "--to", "someone@else.test",
+                              "--to", "ada@example.test"]) == 0
+    line = json.loads((space / "_meta/state/runs.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert line["notes"] == {"step": "send", "failed": "recipient", "email": "m9", "others": 1}
+    assert morning_view.main([str(space), "sent-today"]) == 1
+
+
 def test_an_owner_address_written_with_a_name_is_still_the_person(tmp_path):
     space = make_space(tmp_path / "ada", owner_email="Ada Okafor <ada@example.test>")
     line = morning_view.record_send(space, "m10", to=["ada@example.test", '"Ada" <Ada@Example.test>'], now=NOW)

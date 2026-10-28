@@ -355,8 +355,11 @@ instead.
    line names the two tasks they run as. When a proof stopped them, its last line says instead "Your routines are
    stopped: ...": that is step 2's refusal missing, so both tasks stay off; say so in plain words and offer "run my
    routines here" instead of moving.
-2. **Prove each task.** For `sweep`, then `daily`: `python <workspace>/_meta/tools/cloud.py trigger <workspace>
-   --chain <chain> --proof --timezone <zone>` prints the task's body. Load `RemoteTrigger` with tool search, create the
+2. **Prove each task.** For `sweep`, then `daily`: `python <workspace>/_meta/tools/cloud.py trigger <workspace> --chain
+   <chain> --proof --timezone <zone>` prints the task's body with two keys it does not send: drop `roots` and `grant`
+   (this computer keeps them for the move), and complete each `mcp_connections` entry with `connector_uuid` and `url`,
+   the id and address of the account's connector of that `name`, keeping its `name` and `permitted_tools`. Every body
+   below, with `--proof` or without, is sent completed the same way. Load `RemoteTrigger` with tool search, create the
    task with that body (it is made turned off), and start one run of it. When the check named the two tasks the routines
    already run as, prove those two instead of creating new ones: update each with the proof body (which turns it off
    while it is proved) and start one run; step 3 updates it back. Its proof run exports and reads nothing, runs no chain

@@ -401,3 +401,23 @@ def test_the_onboard_skill_renders_both_tasks_in_the_persons_zone():
     assert "Get-TimeZone" in flat and "IANA" in flat and "routine-host.yaml" in flat
     assert re.search(r"send guard[^.]*proven only when[^.]*daily[^.]*proof line[^.]*send", flat), \
         "the send guard counts as proven only by a daily proof line that shows its send refused"
+
+
+def test_the_onboard_skill_says_how_a_rendered_body_becomes_the_one_sent():
+    """`cloud.py trigger` prints the body with the move's `roots` and `grant` beside it, and connections named only:
+    the skill says to drop the two and give each connection its connector's id and address."""
+    flat = " ".join(text(SKILLS / "onboard" / "SKILL.md").split())
+    said = re.search(r"cloud\.py trigger[^`]*--proof[^`]*` prints the task's body(.*?)Load `RemoteTrigger`", flat)
+    assert said, "the proof's render step says what to change before the body is sent"
+    for word in ("drop `roots` and `grant`", "`mcp_connections`", "`connector_uuid`", "`url`", "`name`",
+                 "`permitted_tools`", "without"):
+        assert word in said.group(1), word
+
+
+def test_the_briefing_is_recorded_with_every_recipient_after_one_to():
+    """`record-send --to` keeps every recipient however it is given; the daily prompts and the morning-view skill
+    say to put them all after the one `--to`."""
+    for path in (PROMPTS["daily"], COMPUTER / "daily-chain.md", SKILLS / "morning-view" / "SKILL.md"):
+        flat = " ".join(text(path).split())
+        assert re.search(r"record-send --id <message id> --to <address>", flat), path
+        assert "every recipient" in flat and "after the one `--to`" in flat, path

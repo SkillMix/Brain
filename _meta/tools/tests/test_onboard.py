@@ -1228,6 +1228,20 @@ def test_a_refusal_missing_is_said_before_a_wrong_id_a_wrong_zone_or_the_history
         "computer.")
 
 
+def test_only_the_newest_proof_counts(tmp_path, capsys):
+    """An older proof that showed every refusal no longer counts once a later one in the window leaves a refusal
+    out: the later line names no refusal missing (`cloud_unrefused`), yet it is the task as it is, and it proves
+    nothing."""
+    ada = proven(tmp_path)
+    proof(ada, "sweep", hours_ago=2)
+    proof(ada, "sweep", hours_ago=1, guard=None)
+    proof(ada, "daily")
+    assert onboard.cloud_proofs(ada) == {"daily"} and onboard.cloud_unrefused(ada) == {}
+    assert onboard.main([*MOVE, str(ada)]) == 2
+    assert capsys.readouterr().out.strip().startswith("The sweep task has no proof run from the last 48 hours")
+    assert routine.host(ada) is None
+
+
 def test_a_proof_that_shows_a_refusal_missing_names_it(tmp_path, capsys):
     """A refusal the cloud did not make (`false` on a chain's newest proof line) is named in plain words, and an
     older proof that showed every refusal no longer counts: the newest proof run is the task as it is."""
@@ -1367,6 +1381,18 @@ def test_a_zone_without_zone_data_is_checked_by_its_shape_only(tmp_path, monkeyp
     assert onboard.zone_unknown("Europe/Amsterdam") is False and onboard.zone_unknown("Not a zone!") is True
 
 
+def test_a_render_that_grants_no_app_moves_nothing(tmp_path, capsys):
+    """Tasks that may call no app would read nothing and send nothing: the move is refused, whatever the proofs."""
+    ada = proven(tmp_path)
+    nothing = {"read": [], "write": [], "send": []}
+    rendered("sweep", ["ada/ada"], nothing)
+    rendered("daily", ["ada/ada"], nothing)
+    proof(ada, "sweep")
+    proof(ada, "daily")
+    assert onboard.main([*MOVE, str(ada)]) == 2
+    assert capsys.readouterr().out.strip() == onboard.CLOUD_NO_GRANT and routine.host(ada) is None
+
+
 def test_a_render_whose_repositories_are_paths_moves_nothing(tmp_path, capsys):
     ada = proven(tmp_path)
     rendered("sweep", ["/home/ada/spaces/brain"], SWEEP_GRANT)
@@ -1437,7 +1463,7 @@ def on_github(root: Path, url: str) -> Path:
 
 
 def cloud_ready(tmp_path, monkeypatch) -> Path:
-    """Ada's workspace on GitHub, mounting a brain she does not administer, with apps granted to her routines."""
+    """Ada's workspace on GitHub, mounting a brain they do not administer, with apps granted to their routines."""
     ada = make_space(tmp_path / "ada", name="ada", mounts=[
         {"name": "brain", "repo": "https://github.com/example/brain.git", "path": "brain", "branch": "main"}])
     on_github(ada, "https://github.com/ada/ada.git")
@@ -1451,7 +1477,7 @@ def test_the_check_names_a_repository_without_enforce_admins(tmp_path, monkeypat
     github(monkeypatch, {"ada/ada": (True, False), "example/brain": (False, None)})
     assert onboard.main(["--routines-cloud", "--check", str(ada)]) == 1
     lines = capsys.readouterr().out.strip().splitlines()
-    assert len(lines) == 1 and "ada/ada" in lines[0] and "past the checks" in lines[0]   # not the brain: not hers to set
+    assert len(lines) == 1 and "ada/ada" in lines[0] and "past the checks" in lines[0]   # not the brain: not theirs to set
     github(monkeypatch, {"ada/ada": (True, None), "example/brain": (False, None)})
     assert onboard.main(["--routines-cloud", "--check", str(ada)]) == 1
     assert "does not protect main" in capsys.readouterr().out
@@ -1474,7 +1500,7 @@ def test_the_check_names_a_missing_grant_and_a_space_github_cannot_reach(tmp_pat
     ada = cloud_ready(tmp_path, monkeypatch)
     monkeypatch.setattr(routine, "grant", lambda ws, *a, **k: {"read": [], "write": [], "send": [], "reconnect": [],
                                                                 "notes": [], "person": "", "shell": ""})
-    harbor = make_space(tmp_path / "harbor", profile="project", name="harbor")   # hers, never pushed to GitHub
+    harbor = make_space(tmp_path / "harbor", profile="project", name="harbor")   # theirs, never pushed to GitHub
     onboard.write_yaml(Path.home() / ".spaces" / "spaces.yaml", {"spaces": [{"root": str(harbor)}]})
     github(monkeypatch, {"ada/ada": (True, True), "example/brain": (False, None)})
     assert onboard.main(["--routines-cloud", "--check", str(ada)]) == 1
@@ -1499,6 +1525,34 @@ def test_the_check_names_the_two_tasks_the_routines_already_run_as(tmp_path, mon
     clear, already = capsys.readouterr().out.strip().splitlines()
     assert clear == onboard.CLOUD_CLEAR and "trig_01AAAAAAAA" in already and "trig_01BBBBBBBB" in already
     assert "update" in already
+
+
+def test_a_computer_that_replaced_the_one_they_moved_from_moves_them_again(tmp_path, monkeypatch, capsys):
+    """Spec 4.5: a new computer takes the leg over by moving again from there. While the routines run in the cloud
+    its build proves nothing, so it has no probe of its own: the check and the move go by the grant the record
+    kept at the move. A probe of its own, once there is one, is what this computer sees, and it decides."""
+    import test_routines
+    ada = on_github(test_routines.granted(tmp_path), "https://github.com/ada/ada.git")
+    got = routine.grant(ada)
+    moved = {part: got[part] for part in routine.GRANT_KEYS}
+    assert moved["read"]   # the old computer's verdicts and probe grant the routines their apps
+    routine.claim_cloud(ada, CLOUD_TASKS, "Europe/Amsterdam", ["ada/ada"], moved, NOW)
+    routine.probe_path().unlink()   # the new computer: the same workspace, no probe, another id
+    monkeypatch.setattr(routine, "this_machine", lambda: "m-0a1b2c3d")
+    github(monkeypatch, {"ada/ada": (True, True)})
+    assert onboard.main(["--routines-cloud", "--check", str(ada)]) == 0
+    clear, already = capsys.readouterr().out.strip().splitlines()
+    assert clear == onboard.CLOUD_CLEAR and already == onboard.CLOUD_ALREADY.format(**CLOUD_TASKS)
+    for chain in onboard.CLOUD_CHAINS:   # the two tasks rendered here, proved in place and landed
+        rendered(chain, ["ada/ada"], onboard.cloud_grant(ada))
+        proof(ada, chain)
+    assert onboard.main([*MOVE, str(ada)]) == 0
+    assert capsys.readouterr().out.strip() == onboard.CLOUD_MOVED.format(**CLOUD_TASKS)
+    record = routine.host(ada)
+    assert record["grant"] == moved and record["computer"] == "m-0a1b2c3d"   # this computer keeps the leg now
+    routine.write_probe({"tools": [], "mcp_servers": []})   # this computer's own probe: it sees no app
+    assert onboard.main(["--routines-cloud", "--check", str(ada)]) == 1
+    assert capsys.readouterr().out.strip().splitlines()[0] == onboard.CLOUD_NO_GRANT
 
 
 def test_the_check_says_the_routines_are_stopped_rather_than_that_they_already_run_in_the_cloud(
