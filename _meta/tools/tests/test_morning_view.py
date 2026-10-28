@@ -184,6 +184,117 @@ def test_record_send_writes_the_canonical_line_and_the_cli_guard(tmp_path, monke
     assert line["notes"] == {"step": "send", "failed": "no connector"}
 
 
+# ----- the read-back's recipients ------------------------------------------------------
+def recipient_items(root):
+    import yaml
+    path = root / "_inbound" / "needs-you" / "morning-view.yaml"
+    return yaml.safe_load(path.read_text(encoding="utf-8"))["items"] if path.exists() else []
+
+
+def test_a_briefing_read_back_to_the_person_is_recorded_as_sent(tmp_path):
+    space = make_space(tmp_path / "ada", owner_email="ada@example.test")
+    line = morning_view.record_send(space, "m1", to=['"Ada Okafor" <Ada@Example.test>'], now=NOW)
+    assert line["notes"] == {"step": "send", "email": "m1"}
+    assert recipient_items(space) == []
+    assert morning_view.sent_today(space, now=NOW) is True
+
+
+def test_a_briefing_with_another_recipient_is_a_security_item(tmp_path):
+    space = make_space(tmp_path / "ada", owner_email="ada@example.test")
+    line = morning_view.record_send(space, "m2", to=["ada@example.test", "someone@else.test"], now=NOW)
+    assert line["notes"] == {"step": "send", "failed": "recipient", "email": "m2", "others": 1}
+    [item] = recipient_items(space)
+    assert item["id"].startswith("morning-view-recipient") and item["kind"] == "security"
+    assert item["text"] == ("Your morning briefing (message m2) went to an address that is not yours. "
+                            "Check the message in your Sent mail.")
+    assert item["recommendation"] == "check who received it and tell them to delete it"
+    assert item["default"] == "it stays on this list until you answer"
+    for path in (space / "_inbound" / "needs-you" / "morning-view.yaml", space / "_meta/state/runs.jsonl"):
+        assert "someone@else.test" not in path.read_text(encoding="utf-8")
+    import needs_you
+    assert item["id"] in [i.id for i in needs_you.collect(space, now=NOW) if i.kind == "security"]
+
+
+def test_a_failed_recipient_check_does_not_count_as_sent_today(tmp_path):
+    space = make_space(tmp_path / "ada", owner_email="ada@example.test")
+    morning_view.record_send(space, "m2", to=["ada@example.test", "someone@else.test"], now=NOW)
+    assert morning_view.sent_today(space, now=NOW) is False
+
+
+def test_a_recipient_the_check_cannot_read_counts_as_someone_else(tmp_path):
+    """A read-back entry with no address in it could hide one: it is never taken for the person."""
+    space = make_space(tmp_path / "ada", owner_email="ada@example.test")
+    line = morning_view.record_send(space, "m3", to=["ada@example.test", "undisclosed-recipients:;"], now=NOW)
+    assert line["notes"]["failed"] == "recipient" and line["notes"]["others"] == 1
+    combined = morning_view.record_send(space, "m4", to=["Ada <ada@example.test>, b@else.test"], now=NOW)
+    assert combined["notes"]["others"] == 1
+
+
+def test_a_space_with_no_owner_address_passes_no_recipient(tmp_path):
+    space = make_space(tmp_path / "ada", owner_email="")
+    line = morning_view.record_send(space, "m5", to=["ada@example.test"], now=NOW)
+    assert line["notes"]["failed"] == "recipient"
+
+
+def test_a_second_wrong_recipient_is_asked_again_after_the_first_was_answered(tmp_path):
+    import needs_you
+    space = make_space(tmp_path / "ada", owner_email="ada@example.test")
+    morning_view.record_send(space, "m6", to=["x@else.test"], now=NOW)
+    [first] = recipient_items(space)
+    (space / "log.md").write_text(f"# Log\n\n- {pages.iso(NOW)} yes {first['id']} by Ada Okafor\n", encoding="utf-8")
+    morning_view.record_send(space, "m7", to=["y@else.test"], now=NOW + dt.timedelta(days=1))
+    asked = [i for i in needs_you.collect(space, now=NOW + dt.timedelta(days=1)) if i.kind == "security"]
+    assert [i.text.split(")")[0] for i in asked] == ["Your morning briefing (message m7"]
+    assert [i["id"] for i in recipient_items(space)] == [asked[0].id]   # the answered one is gone
+
+
+def test_record_send_takes_the_recipients_on_the_command_line(tmp_path, monkeypatch):
+    space = make_space(tmp_path / "ada", owner_email="ada@example.test")
+    monkeypatch.setenv("SPACE_NOW", "2026-10-12T09:00:00Z")
+    assert morning_view.main([str(space), "record-send", "--id", "m8", "--to", "Ada Okafor <ada@example.test>"]) == 0
+    assert morning_view.main([str(space), "sent-today"]) == 0
+    assert morning_view.main([str(space), "record-send", "--id", "m9", "--to", "ada@example.test",
+                              "someone@else.test"]) == 0
+    line = json.loads((space / "_meta/state/runs.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert line["notes"] == {"step": "send", "failed": "recipient", "email": "m9", "others": 1}
+
+
+def test_an_owner_address_written_with_a_name_is_still_the_person(tmp_path):
+    space = make_space(tmp_path / "ada", owner_email="Ada Okafor <ada@example.test>")
+    line = morning_view.record_send(space, "m10", to=["ada@example.test", '"Ada" <Ada@Example.test>'], now=NOW)
+    assert line["notes"] == {"step": "send", "email": "m10"}
+    assert recipient_items(space) == []
+
+
+def test_a_read_back_with_no_recipient_at_all_is_not_taken_for_the_person(tmp_path):
+    """An empty read-back proves nothing about who received the briefing: it fails like one
+    the check cannot read."""
+    space = make_space(tmp_path / "ada", owner_email="ada@example.test")
+    for n, to in enumerate(([], [""], [" "])):
+        line = morning_view.record_send(space, f"m1{n}", to=to, now=NOW)
+        assert line["notes"]["failed"] == "recipient" and line["notes"]["others"] == 1
+    assert morning_view.sent_today(space, now=NOW) is False
+
+
+def test_a_briefing_that_reached_someone_else_leads_a_busy_day(tmp_path):
+    """Seven kinds with two items each: the security item is still first among the undated
+    items on the page, and its count of one stays in the mail's six counts."""
+    import needs_you
+    import yaml
+    space = make_space(tmp_path / "ada", owner_email="ada@example.test")
+    kinds = ["request", "question", "check", "candidate", "outbox", "sample", "reconnect"]
+    rows = [{"id": f"busy-{n}", "kind": kind, "text": f"busy item {n}", "depends": 2}
+            for n, kind in enumerate(kinds * 2)]
+    (space / "_inbound" / "needs-you" / "busy.yaml").write_text(yaml.safe_dump({"items": rows}), encoding="utf-8")
+    morning_view.record_send(space, "m13", to=["someone@else.test"], now=NOW)
+    assert needs_you.collect(space, now=NOW, online=False)[0].kind == "security"
+    report = morning_view.run(space, "Ada Okafor", now=NOW)
+    assert "(message m13)" in Path(report.markdown_path).read_text(encoding="utf-8")
+    notice = json.loads(Path(report.notice_path).read_text(encoding="utf-8"))
+    assert notice["stats"][0] == {"count": 1, "label": morning_view.LABELS["security"]}
+    assert len(notice["stats"]) == 6
+
+
 def test_silent_landings_count_without_a_doubt_item_and_include_the_homes_you_own(tmp_path):
     """The count is on the briefing every day, and it counts what landed in the spaces this
     person owns (their workspace and the mounted homes they own), not only the workspace."""
