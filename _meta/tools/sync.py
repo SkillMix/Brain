@@ -6,13 +6,16 @@ routines only edit files. Each run:
   1. take `.git/sync.lock`; skip if another run holds it or git is mid-operation
   1a. name in stale.yaml each chain whose scheduler stopped starting it (`not_started`)
   2. stage tracked changes and settled untracked text files, never under personal/,
-     academic/, _scratch/, _meta/state/private/ or inside a mount
+     academic/, _scratch/, _meta/state/private/, _meta/state/feed/ or inside a mount
   3. scan the staged paths; unstage every file with a finding (count recorded, never
      the match); commit `chore: sync`
   4. advance the pin of every clean mount to its remote branch; commit `chore: pins`
   5. fetch origin and merge origin/main in (append-only files by union, and the record of which
      computer runs the routines: `MERGE_RULES` is written into the space's own git first, so a
-     space whose .gitattributes is older has it too); a conflict
+     space whose .gitattributes is older has it too). The rules settle what GitHub's own merge
+     cannot, so no merge wedges on them: a watermark keeps the later mark key by key (the
+     `--merge-latest` driver), generated pages and state keep this checkout's side, and an item
+     under _inbound/ or _outbound/ that one side deleted stays deleted (`resolve`). A conflict
      where origin holds only an earlier copy of this checkout's own change keeps ours
      (the rebuilt commits of step 6 share no history with it); any other conflict is
      aborted and recorded
@@ -43,18 +46,26 @@ routines only edit files. Each run:
 
     python sync.py [--root R] [--dry-run] [--no-push] [--release-leg]
                    [--min-age-minutes N] [--only PATH ...] [--message TEXT]
+    python sync.py --merge-latest BASE OURS THEIRS
 
 `--only` lands exactly the changes under the given paths as one commit (`chore: structure`
 unless `--message` says otherwise), whatever their age: the librarian's one commit per
 structural change. Pins and the release leg wait for the next ordinary run.
 
 `--release-leg` runs `release.ship(root)` first when that module is present.
+`--merge-latest` is the watermark driver git runs during a merge (`merge_latest`); nobody types it.
 Exit 0 on success, 2 when the run was skipped, 1 on an error.
+
+`carry(root, chain)` is not a run of its own: a cloud run's `cloud.py begin` calls it first, to
+merge in the earlier run's `cloud/<chain>` branch, which never merged, before anything is written.
+A branch that changes a protected path (`protected_paths`) was pushed by someone else and is never
+merged.
 """
 from __future__ import annotations
 
 import argparse
 import datetime as dt
+import fnmatch
 import hashlib
 import importlib
 import json
@@ -73,7 +84,7 @@ import scan  # noqa: E402
 import spaceyaml  # noqa: E402
 
 OK, ERROR, SKIPPED = 0, 1, 2
-PRIVATE_ZONES = ("personal/", "academic/", "_scratch/", "_meta/state/private/")
+PRIVATE_ZONES = ("personal/", "academic/", "_scratch/", "_meta/state/private/", "_meta/state/feed/")
 IN_PROGRESS = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "rebase-merge", "rebase-apply", "index.lock")
 LOCK_HOURS = 0.5
 QUIET_HOURS = 6   # run lines and mount pins alone go out at most this often
@@ -86,9 +97,19 @@ HEAL_STATE = "sync-heal.json"   # in the git dir: the repair waiting to be seen 
 CHAINS = {"sweep_chain": "sweep-chain", "daily": "daily-chain"}   # run line routine: its routine prompt
 
 
-# Merged by union in every space, whatever its .gitattributes says: two computers that claim the routines before
-# either synced leave a record that reads as unclear (nobody runs) instead of a conflict that wedges the sync.
-MERGE_RULES = ("_meta/state/routine-host.yaml merge=union",)
+# Written into every space's own git, whatever its .gitattributes says. The record of who runs the routines merges by
+# union: two computers that claim them before either synced leave a record that reads as unclear (nobody runs) instead
+# of a conflict that wedges the sync. A watermark keeps the later mark (`merge_latest`); generated pages and state keep
+# this checkout's side, since the next status run writes them again from the files (spec 4.5a).
+MERGE_RULES = ("_meta/state/routine-host.yaml merge=union",
+               "_meta/state/*-watermark.yaml merge=spaces-latest",
+               "live/** merge=spaces-ours",
+               "_meta/state/ids.yaml merge=spaces-ours",
+               "_meta/state/stale.yaml merge=spaces-ours")
+SETTLED_BY_DELETION = ("_inbound/", "_outbound/")   # an answer or a shipping is the later fact than any change
+CLOUD_CHAINS = ("sweep", "daily")   # each lands on its own branch, cloud/<chain>
+LEASE = "sync-cloud-lease-{}"   # in the git dir: the cloud/<chain> head the carry saw, empty when there was none
+DEEPEN, DEEPEN_TRIES = 200, 3   # a shallow clone fetches this much more history, this often, before it unshallows
 
 
 def git(root, *args, check: bool = False, input: str | None = None, env: dict | None = None) -> subprocess.CompletedProcess:
@@ -159,6 +180,73 @@ def not_started(root: Path, now: dt.datetime | None = None) -> bool:
     stale_path.parent.mkdir(parents=True, exist_ok=True)
     stale_path.write_text(yaml.safe_dump(want, sort_keys=True), encoding="utf-8", newline="\n")
     return True
+
+
+# ----- the merge drivers -----------------------------------------------------------------------------
+def _quoted(path: Path) -> str:
+    """A path as one word of the shell command git runs a driver with (forward slashes, which every
+    shell git uses reads, Windows' included)."""
+    # reader._quoted refuses a name it cannot quote, for a guard that must not fail open; a driver escapes it instead
+    text = path.as_posix()
+    for char in ("\\", '"', "$", "`"):
+        text = text.replace(char, "\\" + char)
+    return f'"{text}"'
+
+
+def merge_drivers() -> dict:
+    """The drivers `MERGE_RULES` name, as git config keys and values. `spaces-ours` is `true`, which
+    leaves this checkout's file as it is; `spaces-latest` runs `merge_latest` with the Python running
+    now, started as the sync itself is started, with no flags: `-I` would drop the user's own
+    site-packages, where setup often installs PyYAML (`pip install --user`), and then every
+    watermark would conflict. A script's own folder, never the working folder, heads its import path."""
+    drivers = {"merge.spaces-ours.driver": "true"}
+    if sys.executable:
+        drivers["merge.spaces-latest.driver"] = (f"{_quoted(Path(sys.executable))} {_quoted(Path(__file__).resolve())}"
+                                                 " --merge-latest %O %A %B")
+    return drivers
+
+
+def _moment(value) -> dt.datetime | None:
+    if not isinstance(value, (str, dt.date)):
+        return None   # a count is never a moment, however its digits read
+    try:
+        return pages.parse_iso(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _later(ours, theirs):
+    """Two sides of a watermark as one: mappings key by key, two moments the later one, else ours."""
+    if isinstance(ours, dict) and isinstance(theirs, dict):
+        merged = dict(ours)
+        for key, value in theirs.items():
+            merged[key] = _later(ours[key], value) if key in ours else value
+        return merged
+    mine, other = _moment(ours), _moment(theirs)
+    return theirs if mine is not None and other is not None and other > mine else ours
+
+
+def merge_latest(base: Path, ours: Path, theirs: Path) -> int:
+    """The watermark driver (`merge=spaces-latest`): both sides are read as YAML and merged key by
+    key. Where both values are moments, the later wins; a key on one side only is kept; any other
+    difference keeps ours. So neither a cloud run's progress nor a computer's is undone, whatever
+    the base said. The result is written to `ours`, as git expects, and only when it differs from
+    what is there. 0 when merged; 1 when either side is not readable YAML, and then `ours` is left as
+    it was and git keeps the conflict."""
+    import yaml
+    try:
+        mine = yaml.safe_load(Path(ours).read_text(encoding="utf-8"))
+        other = yaml.safe_load(Path(theirs).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return 1
+    mine, other = ({} if side is None else side for side in (mine, other))   # an empty file marks nothing
+    merged = _later(mine, other)
+    if merged != mine:
+        try:
+            Path(ours).write_text(yaml.safe_dump(merged, sort_keys=False), encoding="utf-8", newline="\n")
+        except OSError:
+            return 1
+    return 0
 
 
 class Run:
@@ -512,7 +600,7 @@ class Run:
             return
         before = git(self.root, "rev-parse", "HEAD").stdout.strip()
         done = git(self.root, "merge", "--no-edit", "origin/main")
-        if done.returncode != 0 and not self.keep_ours():
+        if done.returncode != 0 and not self.settle():
             git(self.root, "merge", "--abort")
             self.notes["conflict"] = True
             print("merge: conflict with origin/main; aborted, next run retries")
@@ -522,7 +610,8 @@ class Run:
 
     def merge_rules(self) -> None:
         """The rules of `MERGE_RULES` in this space's own git (`info/attributes`, which outranks .gitattributes):
-        each one missing is appended; a line already there is left as it is."""
+        each one missing is appended; a line already there is left as it is. The drivers they name go into the
+        space's own git config, each only when it is missing or says something else."""
         done = git(self.root, "rev-parse", "--git-path", "info/attributes")
         if done.returncode != 0:
             return
@@ -539,6 +628,74 @@ class Run:
                     fh.write(("\n" if text and not text.endswith("\n") else "") + "".join(f"{rule}\n" for rule in missing))
         except OSError as exc:
             self.error(f"merge rule not written: {type(exc).__name__}")
+        for key, value in merge_drivers().items():
+            if git(self.root, "config", "--get", key).stdout.rstrip("\n") != value \
+                    and git(self.root, "config", key, value).returncode != 0:
+                self.error(f"merge driver not written ({key})")
+
+    def conflicted(self) -> list:
+        return [p for p in git(self.root, "diff", "--name-only", "--diff-filter=U", "-z").stdout.split("\0") if p]
+
+    def settle(self) -> bool:
+        """Finish a merge that stopped, or say it cannot be: what the merge rules cover is resolved
+        (`resolve`), and what is left must be origin holding an earlier copy of ours (`keep_ours`).
+        False leaves the caller to abort; a merge that never started (a file in the way) is not
+        settled, and nothing here raises, so a merge is never left half done to wedge the next run."""
+        try:
+            if git(self.root, "rev-parse", "-q", "--verify", "MERGE_HEAD").returncode != 0:
+                return False
+            before = len(self.conflicted())
+            left = self.resolve()
+            if left == 0:
+                if git(self.root, "commit", "-q", "--no-edit").returncode != 0:
+                    return False
+            elif not self.keep_ours():
+                return False
+        except Exception as exc:
+            self.error(f"merge not settled: {type(exc).__name__}")
+            return False
+        if before > left:
+            self.notes["resolved"] = before - left
+            print(f"merge: {before - left} path(s) settled by the merge rules")
+        return True
+
+    def resolve(self) -> int:
+        """After a merge stopped, resolve the conflicts the merge rules cover; the number of conflicted
+        paths left. An item under _inbound/ or _outbound/ that one side deleted and the other changed is
+        deleted: the person's answer or the shipping is the later fact. A path whose merge rule is
+        `spaces-ours` keeps this checkout's side also where git ran no driver for it, which is where one
+        side deleted it (deleted here, it stays deleted); where both sides added it, git's driver
+        already kept ours. Anything else is left for the caller."""
+        stages: dict = {}
+        for entry in git(self.root, "ls-files", "-u", "-z").stdout.split("\0"):
+            meta, _, path = entry.partition("\t")
+            if path and meta:
+                stages.setdefault(path, set()).add(meta.split()[-1])
+        ours = self.ruled(sorted(stages), "spaces-ours")
+        drop, keep = [], []
+        for path, have in stages.items():
+            if path.startswith(SETTLED_BY_DELETION) and have in ({"1", "2"}, {"1", "3"}):
+                drop.append(path)
+            elif path in ours:
+                (keep if "2" in have else drop).append(path)
+        if drop:
+            git(self.root, "rm", "-q", "--pathspec-from-file=-", "--pathspec-file-nul", input=self.spec(drop))
+        if keep:
+            git(self.root, "checkout", "--ours", "--pathspec-from-file=-", "--pathspec-file-nul", input=self.spec(keep))
+            git(self.root, "add", "--pathspec-from-file=-", "--pathspec-file-nul", input=self.spec(keep))
+        return len(self.conflicted())
+
+    def ruled(self, paths: list, driver: str) -> set:
+        """The paths whose `merge` attribute is `driver`, as git reads the rules (info/attributes first)."""
+        if not paths:
+            return set()
+        out = git(self.root, "check-attr", "-z", "--stdin", "merge", input=self.spec(paths, literal=False)).stdout
+        fields = out.split("\0")
+        return {path for path, _, value in zip(fields[0::3], fields[1::3], fields[2::3]) if value == driver}
+
+    @staticmethod
+    def spec(paths: list, literal: bool = True) -> str:
+        return "\0".join(f":(literal){p}" if literal else p for p in paths)
 
     def keep_ours(self) -> bool:
         """Finish a conflicted merge when every conflict is origin holding an earlier copy of this
@@ -816,6 +973,174 @@ class Run:
             fh.write(json.dumps(line, ensure_ascii=False, default=str) + "\n")
 
 
+def protected_paths(root: Path, paths) -> list:
+    """The paths among `paths` that a cloud run neither lands nor carries, in their order: the gate's
+    protected list with its minimum (`gate.protected_prefixes`), which only the person's click lands,
+    and every path the routine profile keeps a routine from editing (`routine.PROTECTED_EDITS` at any
+    depth and `routine.PROTECTED_IN_ROOT` at the root, as the profile's own rules read them). A cloud
+    run's tools write none of them, so a change there came from somewhere else (spec 4.3). Case is
+    ignored, as the gate ignores it."""
+    import gate
+    import routine
+    prefixes, _ = gate.protected_prefixes(root)
+    rules = [(rule, True) for rule in routine.PROTECTED_EDITS] + [(rule, False) for rule in routine.PROTECTED_IN_ROOT]
+    found = []
+    for rel in paths:
+        posix = gate._posix(rel)
+        if any(gate._under(posix, prefix) for prefix in prefixes) \
+                or any(_edit_denied(posix, rule, anywhere) for rule, anywhere in rules):
+            found.append(rel)
+    return found
+
+
+def _edit_denied(rel: str, rule: str, anywhere: bool) -> bool:
+    """`rel` falls under one of the profile's Edit rules: `<folder>/**` is the folder and all in it, any
+    other rule one file; `anywhere` at any depth (the profile's `//**/`), else at the root."""
+    parts = rel.casefold().split("/")
+    tails = ["/".join(parts[i:]) for i in range(len(parts) if anywhere else 1)]
+    rule = rule.casefold()
+    globs = (rule[:-3], rule[:-3] + "/*") if rule.endswith("/**") else (rule,)   # fnmatch's * crosses a /
+    return any(fnmatch.fnmatchcase(tail, glob) for tail in tails for glob in globs)
+
+
+def _protected_moves(root: Path, bases: list, ours: str, theirs: str) -> list | None:
+    """The protected paths (`protected_paths`) where merging `theirs` into `ours` can change a file: one `theirs`
+    holds otherwise than some merge base does (git merges against all of them, so a branch that matches one base
+    can still undo what another holds), otherwise than `ours`, and otherwise than origin/main, whose version landed
+    through the gate. Where `theirs` matches every base the merge keeps ours. None when git could not list them."""
+    def differ(ref: str) -> set | None:
+        done = git(root, "diff", "--name-only", "--no-renames", "-z", ref, theirs)
+        return {p for p in done.stdout.split("\0") if p} if done.returncode == 0 else None
+
+    found: set = set()
+    for ref in bases:
+        moved = differ(ref)
+        if moved is None:
+            return None
+        found |= moved
+    for ref in (ours, "refs/remotes/origin/main"):   # a file one of them holds already is no change
+        moved = differ(ref)
+        if moved is None:
+            return None
+        found &= moved
+    return protected_paths(root, sorted(found))
+
+
+def carry(root: Path, chain: str, gh=None) -> dict:
+    """Merge the earlier cloud run's `cloud/<chain>` branch that never merged into this clone, at the
+    start of a cloud run (`cloud.py begin`), before anything is exported or written. Then the cursors
+    and watermarks already hold what the earlier run read, and the new run never writes the same
+    witness pages, queue items, tracker issues or notices again; its push carries both runs.
+
+    A branch that is not on origin is no error: `{"carried": False, "head": None}`, quietly, and
+    GitHub is not asked. A branch whose head is a pull request the person closed without merging is
+    left alone (`"skipped": "closed"`): they turned that work down, and the new run's push replaces
+    it. A clone too shallow to share a commit with the branch fetches more history (`DEEPEN`
+    commits, `DEEPEN_TRIES` times), then all of it; histories that still share nothing are never
+    merged. A branch that changes a protected path (`protected_paths`) is never merged either
+    (`"skipped": "protected"`, with their number): a cloud run never pushes one, so someone else
+    pushed it, and merging it would let them change what this run executes and may do, before the
+    guard profile is written. The branch is checked against every merge base, as git merges against
+    all of them, and a file it holds as this clone or origin/main already holds it is no change
+    (`_protected_moves`). What the merge did is checked again, since git follows a file main moved,
+    and undone when a protected file then reads otherwise. The new run's push replaces the branch.
+    The merge runs with the merge rules (`resolve`, `keep_ours`, as `merge_in`); one that still
+    conflicts is aborted (`"conflict": True`, with what kept it from settling in `"error"`), and the
+    run must not work on top of it. A branch main already holds is not carried again.
+    `{"carried": True, "head": <sha>}` when it merged.
+
+    `"error"` says what could not be done (origin not reached, space.yaml not read); nothing was
+    merged then either, and the run should stop as for a conflict. A chain that is not one of
+    `CLOUD_CHAINS` is a ValueError. In every case the head the fetch saw (empty when there was none)
+    is written to `LEASE` in the git dir: the cloud push is leased to it, so a run that pushed in
+    between is never overwritten."""
+    if chain not in CLOUD_CHAINS:
+        raise ValueError(f"no cloud chain {chain!r}: {', '.join(CLOUD_CHAINS)}")
+    root = Path(root).resolve()
+    gdir = git_dir(root)
+    result: dict = {"carried": False, "head": None}
+    if gdir is None:
+        result["error"] = "not a git repository"
+        return result
+    branch, tracking = f"cloud/{chain}", f"refs/remotes/origin/cloud/{chain}"
+    specs = ("+refs/heads/main:refs/remotes/origin/main", f"+refs/heads/{branch}:{tracking}")
+    try:
+        listed = git(root, "ls-remote", "--exit-code", "origin", f"refs/heads/{branch}")
+        if listed.returncode == 2:   # no such branch on origin
+            git(root, "update-ref", "-d", tracking)
+            return result
+        if listed.returncode != 0 or git(root, "fetch", "--quiet", "--no-recurse-submodules", "origin",
+                                         *specs).returncode != 0:
+            result["error"] = "the branch could not be fetched"
+            return result
+        head = git(root, "rev-parse", "-q", "--verify", tracking).stdout.strip()
+        result["head"] = head or None
+        slug = ghrest.repo_slug(root)
+        if not head or (slug and ghrest.closed_unmerged(gh or ghrest.runner(root), slug, branch, head)):
+            if head:
+                result["skipped"] = "closed"
+            return result
+
+        def shallow() -> bool:
+            return git(root, "rev-parse", "--is-shallow-repository").stdout.strip() == "true"
+
+        def common() -> list:
+            return git(root, "merge-base", "--all", "HEAD", tracking).stdout.split()
+
+        bases, tries = common(), 0
+        while not bases and tries < DEEPEN_TRIES and shallow():
+            git(root, "fetch", "--quiet", "--no-recurse-submodules", f"--deepen={DEEPEN}", "origin", *specs)
+            bases, tries = common(), tries + 1
+        if not bases and shallow():
+            git(root, "fetch", "--quiet", "--no-recurse-submodules", "--unshallow", "origin", *specs)
+            bases = common()
+        if not bases:   # nothing in common, ever: never --allow-unrelated-histories
+            result["conflict"] = True
+            return result
+        if head in bases:
+            return result   # main holds it already
+        guarded = _protected_moves(root, bases, "HEAD", tracking)
+        if guarded is None:
+            result["error"] = "the branch's changes could not be listed"
+            return result
+        if guarded:
+            result.update(skipped="protected", protected=len(guarded))
+            return result
+        try:
+            run = Run(root, gdir, parse(["--root", str(root)]))
+        except Exception as exc:   # the merge rules need the space; said, never raised into begin
+            result["error"] = f"space.yaml could not be read ({type(exc).__name__})"
+            return result
+        run.merge_rules()
+        before = git(root, "rev-parse", "HEAD").stdout.strip()
+        done = git(root, "merge", "--no-edit", tracking)
+        if done.returncode != 0 and not run.settle():
+            git(root, "merge", "--abort")
+            result["conflict"] = True
+            if run.notes.get("errors"):
+                result["error"] = "; ".join(run.notes["errors"])
+            return result
+        # what the merge did, file by file: git follows a file main moved, so a change the branch made to a plain
+        # file can land under a protected path its own paths never named. The lists were read before the merge
+        # (gate and routine are imported), and a space.yaml the merge changed is protected itself
+        guarded = _protected_moves(root, [before], before, "HEAD")
+        if guarded != []:
+            if git(root, "reset", "-q", "--keep", before).returncode != 0:
+                result["error"] = "a carry that changed a protected path could not be undone"
+            elif guarded is None:
+                result["error"] = "the carry's changes could not be listed"
+            else:
+                result.update(skipped="protected", protected=len(guarded))
+            return result
+        result["carried"] = True
+        return result
+    finally:
+        try:
+            (gdir / LEASE.format(chain)).write_text(result["head"] or "", encoding="utf-8")
+        except OSError as exc:
+            result["error"] = f"the lease could not be written ({type(exc).__name__})"
+
+
 def refresh_page(root: Path) -> None:
     """The progress page (`~/.spaces/onboarding.html`, outside every repository) is rewritten from the workspace
     after every ordinary run, once the lock is gone, so it is never older than the last sync. It reads files and
@@ -836,11 +1161,14 @@ def parse(argv) -> argparse.Namespace:
     parser.add_argument("--min-age-minutes", type=float, default=10)
     parser.add_argument("--only", nargs="+", default=None, metavar="PATH")
     parser.add_argument("--message", default=None)
+    parser.add_argument("--merge-latest", nargs=3, default=None, metavar=("BASE", "OURS", "THEIRS"))
     return parser.parse_args(argv)
 
 
 def main(argv=None) -> int:
     args = parse(sys.argv[1:] if argv is None else argv)
+    if args.merge_latest:   # git runs the watermark driver mid-merge: no lock, no run line
+        return merge_latest(*(Path(p) for p in args.merge_latest))
     doctor.use_tools()   # git and gh that onboarding installed under ~/.spaces/tools
     root = Path(args.root).resolve()
     gdir = git_dir(root)

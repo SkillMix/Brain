@@ -33,6 +33,11 @@ pull_state(gh, slug, number) -> dict | None
 failed_checks(gh, slug, sha) -> list[dict] | None
     The check runs on a commit whose conclusion is one of `FAILED`, as `name, link` (the run's
     details page, else its page on GitHub).
+closed_unmerged(gh, slug, branch, sha) -> bool
+    True when a pull request from `branch` of this repository whose head is `sha` was closed
+    without merging: the person turned that run's work down. False on any failure, and for an
+    answer that does not say `merged_at`, so a carry is never refused for an answer that could not
+    be read.
 """
 from __future__ import annotations
 
@@ -122,10 +127,15 @@ def _pull(raw) -> dict | None:
             "created_at": str(raw.get("created_at") or "")}
 
 
+def _head(slug: str, branch: str) -> str:
+    """The `head` filter of a pull request list: this repository's owner and the branch."""
+    return quote(f"{slug.split('/')[0]}:{branch}", safe="/:")
+
+
 def open_pulls(gh: Callable, slug: str, head: str | None = None) -> list[dict] | None:
     route = f"repos/{slug}/pulls?state=open&per_page=100"
     if head:
-        route += "&head=" + quote(f"{slug.split('/')[0]}:{head}", safe="/:")
+        route += "&head=" + _head(slug, head)
     listed = _answer(gh, "api", route)
     if not isinstance(listed, list):
         return None
@@ -154,3 +164,13 @@ def failed_checks(gh: Callable, slug: str, sha: str) -> list[dict] | None:
         return None
     return [{"name": str(run.get("name") or ""), "link": str(run.get("details_url") or run.get("html_url") or "")}
             for run in runs if isinstance(run, dict) and run.get("conclusion") in FAILED]
+
+
+def closed_unmerged(gh: Callable, slug: str, branch: str, sha: str) -> bool:
+    if not sha:
+        return False
+    listed = _answer(gh, "api", f"repos/{slug}/pulls?state=closed&head={_head(slug, branch)}&per_page=100")
+    if not isinstance(listed, list):
+        return False
+    return any(isinstance(raw, dict) and str(_dict(raw.get("head")).get("sha") or "") == sha
+               and "merged_at" in raw and raw["merged_at"] is None for raw in listed)

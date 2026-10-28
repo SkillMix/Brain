@@ -192,6 +192,30 @@ def test_checks_that_cannot_be_read_are_none():
                                 "ada/ada-space", "abc") is None
 
 
+# ----- a branch the person turned down -----------------------------------------------------------
+CLOSED = "repos/ada/ada-space/pulls?state=closed&head=ada:cloud/sweep&per_page=100"
+
+
+def test_a_branch_closed_unmerged_is_told_apart_from_a_merged_one():
+    closed = dict(pull(9, "cloud/sweep"), state="closed", merged_at=None)
+    merged = dict(pull(10, "cloud/sweep"), state="closed", merged_at="2026-10-27T08:00:00Z")
+    fake = FakeGh({CLOSED: [closed, merged]})
+    assert ghrest.closed_unmerged(fake, "ada/ada-space", "cloud/sweep", "sha9") is True
+    assert fake.calls[0][:2] == ("api", CLOSED)
+    assert ghrest.closed_unmerged(fake, "ada/ada-space", "cloud/sweep", "sha10") is False   # it merged
+    assert ghrest.closed_unmerged(fake, "ada/ada-space", "cloud/sweep", "sha11") is False   # another head
+    assert ghrest.closed_unmerged(fake, "ada/ada-space", "cloud/sweep", "") is False
+
+
+def test_an_answer_that_cannot_be_read_never_refuses_a_carry():
+    assert ghrest.closed_unmerged(FakeGh({}, code=1), "ada/ada-space", "cloud/sweep", "sha9") is False
+    assert ghrest.closed_unmerged(lambda *a: None, "ada/ada-space", "cloud/sweep", "sha9") is False
+    assert ghrest.closed_unmerged(FakeGh({CLOSED: {"message": "Not Found"}}), "ada/ada-space", "cloud/sweep",
+                                  "sha9") is False
+    unsaid = dict(pull(9, "cloud/sweep"), state="closed")   # no merged_at at all: not known to be unmerged
+    assert ghrest.closed_unmerged(FakeGh({CLOSED: [unsaid]}), "ada/ada-space", "cloud/sweep", "sha9") is False
+
+
 # ----- the real gh -------------------------------------------------------------------------------
 def test_the_runner_is_none_without_gh_and_a_failed_call_on_a_timeout(tmp_path, monkeypatch):
     seen = {}

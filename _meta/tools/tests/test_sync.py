@@ -887,7 +887,7 @@ def test_the_record_merge_rule_is_written_into_the_spaces_own_git_once(repo):
     attributes.write_text("*.bin binary", encoding="utf-8")   # a rule of the person's own, with no newline at its end
     assert run(repo, "--dry-run") == 0 and attributes.read_text(encoding="utf-8") == "*.bin binary"
     assert run(repo) == 0 and run(repo) == 0
-    assert attributes.read_text(encoding="utf-8") == "*.bin binary\n_meta/state/routine-host.yaml merge=union\n"
+    assert attributes.read_text(encoding="utf-8") == "*.bin binary\n" + "".join(f"{r}\n" for r in sync.MERGE_RULES)
 
 
 def test_an_attributes_file_that_is_not_utf8_still_gets_the_rule_and_the_sync_runs(repo):
@@ -897,11 +897,11 @@ def test_an_attributes_file_that_is_not_utf8_still_gets_the_rule_and_the_sync_ru
     own = b"*.bin binary # caf\xe9\n"   # Latin-1, not UTF-8
     attributes.write_bytes(own)
     assert run(repo) == 0
-    assert attributes.read_bytes() == own + b"_meta/state/routine-host.yaml merge=union\n"
+    assert attributes.read_bytes() == own + "".join(f"{r}\n" for r in sync.MERGE_RULES).encode("utf-8")
 
 @template_only
 def test_the_template_merges_the_routine_record_and_the_friction_log_by_union():
     rules = (TEMPLATE / ".gitattributes").read_text(encoding="utf-8").splitlines()
     for path in ("_meta/state/routine-host.yaml", "_meta/friction-log.md"):
         assert any(line.split() == [path, "merge=union"] for line in rules)
-    assert sync.MERGE_RULES == ("_meta/state/routine-host.yaml merge=union",)
+    assert sync.MERGE_RULES[0] == "_meta/state/routine-host.yaml merge=union"
