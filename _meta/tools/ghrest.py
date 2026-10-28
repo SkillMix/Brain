@@ -11,10 +11,12 @@ from "nobody could look".
 repo_slug(root) -> "owner/name" | None
     The last two path segments of origin's URL, `.git` dropped: one answer for the ssh form, the
     https form and a cloud run's proxy (`http://local_proxy@127.0.0.1:34567/git/<owner>/<name>`).
-    None without an origin.
+    None without an origin, or when a segment is not a plain ASCII name or is only dots (a local
+    origin such as `../origin.git`).
 runner(cwd) -> gh
-    The real `gh`, run in `cwd`. None when it is not installed; a call that runs out of time, or
-    cannot start for another reason, is a failed call (a non-zero exit), never None.
+    The real `gh`, run in `cwd`. None when gh itself is not installed; a call that runs out of
+    time, or cannot start for another reason (its working folder gone, say), is a failed call (a
+    non-zero exit), never None.
 open_pulls(gh, slug, head=None) -> list[dict] | None
     The open pull requests, at most 100 (only the branch `head` of this repository when given),
     each as `number, head_ref, head_sha, title, url, draft, auto_merge, cross_repo, created_at`.
@@ -23,8 +25,9 @@ open_pulls(gh, slug, head=None) -> list[dict] | None
 create_pull(gh, slug, head, title, body) -> int | None
     Opens a pull request from `head` into main; its number. Every field is sent as a string.
 pull_state(gh, slug, number) -> dict | None
-    `merged, state, mergeable_state, head_sha` of one pull request. `mergeable_state` is None
-    while GitHub has none to give (a merged pull request).
+    `merged, state, mergeable_state, head_sha` of one pull request. `mergeable_state` is GitHub's
+    string as given (`unknown` while GitHub is still working it out, and for a merged pull
+    request); None only when the answer has none.
 failed_checks(gh, slug, sha) -> list[dict] | None
     The check runs on a commit whose conclusion is one of `FAILED`, as `name, link` (the run's
     details page, else its page on GitHub).
@@ -40,7 +43,7 @@ from urllib.parse import quote
 
 FAILED = ("failure", "timed_out", "cancelled", "action_required", "startup_failure")
 TIMEOUT_SECONDS = 60
-SEGMENT = re.compile(r"[\w.-]+")
+SEGMENT = re.compile(r"(?!\.+$)[A-Za-z0-9_.-]+")
 
 
 def repo_slug(root: Path) -> str | None:
@@ -66,11 +69,13 @@ def runner(cwd: Path) -> Callable:
         try:
             return subprocess.run(argv, cwd=str(cwd), capture_output=True, text=True, encoding="utf-8",
                                   errors="replace", timeout=TIMEOUT_SECONDS)
-        except FileNotFoundError:
-            return None
         except subprocess.TimeoutExpired:
             return subprocess.CompletedProcess(argv, 1, "", f"gh timed out after {TIMEOUT_SECONDS} s")
         except OSError as exc:
+            # gh itself is missing when the error names gh (POSIX) or no file at all (Windows);
+            # POSIX names the working folder when that is what is gone.
+            if isinstance(exc, FileNotFoundError) and exc.filename in (None, argv[0]):
+                return None
             return subprocess.CompletedProcess(argv, 1, "", f"gh could not run ({type(exc).__name__})")
     return gh
 

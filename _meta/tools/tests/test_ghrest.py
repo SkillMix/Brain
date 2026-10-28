@@ -66,6 +66,9 @@ def test_the_slug_is_the_last_two_segments_of_any_origin(tmp_path):
 def test_no_origin_has_no_slug(tmp_path):
     assert ghrest.repo_slug(init_repo(tmp_path / "r", origin=None)) is None
     assert ghrest.repo_slug(tmp_path / "not-a-repository") is None
+    assert ghrest.repo_slug(init_repo(tmp_path / "local", origin="../origin.git")) is None
+    accented = f"https://example.test/{chr(0xE4)}da/ada-space"   # a letter outside ASCII
+    assert ghrest.repo_slug(init_repo(tmp_path / "accented", origin=accented)) is None
 
 
 # ----- open pull requests ------------------------------------------------------------------------
@@ -137,11 +140,13 @@ def test_pull_state_says_merged_and_mergeable():
     assert fake.calls[0][:2] == ("api", "repos/ada/ada-space/pulls/7")
 
 
-def test_a_merged_pull_has_no_mergeable_state_and_a_failed_read_is_none():
+def test_a_merged_pull_keeps_githubs_unknown_and_a_failed_read_is_none():
     fake = FakeGh({"repos/ada/ada-space/pulls/7": dict(pull(7, "cloud/sweep"), merged=True, state="closed",
-                                                       mergeable_state=None)})
+                                                       mergeable_state="unknown")})
     assert ghrest.pull_state(fake, "ada/ada-space", 7) == {"merged": True, "state": "closed",
-                                                          "mergeable_state": None, "head_sha": "sha7"}
+                                                          "mergeable_state": "unknown", "head_sha": "sha7"}
+    bare = FakeGh({"repos/ada/ada-space/pulls/7": dict(pull(7, "cloud/sweep"), merged=False, state="open")})
+    assert ghrest.pull_state(bare, "ada/ada-space", 7)["mergeable_state"] is None
     assert ghrest.pull_state(FakeGh({}), "ada/ada-space", 7) is None
     assert ghrest.pull_state(lambda *a: None, "ada/ada-space", 7) is None
 
@@ -179,9 +184,14 @@ def test_checks_that_cannot_be_read_are_none():
 def test_the_runner_is_none_without_gh_and_a_failed_call_on_a_timeout(tmp_path, monkeypatch):
     seen = {}
 
-    def missing(argv, **kw):
-        raise FileNotFoundError("gh")
+    def missing(argv, **kw):   # POSIX names the program it could not find
+        raise FileNotFoundError(2, "No such file or directory", "gh")
     monkeypatch.setattr(ghrest.subprocess, "run", missing)
+    assert ghrest.runner(tmp_path)("api", "user") is None
+
+    def missing_on_windows(argv, **kw):   # Windows names no file
+        raise FileNotFoundError(2, "The system cannot find the file specified")
+    monkeypatch.setattr(ghrest.subprocess, "run", missing_on_windows)
     assert ghrest.runner(tmp_path)("api", "user") is None
 
     def slow(argv, **kw):
@@ -192,3 +202,19 @@ def test_the_runner_is_none_without_gh_and_a_failed_call_on_a_timeout(tmp_path, 
     assert done is not None and done.returncode != 0 and "timed out" in done.stderr
     assert seen["argv"] == ["gh", "api", "user"] and seen["cwd"] == str(tmp_path)
     assert (seen["timeout"], seen["encoding"], seen["errors"]) == (60, "utf-8", "replace")
+
+
+def test_a_gone_working_folder_is_a_failed_call_not_a_missing_gh(tmp_path, monkeypatch):
+    gone = tmp_path / "gone"
+
+    def no_folder(argv, **kw):   # POSIX names the folder when chdir fails; Windows raises NotADirectoryError
+        raise FileNotFoundError(2, "No such file or directory", str(gone))
+    monkeypatch.setattr(ghrest.subprocess, "run", no_folder)
+    done = ghrest.runner(gone)("api", "user")
+    assert done is not None and done.returncode != 0 and "could not run" in done.stderr
+
+    def windows_folder(argv, **kw):
+        raise NotADirectoryError(20, "The directory name is invalid")
+    monkeypatch.setattr(ghrest.subprocess, "run", windows_folder)
+    done = ghrest.runner(gone)("api", "user")
+    assert done is not None and done.returncode != 0 and "could not run" in done.stderr
