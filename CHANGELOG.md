@@ -156,8 +156,9 @@ back to back, and nothing a record or the person settled is asked again.
   Python under `~/.spaces/tools/python`, a venv made from a Python under `%APPDATA%` is made again,
   there is no `--user` install on Windows, and gh's folder is `~/.spaces/gh` (the sign-in setup made
   is copied there). The probe task writes what it printed to `~/.spaces/logs/`, so a Python that
-  cannot start fails the build at once with its own words instead of after four silent minutes, and
-  the probe checks that a scheduled run can use the GitHub sign-in.
+  cannot start fails the build at once with its own words instead of after four silent minutes;
+  the task ends with Python's own exit code, so Task Scheduler's last result shows a run that
+  failed; and the probe checks that a scheduled run can use the GitHub sign-in.
 - **A copy of the template is no longer the template.** The checks ask GitHub's own
   `is_template` setting, which a repository made from the template never has, instead of the
   marker file it keeps until onboarding's first commit lands: a workspace's sync pull requests no
@@ -181,14 +182,17 @@ back to back, and nothing a record or the person settled is asked again.
   through gh in everything the tools start, as gh's own clone does, so a credential manager that
   would ask in a window no one sees no longer stops it. A first push to `main` that fails, or that
   leaves `main` the template's, is a failed step with git's own words, and the build is not done;
-  a brain or project that did not mount is a failed step too. While `main` is still the
-  template's, the sync sends everything as one protected pull request, checked as one tree, so the
-  owner merges once instead of a protected half that fails on a tree without the folders.
+  a brain or project that did not mount is a failed step too, one for each mount. While `main` is
+  still the template's, the sync sends everything as one protected pull request, checked as one
+  tree, so the owner merges once instead of a protected half that fails on a tree without the
+  folders.
 - **A company site that moved is read where it moved to.** The site's reader may fetch only the
   company's domain and its `www.` twin, so a domain that redirects to another host (a `.nl` that
-  moved to a `.com`) came back with nothing and the build said the site gave nothing to keep. The
-  reader now says where the site sent it, and the research reads once more on that host, keeping
-  what the first read found on the pages that did not move; the company's domain stays the one given.
+  moved to a `.com`) came back with nothing and the build said the site gave nothing to keep. When
+  the reader says the site sent it elsewhere, the domain's own server is asked where it redirects,
+  and the research reads once more on the host it really lands on, never one a page names; it keeps
+  what the first read found on the pages that did not move, and the company's domain stays the one
+  given.
 - **Task names another Windows account holds.** Where another account on the computer already has
   the space's task names, Windows said only "Access is denied". The row now says the name is
   another account's (Windows' own words for it are read in the computer's display language too),
@@ -196,7 +200,10 @@ back to back, and nothing a record or the person settled is asked again.
   `start.py build --task-prefix space-<letters>-` gives this computer names of its own, kept in
   `~/.spaces/settings.yaml`.
 - **The app card.** "Read <app> again" (`start.py apps --unskip <app>`) takes a skip back, with
-  the reader's own verdict. Two apps on one mailbox (a mailbox and a reader of its attachments)
+  the reader's own verdict; an app skipped before it was read is read the next time the sentence
+  is said, and its answer says so instead of promising it to the routines at once. Once the build
+  has kept the apps' verdicts in the workspace, every later run of the apps phase keeps them there
+  too, so an app read after the build reaches the routines. Two apps on one mailbox (a mailbox and a reader of its attachments)
   count its mail once in the history's estimate. Claude's own connectors (`Claude …`) are not the
   person's apps: they are neither read nor sorted. The card's ten minutes start again only when an
   app is read that the card did not read before.

@@ -442,12 +442,12 @@ def create_space(report, root, dirname, repo_name, offline, org, home, tpl, dry_
 
 
 def unconfigured_remote(dst, dry_run) -> bool:
-    """True while origin/main still carries the template's own space.yaml (or none at all)."""
+    """True while origin/main still carries the template's own space.yaml (or none at all; `spaceyaml.still_template`)."""
     if dry_run:
         return True
     run_cmd(["git", "fetch", "-q", "origin", "main", "--no-recurse-submodules"], dry_run, cwd=dst)
     shown = run_cmd(["git", "show", "origin/main:space.yaml"], dry_run, cwd=dst)
-    return shown.returncode != 0 or "profile: template" in (shown.stdout or "")
+    return spaceyaml.still_template((shown.stdout or "") if shown.returncode == 0 else None)
 
 
 def commit_fill(report, dst, push, dry_run, repo=None) -> None:
@@ -887,11 +887,11 @@ def task_prefix() -> str:
     it registers, reads back and removes tasks of its own and never touches a person's. Without it, this
     computer's `task_prefix` (`~/.spaces/settings.yaml`, saved by `start.py build --task-prefix` where another
     account holds the names). A value that is not `space-` and lower-case letters, digits and hyphens is
-    refused, never replaced by the default: a typo must not register tasks under the person's own names."""
-    prefix = os.environ.get(TASK_PREFIX_ENV) or _saved_settings().get("task_prefix") or TASK_PREFIX
-    if not re.fullmatch(r"space-[a-z0-9-]*", str(prefix)):
-        raise ValueError(f"{TASK_PREFIX_ENV} must start with space- and use only lower-case letters, digits and "
-                         f"hyphens, not {prefix!r}")
+    refused, never replaced by the default: a typo must not register tasks under the person's own names. The refusal
+    is check_task_prefix's, naming the setting the prefix came from."""
+    said = os.environ.get(TASK_PREFIX_ENV)
+    prefix = said or _saved_settings().get("task_prefix") or TASK_PREFIX
+    check_task_prefix(prefix, TASK_PREFIX_ENV if said else f"task_prefix in {_settings_path()}")
     return prefix
 
 
@@ -907,11 +907,12 @@ def _saved_settings() -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def check_task_prefix(prefix: str) -> None:
-    """A ValueError for a task-name prefix task_prefix would refuse."""
+def check_task_prefix(prefix: str, source: str = "a task-name prefix") -> None:
+    """A ValueError for a task-name prefix that is not ours, naming where it came from (`source`): the one rule,
+    for task_prefix, save_task_prefix and the build's `--task-prefix` (the review of #61)."""
     if not re.fullmatch(r"space-[a-z0-9-]*", str(prefix)):
-        raise ValueError(f"a task-name prefix starts with space- and uses only lower-case letters, digits and "
-                         f"hyphens, not {prefix!r}")
+        raise ValueError(f"{source} must start with space- and use only lower-case letters, digits and hyphens, "
+                         f"not {prefix!r}")
 
 
 def save_task_prefix(prefix: str) -> None:
@@ -1204,14 +1205,16 @@ def register_task(report, label, task, root, args, minutes=None, times=None, cro
     `systemctl --user` works, else a cron line, which does not catch up (one plain line says so). A task runs
     through one scheduler: moving to another takes it out of the rest (`retire_others`). On Windows, a task
     given `stderr_log` runs through cmd, which adds what it printed to its error output and then TASK_ENDED
-    to that file: a hidden task's Python that cannot start says so nowhere else (the other schedulers log)."""
+    to that file: a hidden task's Python that cannot start says so nowhere else (the other schedulers log). The
+    line ends on `exit /b`, so cmd ends with Python's own exit code, not the echo's 0, and the scheduler's last result
+    shows a run that failed (the review of #61)."""
     root, py, path = Path(root), sys.executable, os.environ.get("PATH", "")
     if SYSTEM == "Windows":
         arguments = f"--headless {_argline(py, args)}"
         if stderr_log:
             log = Path(stderr_log)
             arguments = (f'--headless cmd.exe /d /s /c "{_argline(py, args)} 2>>"{log}" & '
-                         f'echo {TASK_ENDED}>>"{log}""')
+                         f'echo {TASK_ENDED}>>"{log}" & exit /b"')
         record = {"name": task, "kind": "schtasks", "line": f"{CONHOST} {arguments}",
                   "create": ["schtasks", "/Create", "/F", "/TN", task, "/XML", f"{task}.xml"],
                   "check": ["schtasks", "/Query", "/TN", task, "/XML"], "root": str(root)}
@@ -2641,11 +2644,12 @@ def run(root, answers, offline=False, org=None, dry_run=False, home=None, user_i
                        "a note names this workspace to the brain" if sent else "the brain knows it, or has no entry yet")
         except Exception as exc:
             report.add("workspace announced", False, "python _meta/tools/classify.py . pending", str(exc)[:200])
-        for mount in crew_mounts:
+        for mount in crew_mounts:   # one row a mount: add_mount's when it mounts one (the review of #61)
             if not offline and mount.get("repo") and not (root / mount["path"] / "space.yaml").exists():
                 add_mount(report, root, mount["repo"], mount["path"], dry_run)
-            report.add(f"mount {mount['name']}", offline or (root / mount["path"] / "space.yaml").exists() or dry_run,
-                       f"test -f {root / mount['path'] / 'space.yaml'}", "crew project mounted read-only")
+            else:
+                report.add(f"mount {mount['name']}", offline or (root / mount["path"] / "space.yaml").exists() or dry_run,
+                           f"test -f {root / mount['path'] / 'space.yaml'}", "crew project mounted read-only")
         scan_codebases(report, root, now, offline)
         report.spaces[name] = root
     ui = Path(user_instructions) if user_instructions else default_user_instructions(root, offline, home)

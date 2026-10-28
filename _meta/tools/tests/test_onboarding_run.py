@@ -17,6 +17,7 @@ import apps
 import doctor
 import gate
 import onboard
+import research
 import routine
 import spaceyaml
 import start
@@ -123,8 +124,25 @@ def test_the_probe_task_on_windows_writes_what_it_said_to_a_log(tmp_path, monkey
     xml = files[argv[argv.index("/XML") + 1]].decode("utf-16")
     line = f'"{sys.executable}" "{tmp_path / "ada" / "routine.py"}" --probe "{tmp_path / "ada"}"'
     assert (f'<Arguments>--headless cmd.exe /d /s /c "{line} 2&gt;&gt;"{log}" &amp; '
-            f'echo {onboard.TASK_ENDED}&gt;&gt;"{log}""</Arguments>') in xml
+            f'echo {onboard.TASK_ENDED}&gt;&gt;"{log}" &amp; exit /b"</Arguments>') in xml
     assert record["log"] == str(log) and log.parent.is_dir()
+
+
+def test_the_probe_task_ends_with_python_s_own_exit_code(tmp_path, monkeypatch):
+    # the review of #61: cmd ended on the end line's echo, so Task Scheduler showed 0x0 for a probe that failed
+    if os.name != "nt":
+        return   # the line is cmd's
+    monkeypatch.setattr(onboard, "SYSTEM", "Windows")
+    monkeypatch.setattr(onboard, "run_cmd", world({}, []))
+    ends = tmp_path / "ends.py"
+    ends.write_text("import sys\nsys.exit(int(sys.argv[1]))\n", encoding="utf-8")
+    log = tmp_path / "logs" / "space-probe-ada.log"
+    for code in (3, 0):
+        record = onboard.register_task(onboard.Report("person"), "routine probe task", "space-probe-ada", tmp_path,
+                                       [ends, str(code)], times=[(3, 33)], stderr_log=log)
+        started = record["line"].split("--headless ", 1)[1]   # what conhost starts: cmd with its line
+        assert subprocess.run(started, cwd=tmp_path).returncode == code
+    assert log.read_text(encoding="utf-8").split() == [onboard.TASK_ENDED, onboard.TASK_ENDED]
 
 
 def test_a_probe_that_ends_without_a_result_fails_at_once_with_what_it_said(tmp_path, monkeypatch):
@@ -471,6 +489,26 @@ def test_a_brain_that_did_not_mount_is_a_failed_step(tmp_path, monkeypatch):
     assert report.steps[-1].done
 
 
+def test_a_crew_project_that_did_not_mount_is_one_failed_step(tmp_path, monkeypatch):
+    # the review of #61: add_mount's row and a second "crew project mounted read-only" row named the same mount
+    import yaml
+    brain = make_space(tmp_path / "brain", profile="brain", name="lantern", subjects=[
+        {"id": "ben", "kind": "people", "title": "Ben Liu"}])
+    harbor = make_space(tmp_path / "harbor", profile="project", name="harbor", audience=["Ada Okafor", "Ben Liu"])
+    onboard.write_yaml(brain / "_meta" / "state" / "onboard.yaml", {
+        "case": "company", "repo": "lantern-org/brain", "spaces": {"lantern": str(brain), "harbor": str(harbor)}})
+    monkeypatch.setattr(onboard, "run_cmd", lambda argv, *a, **k: subprocess.CompletedProcess(argv, 1, "", ""))
+    answers = yaml.safe_load(onboard.invite(brain, "ben").read_text(encoding="utf-8"))
+    answers["crew_projects"][0]["repo"] = "https://github.com/lantern-org/harbor.git"
+    fake, _ = outside({"git submodule add": (128, "", "fatal: repository 'lantern-org/harbor' not found")})
+    monkeypatch.setattr(onboard, "run_cmd", fake)
+    ws = tmp_path / "ben-workspace"
+    onboard.copy_template(onboard.TEMPLATE_ROOT, ws)
+    report = onboard.run(ws, answers, brain=str(brain), home=tmp_path, user_instructions=str(tmp_path / "CLAUDE.md"))
+    rows = [s for s in report.steps if s.name.startswith("mount") and "harbor" in s.name]
+    assert len(rows) == 1 and not rows[0].done and "not found" in rows[0].result, [s.row() for s in rows]
+
+
 def test_while_main_is_still_the_template_s_the_sync_sends_the_whole_fill_as_one_protected_pull_request(repo, monkeypatch):
     from test_sync import git as sync_git
     monkeypatch.setattr(sync.Run, "gh", lambda self, *args: None)
@@ -488,6 +526,35 @@ def test_while_main_is_still_the_template_s_the_sync_sends_the_whole_fill_as_one
     assert sorted(guarded) == ["space.yaml", "work/notes.md"]
 
 
+PROFILES = {None: True, "profile: template\n": True, "profile: 'template'   # until onboard sets one\n": True,
+            "profile: personal\n": False, "profile: personal   # was profile: template\n": False,
+            "profile: [template\n": False}   # origin/main's space.yaml (None: there is none) -> still the template's
+
+
+def test_onboarding_reads_main_s_profile_as_the_other_tools_do(tmp_path, monkeypatch):
+    # the review of #61: onboarding and the sync each had a copy of the check, which looked for a string in the file
+    for text, still in PROFILES.items():
+        shown = (128, "", "fatal: path 'space.yaml' does not exist in 'origin/main'") if text is None else (0, text, "")
+        monkeypatch.setattr(onboard, "run_cmd", outside({"git show origin/main:space.yaml": shown})[0])
+        assert onboard.unconfigured_remote(tmp_path, False) is still, text
+    assert {text: spaceyaml.still_template(text) for text in PROFILES} == PROFILES
+
+
+def test_the_sync_reads_main_s_profile_as_onboarding_does(repo, monkeypatch):
+    from test_sync import git as sync_git
+    monkeypatch.setattr(sync.Run, "gh", lambda self, *args: None)
+    filled = (repo / "space.yaml").read_text(encoding="utf-8")
+    write(repo / "space.yaml", filled.replace("profile: personal", "profile: personal   # was profile: template"))
+    sync_git(repo, "commit", "-q", "-am", "the fill, landed")
+    sync_git(repo, "push", "-q", "origin", "main")
+    write(repo / "work" / "notes.md", "# Notes\n\nline one\nline two\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    host = sync.hostname()
+    sync_git(repo, "fetch", "-q", "origin")
+    assert sync_git(repo, "rev-parse", "-q", "--verify", f"origin/sync/{host}-protected", check=False).returncode != 0
+    assert sync_git(repo, "diff", "--name-only", "origin/main", f"origin/sync/{host}").stdout.split() == ["work/notes.md"]
+
+
 # ----- the company's site: a site that moved to another host is read there -----------------------------------
 from test_research import Readers, journal as research_journal, phase, records_on_disk, the_apps, the_home  # noqa: E402,F401
 from test_research import run as research_run  # noqa: E402
@@ -497,12 +564,25 @@ THERE = {"name": "Lantern Works", "records": [
     {"title": "What we do", "url": "https://lanternworks.test/", "about": "identity", "text": "Wayfinding for ports."}]}
 
 
+def lands_on(monkeypatch, landed) -> list:
+    """Where the company's domain lands after its server's redirects (`research._final_url`); the addresses asked."""
+    asked = []
+
+    def final(url):
+        asked.append(url)
+        return landed
+    monkeypatch.setattr(research, "_final_url", final, raising=False)
+    return asked
+
+
 def test_a_site_that_moved_to_another_host_is_read_on_that_host(phase, capsys, tmp_path):
     the_home(tmp_path)
     the_apps()
+    asked = lands_on(phase, "https://lanternworks.test/")
     readers = Readers(phase, {"site": lambda prompt: THERE if "https://lanternworks.test/" in prompt else MOVED})
     code, _ = research_run(capsys)
     first, second = readers.asked("site")
+    assert asked == ["https://lanternworks.example/"]
     assert first["tools"] == ["WebFetch(domain:lanternworks.example)", "WebFetch(domain:www.lanternworks.example)"]
     assert "moved_to" in first["schema"]["properties"] and "moved_to" in first["prompt"]
     assert second["tools"] == ["WebFetch(domain:lanternworks.test)", "WebFetch(domain:www.lanternworks.test)"]
@@ -519,6 +599,7 @@ def test_what_the_first_read_found_is_kept_when_part_of_the_site_moved(phase, ca
     # the review of #61: the read on the host the site moved to replaced the first read's records
     the_home(tmp_path)
     the_apps()
+    lands_on(phase, "https://lanternworks.test/")
     Readers(phase, {"site": lambda prompt: THERE if "https://lanternworks.test/" in prompt else HERE})
     code, _ = research_run(capsys)
     assert code == 0 and "site" in research_journal()["sources_done"]
@@ -529,6 +610,7 @@ def test_what_the_first_read_found_is_kept_when_part_of_the_site_moved(phase, ca
 def test_a_second_read_that_finds_nothing_keeps_the_first_read(phase, capsys, tmp_path):
     the_home(tmp_path)
     the_apps()
+    lands_on(phase, "https://lanternworks.test/")
     Readers(phase, {"site": lambda prompt: {"records": []} if "https://lanternworks.test/" in prompt else HERE})
     code, _ = research_run(capsys)
     assert code == 0 and "site" in research_journal()["sources_done"]
@@ -538,10 +620,59 @@ def test_a_second_read_that_finds_nothing_keeps_the_first_read(phase, capsys, tm
 def test_a_site_that_says_it_moved_to_itself_or_to_no_host_is_read_once(phase, capsys, tmp_path):
     the_home(tmp_path)
     the_apps()
+    asked = lands_on(phase, "https://lanternworks.test/")
     for moved in ("https://www.lanternworks.example/", "not a host", "file:///etc/passwd", ""):
         readers = Readers(phase, {"site": {"records": [], "moved_to": moved}})
         research_run(capsys)
-        assert len(readers.asked("site")) == 1, moved
+        assert len(readers.asked("site")) == 1 and asked == [], moved   # nothing to ask the domain about
+
+
+def test_a_page_that_says_the_site_moved_is_not_taken_at_its_word(phase, capsys, tmp_path):
+    # the review of #61: the host came from the reader's moved_to, which anyone who writes on the site can put there
+    the_home(tmp_path)
+    the_apps()
+    for landed in ("https://www.lanternworks.example/", "https://lanternworks.example/about", None,
+                   "ftp://lanternworks.test/"):   # the domain stays on itself, cannot be reached, or lands on no web page
+        asked = lands_on(phase, landed)
+        readers = Readers(phase, {"site": lambda prompt: THERE if "https://lanternworks.test/" in prompt else MOVED})
+        research_run(capsys)
+        assert len(readers.asked("site")) == 1 and asked == ["https://lanternworks.example/"], landed
+
+
+def test_the_host_the_domain_really_redirects_to_is_read_not_the_one_a_page_names(phase, capsys, tmp_path):
+    the_home(tmp_path)
+    the_apps()
+    lands_on(phase, "https://lanternworks.test/en/")
+    elsewhere = {"records": [], "moved_to": "https://other.test/"}
+    readers = Readers(phase, {"site": lambda prompt: THERE if "https://lanternworks.test/" in prompt else elsewhere})
+    code, _ = research_run(capsys)
+    first, second = readers.asked("site")
+    assert second["tools"] == ["WebFetch(domain:lanternworks.test)", "WebFetch(domain:www.lanternworks.test)"]
+    assert code == 0 and [r["url"] for r in records_on_disk() if r["id"].startswith("site")] == ["https://lanternworks.test/"]
+
+
+def test_where_a_domain_lands_is_asked_of_its_own_server():
+    import http.server
+    import threading
+
+    class Hops(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(301 if self.path == "/" else 403)   # the last host answers, if only with an error
+            if self.path == "/":
+                self.send_header("Location", "/moved")
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+    server = http.server.HTTPServer(("127.0.0.1", 0), Hops)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        assert research._final_url(base + "/") == base + "/moved"
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert research._final_url(base + "/") is None   # nothing answers
 
 
 # ----- #6: task names another account on the computer holds -------------------------------------------------
@@ -563,6 +694,37 @@ def test_a_task_prefix_that_is_not_ours_is_never_saved():
         else:
             raise AssertionError(bad)
     assert not (Path.home() / ".spaces" / "settings.yaml").exists()
+
+
+def refusal(monkeypatch, said=None) -> str:
+    """What task_prefix() refuses with, the test setting `said` (None: not set)."""
+    if said is None:
+        monkeypatch.delenv(onboard.TASK_PREFIX_ENV, raising=False)
+    else:
+        monkeypatch.setenv(onboard.TASK_PREFIX_ENV, said)
+    try:
+        onboard.task_prefix()
+    except ValueError as exc:
+        return str(exc)
+    raise AssertionError(said)
+
+
+def test_a_task_prefix_that_is_not_ours_is_refused_by_one_rule_that_names_where_it_came_from(monkeypatch):
+    # the review of #61: task_prefix had its own copy of the rule, whose refusal named SPACES_TASK_PREFIX for a saved one
+    settings = Path.home() / ".spaces" / "settings.yaml"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text("task_prefix: Space-Ada-\n", encoding="utf-8")   # a hand edit that save_task_prefix refuses
+    said = refusal(monkeypatch)
+    assert onboard.TASK_PREFIX_ENV not in said and str(settings) in said and "'Space-Ada-'" in said
+    assert refusal(monkeypatch, "space-Test-").startswith(f"{onboard.TASK_PREFIX_ENV} must start with space-")
+    for bad in ("ada-", "space-Ada-", "space-ada "):   # the same words, wherever the prefix came from
+        settings.write_text(f"task_prefix: '{bad}'\n", encoding="utf-8")
+        try:
+            onboard.check_task_prefix(bad)
+        except ValueError as exc:
+            assert str(exc).split(" must ", 1)[1] == refusal(monkeypatch).split(" must ", 1)[1], bad
+        else:
+            raise AssertionError(bad)
 
 
 def test_the_build_saves_the_task_prefix_it_was_given(tmp_path):
@@ -630,7 +792,7 @@ def yaml_load(path: Path):
 
 
 # ----- #9: one mailbox counted once, and a skip that can be taken back ---------------------------------------
-from test_start import CALENDAR, GMAIL, finished_setup, no_outside  # noqa: E402
+from test_start import CALENDAR, GMAIL, finished_setup, no_outside, probed_apps  # noqa: E402
 import setup_journal  # noqa: E402
 
 ATTACHMENTS = {"app": "Mail Attachments", "kinds": ["mail"], "read": ["mcp__claude_ai_Mail_Attachments__read"],
@@ -658,6 +820,31 @@ def test_a_skipped_app_is_read_again_when_the_person_takes_the_skip_back(monkeyp
     assert start.history_counts(setup_journal.load()) == {"2026-10": 252, "2026-09": 187}
 
 
+def kept_verdicts(workspace) -> dict:
+    return {v["app"]: v["verdict"] for v in yaml_load(workspace / routine.APPS_FILE)["apps"]}
+
+
+def test_an_app_skipped_before_it_was_read_is_promised_to_the_routines_only_once_it_is_read(tmp_path, monkeypatch, capsys):
+    # the review of #61: "your routines read it again from their next run", while the workspace's file kept it skipped
+    no_outside(monkeypatch)
+    finished_setup([GMAIL])
+    setup_journal.set_phase("apps", "done", verdicts=[dict(GMAIL), start._skipped(dict(CALENDAR))],
+                            person_skips=["Google Calendar"])
+    ws = make_space(tmp_path / "ada", owner="Ada Okafor", owner_email="ada@lanternworks.example")
+    start.keep_findings(types.SimpleNamespace(settings=None, workspace=ws), setup_journal.load())
+    assert start.main(["apps", "--skip", "Gmail", "--workspace", str(ws), "--json"]) == 0
+    capsys.readouterr()
+    assert start.main(["apps", "--unskip", "Gmail,Google Calendar", "--workspace", str(ws), "--json"]) == 0
+    why = json.loads(capsys.readouterr().out)["why"]
+    assert "Your routines read Gmail again from their next run." in why
+    assert "Google Calendar had not been read before you skipped it" in why and "the next time you say the sentence" in why
+    assert kept_verdicts(ws) == {"Gmail": "work", "Google Calendar": "skip"}
+    probed_apps(monkeypatch)   # the sentence said again: the apps phase reads the calendar, and the routines follow
+    monkeypatch.setattr(apps, "analyse", lambda groups, *a, **k: [dict(CALENDAR) for g in groups if g["app"] == "Google Calendar"])
+    assert start.main(["apps", "--workspace", str(ws), "--json"]) == 0
+    assert kept_verdicts(ws) == {"Gmail": "work", "Google Calendar": "work"}
+
+
 def test_taking_back_a_skip_of_an_app_that_was_never_skipped_changes_nothing(monkeypatch, capsys):
     no_outside(monkeypatch)
     finished_setup()
@@ -678,7 +865,6 @@ def test_a_claude_connector_is_not_an_app_and_is_not_sorted():
 
 
 # ----- #15: the card's ten minutes start again only for an app it did not read before ----------------------
-from test_start import probed_apps  # noqa: E402
 
 SHOWN = "2026-10-27T09:00:00+00:00"
 
