@@ -1598,6 +1598,76 @@ def test_a_second_computers_build_schedules_and_proves_no_routines_and_says_wher
     assert routine.host(Path(second["workspace"]))["machine"] == "m-desktop"
 
 
+def test_the_history_phase_while_the_routines_run_in_the_cloud_says_a_computer_reads_it(tmp_path, monkeypatch):
+    """The cloud is no computer the history is planned, measured or read on: the phase writes nothing and says, in
+    the history's own sentence, that the routines come back to a computer first."""
+    import backfill
+    no_outside(monkeypatch)
+    finished_setup()
+    ws = make_space(tmp_path / "ada", owner="Ada Okafor")
+    start.render_routines(ws, "Ada Okafor")
+    routine.claim_cloud(ws, {"sweep": "trig_01AAAAAAAA", "daily": "trig_01BBBBBBBB"}, "Europe/Amsterdam", ["ada/ada"],
+                        {"read": [], "write": [], "send": []}, dt.datetime.now().astimezone())
+    monkeypatch.setattr(onboard, "run_now", lambda *a, **k: (_ for _ in ()).throw(AssertionError("a part started")))
+    given = args(tmp_path, reading="five_hour=5,week=26,five_hour_resets=2026-10-25T05:00:00+02:00,"
+                                   "week_resets=2026-10-29T06:00:00+02:00,extra=0")
+    given.phase, given.workspace = "history", str(ws)
+    result = start.phase_history(given)
+    assert result["why"] == backfill.CLOUD_WHY and "on the cloud" not in result["why"]
+    assert not backfill.load(ws).get("parts") and not backfill.load(ws).get("reading")
+
+
+def test_the_history_phase_while_the_routines_run_in_the_cloud_says_a_history_read_before_the_move_as_it_is(
+        tmp_path, monkeypatch):
+    """The routines move to the cloud once the history is read, so a plan made on the computer before the move is
+    said as for any record: read, with its parts. The phase still writes nothing and starts no part."""
+    import backfill
+    no_outside(monkeypatch)
+    finished_setup()
+    ws = make_space(tmp_path / "ada", owner="Ada Okafor")
+    start.render_routines(ws, "Ada Okafor")
+    backfill.plan(ws, {"2026-09": 30, "2026-10": 40}, dt.datetime.now().astimezone())
+    state = backfill.load(ws)
+    state["parts"] = [{**part, "status": "done"} for part in state["parts"]]
+    backfill.save(ws, state)
+    routine.claim_cloud(ws, {"sweep": "trig_01AAAAAAAA", "daily": "trig_01BBBBBBBB"}, "Europe/Amsterdam", ["ada/ada"],
+                        {"read": [], "write": [], "send": []}, dt.datetime.now().astimezone())
+    before = (ws / backfill.PATH).read_bytes()
+    monkeypatch.setattr(onboard, "run_now", lambda *a, **k: (_ for _ in ()).throw(AssertionError("a part started")))
+    given = args(tmp_path, reading="five_hour=5,week=26,five_hour_resets=2026-10-25T05:00:00+02:00,"
+                                   "week_resets=2026-10-29T06:00:00+02:00,extra=0")
+    given.phase, given.workspace = "history", str(ws)
+    result = start.phase_history(given)
+    assert result["state"] == "done" and result["why"] == "The history is read.", result
+    assert result["parts"] == state["parts"] and backfill.CLOUD_WHY not in result.values()
+    assert (ws / backfill.PATH).read_bytes() == before
+    (ws / backfill.PATH).write_text("parts: [\n", encoding="utf-8")   # notes on a plan that cannot be read
+    result = start.phase_history(given)
+    assert (result["state"], result["why"]) == ("waiting", backfill.BROKEN_WHY)
+    assert (ws / backfill.PATH).read_text(encoding="utf-8") == "parts: [\n"
+
+
+def test_the_history_phase_while_the_routines_run_in_the_cloud_says_a_computer_reads_the_rest(tmp_path, monkeypatch):
+    """A plan made before the move with parts still to read: the cloud reads none of them, so the phase says, in the
+    history's own sentence, that the routines come back to a computer first. It writes nothing and starts no part."""
+    import backfill
+    no_outside(monkeypatch)
+    finished_setup()
+    ws = make_space(tmp_path / "ada", owner="Ada Okafor")
+    start.render_routines(ws, "Ada Okafor")
+    backfill.plan(ws, {"2026-09": 30, "2026-10": 40}, dt.datetime.now().astimezone())   # no part read yet
+    state = backfill.load(ws)
+    routine.claim_cloud(ws, {"sweep": "trig_01AAAAAAAA", "daily": "trig_01BBBBBBBB"}, "Europe/Amsterdam", ["ada/ada"],
+                        {"read": [], "write": [], "send": []}, dt.datetime.now().astimezone())
+    before = (ws / backfill.PATH).read_bytes()
+    monkeypatch.setattr(onboard, "run_now", lambda *a, **k: (_ for _ in ()).throw(AssertionError("a part started")))
+    given = args(tmp_path)
+    given.phase, given.workspace = "history", str(ws)
+    result = start.phase_history(given)
+    assert (result["state"], result["why"]) == ("running", backfill.CLOUD_WHY), result
+    assert result["parts"] == state["parts"] and (ws / backfill.PATH).read_bytes() == before
+
+
 def test_the_probe_holds_the_start_lock_and_waits_for_no_second_start(tmp_path, monkeypatch):
     ws = make_space(tmp_path / "ada", name="ada")
     monkeypatch.setattr(onboard, "register_task", lambda *a, **k: (_ for _ in ()).throw(AssertionError("registered")))

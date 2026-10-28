@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+import ghrest
 import sync
 from conftest import make_space
 
@@ -329,32 +330,127 @@ def platform_merges(tmp_path, branch):
     git(hub, "push", "-q", "origin", "main")
 
 
-def test_a_new_mount_merges_while_a_protected_change_waits(repo, tmp_path, monkeypatch):
-    """A protected change waiting splits the push: the new mount lands on origin through a
-    rebuilt commit that shares no history with this checkout. The mounted space moves on, the
-    next run advances the pin, and origin/main must still merge in: git cannot merge two
-    different pins of a mount that the merge base lacks, so the run keeps its own newer one."""
+def mounted(repo, origin, path):
+    """A mount already on origin/main, as one the person's click landed."""
+    git(repo, "submodule", "add", "-q", "-b", "main", str(origin), path)
+    git(repo, "commit", "-q", "-m", "mount")
+    git(repo, "push", "-q", "origin", "main")
+
+
+def pin(clone, ref, path):
+    return git(clone, "ls-tree", ref, path).stdout.split()[2]
+
+
+def branch_paths(repo, branch):
+    """What a sync branch changes against origin/main, sorted; empty when it was never pushed."""
+    git(repo, "fetch", "-q", "origin")
+    if git(repo, "rev-parse", "-q", "--verify", f"origin/{branch}", check=False).returncode:
+        return []
+    return sorted(git(repo, "diff", "--name-only", "--no-renames", f"origin/main...origin/{branch}").stdout.split())
+
+
+def test_a_pin_advance_merges_while_a_protected_change_waits(repo, tmp_path, monkeypatch):
+    """A protected change waiting splits the push: a mount already on origin/main moves, and its
+    pin lands on green through a rebuilt commit that shares no history with this checkout (its
+    address did not change, decision 2026-10-16). The mounted space moves again, the next run
+    advances the pin again, and origin/main must still merge in, the run keeping its own newer pin."""
     monkeypatch.setattr(sync.Run, "gh", lambda self, *args: None)
     origin, work = remote_space(tmp_path, "harbor")
-    first = move(work, "# Harbor\n")
-    git(repo, "submodule", "add", "-q", "-b", "main", str(origin), "mounts/harbor")
+    move(work, "# Harbor\n")
+    mounted(repo, origin, "mounts/harbor")
+    first = move(work, "# Harbor\n\nmoved\n")
     write(repo / "space.yaml", (repo / "space.yaml").read_text(encoding="utf-8") + "x: 1\n", minutes_old=20)
     assert sync.main(["--root", str(repo)]) == 0
     host = sync.hostname()
-    platform_merges(tmp_path, f"sync/{host}")   # the plain part lands; the protected one waits
+    assert branch_paths(repo, f"sync/{host}") == ["mounts/harbor"]
+    assert branch_paths(repo, f"sync/{host}-protected") == ["space.yaml"]
+    platform_merges(tmp_path, f"sync/{host}")   # the pin lands; the protected change waits
     git(repo, "fetch", "-q", "origin")
-    assert git(repo, "ls-tree", "origin/main", "mounts/harbor").stdout.split()[2] == first
+    assert pin(repo, "origin/main", "mounts/harbor") == first
     assert git(repo, "ls-tree", "origin/main", "space.yaml").stdout != git(repo, "ls-tree", "HEAD", "space.yaml").stdout
-    second = move(work, "# Harbor\n\nmoved\n")
+    second = move(work, "# Harbor\n\nmoved twice\n")
     assert sync.main(["--root", str(repo)]) == 0
     notes = run_lines(repo)[-1]["notes"]
     assert not notes.get("conflict"), notes
     assert git(repo, "merge-base", "--is-ancestor", "origin/main", "HEAD", check=False).returncode == 0
-    assert git(repo, "ls-tree", "HEAD", "mounts/harbor").stdout.split()[2] == second
+    assert pin(repo, "HEAD", "mounts/harbor") == second
     assert not git(repo, "diff", "--name-only", "--diff-filter=U").stdout.strip()
+    # the protected change still waits on its own branch
+    assert branch_paths(repo, f"sync/{host}-protected") == ["space.yaml"]
+
+
+def test_a_new_mount_waits_for_the_click_with_its_address(repo, tmp_path, monkeypatch):
+    """A new mount is its pin and its address in .gitmodules: both wait on the protected branch
+    for the person's click, so main never holds a pin `git submodule update --init` cannot fetch
+    ("No url found"). A mount already on main still advances on green beside it. After the click
+    the new mount has moved, and origin/main merges in: git cannot merge two pins of a mount the
+    merge base lacks, so the run keeps its own newer one."""
+    monkeypatch.setattr(sync.Run, "gh", lambda self, *args: None)
+    harbor, harbor_work = remote_space(tmp_path, "harbor")
+    move(harbor_work, "# Harbor\n")
+    mounted(repo, harbor, "mounts/harbor")
+    moved = move(harbor_work, "# Harbor\n\nmoved\n")
+    port, port_work = remote_space(tmp_path, "port")
+    first = move(port_work, "# Port\n")
+    git(repo, "submodule", "add", "-q", "-b", "main", str(port), "mounts/port")
+    write(repo / "work" / "notes.md", "# Notes\n\nline one\nline two\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    host = sync.hostname()
+    assert branch_paths(repo, f"sync/{host}-protected") == [".gitmodules", "mounts/port"]
+    assert branch_paths(repo, f"sync/{host}") == ["mounts/harbor", "work/notes.md"]
+    platform_merges(tmp_path, f"sync/{host}")
     git(repo, "fetch", "-q", "origin")
-    guarded = git(repo, "diff", "--name-only", f"origin/main...origin/sync/{host}-protected").stdout.split()
-    assert guarded == ["space.yaml"]   # the protected change still waits on its own branch
+    assert pin(repo, "origin/main", "mounts/harbor") == moved
+    assert not git(repo, "ls-tree", "origin/main", "mounts/port").stdout.strip()
+    platform_merges(tmp_path, f"sync/{host}-protected")   # the person's click
+    fresh = tmp_path / "fresh"
+    git(tmp_path, "clone", "-q", str(tmp_path / "origin.git"), str(fresh))
+    done = git(fresh, "submodule", "update", "--init", check=False)
+    assert done.returncode == 0, done.stderr
+    assert pin(fresh, "HEAD", "mounts/port") == first
+    second = move(port_work, "# Port\n\nmoved\n")
+    assert sync.main(["--root", str(repo)]) == 0
+    notes = run_lines(repo)[-1]["notes"]
+    assert not notes.get("conflict"), notes
+    assert git(repo, "merge-base", "--is-ancestor", "origin/main", "HEAD", check=False).returncode == 0
+    assert pin(repo, "HEAD", "mounts/port") == second
+    assert not git(repo, "diff", "--name-only", "--diff-filter=U").stdout.strip()
+
+
+def test_a_mount_at_a_new_address_waits_for_the_click_with_it(repo, tmp_path, monkeypatch):
+    """A mount moved to another address and pinned there waits with .gitmodules: main's address
+    would not hold the new pin."""
+    monkeypatch.setattr(sync.Run, "gh", lambda self, *args: None)
+    harbor, harbor_work = remote_space(tmp_path, "harbor")
+    move(harbor_work, "# Harbor\n")
+    mounted(repo, harbor, "mounts/harbor")
+    mirror = tmp_path / "mirror.git"
+    git(tmp_path, "clone", "-q", "--bare", str(harbor), str(mirror))
+    mirror_work = tmp_path / "mirror-work"
+    git(tmp_path, "clone", "-q", str(mirror), str(mirror_work))
+    there = move(mirror_work, "# Harbor\n\nonly at the new address\n")
+    git(repo, "submodule", "set-url", "--", "mounts/harbor", str(mirror))
+    write(repo / "work" / "notes.md", "# Notes\n\nline one\nline two\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    host = sync.hostname()
+    assert pin(repo, "HEAD", "mounts/harbor") == there
+    assert branch_paths(repo, f"sync/{host}-protected") == [".gitmodules", "mounts/harbor"]
+    assert branch_paths(repo, f"sync/{host}") == ["work/notes.md"]
+
+
+def test_a_mount_moved_to_another_path_waits_with_its_old_path(repo, tmp_path, monkeypatch):
+    """A mount moved to another folder is a new pin there and an old one gone: both wait with
+    .gitmodules, so main never holds the one without the other's address."""
+    monkeypatch.setattr(sync.Run, "gh", lambda self, *args: None)
+    harbor, harbor_work = remote_space(tmp_path, "harbor")
+    move(harbor_work, "# Harbor\n")
+    mounted(repo, harbor, "mounts/harbor")
+    git(repo, "mv", "mounts/harbor", "mounts/haven")
+    git(repo, "commit", "-q", "-m", "the person moves the mount")
+    assert sync.main(["--root", str(repo)]) == 0
+    host = sync.hostname()
+    assert branch_paths(repo, f"sync/{host}-protected") == [".gitmodules", "mounts/harbor", "mounts/haven"]
+    assert branch_paths(repo, f"sync/{host}") == []
 
 
 def test_a_path_changed_again_while_a_protected_change_waits_merges(repo, tmp_path, monkeypatch):
@@ -554,23 +650,48 @@ def test_a_failing_answer_test_is_set_aside_so_the_desk_still_lands(repo, monkey
 
 
 class FakeGh:
-    """The platform as the sync sees it: one open sync pull request whose checks failed."""
+    """The platform as the sync sees it, through REST (`gh api`) and `gh run`: the open sync pull
+    requests, their checks and their failed logs. By default one open sync pull request, #7,
+    whose checks failed; `pulls={}` starts with none, and a POST opens one whose checks pass.
+    `state = "MERGED"` merges them all."""
 
-    def __init__(self, log: str):
+    RED = "abc123"
+
+    def __init__(self, log: str, pulls: dict | None = None):
         self.log, self.state, self.calls = log, "OPEN", []
+        # number: (head branch, head sha)
+        self.pulls = {7: (f"sync/{sync.hostname()}", self.RED)} if pulls is None else dict(pulls)
 
     def __call__(self, *args):   # set on the class, an instance is not bound: no self of the run
         self.calls.append(args)
-        out = ""
-        if args[:2] == ("pr", "list"):
-            out = json.dumps([{"number": 7, "headRefOid": "abc123"}] if self.state == "OPEN" else [])
-        elif args[:2] == ("pr", "checks"):
-            out = json.dumps([{"name": "checks", "bucket": "fail",
-                               "link": "https://github.com/o/r/actions/runs/123/job/456"}])
+        route = next((a for a in args if a.startswith("repos/")), "")
+        slug, out = "/".join(route.split("/")[1:3]), ""
+        if args[:3] == ("api", "-X", "POST") and re.fullmatch(r"repos/[^/]+/[^/]+/pulls", route):
+            number = max(self.pulls, default=11) + 1
+            head = next(a[len("head="):] for a in args if a.startswith("head="))
+            self.pulls[number] = (head, f"sha{number}")
+            out = json.dumps({"number": number})
+        elif re.fullmatch(r"repos/[^/]+/[^/]+/pulls\?.*", route):
+            wanted = route.split("&head=")[1].split(":", 1)[1] if "&head=" in route else None
+            out = json.dumps([] if self.state == "MERGED" else [
+                {"number": n, "title": "chore: sync", "draft": False, "auto_merge": None,
+                 "html_url": f"https://github.com/{slug}/pull/{n}", "created_at": "2026-10-27T07:10:00Z",
+                 "head": {"ref": ref, "sha": sha, "repo": {"full_name": slug}},
+                 "base": {"repo": {"full_name": slug}}}
+                for n, (ref, sha) in self.pulls.items() if wanted in (None, ref)])
+        elif m := re.fullmatch(r"repos/[^/]+/[^/]+/pulls/(\d+)", route):
+            merged = self.state == "MERGED"
+            out = json.dumps({"number": int(m[1]), "state": "closed" if merged else "open", "merged": merged,
+                              "mergeable_state": "unknown" if merged else "clean",
+                              "head": {"sha": self.pulls.get(int(m[1]), ("", ""))[1]}})
+        elif m := re.fullmatch(r"repos/[^/]+/[^/]+/commits/([^/]+)/check-runs\?.*", route):
+            link = "https://github.com/o/r/actions/runs/123/job/456"
+            out = json.dumps({"check_runs": [{"name": "checks", "details_url": link,
+                                              "conclusion": "failure" if m[1] == self.RED else "success"}]})
         elif args[:2] == ("run", "view"):
             out = self.log
-        elif args[:2] == ("pr", "view"):
-            out = json.dumps({"state": self.state})
+        elif args[:2] != ("run", "rerun"):
+            return subprocess.CompletedProcess(["gh", *args], 1, "", "unknown command")
         return subprocess.CompletedProcess(["gh", *args], 0, out, "")
 
 
@@ -614,6 +735,65 @@ def test_a_red_sync_pull_request_with_no_known_cause_is_rerun_once(repo, monkeyp
     assert sync.main(["--root", str(repo)]) == 0   # the same head is still red: not rerun again
     assert len([c for c in gh.calls if c[:2] == ("run", "rerun")]) == 1
     assert run_lines(repo)[-1]["notes"]["pr_red"] == {"pr": 7, "checks": ["checks"]}
+
+
+def test_the_sync_never_calls_graphql(repo, monkeypatch):
+    """A cloud run refuses GraphQL, which every `gh pr` command is: the sync reads and opens its
+    pull request, reads its checks and reruns them through `gh api` and `gh run` only."""
+    gh = FakeGh("")
+    monkeypatch.setattr(sync.Run, "gh", gh)
+    write(repo / "work" / "notes.md", "# Notes\n\nline two\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    assert gh.calls and all(c[0] in ("api", "run") and "graphql" not in c for c in gh.calls)
+
+
+def test_a_sync_pull_request_opens_through_rest_once(repo, monkeypatch):
+    """No sync pull request open: one POST into main from this machine's branch. Once it is open,
+    the next run that pushes finds it and opens no second one."""
+    gh = FakeGh("", pulls={})
+    monkeypatch.setattr(sync.Run, "gh", gh)
+    write(repo / "work" / "notes.md", "# Notes\n\nline one\nline two\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    posts = [c for c in gh.calls if c[:3] == ("api", "-X", "POST")]
+    assert len(posts) == 1 and posts[0][3] == f"repos/{ghrest.repo_slug(repo)}/pulls"
+    assert {f"head=sync/{sync.hostname()}", "base=main", "title=chore: sync"} <= set(posts[0])
+    assert run_lines(repo)[-1]["notes"]["pr"] == "opened"
+    write(repo / "work" / "notes.md", "# Notes\n\nline one\nline two\nline three\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    assert len([c for c in gh.calls if c[:3] == ("api", "-X", "POST")]) == 1
+    notes = run_lines(repo)[-1]["notes"]
+    assert notes.get("pushed") and "pr" not in notes
+
+
+def test_open_pr_answers_the_number_of_the_open_or_new_pull_request(repo, monkeypatch):
+    monkeypatch.setattr(sync.Run, "gh", FakeGh("", pulls={}))
+    run = sync.Run(repo, repo / ".git", sync.parse(["--root", str(repo)]))
+    assert run.slug == ghrest.repo_slug(repo) and run.slug
+    assert run.open_pr("sync/m-0000aaaa") == 12 and run.notes == {"pr": "opened"}
+    run.notes.clear()
+    assert run.open_pr("sync/m-0000aaaa") == 12 and run.notes == {}   # found open: not opened again
+
+
+def test_without_gh_the_run_line_says_so_and_nothing_fails(repo, monkeypatch):
+    monkeypatch.setattr(sync.Run, "gh", lambda self, *args: None)
+    write(repo / "work" / "notes.md", "# Notes\n\nline one\nline two\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    notes = run_lines(repo)[-1]["notes"]
+    assert notes["gh"] == "absent" and not notes.get("errors")
+
+
+def test_an_origin_that_names_no_repository_is_said_once(repo, monkeypatch):
+    """A protected change splits the push into two branches, and origin names no repository to
+    ask: one error for the run, not one per branch, and GitHub is never called (gh is asked only
+    whether it is there)."""
+    gh = FakeGh("", pulls={})
+    monkeypatch.setattr(sync.Run, "gh", gh)
+    monkeypatch.setattr(ghrest, "repo_slug", lambda root: None)
+    write(repo / "space.yaml", (repo / "space.yaml").read_text(encoding="utf-8") + "x: 1\n", minutes_old=20)
+    write(repo / "work" / "notes.md", "# Notes\n\nline one\nline two\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 1
+    assert run_lines(repo)[-1]["notes"]["errors"] == ["no GitHub repository behind origin"]
+    assert gh.calls == [("--version",)]
 
 
 def test_sync_rewrites_the_page_every_run(repo, monkeypatch):
@@ -708,7 +888,7 @@ def test_the_record_merge_rule_is_written_into_the_spaces_own_git_once(repo):
     attributes.write_text("*.bin binary", encoding="utf-8")   # a rule of the person's own, with no newline at its end
     assert run(repo, "--dry-run") == 0 and attributes.read_text(encoding="utf-8") == "*.bin binary"
     assert run(repo) == 0 and run(repo) == 0
-    assert attributes.read_text(encoding="utf-8") == "*.bin binary\n_meta/state/routine-host.yaml merge=union\n"
+    assert attributes.read_text(encoding="utf-8") == "*.bin binary\n" + "".join(f"{r}\n" for r in sync.MERGE_RULES)
 
 
 def test_an_attributes_file_that_is_not_utf8_still_gets_the_rule_and_the_sync_runs(repo):
@@ -718,11 +898,11 @@ def test_an_attributes_file_that_is_not_utf8_still_gets_the_rule_and_the_sync_ru
     own = b"*.bin binary # caf\xe9\n"   # Latin-1, not UTF-8
     attributes.write_bytes(own)
     assert run(repo) == 0
-    assert attributes.read_bytes() == own + b"_meta/state/routine-host.yaml merge=union\n"
+    assert attributes.read_bytes() == own + "".join(f"{r}\n" for r in sync.MERGE_RULES).encode("utf-8")
 
 @template_only
 def test_the_template_merges_the_routine_record_and_the_friction_log_by_union():
     rules = (TEMPLATE / ".gitattributes").read_text(encoding="utf-8").splitlines()
     for path in ("_meta/state/routine-host.yaml", "_meta/friction-log.md"):
         assert any(line.split() == [path, "merge=union"] for line in rules)
-    assert sync.MERGE_RULES == ("_meta/state/routine-host.yaml merge=union",)
+    assert sync.MERGE_RULES[0] == "_meta/state/routine-host.yaml merge=union"

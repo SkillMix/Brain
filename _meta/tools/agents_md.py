@@ -77,10 +77,11 @@ ZONES = {
 NEVER = (
     "Never sign: `status: stable` is written only by `sign` while it executes a named "
     "person's verdict; a routine or agent that writes it is a defect. Never send, post, "
-    "spend or delete: drafts go to `outbox/` and the person fires them. Agents edit files; "
-    "the sync script commits them and the platform merges; no session runs a git write. "
-    "Secrets never enter the repository, what is on the never-leaves list never leaves this "
-    "space by any path, and agents never widen their own authority (`rules.md` section 1)."
+    "spend or delete: drafts go to `outbox/` and the person fires them. Agents edit files. "
+    "The sync script commits: on the computer every 15 minutes, and once at the end of a cloud "
+    "routine run. The platform merges. No session runs a git write itself. Secrets never "
+    "enter the repository, what is on the never-leaves list never leaves this space by any "
+    "path, and agents never widen their own authority (`rules.md` section 1)."
 )
 KINDS_INTRO = {
     "pages": "Subjects and signed pages are grouped by kind under `knowledge/`; hierarchy and "

@@ -5,6 +5,11 @@ timezone: local   # the machine's own clock, as the harness and the OS scheduler
 description: Three times a day, export {person}'s feeds into their spaces on this machine, then run the sweep chain, the tracker step and the owner notices; the sync tasks land the files
 ---
 
+Before anything else, the gate: run `{python} {workspace}/_meta/tools/chain.py gate {workspace}`. When it
+exits 3, this computer does not run {person}'s routines now (they run in the cloud or on another
+computer, or they are paused): stop at once and write nothing, not even a run line, and finish with the
+sentence it printed. Any other exit but 0 is a fault: stop the same way and say so. When it exits 0, go on.
+
 You run the sweep chain for {person}'s spaces on this machine: every root that
 `{python} {workspace}/_meta/tools/chain.py spaces {workspace}` prints, one after another, their
 workspace `{workspace}` first. You never run git: each space's sync task merges, pins the mounts

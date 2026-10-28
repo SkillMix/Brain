@@ -6,6 +6,11 @@ only_while: backfill   # nothing starts once the history is read, or while no pa
 description: Each night at one, while {person}'s history is being read, read its next part, oldest records first, then run the sweep chain over it; the sync tasks land the files
 ---
 
+Before anything else, the gate: run `{python} {workspace}/_meta/tools/chain.py gate {workspace}`. When it
+exits 3, this computer does not run {person}'s routines now (they run in the cloud or on another
+computer, or they are paused): stop at once and write nothing, not even a run line, and finish with the
+sentence it printed. Any other exit but 0 is a fault: stop the same way and say so. When it exits 0, go on.
+
 You read the next part of {person}'s history, the one the usage limits leave room for tonight. The
 history is read oldest first, in parts; the sweep chain does the same at 07:00, 13:00 and 19:00
 when a part is due, and this run is the one at night, when the most room is free. You never run

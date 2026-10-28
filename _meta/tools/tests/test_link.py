@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -673,6 +674,87 @@ def test_default_host_calls_tell_signed_out_from_not_found(tmp_path, now, monkey
     answers["graphql"] = (1, "", "gh: Could not resolve to a node with the global id of 'R_1'\n")
     link.check(ws, now=now, readers_fn=lambda r: None)
     assert link.links(ws)[0].gone == now.date().isoformat()
+
+
+def host(monkeypatch, answers: dict, seen: list | None = None):
+    """`link._gh` answering `gh api <route> ...` from `answers` (route -> (code, stdout, stderr));
+    any other call, GraphQL included, fails the test."""
+    def gh(*args):
+        if seen is not None:
+            seen.append(args)
+        assert args[0] == "api" and "graphql" not in args, args
+        return answers.get(args[1], (1, "", "gh: Not Found (HTTP 404)\n"))
+    monkeypatch.setattr(link, "_gh", gh)
+
+
+def test_owner_repositories_are_listed_through_rest(monkeypatch):
+    seen = []
+    host(monkeypatch, {"users/ada": (0, "User\n", ""), "user": (0, "ada\n", ""),
+                       "user/repos?affiliation=owner&per_page=100": (0, "ada/one\nada/two\n", "")}, seen)
+    assert link._host_repos("ada") == ["ada/one", "ada/two"]
+    assert seen[-1] == ("api", "user/repos?affiliation=owner&per_page=100", "--paginate", "--jq", ".[].full_name")
+
+
+def test_an_organisation_and_another_person_are_listed_by_their_own_routes(monkeypatch):
+    host(monkeypatch, {"users/northwind": (0, "Organization\n", ""), "users/ben-gh": (0, "User\n", ""),
+                       "user": (0, "ada\n", ""),
+                       "orgs/northwind/repos?type=all&per_page=100": (0, "northwind/harbor-voice\n", ""),
+                       "users/ben-gh/repos?per_page=100": (0, "ben-gh/notes\n", "")})
+    assert link._host_repos("northwind") == ["northwind/harbor-voice"]
+    assert link._host_repos("ben-gh") == ["ben-gh/notes"]
+
+
+def test_a_host_that_cannot_list_says_so(monkeypatch):
+    signed_out = (4, "", "To get started with GitHub CLI, please run:  gh auth login\n")
+    host(monkeypatch, {"users/ada": signed_out})
+    assert link._host_repos("ada") is None
+    host(monkeypatch, {"users/ada": (0, "User\n", ""), "user": signed_out})
+    assert link._host_repos("ada") is None
+    host(monkeypatch, {"users/ada": (0, "User\n", ""), "user": (0, "ada\n", ""),
+                       "user/repos?affiliation=owner&per_page=100": (1, "", "gh: API rate limit exceeded (HTTP 403)\n")})
+    assert link._host_repos("ada") is None
+
+
+def test_a_repository_the_cloud_run_cannot_reach_is_never_gone():
+    with pytest.raises(OSError):
+        link._answer(1, "", "GitHub access to this repository is not enabled for this session (HTTP 404)")
+    with pytest.raises(OSError):
+        link._answer(1, "GitHub access to this repository is not enabled for this session", "gh: (HTTP 404)")
+    assert link._answer(1, "", "gh: Not Found (HTTP 404)\n") is None   # truly not there: still gone
+
+
+def test_the_unattached_answer_is_read_with_ghrests_one_pattern(monkeypatch):
+    monkeypatch.setattr(link.ghrest, "NOT_ENABLED", re.compile(r"refused for this run"))
+    with pytest.raises(OSError):
+        link._answer(1, "", "gh: refused for this run (HTTP 404)\n")
+
+
+def test_without_graphql_a_renamed_repository_by_id_keeps_its_link(monkeypatch):
+    host(monkeypatch, {})   # not found by name; the by-id question is GraphQL and never asked
+    with pytest.raises(OSError):
+        link._host_lookup("ada/old-name", "R_kgDOxyz", graphql=False)
+    host(monkeypatch, {"repos/ada/old-name": (0, '{"repo":"ada/old-name","repo_id":"R_other"}\n', "")})
+    with pytest.raises(OSError):   # another repository has the name now
+        link._host_lookup("ada/old-name", "R_kgDOxyz", graphql=False)
+    host(monkeypatch, {"repos/ada/old-name": (0, '{"repo":"ada/new-name","repo_id":"R_kgDOxyz"}\n', "")})
+    assert link._host_lookup("ada/old-name", "R_kgDOxyz", graphql=False)["repo"] == "ada/new-name"
+
+
+def test_a_check_without_graphql_never_marks_a_link_gone_by_id(tmp_path, now, monkeypatch):
+    ws = linked_ws(tmp_path, repo_id="R_1", checked="2026-10-05")
+    host(monkeypatch, {})
+    before = (ws / "_meta" / "subjects.yaml").read_text(encoding="utf-8")
+    assert link.check(ws, now=now, readers_fn=lambda r: None, graphql=False)["repaired"] == 0
+    assert (ws / "_meta" / "subjects.yaml").read_text(encoding="utf-8") == before
+    assert link.links(ws)[0].gone is None
+
+
+def test_a_check_in_a_run_the_repository_is_not_attached_to_keeps_the_link(tmp_path, now, monkeypatch):
+    ws = linked_ws(tmp_path, checked="2026-10-05")
+    host(monkeypatch, {"repos/northwind/harbor-voice": (
+        1, "", "GitHub access to this repository is not enabled for this session (HTTP 404)\n")})
+    assert link.check(ws, now=now, readers_fn=lambda r: None, graphql=False)["repaired"] == 0
+    assert link.links(ws)[0].gone is None
 
 
 def test_health_cell(tmp_path, now):

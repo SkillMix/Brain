@@ -17,6 +17,8 @@ The destination's librarian runs this before anything reads the space. For every
 | one of two releases for one page with other text    | both pending, `disagrees_with`  |
 | the same text as the page already there             | a duplicate: dropped, logged    |
 | a body that does not match its fingerprint          | pending, never filed            |
+| signed in a repository this run may not ask (a      | left as it is, for a run that   |
+|   cloud run it is not attached to)                  |   can ask                       |
 | a retraction from the release's sender              | that release withdrawn: never   |
 |                                                     |   lands, or kept deprecated and |
 |                                                     |   no longer evidence            |
@@ -42,6 +44,7 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ghrest  # noqa: E402
 import pages  # noqa: E402
 import registry as registry_mod  # noqa: E402
 import spaceyaml  # noqa: E402
@@ -58,6 +61,14 @@ SAMPLE_SIZE = 5
 TRUST_SHARE = 0.2
 TRUST_MIN = 5
 TRUST_DAYS = 28
+
+
+class _Unreachable:
+    """The type of UNREACHABLE: signer_log's answer for a repository this session may not ask (a
+    cloud run it is not attached to), neither the signer's history nor its absence."""
+
+
+UNREACHABLE = _Unreachable()
 
 
 @dataclass
@@ -232,28 +243,37 @@ def stakes(fm: dict) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else "flagged"
 
 
-def signer_log(repo: str, cache: dict) -> str | None:
-    """The signer's own `log.md`, read with this person's grants (the host's command line)."""
+def signer_log(repo: str, cache: dict) -> str | _Unreachable | None:
+    """The signer's own `log.md`, read with this person's grants (the host's command line); None
+    when it cannot be read; UNREACHABLE when this session may not ask that repository at all (a
+    cloud run it is not attached to)."""
     if repo in cache:
         return cache[repo]
     import subprocess
     try:
         res = subprocess.run(["gh", "api", f"repos/{repo}/contents/log.md", "-H", "Accept: application/vnd.github.raw"],
                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
-        cache[repo] = res.stdout if res.returncode == 0 else None
+        if res.returncode == 0:
+            cache[repo] = res.stdout
+        else:
+            cache[repo] = UNREACHABLE if ghrest.NOT_ENABLED.search(f"{res.stderr}\n{res.stdout}") else None
     except Exception:
         cache[repo] = None
     return cache[repo]
 
 
-def verified(fm: dict, cache: dict) -> bool | None:
+def verified(fm: dict, cache: dict) -> bool | str | None:
     """The trust root (rules.md section 9): a release names the repository it was signed in;
     the signer's own history must carry the fingerprint line for this page. None when the
-    release names no repository (offline, a fixture): nothing to check against."""
+    release names no repository (offline, a fixture): nothing to check against. "unknown" when
+    this session may not ask the signer's repository (a cloud run it is not attached to): the
+    release waits as it is for a run that can."""
     repo = fm.get("signed_repo")
     if not repo:
         return None
     text = signer_log(str(repo), cache)
+    if text is UNREACHABLE:
+        return "unknown"
     if text is None:
         return False
     return f" fingerprint {fm.get('id')} {fm.get('fingerprint')} by {fm.get('signed_by')}" in text
@@ -340,7 +360,10 @@ def land(root, space: spaceyaml.Space | None = None, reg=None, now: dt.datetime 
                 report.pending.append(pid)
                 continue
             releaser = str(fm.get("released_from") or "")
-            if verified(fm, signer_cache) is False:
+            signature = verified(fm, signer_cache)
+            if signature == "unknown":   # the signer's history cannot be asked here: left as it is
+                continue
+            if signature is False:
                 _mark(path, fm, body, landing="pending: the signer's history does not show this signature",
                       **{"for": owner})
                 report.pending.append(pid)

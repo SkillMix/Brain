@@ -8,16 +8,22 @@ payload to its mail connector. In the shadow the subject and title say so.
 
     python morning_view.py [root] --person <name> [--shadow] [--limit N]
     python morning_view.py [root] sent-today        exit 0 when today's briefing was sent
-    python morning_view.py [root] record-send --id <message id> | --failed <reason>
+    python morning_view.py [root] record-send --id <message id> [--to <address> ...] | --failed <reason>
+
+`record-send --to` takes the recipients read back from the sent message, all after one `--to` or
+one `--to` each; every one is kept. Any address but the owner's makes the line a failed send
+and puts one security item on Needs you; no address is written into the space.
 """
 from __future__ import annotations
 
 import argparse
 import datetime as dt
 import json
+import re
 import sys
 from collections import Counter
 from dataclasses import dataclass
+from email.utils import getaddresses
 from pathlib import Path
 
 import yaml
@@ -41,6 +47,16 @@ UNSURE_TAIL = "Reply with the code and yes or no."
 LEGACY = (Path("_meta") / "state" / "morning-notice.json", Path("_meta") / "state" / "morning-payload.json")
 RUNS = Path("_meta") / "state" / "runs.jsonl"
 STALE = Path("_meta") / "state" / "stale.yaml"
+# One security item per briefing that reached someone else, written by record_send only. It goes
+# before every undated item on the list (the tools' own items depend 2 at most; 99 stays ahead of
+# any value read from data), and the mail always counts it, however many other kinds wait.
+ITEMS = Path("_inbound") / "needs-you" / "morning-view.yaml"
+RECIPIENT_ITEM = "morning-view-recipient"
+RECIPIENT_DEPENDS = 99
+ALWAYS_COUNTED = ("security",)
+# Counts that tell the person something and ask nothing: they rank after every kind that waits on
+# them, so hundreds of attachments to read never push a change waiting for one click off the mail.
+INFORMATION = ("landed_silently", "meetings", "unsure", "unread_attachments")
 
 # One plain label per item kind for the email's counts (they pass the plain-language check).
 LABELS = {
@@ -61,6 +77,9 @@ LABELS = {
     "landed_silently": "updates that landed here silently this week",
     "meetings": "meetings today and tomorrow, with who is who on your page",
     "sample": "samples to look over",
+    "security": "briefings that reached an address that is not yours",
+    "unsure": "records not sorted as work or personal, since your last briefing",
+    "unread_attachments": "attachments not yet read",
 }
 
 
@@ -112,16 +131,13 @@ def _day_index(space: spaceyaml.Space, moment: dt.datetime) -> int:
     return int(moment.timestamp() // space.scale(24).total_seconds())
 
 
-def sent_today(root, now: dt.datetime | None = None) -> bool:
-    """True when a briefing was already sent this scaled day: any run line of a sending
-    routine whose notes carry `email` or `message_id`, whichever routine wrote it."""
-    root = Path(root)
-    space = spaceyaml.load(root)
-    now = now or space.now()
+def _sends(root: Path):
+    """The time of every briefing sent: any run line of a sending routine whose notes carry
+    `email` or `message_id`, whichever routine wrote it. A line that says the send failed does
+    not count, a briefing that reached someone else included."""
     path = root / RUNS
     if not path.exists():
-        return False
-    today = _day_index(space, now)
+        return
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         try:
             run = json.loads(line)
@@ -130,25 +146,101 @@ def sent_today(root, now: dt.datetime | None = None) -> bool:
         notes = run.get("notes") if isinstance(run, dict) else None
         if not isinstance(notes, dict) or run.get("routine") not in SEND_ROUTINES:
             continue
-        if not (notes.get("email") or notes.get("message_id")):
+        if notes.get("failed") or not (notes.get("email") or notes.get("message_id")):
             continue
         try:
-            at = pages.parse_iso(run.get("at"))
+            yield pages.parse_iso(run.get("at"))
         except (TypeError, ValueError):
             continue
-        if _day_index(space, at) == today and at <= now:
-            return True
-    return False
+
+
+def sent_today(root, now: dt.datetime | None = None) -> bool:
+    """True when a briefing was already sent this scaled day (`_sends`)."""
+    root = Path(root)
+    space = spaceyaml.load(root)
+    now = now or space.now()
+    today = _day_index(space, now)
+    return any(_day_index(space, at) == today and at <= now for at in _sends(root))
+
+
+def _last_sent(root: Path, now: dt.datetime) -> dt.datetime | None:
+    """When the last briefing before now went out, if one did."""
+    return max((at for at in _sends(root) if at <= now), default=None)
+
+
+def _unread_attachments(root: Path) -> int:
+    """How many attachments the sweep still lists to read (`sweep.py --attachments`); a count
+    that cannot be read is none, never a briefing that fails."""
+    try:
+        import sweep
+        return len(sweep.attachments(root))
+    except Exception:
+        return 0
+
+
+def _others(own_address: str, to: list) -> int:
+    """How many read-back recipients are not the person. The owner address and each entry may be
+    `Name <address>`, and an entry may hold several addresses. An entry, or any piece of one,
+    with no address in it could hide one, so it counts as someone else, even beside the
+    person's own (`ada@example.test, undisclosed-recipients:;`); so does a read-back with no
+    recipient at all, and every address when the space has no one owner address. A display name
+    with an unquoted comma (`Okafor, Ada <address>`) reads as a bare name plus the address, so it
+    counts as someone else too: the check fails closed, never open."""
+    mine = [addr.strip().lower() for _, addr in getaddresses([str(own_address or "")]) if "@" in addr]
+    own = mine[0] if len(mine) == 1 else ""
+    others, seen = 0, False
+    for entry in to:
+        if not str(entry).strip():
+            continue
+        seen = True
+        found = [addr.strip().lower() for _, addr in getaddresses([str(entry)])]
+        # an empty address never equals the person's, not even when the space has none
+        others += sum(1 for addr in found if not addr or addr != own) if found else 1
+    return others if seen else 1
+
+
+def _recipient_item(root: Path, message_id: str, now: dt.datetime) -> None:
+    """One security item for a briefing that reached someone else, its id named after the
+    message, so a later one is asked again after this one is answered. Answered items leave the
+    file; no address is written."""
+    path = root / ITEMS
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, yaml.YAMLError):
+        data = {}
+    rows = data.get("items") if isinstance(data, dict) else None
+    answered = needs_you.answered_ids(root)
+    items = [i for i in rows if isinstance(i, dict) and i.get("id") not in answered] if isinstance(rows, list) else []
+    slug = (re.sub(r"[^a-z0-9]+", "-", message_id.lower()).strip("-")
+            or re.sub(r"[^a-z0-9]+", "-", pages.iso(now).lower()).strip("-"))
+    item_id = f"{RECIPIENT_ITEM}-{slug}"
+    if not any(i.get("id") == item_id for i in items):
+        which = f" (message {message_id})" if message_id else ""
+        items.append({"id": item_id, "kind": "security",
+                      "text": f"Your morning briefing{which} went to an address that is not yours. "
+                              "Check the message in your Sent mail.",
+                      "recommendation": "check who received it and tell them to delete it",
+                      "default": "it stays on this list until you answer", "depends": RECIPIENT_DEPENDS})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump({"items": items}, sort_keys=False, allow_unicode=True, width=100),
+                    encoding="utf-8", newline="\n")
 
 
 def record_send(root, message_id: str | None = None, failed: str | None = None,
-                cost_tokens: int = 0, now: dt.datetime | None = None) -> dict:
-    """Append the canonical send line; the agent never writes it by hand."""
+                cost_tokens: int = 0, now: dt.datetime | None = None, to: list | None = None) -> dict:
+    """Append the canonical send line; the agent never writes it by hand. `to` is the
+    recipients read back from the sent message: any address but the owner's, or an empty list,
+    makes the line a failed send (`sent_today` passes it by) and one security item; without
+    `to`, nothing is checked."""
     root = Path(root)
     space = spaceyaml.load(root)
     now = now or space.now()
     notes = {"step": "send"}
-    if failed:
+    others = _others(space.owner_email, [to] if isinstance(to, str) else to) if to is not None else 0
+    if others:
+        notes.update(failed="recipient", email=str(message_id or ""), others=others)
+        _recipient_item(root, str(message_id or ""), now)
+    elif failed:
         notes["failed"] = str(failed)
     else:
         notes["email"] = str(message_id or "")
@@ -316,7 +408,9 @@ def _notice(space: spaceyaml.Space, items: list, counts: dict, health: list, sha
     else:
         title = f"{count} item{'s' if count != 1 else ''} need{'s' if count == 1 else ''} you"
     stats = [{"count": n, "label": LABELS.get(kind, kind.replace("_", " "))}
-             for kind, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))][:owner_email.LIMITS["stats"]]
+             for kind, n in sorted(counts.items(),
+                                   key=lambda kv: (kv[0] not in ALWAYS_COUNTED, kv[0] in INFORMATION, -kv[1], kv[0]))
+             ][:owner_email.LIMITS["stats"]]
     base = "Here is what needs you today." if count else "Nothing is waiting for you today."
     notice = {"kind": "briefing", "sender": ROUTINE, "title": ("[shadow] " if shadow else "") + title,
               "summary": base, "stats": stats}
@@ -423,6 +517,15 @@ def run(root, person: str, now: dt.datetime | None = None, shadow: bool = False,
     approved = needs_you.approved_leaving(root, space, now)
     if approved:
         counts["approved_leaving"] = len(approved)
+    # what a cloud run kept by id only: counts, never which records or files. A record this
+    # computer still holds is asked about by its code below, so it is not counted as well.
+    here = {str(r["id"]) for r in unsure.waiting(root)}
+    kept = unsure.kept_since(root, _last_sent(root, now), now, besides=here)
+    if kept:
+        counts["unsure"] = kept
+    unread = _unread_attachments(root)
+    if unread:
+        counts["unread_attachments"] = unread
     listed = _mark_listed(root, space, items + approved, now)
     health = _with_stale(root, space.name, _health_lines(root))
     page_fm = {"id": _page_id(root), "type": "snapshot", "title": "Needs you", "status": "draft",
@@ -457,7 +560,7 @@ def run(root, person: str, now: dt.datetime | None = None, shadow: bool = False,
 
 
 def _guard_cli(argv: list):
-    """`[root] sent-today` and `[root] record-send --id X | --failed REASON [--cost N]`."""
+    """`[root] sent-today` and `[root] record-send --id X [--to ADDRESS ...] | --failed REASON [--cost N]`."""
     args = list(argv)
     verbs = ("sent-today", "record-send")
     root = "."
@@ -474,10 +577,12 @@ def _guard_cli(argv: list):
     ap.add_argument("--id", dest="message_id")
     ap.add_argument("--failed")
     ap.add_argument("--cost", type=int, default=0)
+    ap.add_argument("--to", nargs="+", action="extend",
+                    help="each recipient read back from the sent message: all after one --to, or one --to each")
     opts = ap.parse_args(rest)
     if not opts.message_id and not opts.failed:
         ap.error("give --id <message id> or --failed <reason>")
-    print(json.dumps(record_send(root, opts.message_id, opts.failed, opts.cost)))
+    print(json.dumps(record_send(root, opts.message_id, opts.failed, opts.cost, to=opts.to)))
     return 0
 
 

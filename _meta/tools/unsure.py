@@ -1,11 +1,17 @@
 """unsure: records the reader could not classify as company or personal (judgment routing design).
 
 The export writes such a record, with `"feed": "<source>"` added, to
-`_meta/state/private/unsure.jsonl`: a local private zone the sync script never stages. The
-morning view lists each one in the owner's own email by a plain one-line label; a `yes` in the
-reply admits it (written once to its feed as a company record, so the next sweep makes its page
-and the router reads it), a `no` drops it (counted as personal). An item listed for 14 days
-without an answer goes. Nothing here reads or writes the repository's tracked files.
+`_meta/state/private/unsure.jsonl` (or hands it to `keep`): a local private zone the sync script
+never stages. The morning view lists each one in the owner's own email by a plain one-line label;
+a `yes` in the reply admits it (written once to its feed as a company record, so the next sweep
+makes its page and the router reads it), a `no` drops it (counted as personal). An item listed
+for 14 days without an answer goes.
+
+A cloud run's private zone goes with its clone, so every record kept here also leaves its id,
+its source and the time it was kept in `_meta/state/unsure-ids.jsonl`, once per id, and nothing
+else: no content, no subject, no sender. The morning view counts them and a session on the
+computer can fetch each by its id. A record the export wrote to the store itself is noted the
+next time the sweep runs. That file is the only tracked file this tool writes.
 
     python unsure.py [root]            how many records wait
 """
@@ -23,6 +29,7 @@ import pages  # noqa: E402
 import spaceyaml  # noqa: E402
 
 STORE = spaceyaml.PRIVATE_STATE / "unsure.jsonl"
+IDS = Path("_meta") / "state" / "unsure-ids.jsonl"   # tracked: ids, sources and times only
 FEED = Path("_meta") / "state" / "feed"
 EXPIRE_DAYS = 14
 LOCAL = ("key", "feed", "first_listed")
@@ -62,6 +69,71 @@ def _write(root: Path, records: list) -> None:
     tmp.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records), encoding="utf-8",
                    newline="\n")
     tmp.replace(path)
+
+
+def _id_rows(root: Path) -> list:
+    path = Path(root) / IDS
+    out = []
+    for line in path.read_text(encoding="utf-8").splitlines() if path.exists() else []:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("id"):
+            out.append(row)
+    return out
+
+
+def keep(root, record: dict, now: dt.datetime | None = None) -> bool:
+    """Park a record the reader could not classify, once per id, with its `feed` (its source
+    when the export left it out), and note its id. True when it was not kept yet."""
+    root = Path(root)
+    if not isinstance(record, dict) or not record.get("id"):
+        return False
+    records = _read(root)
+    new = str(record["id"]) not in {str(r["id"]) for r in records}
+    if new:
+        _write(root, records + [dict(record, feed=record.get("feed") or record.get("source") or "mail")])
+    note_ids(root, now)
+    return new
+
+
+def note_ids(root, now: dt.datetime | None = None) -> int:
+    """Append `{id, source, at}` to IDS for every kept record it does not name yet (`at` is when
+    it was noted, so the morning view can count what came since the last briefing); returns how
+    many. Nothing else of the record leaves the private zone."""
+    root = Path(root)
+    known = {str(r["id"]) for r in _id_rows(root)}
+    new = []
+    for record in _read(root):
+        if str(record["id"]) not in known:
+            known.add(str(record["id"]))
+            new.append(record)
+    if not new:
+        return 0
+    at = pages.iso(now or spaceyaml.load(root).now())
+    path = root / IDS
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as handle:
+        for record in new:
+            source = str(record.get("feed") or record.get("source") or "mail")
+            handle.write(json.dumps({"id": str(record["id"]), "source": source, "at": at},
+                                    ensure_ascii=False) + "\n")
+    return len(new)
+
+
+def kept_since(root, since: dt.datetime | None, now: dt.datetime, besides=()) -> int:
+    """How many records were noted as unsure after `since` and by `now` (every one by `now`
+    without a `since`), leaving out the ids in `besides`: distinct ids, a count only."""
+    ids, besides = set(), {str(b) for b in besides}
+    for row in _id_rows(root):
+        try:
+            at = pages.parse_iso(row.get("at"))
+        except (TypeError, ValueError):
+            continue
+        if (since is None or at > since) and at <= now and str(row["id"]) not in besides:
+            ids.add(str(row["id"]))
+    return len(ids)
 
 
 def waiting(root) -> list:
@@ -117,7 +189,7 @@ def drop(root, key: str) -> bool:
 def expire(root, now: dt.datetime, days: int = EXPIRE_DAYS) -> int:
     """Items listed for `days` without an answer go; returns how many."""
     records = _read(root)
-    keep, gone = [], 0
+    kept, gone = [], 0
     for r in records:
         try:
             first = pages.parse_iso(r["first_listed"]) if r.get("first_listed") else None
@@ -126,9 +198,9 @@ def expire(root, now: dt.datetime, days: int = EXPIRE_DAYS) -> int:
         if first is not None and now - first > dt.timedelta(days=days):
             gone += 1
         else:
-            keep.append(r)
+            kept.append(r)
     if gone:
-        _write(root, keep)
+        _write(root, kept)
     return gone
 
 

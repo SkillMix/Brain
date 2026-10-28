@@ -17,6 +17,11 @@ notices (this skill).
   security email goes out in any 24 hours; the rest wait for the next.
 - In a session, when the person must know now and is not in the chat (a credential in a
   shared document, a deadline only they can meet). Write the notice, queue it, send it.
+- While the routines run in the cloud (`_meta/state/routine-host.yaml` has `runner: "cloud"`), a
+  session on a computer leaves the notices `pending` lists to the cloud's runs, which send them,
+  so none goes twice: it sends only a notice it queued itself in that session. The cloud's runs
+  follow this skill as their prompts (`_meta/templates/cloud/`) say, and read each sent message
+  back with the mail connector's `get_message`.
 
 ## Run
 

@@ -145,6 +145,22 @@ def test_a_routine_never_runs_needs_you():
         assert not allowed(merged, command), command
 
 
+def test_a_routine_never_runs_the_merge_driver(tmp_path):
+    """git runs `sync.py --merge-latest` itself mid-merge; a routine that ran it would write a file past the edit
+    rules. Claude Code's own rule match refuses it however it is spelled, and the landing still runs."""
+    rules = routine.routine_settings(REPO, "", roots=[REPO])["permissions"]
+    merged = {"allow": profile()["allow"] + rules["allow"], "deny": profile()["deny"] + rules["deny"]}
+    sync_py = f"python {REPO.as_posix()}/_meta/tools/sync.py"
+    assert allowed(merged, f"{sync_py} --root {REPO.as_posix()} --release-leg")
+    assert allowed(merged, "python _meta/tools/sync.py --root . --release-leg")
+    for command in (f"{sync_py} --merge-latest a space.yaml b", f"{sync_py} --merge a space.yaml b",
+                    f"{sync_py} '--merge-latest' a space.yaml b", f"{sync_py} --'merge'-latest a space.yaml b",
+                    "python _meta/tools/sync.py --merge-latest a space.yaml b",
+                    f"{sync_py} {{--m,X}}erge-latest a space.yaml b", f"{sync_py} --me[r]ge-latest a space.yaml b",
+                    f"{sync_py} --me* a space.yaml b"):
+        assert not allowed(merged, command), command
+
+
 def test_a_rendered_routine_prompt_runs_its_tools_and_nothing_else(tmp_path):
     ws = make_space(tmp_path / "ada")
     start.render_routines(ws, "Ada Okafor")

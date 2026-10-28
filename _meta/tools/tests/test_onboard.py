@@ -909,6 +909,27 @@ def test_a_pause_ends_at_six_the_next_morning_or_when_the_person_says():
             onboard.pause_end(said, LOCAL)
 
 
+@pytest.mark.parametrize("error", [OSError(22, "Invalid argument"), OverflowError("date value out of range")])
+def test_a_pause_this_computers_clock_cannot_place_is_a_plain_line(monkeypatch, error):
+    """Windows' clock places no moment without a zone past 3000 or before 1970 (OSError): `--pause 9999-12-31` says
+    so in a plain line, never a traceback."""
+    import types
+
+    class Unplaced(dt.datetime):
+        def astimezone(self, tz=None):
+            if tz is None and self.tzinfo is None and not 1970 < self.year < 3000:
+                raise error
+            return super().astimezone(tz)
+    monkeypatch.setattr(onboard, "dt", types.SimpleNamespace(**{**vars(dt), "datetime": Unplaced}))
+    now = Unplaced(2026, 10, 24, 18, 0).astimezone()
+    with pytest.raises(ValueError, match="too far ahead"):
+        onboard.pause_end("9999-12-31", now)
+    with pytest.raises(ValueError, match="too far ahead"):
+        onboard.pause_end("9999-12-31T00:00:00", now)
+    with pytest.raises(ValueError, match="has passed"):
+        onboard.pause_end("1960-01-01", now)
+
+
 def cron_tasks(ada, monkeypatch, here: bool) -> None:
     """Ada's routines recorded as cron lines; `here`: this computer's crontab holds them."""
     line = "33 3 * * * routine.py daily-chain"
@@ -931,7 +952,7 @@ def test_pausing_with_nothing_recorded_records_this_computer_and_resuming_clears
     assert onboard.main([str(ada), "--resume"]) == 0 and "not paused" in capsys.readouterr().out.splitlines()[-1]
 
 
-def test_a_pause_says_the_apps_own_tasks_are_not_paused_by_it(tmp_path, capsys):
+def test_a_pause_says_the_apps_own_tasks_read_it_first(tmp_path, capsys):
     ada = make_space(tmp_path / "ada", name="ada")
     task = tmp_path / "scheduled-tasks" / "daily" / "SKILL.md"
     task.parent.mkdir(parents=True)
@@ -939,7 +960,10 @@ def test_a_pause_says_the_apps_own_tasks_are_not_paused_by_it(tmp_path, capsys):
     onboard.write_yaml(ada / "_meta" / "state" / "onboard.yaml", {"routine_checks": [
         {"name": "routine scheduled 1", "check": f"test -f {task.as_posix()}"}]})
     assert onboard.main([str(ada), "--pause"]) == 0
-    assert "does not stop" in capsys.readouterr().out and routine.host(ada)["runner"] == "harness"
+    said = capsys.readouterr().out
+    assert "does not stop" not in said and routine.host(ada)["runner"] == "harness"
+    assert said.rstrip().endswith("They run as scheduled tasks in the Claude app, and each one reads the pause first "
+                                  "and stops.")
 
 
 def test_a_pause_in_the_past_or_on_a_record_that_is_not_one_changes_nothing(tmp_path, capsys):
@@ -961,8 +985,765 @@ def test_a_pause_with_nothing_recorded_is_made_on_the_computer_that_runs_them(tm
     assert routine.host(ada) is None and routine.gate(ada, NOW) is None   # the computer that runs them goes on
 
 
+CLOUD_TASKS = {"sweep": "trig_01AAAAAAAA", "daily": "trig_01BBBBBBBB"}
+
+
+def cloud_hosted(ada) -> dict:
+    return routine.claim_cloud(ada, CLOUD_TASKS, "Europe/Amsterdam", ["ada/ada"],
+                               {"read": [], "write": [], "send": ["mcp__mail__send_message"]}, NOW)
+
+
+def test_the_check_says_the_routines_run_in_the_cloud(tmp_path, monkeypatch):
+    ada = make_space(tmp_path / "ada", name="ada")
+    onboard.write_yaml(ada / "_meta" / "state" / "onboard.yaml", {"case": "person", "routine_tasks": [
+        {"name": "space-daily-chain-ada", "kind": "schtasks", "check": ["schtasks", "/Query", "/TN", "space-daily-chain-ada", "/XML"]}]})
+    cloud_hosted(ada)
+    said = ("Your routines run in the cloud, as two scheduled tasks; this computer's sync lands what they leave "
+            "open")
+    elsewhere = onboard.routines_elsewhere(ada)
+    assert (elsewhere.name, elsewhere.done, elsewhere.result) == (onboard.ELSEWHERE_STEP, True, said)
+    schtasks(monkeypatch, set())   # no routine task of this computer's to read back
+    rows = [s for s in onboard.check(ada) if s.name.startswith("routine")]
+    assert [(s.name, s.done) for s in rows] == [(onboard.CLOUD_STEP, True)]   # the cloud's own row, below
+    monkeypatch.setattr(onboard, "register_task", lambda *a, **k: (_ for _ in ()).throw(AssertionError(a)))
+    report = onboard.Report(case="test")
+    assert onboard.register_routines(report, ada) == [] and report.steps[-1].result == said   # none beside the cloud's
+
+
+def run_line(ada, name, hours_ago, **more) -> None:
+    """One run line in Ada's runs.jsonl, as the sync brings it from main, `hours_ago` before now."""
+    at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=hours_ago)
+    with (ada / "_meta" / "state" / "runs.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"routine": name, "at": pages.iso(at), "space": "ada", **more}) + "\n")
+
+
+def test_the_check_shows_the_cloud_tasks_and_how_long_ago_each_chain_wrote_a_run_line(tmp_path, monkeypatch):
+    """Spec section 6: the plain check reads the two tasks from the record, and each chain's newest run line from
+    runs.jsonl, which this computer's sync keeps at main. The row fails nothing: a chain that has not run yet is
+    the cloud's to start, and Needs you names one that went silent."""
+    ada = make_space(tmp_path / "ada", name="ada")
+    cloud_hosted(ada)
+    schtasks(monkeypatch, set())
+    tasks = ("Your routines run in the cloud, as the scheduled tasks trig_01AAAAAAAA (the sweep) and trig_01BBBBBBBB "
+             "(the daily). ")
+
+    def row():
+        rows = [s for s in onboard.check(ada) if s.name.startswith("routine")]
+        assert [(s.name, s.done, s.needs_owner) for s in rows] == [(onboard.CLOUD_STEP, True, False)]
+        return rows[0].result
+
+    assert row() == tasks + "Neither has written a run line yet."
+    run_line(ada, "cloud-proof", 0.5, chain="sweep")   # a proof run is no run of the chain
+    run_line(ada, "sync", 0.5, cloud="sweep")   # nor is the landing that carried it
+    run_line(ada, "sweep-chain", 5)   # the agent's own line (the routine prompt)
+    run_line(ada, "sweep_chain", 3)   # the chain tool's line (chain.py)
+    assert row() == tasks + ("The sweep's newest run line was written 3 hours ago, and the daily has written no run "
+                             "line yet.")
+    run_line(ada, "daily", 50)   # chain.py daily
+    with (ada / "_meta" / "state" / "runs.jsonl").open("a", encoding="utf-8") as fh:   # read past, never a failure
+        fh.write('{"routine": "daily-chain", "at": "not a time"}\n{not json\n'
+                 '{"routine": "daily-chain", "at": "0001-01-01T00:00:00+01:00"}\n')   # before the first moment UTC has
+    assert row() == tasks + ("The sweep's newest run line was written 3 hours ago, and the daily's newest run line "
+                             "was written 2 days ago.")
+    run_line(ada, "daily-chain", 0.25)   # the briefing's own line
+    assert row().endswith("and the daily's newest run line was written 15 minutes ago.")
+
+
+def test_the_plain_check_prints_the_cloud_row_whole(tmp_path, monkeypatch, capsys):
+    """The row is there to be read: the terminal shows both tasks and both ages, not a done row's first 70
+    characters."""
+    ada = make_space(tmp_path / "ada", name="ada")
+    tasks = {"sweep": "trig_01HZX3K9QWABCDEFGHJKMNPQRS", "daily": "trig_01HZX3K9QWTVWXYZ23456789AB"}
+    routine.claim_cloud(ada, tasks, "Europe/Amsterdam", ["ada/ada"], {"read": [], "write": [], "send": []}, NOW)
+    schtasks(monkeypatch, set())
+    run_line(ada, "sweep_chain", 3)
+    run_line(ada, "daily", 50)
+    assert onboard.main([str(ada), "--check"]) == 0
+    printed = next(line for line in capsys.readouterr().out.splitlines() if onboard.CLOUD_STEP in line)
+    assert printed.startswith("ok ")
+    for needed in (*tasks.values(), "3 hours ago", "2 days ago"):
+        assert needed in printed
+
+
+def test_the_cloud_row_says_the_routines_are_stopped_after_a_proof_showed_a_refusal_missing(tmp_path, monkeypatch,
+                                                                                             capsys):
+    """Proved in place, the two tasks stay off once a proof showed a refusal missing: the routines run nowhere, so
+    the row fails and names what to say, until a later proof shows every refusal again. However long ago that proof
+    was: a missing refusal is mended only by a proof that shows it."""
+    ada = make_space(tmp_path / "ada", name="ada")
+    cloud_hosted(ada)
+    schtasks(monkeypatch, set())
+    run_line(ada, "sweep_chain", 3)
+    proof(ada, "sweep", hours_ago=72, edit=False)
+    proof(ada, "daily", hours_ago=72)
+
+    def row():
+        rows = [s for s in onboard.check(ada) if s.name.startswith("routine")]
+        assert [s.name for s in rows] == [onboard.CLOUD_STEP]
+        return rows[0]
+
+    stopped = row()
+    assert not stopped.done and not stopped.needs_owner
+    assert stopped.result == (
+        "Your routines are stopped: the sweep task's proof run shows that the cloud no longer refuses a change to a "
+        "protected file, so its two tasks stay off; say 'run my routines here' to run them on this computer. The "
+        "cloud's two tasks are trig_01AAAAAAAA (the sweep) and trig_01BBBBBBBB (the daily). The sweep's newest run "
+        "line was written 3 hours ago, and the daily has written no run line yet.")
+    assert onboard.main([str(ada), "--check"]) == 1
+    assert stopped.result in capsys.readouterr().out
+    proof(ada, "sweep", hours_ago=60)   # proved again since, if not in the last two days
+    assert row().done and row().result.startswith("Your routines run in the cloud")
+
+
+@pytest.mark.parametrize("seconds, said", [(-30, "less than a minute ago"), (30, "less than a minute ago"),
+                                           (60, "1 minute ago"), (59 * 60 + 59, "59 minutes ago"),
+                                           (3600, "1 hour ago"), (47 * 3600 + 3599, "47 hours ago"),
+                                           (48 * 3600, "2 days ago"), (30 * 86400, "30 days ago")])
+def test_how_long_ago_is_said_in_whole_units(seconds, said):
+    assert onboard.ago(NOW - dt.timedelta(seconds=seconds), NOW) == said
+
+
+def test_a_pause_with_cloud_routines_says_when_the_cloud_hears_of_it(tmp_path, capsys):
+    ada = make_space(tmp_path / "ada", name="ada")
+    cloud_hosted(ada)
+    assert onboard.main([str(ada), "--pause", "--until", "2099-01-02"]) == 0
+    said = capsys.readouterr().out
+    assert said.startswith("Your routines are paused until") and said.rstrip().endswith(
+        "The cloud's next run reads the pause once this computer's sync lands it; away from this computer, turn the "
+        "two tasks off on claude.ai instead.")
+    assert "does not stop" not in said and "hears of it at its next sync" not in said
+    assert routine.cloud_gate(ada, NOW).startswith("paused until 2099-01-02") and routine.host(ada)["tasks"] == CLOUD_TASKS
+    assert onboard.main([str(ada), "--resume"]) == 0 and routine.cloud_gate(ada, NOW) is None
+
+
+# ----- run my routines in the cloud (cloud routines, Task 12) ----------------------------------------------
+import json   # noqa: E402
+import re   # noqa: E402
+
+import ghrest   # noqa: E402
+
+MOVE = ["--routines-cloud", "--sweep", CLOUD_TASKS["sweep"], "--daily", CLOUD_TASKS["daily"],
+        "--timezone", "Europe/Amsterdam"]
+SWEEP_GRANT = {"read": ["mcp__mail__get_message"], "write": ["mcp__tracker__create_issue"],
+               "send": ["mcp__mail__send_message"]}
+DAILY_GRANT = {"read": ["mcp__mail__get_message", "mcp__calendar__list_events"], "write": [],
+               "send": ["mcp__mail__send_message"]}
+
+
+def proof(ada, chain, hours_ago=1.0, **seen) -> None:
+    """One proof line as a cloud run lands it (`cloud.py proof-line`), `hours_ago` before now: every refusal the
+    profile owes was seen, unless `seen` says otherwise."""
+    at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=hours_ago)
+    line = {"routine": "cloud-proof", "chain": chain, "guard": True, "edit": True, "tool": True,
+            **({"send": True} if chain == "daily" else {}), "at": pages.iso(at), **seen}
+    with (ada / "_meta" / "state" / "runs.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(line) + "\n")
+
+
+def rendered(chain, roots, grant) -> None:
+    """The task body `cloud.py trigger` left on this computer for `chain`, with the repositories and the grant."""
+    path = Path.home() / ".spaces" / f"cloud-{chain}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"name": f"Ada Okafor's {chain}", "enabled": False, "roots": roots, "grant": grant}),
+                    encoding="utf-8")
+
+
+def proven(tmp_path):
+    """Ada's workspace with both tasks rendered here; no proof run yet."""
+    ada = make_space(tmp_path / "ada", name="ada")
+    rendered("sweep", ["ada/ada", "ada/ada-harbor"], SWEEP_GRANT)
+    rendered("daily", ["ada/ada"], DAILY_GRANT)
+    return ada
+
+
+def reading_history(ada) -> None:
+    onboard.write_yaml(ada / "_meta" / "state" / "backfill.yaml", {"parts": [{"id": "p1", "status": "pending"}]})
+
+
+def test_the_move_is_refused_without_both_proofs(tmp_path, capsys):
+    ada = proven(tmp_path)
+    assert onboard.main([*MOVE, str(ada)]) == 2
+    said = capsys.readouterr().out.strip()
+    assert len(said.splitlines()) == 1 and "sweep and daily tasks" in said and "48 hours" in said
+    proof(ada, "sweep")
+    assert onboard.main([*MOVE, str(ada)]) == 2
+    said = capsys.readouterr().out.strip()
+    assert len(said.splitlines()) == 1 and said.startswith("The daily task has no proof run")
+    assert routine.host(ada) is None
+
+
+def test_a_proof_older_than_two_days_does_not_count(tmp_path, capsys):
+    ada = proven(tmp_path)
+    proof(ada, "sweep", hours_ago=49)
+    proof(ada, "daily")
+    assert onboard.main([*MOVE, str(ada)]) == 2 and "The sweep task has no proof run" in capsys.readouterr().out
+    proof(ada, "sweep", hours_ago=47)
+    assert onboard.main([*MOVE, str(ada)]) == 0 and routine.host(ada)["runner"] == "cloud"
+
+
+def test_a_daily_proof_without_the_send_refusal_does_not_count(tmp_path, capsys):
+    ada = proven(tmp_path)
+    proof(ada, "sweep")
+    proof(ada, "daily", hours_ago=3, send=None)
+    proof(ada, "daily", hours_ago=2, tool="yes")   # only a refusal seen counts, never a word for one
+    proof(ada, "daily", at="0001-01-01T00:00:00+01:00")   # a moment before UTC's first is no moment: read past
+    assert onboard.main([*MOVE, str(ada)]) == 2 and "The daily task has no proof run" in capsys.readouterr().out
+    proof(ada, "daily")   # the sweep's line has no send at all: a sweep sends nothing it must refuse
+    assert onboard.main([*MOVE, str(ada)]) == 0
+
+
+def test_a_refusal_missing_is_not_hidden_by_a_later_proof_that_proves_nothing(tmp_path, capsys):
+    """A refusal the cloud did not make stays missing until a later proof line shows every refusal: a later line
+    that leaves one out, or writes it as a word, proves nothing either way, and no number of hours mends it."""
+    ada = proven(tmp_path)
+    proof(ada, "sweep", hours_ago=72, edit=False)
+    proof(ada, "sweep", hours_ago=2, edit=None)
+    proof(ada, "daily", hours_ago=3, send=False)
+    proof(ada, "daily", hours_ago=2, send=None)
+    proof(ada, "daily", tool="yes")
+    assert onboard.main([*MOVE, str(ada)]) == 2
+    assert capsys.readouterr().out.strip() == (
+        "The sweep and daily tasks' proof runs show that the cloud does not refuse a change to a protected file or "
+        "mail to anyone but you, so your routines stay where they run.")
+    proof(ada, "sweep")
+    proof(ada, "daily")
+    assert onboard.main([*MOVE, str(ada)]) == 0 and routine.host(ada)["runner"] == "cloud"
+
+
+def test_a_refusal_missing_is_said_before_a_wrong_id_a_wrong_zone_or_the_history(tmp_path, capsys):
+    """The skill keeps the two tasks off for a refusal missing alone, so nothing else said may hide it."""
+    ada = proven(tmp_path)
+    cloud_hosted(ada)
+    proof(ada, "sweep", guard=False)
+    proof(ada, "daily")
+    reading_history(ada)
+    moved = [*MOVE]
+    moved[moved.index("--sweep") + 1] = "my-sweep"
+    moved[moved.index("--daily") + 1] = "my-sweep"
+    moved[moved.index("--timezone") + 1] = "Not a zone!"
+    assert onboard.main([*moved, str(ada)]) == 2
+    assert capsys.readouterr().out.strip() == (
+        "Your routines are stopped: the sweep task's proof run shows that the cloud no longer refuses a command "
+        "outside its allowed list, so its two tasks stay off; say 'run my routines here' to run them on this "
+        "computer.")
+
+
+def test_only_the_newest_proof_counts(tmp_path, capsys):
+    """An older proof that showed every refusal no longer counts once a later one in the window leaves a refusal
+    out: the later line names no refusal missing (`cloud_unrefused`), yet it is the task as it is, and it proves
+    nothing."""
+    ada = proven(tmp_path)
+    proof(ada, "sweep", hours_ago=2)
+    proof(ada, "sweep", hours_ago=1, guard=None)
+    proof(ada, "daily")
+    assert onboard.cloud_proofs(ada) == {"daily"} and onboard.cloud_unrefused(ada) == {}
+    assert onboard.main([*MOVE, str(ada)]) == 2
+    assert capsys.readouterr().out.strip().startswith("The sweep task has no proof run from the last 48 hours")
+    assert routine.host(ada) is None
+
+
+def test_a_proof_that_shows_a_refusal_missing_names_it(tmp_path, capsys):
+    """A refusal the cloud did not make (`false` on a chain's newest proof line) is named in plain words, and an
+    older proof that showed every refusal no longer counts: the newest proof run is the task as it is."""
+    ada = proven(tmp_path)
+    proof(ada, "sweep")
+    proof(ada, "daily", hours_ago=3)
+    proof(ada, "daily", hours_ago=2, send=False)
+    assert onboard.main([*MOVE, str(ada)]) == 2
+    assert capsys.readouterr().out.strip() == (
+        "The daily task's proof run shows that the cloud does not refuse mail to anyone but you, so your routines "
+        "stay where they run.")
+    assert routine.host(ada) is None
+    proof(ada, "sweep", guard=False, tool=False)
+    assert onboard.main([*MOVE, str(ada)]) == 2
+    assert capsys.readouterr().out.strip() == (
+        "The sweep and daily tasks' proof runs show that the cloud does not refuse a command outside its allowed "
+        "list, an app tool it was not given or mail to anyone but you, so your routines stay where they run.")
+    proof(ada, "sweep")
+    proof(ada, "daily")   # proved again since: the refusals hold now
+    assert onboard.main([*MOVE, str(ada)]) == 0 and routine.host(ada)["runner"] == "cloud"
+
+
+def test_a_refusal_missing_while_the_routines_run_in_the_cloud_says_they_are_stopped(tmp_path, capsys):
+    """Proved in place, the two tasks the routines run as are off; a proof that shows a refusal missing keeps them
+    off (the skill never turns them back on), so nothing runs until the person moves the routines here."""
+    ada = proven(tmp_path)
+    cloud_hosted(ada)
+    before = (ada / routine.HOST).read_text(encoding="utf-8")
+    proof(ada, "sweep", edit=False)
+    proof(ada, "daily")
+    assert onboard.main([*MOVE, str(ada)]) == 2
+    assert capsys.readouterr().out.strip() == (
+        "Your routines are stopped: the sweep task's proof run shows that the cloud no longer refuses a change to a "
+        "protected file, so its two tasks stay off; say 'run my routines here' to run them on this computer.")
+    assert (ada / routine.HOST).read_text(encoding="utf-8") == before
+
+
+def test_two_green_proofs_claim_the_cloud(tmp_path, capsys):
+    ada = proven(tmp_path)
+    task = tmp_path / "scheduled-tasks" / "daily" / "SKILL.md"   # the app's own task that ran the daily chain
+    task.parent.mkdir(parents=True)
+    task.write_text("the routine\n", encoding="utf-8")
+    onboard.write_yaml(ada / "_meta" / "state" / "onboard.yaml", {"routine_checks": [
+        {"name": "routine scheduled 1", "check": f"test -f {task.as_posix()}"}]})
+    proof(ada, "sweep")
+    proof(ada, "daily")
+    assert onboard.main([*MOVE, str(ada)]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert "trig_01AAAAAAAA" in out[0] and "trig_01BBBBBBBB" in out[0]
+    assert out[1:] == [f"turn off: {task.as_posix()}"]
+    record = routine.host(ada)
+    assert (record["runner"], record["machine"], record["tasks"], record["timezone"]) == \
+           ("cloud", routine.CLOUD_MACHINE, CLOUD_TASKS, "Europe/Amsterdam")
+    assert record["roots"] == ["ada/ada", "ada/ada-harbor"]   # what either task attaches
+    assert record["grant"] == {"read": ["mcp__mail__get_message", "mcp__calendar__list_events"],
+                               "write": ["mcp__tracker__create_issue"], "send": ["mcp__mail__send_message"]}
+    assert routine.gate(ada, NOW) == routine.CLOUD and routine.cloud_gate(ada, NOW) is None
+    assert "routine_checks" not in onboard.read_yaml(ada / "_meta" / "state" / "onboard.yaml")
+
+
+def test_the_move_needs_both_tasks_rendered_on_this_computer(tmp_path, capsys):
+    ada = proven(tmp_path)
+    (Path.home() / ".spaces" / "cloud-daily.json").write_text("{not json", encoding="utf-8")
+    proof(ada, "sweep")
+    proof(ada, "daily")
+    assert onboard.main([*MOVE, str(ada)]) == 2
+    said = capsys.readouterr().out.strip()
+    assert len(said.splitlines()) == 1 and "daily task was not rendered" in said and routine.host(ada) is None
+
+
+def test_the_move_waits_until_the_history_is_read(tmp_path, capsys):
+    ada = proven(tmp_path)
+    proof(ada, "sweep")
+    proof(ada, "daily")
+    reading_history(ada)
+    assert onboard.main([*MOVE, str(ada)]) == 2
+    assert "history is still being read" in capsys.readouterr().out and routine.host(ada) is None
+
+
+def refused(capsys) -> str:
+    """The one sentence a refused move said, in plain words: no doubled stop, no word of the record."""
+    said = capsys.readouterr().out.strip()
+    assert len(said.splitlines()) == 1 and said.startswith("Your routines stay where they run: ")
+    assert ".." not in said and "record" not in said and said.endswith(".")
+    return said
+
+
+def test_a_task_id_of_the_wrong_shape_moves_nothing(tmp_path, capsys):
+    ada = proven(tmp_path)
+    proof(ada, "sweep")
+    proof(ada, "daily")
+    moved = [*MOVE]
+    moved[moved.index("--sweep") + 1] = "my-sweep"
+    assert onboard.main([*moved, str(ada)]) == 2
+    said = refused(capsys)
+    assert "my-sweep" in said and "trig_" in said and routine.host(ada) is None
+    moved[moved.index("--daily") + 1] = "my-daily"
+    assert onboard.main([*moved, str(ada)]) == 2
+    assert "my-sweep and my-daily are not" in refused(capsys) and routine.host(ada) is None
+
+
+def test_one_task_id_for_both_chains_moves_nothing(tmp_path, capsys):
+    """One task carries one body, so one id given for both would leave a chain that runs nowhere while every
+    computer steps aside for it."""
+    ada = proven(tmp_path)
+    proof(ada, "sweep")
+    proof(ada, "daily")
+    moved = [*MOVE]
+    moved[moved.index("--daily") + 1] = CLOUD_TASKS["sweep"]
+    assert onboard.main([*moved, str(ada)]) == 2
+    said = refused(capsys)
+    assert CLOUD_TASKS["sweep"] in said and "two ids" in said and routine.host(ada) is None
+
+
+@pytest.mark.parametrize("zone", ["Not a zone!", "Mars/Olympus"])
+def test_a_zone_that_is_none_moves_nothing(tmp_path, capsys, zone):
+    import zoneinfo
+    if zone == "Mars/Olympus" and not zoneinfo.available_timezones():
+        pytest.skip("no zone data on this computer: only the shape of a zone is checked")
+    ada = proven(tmp_path)
+    proof(ada, "sweep")
+    proof(ada, "daily")
+    moved = [*MOVE]
+    moved[moved.index("--timezone") + 1] = zone
+    assert onboard.main([*moved, str(ada)]) == 2
+    said = refused(capsys)
+    assert zone in said and "Europe/Amsterdam" in said and routine.host(ada) is None
+
+
+def test_a_zone_without_zone_data_is_checked_by_its_shape_only(tmp_path, monkeypatch):
+    import zoneinfo
+    monkeypatch.setattr(zoneinfo, "available_timezones", lambda: set())   # Windows without the tzdata package
+
+    def nowhere(key):
+        raise zoneinfo.ZoneInfoNotFoundError(key)
+    monkeypatch.setattr(zoneinfo, "ZoneInfo", nowhere)
+    assert onboard.zone_unknown("Europe/Amsterdam") is False and onboard.zone_unknown("Not a zone!") is True
+
+
+def test_a_render_that_grants_no_app_moves_nothing(tmp_path, capsys):
+    """Tasks that may call no app would read nothing and send nothing: the move is refused, whatever the proofs."""
+    ada = proven(tmp_path)
+    nothing = {"read": [], "write": [], "send": []}
+    rendered("sweep", ["ada/ada"], nothing)
+    rendered("daily", ["ada/ada"], nothing)
+    proof(ada, "sweep")
+    proof(ada, "daily")
+    assert onboard.main([*MOVE, str(ada)]) == 2
+    assert capsys.readouterr().out.strip() == onboard.CLOUD_NO_GRANT and routine.host(ada) is None
+
+
+def test_a_render_whose_repositories_are_paths_moves_nothing(tmp_path, capsys):
+    ada = proven(tmp_path)
+    rendered("sweep", ["/home/ada/spaces/brain"], SWEEP_GRANT)
+    proof(ada, "sweep")
+    proof(ada, "daily")
+    assert onboard.main([*MOVE, str(ada)]) == 2
+    assert "render both tasks again" in refused(capsys) and routine.host(ada) is None
+
+
+def test_a_second_move_names_the_earlier_tasks_still_running(tmp_path, capsys):
+    """A space minted after the move is added by moving again: new tasks replace the two that ran, which still
+    run (and pass the cloud's gate) until they are turned off, so the move names them."""
+    ada = proven(tmp_path)
+    cloud_hosted(ada)
+    proof(ada, "sweep")
+    proof(ada, "daily")
+    moved = [*MOVE]
+    moved[moved.index("--sweep") + 1], moved[moved.index("--daily") + 1] = "trig_02CCCCCCCC", "trig_02DDDDDDDD"
+    assert onboard.main([*moved, str(ada)]) == 0
+    (said,) = capsys.readouterr().out.strip().splitlines()
+    assert said.endswith("The cloud's earlier tasks trig_01AAAAAAAA and trig_01BBBBBBBB still run beside the new "
+                         "ones: turn them off now, so no chain runs twice.")
+    assert routine.host(ada)["tasks"] == {"sweep": "trig_02CCCCCCCC", "daily": "trig_02DDDDDDDD"}
+    moved[moved.index("--daily") + 1] = "trig_01BBBBBBBB"   # one updated in place, one made anew
+    cloud_hosted(ada)
+    assert onboard.main([*moved, str(ada)]) == 0
+    assert capsys.readouterr().out.strip().endswith(
+        "The cloud's earlier task trig_01AAAAAAAA still runs beside the new ones: turn it off now, so no chain runs "
+        "twice.")
+    assert onboard.main([*moved, str(ada)]) == 0   # the same two again: nothing runs beside them
+    assert "earlier" not in capsys.readouterr().out
+
+
+def test_cloud_proofs_take_a_moment_without_a_zone_as_this_computers_own(tmp_path):
+    ada = proven(tmp_path)
+    proof(ada, "sweep")
+    assert onboard.cloud_proofs(ada, dt.datetime.now()) == {"sweep"}
+
+
+def github(monkeypatch, repos: dict) -> list:
+    """GitHub as the check meets it, through REST: `repos` maps owner/name to (whether the person administers it,
+    and so can push to it; what main's enforce_admins says: True, False, or None for a main with no protection). Any
+    other repository is not found. Returns every call."""
+    calls = []
+
+    def gh(*args):
+        calls.append(args)
+        found = re.fullmatch(r"repos/([^/]+/[^/]+)(/branches/main/protection/enforce_admins)?", args[-1])
+        if args[0] != "api" or not found or found.group(1) not in repos:
+            return subprocess.CompletedProcess(args, 1, "", "gh: Not Found (HTTP 404)")
+        admin, held = repos[found.group(1)]
+        if not found.group(2):
+            return subprocess.CompletedProcess(args, 0, json.dumps({"full_name": found.group(1),
+                                                                    "permissions": {"admin": admin, "push": admin, "pull": True}}), "")
+        if not admin:
+            return subprocess.CompletedProcess(args, 1, "", "gh: Not Found (HTTP 404)")
+        if held is None:
+            return subprocess.CompletedProcess(args, 1, "", "gh: Branch not protected (HTTP 404)")
+        return subprocess.CompletedProcess(args, 0, json.dumps({"enabled": held}), "")
+    monkeypatch.setattr(ghrest, "runner", lambda cwd: gh)
+    return calls
+
+
+def on_github(root: Path, url: str) -> Path:
+    subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(root), "remote", "add", "origin", url], check=True, capture_output=True)
+    return root
+
+
+def cloud_ready(tmp_path, monkeypatch) -> Path:
+    """Ada's workspace on GitHub, mounting a brain they do not administer, with apps granted to their routines."""
+    ada = make_space(tmp_path / "ada", name="ada", mounts=[
+        {"name": "brain", "repo": "https://github.com/example/brain.git", "path": "brain", "branch": "main"}])
+    on_github(ada, "https://github.com/ada/ada.git")
+    monkeypatch.setattr(routine, "grant", lambda ws, *a, **k: {**SWEEP_GRANT, "reconnect": [], "notes": [],
+                                                                "person": "owner@example.test", "shell": ""})
+    return ada
+
+
+def test_the_check_names_a_repository_without_enforce_admins(tmp_path, monkeypatch, capsys):
+    ada = cloud_ready(tmp_path, monkeypatch)
+    github(monkeypatch, {"ada/ada": (True, False), "example/brain": (False, None)})
+    assert onboard.main(["--routines-cloud", "--check", str(ada)]) == 1
+    lines = capsys.readouterr().out.strip().splitlines()
+    assert len(lines) == 1 and "ada/ada" in lines[0] and "past the checks" in lines[0]   # not the brain: not theirs to set
+    github(monkeypatch, {"ada/ada": (True, None), "example/brain": (False, None)})
+    assert onboard.main(["--routines-cloud", "--check", str(ada)]) == 1
+    assert "does not protect main" in capsys.readouterr().out
+    calls = github(monkeypatch, {"ada/ada": (True, True), "example/brain": (False, None)})
+    assert onboard.main(["--routines-cloud", "--check", str(ada)]) == 0
+    assert capsys.readouterr().out.strip() == onboard.CLOUD_CLEAR
+    assert {c[-1] for c in calls} >= {"repos/ada/ada/branches/main/protection/enforce_admins", "repos/example/brain"}
+    assert all("graphql" not in c and c[0] == "api" for c in calls) and routine.host(ada) is None
+
+
+def test_the_check_names_unread_history(tmp_path, monkeypatch, capsys):
+    ada = cloud_ready(tmp_path, monkeypatch)
+    github(monkeypatch, {"ada/ada": (True, True), "example/brain": (False, None)})
+    reading_history(ada)
+    assert onboard.main(["--routines-cloud", "--check", str(ada)]) == 1
+    assert capsys.readouterr().out.strip().splitlines() == [onboard.CLOUD_HISTORY]
+
+
+def test_the_check_names_a_missing_grant_and_a_space_github_cannot_reach(tmp_path, monkeypatch, capsys):
+    ada = cloud_ready(tmp_path, monkeypatch)
+    monkeypatch.setattr(routine, "grant", lambda ws, *a, **k: {"read": [], "write": [], "send": [], "reconnect": [],
+                                                                "notes": [], "person": "", "shell": ""})
+    harbor = make_space(tmp_path / "harbor", profile="project", name="harbor")   # theirs, never pushed to GitHub
+    onboard.write_yaml(Path.home() / ".spaces" / "spaces.yaml", {"spaces": [{"root": str(harbor)}]})
+    github(monkeypatch, {"ada/ada": (True, True), "example/brain": (False, None)})
+    assert onboard.main(["--routines-cloud", "--check", str(ada)]) == 1
+    lines = capsys.readouterr().out.strip().splitlines()
+    assert lines[0] == onboard.CLOUD_NO_GRANT
+    assert len(lines) == 2 and "harbor" in lines[1] and "no repository on GitHub" in lines[1]
+
+
+def test_the_check_says_when_github_cannot_be_asked(tmp_path, monkeypatch, capsys):
+    ada = cloud_ready(tmp_path, monkeypatch)
+    monkeypatch.setattr(ghrest, "runner", lambda cwd: lambda *a: None)   # gh is not installed
+    assert onboard.main(["--routines-cloud", "--check", str(ada)]) == 1
+    assert capsys.readouterr().out.strip().splitlines() == [onboard.CLOUD_NO_GH]
+
+
+def test_the_check_names_the_two_tasks_the_routines_already_run_as(tmp_path, monkeypatch, capsys):
+    """Moving again (a space minted later): the tasks they run as are proved and updated, never made twice."""
+    ada = cloud_ready(tmp_path, monkeypatch)
+    github(monkeypatch, {"ada/ada": (True, True), "example/brain": (False, None)})
+    cloud_hosted(ada)
+    assert onboard.main(["--routines-cloud", "--check", str(ada)]) == 0
+    clear, already = capsys.readouterr().out.strip().splitlines()
+    assert clear == onboard.CLOUD_CLEAR and "trig_01AAAAAAAA" in already and "trig_01BBBBBBBB" in already
+    assert "update" in already
+
+
+def test_a_computer_that_replaced_the_one_they_moved_from_moves_them_again(tmp_path, monkeypatch, capsys):
+    """Spec 4.5: a new computer takes the leg over by moving again from there. While the routines run in the cloud
+    its build proves nothing, so it has no probe of its own: the check and the move go by the grant the record
+    kept at the move. A probe of its own, once there is one, is what this computer sees, and it decides."""
+    import test_routines
+    ada = on_github(test_routines.granted(tmp_path), "https://github.com/ada/ada.git")
+    got = routine.grant(ada)
+    moved = {part: got[part] for part in routine.GRANT_KEYS}
+    assert moved["read"]   # the old computer's verdicts and probe grant the routines their apps
+    routine.claim_cloud(ada, CLOUD_TASKS, "Europe/Amsterdam", ["ada/ada"], moved, NOW)
+    routine.probe_path().unlink()   # the new computer: the same workspace, no probe, another id
+    monkeypatch.setattr(routine, "this_machine", lambda: "m-0a1b2c3d")
+    github(monkeypatch, {"ada/ada": (True, True)})
+    assert onboard.main(["--routines-cloud", "--check", str(ada)]) == 0
+    clear, already = capsys.readouterr().out.strip().splitlines()
+    assert clear == onboard.CLOUD_CLEAR and already == onboard.CLOUD_ALREADY.format(**CLOUD_TASKS)
+    for chain in onboard.CLOUD_CHAINS:   # the two tasks rendered here, proved in place and landed
+        rendered(chain, ["ada/ada"], onboard.cloud_grant(ada))
+        proof(ada, chain)
+    assert onboard.main([*MOVE, str(ada)]) == 0
+    assert capsys.readouterr().out.strip() == onboard.CLOUD_MOVED.format(**CLOUD_TASKS)
+    record = routine.host(ada)
+    assert record["grant"] == moved and record["computer"] == "m-0a1b2c3d"   # this computer keeps the leg now
+    routine.write_probe({"tools": [], "mcp_servers": []})   # this computer's own probe: it sees no app
+    assert onboard.main(["--routines-cloud", "--check", str(ada)]) == 1
+    assert capsys.readouterr().out.strip().splitlines()[0] == onboard.CLOUD_NO_GRANT
+
+
+def test_the_check_says_the_routines_are_stopped_rather_than_that_they_already_run_in_the_cloud(
+        tmp_path, monkeypatch, capsys):
+    """The record says cloud, so this computer's own tasks step aside, and a proof showed a refusal missing, so the
+    cloud's two tasks stay off: nothing runs the routines, and the check says so, with 'run my routines here'."""
+    ada = cloud_ready(tmp_path, monkeypatch)
+    github(monkeypatch, {"ada/ada": (True, True), "example/brain": (False, None)})
+    proof(ada, "sweep", hours_ago=72, tool=False)
+    proof(ada, "daily", hours_ago=72)
+    assert onboard.cloud_stopped(ada) == {}   # tasks made new for the proof: the routines run where they ran
+    cloud_hosted(ada)
+    assert onboard.cloud_stopped(ada) == {"sweep": ["tool"]}
+    assert onboard.main(["--routines-cloud", "--check", str(ada)]) == 0
+    clear, stopped = capsys.readouterr().out.strip().splitlines()
+    assert clear == onboard.CLOUD_CLEAR and stopped == onboard.unrefused_sentence(ada, {"sweep": ["tool"]})
+    assert stopped.startswith("Your routines are stopped") and "run my routines here" in stopped
+    assert "already run in the cloud" not in stopped
+    proof(ada, "sweep", hours_ago=60)   # proved again since: they run in the cloud again
+    assert onboard.cloud_stopped(ada) == {}
+    assert onboard.main(["--routines-cloud", "--check", str(ada)]) == 0
+    assert "already run in the cloud" in capsys.readouterr().out
+
+
+def answers(routes: dict):
+    """A `gh` that answers each REST route with (exit code, JSON or text); any other route is not found."""
+    calls = []
+
+    def gh(*args):
+        calls.append(args[-1])
+        code, out = routes.get(args[-1], (1, "gh: Not Found (HTTP 404)"))
+        text = out if isinstance(out, str) else json.dumps(out)
+        return subprocess.CompletedProcess(args, code, text if code == 0 else "", "" if code == 0 else text)
+    gh.calls = calls
+    return gh
+
+
+def test_a_repository_whose_rights_cannot_be_read_is_named():
+    gh = answers({"repos/ada/ada": (0, {"full_name": "ada/ada"})})   # no permissions in the answer
+    assert onboard._admins_held(gh, "ada/ada", "your workspace") == onboard.CLOUD_PROTECTION_UNREAD.format(
+        slug="ada/ada", what="your workspace")
+    gh = answers({"repos/ada/ada": (0, {"full_name": "ada/ada", "permissions": "admin"})})
+    assert "could not be read" in onboard._admins_held(gh, "ada/ada", "your workspace")
+
+
+def test_an_unprotected_main_the_person_can_push_to_is_named_though_not_theirs_to_set():
+    pushes = {"full_name": "example/brain", "permissions": {"admin": False, "push": True, "pull": True}}
+    gh = answers({"repos/example/brain": (0, pushes), "repos/example/brain/branches/main": (0, {"protected": False})})
+    said = onboard._admins_held(gh, "example/brain", "the mount brain of your workspace")
+    assert "example/brain" in said and "does not protect main" in said and "administers it" in said
+    gh = answers({"repos/example/brain": (0, pushes), "repos/example/brain/branches/main": (0, {"protected": True})})
+    assert onboard._admins_held(gh, "example/brain", "the mount brain") is None   # the checks bind a pusher already
+    assert "repos/example/brain/branches/main/protection/enforce_admins" not in gh.calls   # not theirs to read
+    gh = answers({"repos/example/brain": (0, pushes)})   # the branch cannot be read
+    assert onboard._admins_held(gh, "example/brain", "the mount brain") == onboard.CLOUD_PROTECTION_UNREAD.format(
+        slug="example/brain", what="the mount brain")
+    reads = {"full_name": "example/brain", "permissions": {"admin": False, "push": False, "pull": True}}
+    gh = answers({"repos/example/brain": (0, reads)})
+    assert onboard._admins_held(gh, "example/brain", "the mount brain") is None and gh.calls == ["repos/example/brain"]
+
+
+@pytest.mark.parametrize("url, slug", [
+    ("https://github.com/example/brain.git", "example/brain"),
+    ("ssh://git@github.com/example/brain.git", "example/brain"),
+    ("git@github.com:example/brain.git", "example/brain"),
+    ("http://local_proxy@127.0.0.1:34567/git/example/brain", "example/brain"),
+    ("/home/ada/spaces/brain", None),
+    ("C:\\Users\\ada\\brain", None),
+    ("C:/Users/ada/brain", None),
+    ("../brain", None),
+    ("file:///home/ada/spaces/brain", None),
+    ("", None),
+])
+def test_a_mount_names_its_repository_only_by_a_url(url, slug):
+    assert onboard._slug_of(url) == slug
+
+
+def test_a_mount_made_offline_has_no_repository_on_github(tmp_path, monkeypatch, capsys):
+    """A mount whose row names a local folder, and whose checkout has no origin, is no repository the cloud can
+    attach: it is said so, never read as a repository on GitHub of the same two names."""
+    ada = cloud_ready(tmp_path, monkeypatch)
+    brain = tmp_path / "spaces" / "brain"
+    brain.mkdir(parents=True)
+    data = spaceyaml.load(ada)
+    data.data["mounts"] = [{"name": "brain", "repo": str(brain), "path": "brain", "branch": "main"}]
+    spaceyaml.save(data)
+    calls = github(monkeypatch, {"ada/ada": (True, True), "spaces/brain": (False, None)})
+    assert onboard.main(["--routines-cloud", "--check", str(ada)]) == 1
+    (line,) = capsys.readouterr().out.strip().splitlines()
+    assert "The mount brain of your workspace has no repository on GitHub" in line
+    assert "repos/spaces/brain" not in {c[-1] for c in calls}
+
+
+def test_new_spaces_get_enforce_admins(tmp_path, monkeypatch):
+    calls, bodies, main_says = [], [], {"space.yaml": "profile: personal\n", "hold": 0}
+
+    def fake(argv, dry_run=False, cwd=None):
+        argv = [str(a) for a in argv]
+        calls.append(argv)
+        if "--input" in argv:
+            bodies.append(json.loads(Path(argv[argv.index("--input") + 1]).read_text(encoding="utf-8")))
+        if argv[:2] == ["git", "show"]:
+            return subprocess.CompletedProcess(argv, 0, main_says["space.yaml"], "")
+        if argv[:2] == ["git", "push"]:   # the first fill lands: main is the space's own from now on
+            main_says["space.yaml"] = "profile: personal\n"
+        if argv[-1].endswith("/protection/enforce_admins"):
+            return subprocess.CompletedProcess(argv, main_says["hold"], "", "gh: Branch not protected (HTTP 404)"
+                                               if main_says["hold"] else "")
+        return subprocess.CompletedProcess(argv, 0, "ada\n" if argv[:3] == ["gh", "api", "user"] else "", "")
+    monkeypatch.setattr(onboard, "run_cmd", fake)
+    ada = on_github(make_space(tmp_path / "ada", name="ada"), "https://github.com/ada/ada.git")
+    report = onboard.Report(case="test")
+    onboard.platform_settings(report, ada, "ada/ada", None, False)   # a space whose main is set up: admins held at once
+    assert bodies[-1]["enforce_admins"] is True and bodies[-1]["required_status_checks"]["contexts"] == ["checks"]
+    main_says["space.yaml"] = "profile: template\n"   # a new one: its first fill goes to main before the rule binds
+    onboard.platform_settings(report, ada, "ada/ada", None, False)
+    assert bodies[-1]["enforce_admins"] is False
+    del calls[:]
+    onboard.commit_fill(report, ada, True, False)
+    pushed = calls.index(["git", "push", "-q", "origin", "HEAD:main"])
+    held = calls.index(["gh", "api", "-X", "POST", "repos/ada/ada/branches/main/protection/enforce_admins"])
+    assert pushed < held and not report.failed(), [s.row() for s in report.failed()]
+    assert report.steps[-1].name == "admins held to the checks ada/ada"
+    main_says["hold"] = 1   # a project minted before its platform settings: nothing to hold yet, and nothing fails
+    main_says["space.yaml"] = "profile: template\n"
+    steps = len(report.steps)
+    onboard.commit_fill(report, ada, True, False)
+    assert len(report.steps) == steps + 1 and not report.failed()
+
+
+def test_admins_are_held_on_the_repository_given_and_a_missed_hold_is_a_failing_row(tmp_path, monkeypatch):
+    calls, main = [], {"says": "profile: template\n"}
+
+    def fake(argv, dry_run=False, cwd=None):
+        argv = [str(a) for a in argv]
+        calls.append(argv)
+        if argv[:2] == ["git", "push"]:   # the first fill lands
+            main["says"] = "profile: personal\n"
+        return subprocess.CompletedProcess(argv, 0, main["says"] if argv[:2] == ["git", "show"] else "", "")
+    monkeypatch.setattr(onboard, "run_cmd", fake)
+    ada = make_space(tmp_path / "ada", name="ada")   # its origin cannot be read here (no .git folder)
+    report = onboard.Report(case="test")
+    onboard.commit_fill(report, ada, True, False)
+    step = report.steps[-1]
+    assert step.name == "admins held to the checks" and step in report.failed() and "enforce_admins" in step.check
+    assert not any("enforce_admins" in " ".join(c) for c in calls)
+    del calls[:]
+    main["says"] = "profile: template\n"
+    onboard.commit_fill(report, ada, True, False, repo="ada/ada")
+    assert ["gh", "api", "-X", "POST", "repos/ada/ada/branches/main/protection/enforce_admins"] in calls
+    assert (report.steps[-1].name, report.steps[-1].done) == ("admins held to the checks ada/ada", True)
+
+
+def test_taking_the_routines_back_names_the_tasks_to_disable_first(tmp_path, monkeypatch, capsys):
+    ada = make_space(tmp_path / "ada", name="ada")
+    cloud_hosted(ada)
+    prompt = ada / "_meta" / "state" / "routines" / "sweep-chain.md"
+    prompt.parent.mkdir(parents=True)
+    prompt.write_text('---\nname: sweep-chain\nschedule: "7 7,13,19 * * *"\n---\nSweep.\n', encoding="utf-8")
+    said_before_proof = []
+    monkeypatch.setattr(onboard, "_no_claude", lambda report: False)
+    monkeypatch.setattr(start, "prove_routines", lambda report, ws: said_before_proof.append(
+        capsys.readouterr().out) or {"ok": True, "checks": [], "notes": [], "why": None})
+
+    def register(report, label, task, *args, **kwargs):
+        report.add(label, True, f"crontab -l | grep {task}")
+        return {"name": task, "kind": "cron", "check": ["crontab", "-l"]}
+    monkeypatch.setattr(onboard, "register_task", register)
+    assert onboard.main([str(ada), "--routines-here"]) == 0
+    (first,) = said_before_proof[0].strip().splitlines()   # said before this computer proves anything
+    assert "trig_01AAAAAAAA" in first and "trig_01BBBBBBBB" in first and "first" in first
+    record = routine.host(ada)
+    assert (record["runner"], record["machine"]) == ("os", routine.this_machine()) and "tasks" not in record
+    capsys.readouterr()
+    assert onboard.main([str(ada), "--routines-here"]) == 0   # from a computer, nothing to turn off in the cloud
+    assert "trig_" not in said_before_proof[1] + capsys.readouterr().out
+
+
+@pytest.mark.parametrize("flags", [["--routines-cloud"], ["--routines-cloud", "--sweep", "trig_01AAAAAAAA"],
+                                   ["--sweep", "trig_01AAAAAAAA", "--daily", "trig_01BBBBBBBB", "--timezone", "UTC"],
+                                   ["--routines-cloud", "--check", "--timezone", "UTC"]])
+def test_the_move_takes_its_check_or_all_three_answers(tmp_path, capsys, flags):
+    ada = make_space(tmp_path / "ada", name="ada")
+    assert onboard.main([str(ada), *flags]) == 2
+    said = capsys.readouterr().out.strip()
+    assert len(said.splitlines()) == 1 and "--routines-cloud" in said and routine.host(ada) is None
+
+
 @pytest.mark.parametrize("flags", [["--until", "2099-01-02"], ["--pause", "--resume"], ["--resume", "--until", "2099-01-02"],
-                                   ["--routines-here", "--pause"], ["--routines-here", "--resume"]])
+                                   ["--routines-here", "--pause"], ["--routines-here", "--resume"],
+                                   ["--routines-cloud", "--check", "--pause"], ["--routines-cloud", "--routines-here"]])
 def test_flags_that_do_not_go_together_are_refused_plainly(tmp_path, capsys, flags):
     ada = make_space(tmp_path / "ada", name="ada")
     assert onboard.main([str(ada), *flags]) == 2
@@ -972,10 +1753,71 @@ def test_flags_that_do_not_go_together_are_refused_plainly(tmp_path, capsys, fla
 
 
 SKILL = TEMPLATE / ".claude" / "skills" / "onboard"
-PHRASES = ("pause my routines", "resume my routines", "run my routines here")
+PHRASES = ("pause my routines", "resume my routines", "run my routines here", "run my routines in the cloud")
 
 
-def test_the_three_routine_phrases_reach_the_onboard_skill():
+def test_the_cloud_sentence_reaches_the_onboard_skill_with_its_proof_before_the_move():
+    description = (SKILL / "SKILL.md").read_text(encoding="utf-8").split("---")[1]
+    assert '"run my routines in the cloud"' in description
+    text = " ".join((SKILL / "SKILL.md").read_text(encoding="utf-8").split())
+    section = text[text.index('## "Run my routines in the cloud"'):]
+    section = section[:section.index("## ", 3)]
+    for needed in ("--routines-cloud --check", "--proof", "RemoteTrigger", "enforce_admins", "--timezone"):
+        assert needed in section
+    assert section.index("--proof") < section.index("--routines-cloud --sweep")
+
+
+def test_the_skill_reads_a_proof_runs_log_only_and_proves_the_tasks_the_routines_already_run_as():
+    text = " ".join((SKILL / "SKILL.md").read_text(encoding="utf-8").split())
+    never = text[text.index("## Never"):]
+    never = never[:never.index("## ", 3)]
+    assert "routine's log" in never and "proof run" in never   # the one log it reads, and why it may
+    section = text[text.index('## "Run my routines in the cloud"'):]
+    section = section[:section.index("## ", 3)]
+    proving = section[section.index("2. **Prove each task.**"):section.index("3. **Move.**")]
+    assert "already run" in proving and "update" in proving and "exports and reads nothing" in proving
+    # A proof that shows a refusal missing keeps both tasks off for good: put back, they would run under a guard the
+    # proof showed does not hold. Proved in place, they were the routines' own, so the routines are stopped: say so,
+    # and offer to run them on the computer.
+    missing = proving[proving.index("**A refusal missing.**"):proving.index("**Anything else.**")]
+    for needed in ("leave both tasks off", "never turn them back on", "stopped", "no longer refuses",
+                   '"run my routines here"'):
+        assert needed in missing
+    assert "enabled: true" not in missing and "put" not in missing
+    # Proved one after the other, the second task may still be on, on its real body, when the first one's proof shows
+    # a refusal missing: it is turned off before both are left off.
+    assert "still on" in missing and "`enabled: false`" in missing
+    assert missing.index("`enabled: false`") < missing.index("leave both tasks off")
+    here = text[text.index("**Run my routines here**"):text.index('## "Run my routines in the cloud"')]
+    back_on = here[here.index("turn the two cloud tasks back on"):]
+    assert "never when they were off because a proof showed a refusal missing" in back_on[:back_on.index(")")]
+    # Proved in place, the two tasks are off and carry the proof body: a move that stops for what says nothing
+    # against the guard, here or in step 3, puts them back as they ran, or every computer steps aside for a cloud
+    # that no longer runs anything.
+    back = proving[proving.index("**Anything else.**"):]
+    for needed in ("step 3", "48 hours", "not rendered", "did not merge", "the person stopping", "without `--proof`",
+                   "cloud.py trigger <workspace> --chain <chain>", "`enabled: true`", "keep running in the cloud"):
+        assert needed in back
+    moving = section[section.index("3. **Move.**"):section.index("4. **Say it.**")]
+    assert "earlier" in moving and "put back" in moving and "step 2" in moving
+    refusing = moving[moving.index("does not refuse"):moving.index("put back")]   # the tool's sentence, before any put back
+    assert "refusal missing" in refusing and "leave both tasks off" in refusing
+    raw = (SKILL / "SKILL.md").read_text(encoding="utf-8")
+    raw = raw[raw.index('## "Run my routines in the cloud"'):]
+    assert all(len(line) <= 120 for line in raw[:raw.index("\n## ", 3)].splitlines())   # wrapped as the rest
+
+
+def test_is_this_set_up_says_the_cloud_row_though_it_does_not_fail():
+    """Only failing rows are shown, but the cloud's row is the one place the agent reads where the routines run in
+    the cloud and when each chain last ran, so it is said whenever it is there."""
+    text = " ".join((SKILL / "SKILL.md").read_text(encoding="utf-8").split())
+    section = text[text.index('## "Is this set up?"'):]
+    section = section[:section.index("## ", 3)]
+    assert "failing rows" in section and "`routines in the cloud`" in section
+    assert onboard.CLOUD_STEP == "routines in the cloud"
+
+
+def test_the_routine_phrases_reach_the_onboard_skill():
     description = (SKILL / "SKILL.md").read_text(encoding="utf-8").split("---")[1]
     instruction = " ".join((TEMPLATE / "_meta" / "templates" / "personal-instruction.md").read_text(encoding="utf-8").split())
     routing = instruction[instruction.index("The toolbox is in"):]

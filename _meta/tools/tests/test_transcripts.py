@@ -48,6 +48,23 @@ def test_scan_records_sessions_and_the_capture_rate_without_content(tmp_path):
     assert "capture rate 0.67 (3 sessions)" in (root / "live/health.md").read_text(encoding="utf-8")
 
 
+def test_a_missing_transcripts_folder_leaves_the_sessions_file_as_it_was(tmp_path):
+    """A computer without the session files (the cloud, a second laptop) has nothing to count:
+    the scan says the folder is missing and keeps the last scan's sessions and capture rate."""
+    import shutil
+    root = setup(tmp_path)
+    transcripts.scan(root, now=NOW)
+    sessions = (root / "_meta/state/sessions.yaml").read_text(encoding="utf-8")
+    runs = (root / "_meta/state/runs.jsonl").read_text(encoding="utf-8")
+    shutil.rmtree(tmp_path / "transcripts")
+    report = transcripts.scan(root, now=NOW + dt.timedelta(hours=1))
+    assert report == {"seen": 0, "captured": 0, "witnessed": 0, "switch": "off", "path": "missing"}
+    assert (root / "_meta/state/sessions.yaml").read_text(encoding="utf-8") == sessions
+    assert (root / "_meta/state/runs.jsonl").read_text(encoding="utf-8") == runs, "no run line either"
+    status.run(root, now=NOW + dt.timedelta(hours=1))
+    assert "capture rate 0.67 (3 sessions)" in (root / "live/health.md").read_text(encoding="utf-8")
+
+
 def test_switch_on_turns_missed_sessions_into_witness_pages_here_only(tmp_path):
     root = setup(tmp_path, switch="on")
     report = transcripts.scan(root, now=NOW)

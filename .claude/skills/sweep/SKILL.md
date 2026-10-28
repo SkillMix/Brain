@@ -15,6 +15,13 @@ export; the tool decides.
   step of the sweep chain (sweep, then distill, then check).
 - On request: "sweep my mail", "anything new from the calendar?". No `sources` and no `repos`
   in `_meta/state/links.json`: nothing to do.
+- In the cloud: the sweep chain's cloud task follows this skill through
+  `_meta/templates/cloud/sweep-chain.md`, every command with absolute paths. There every feed
+  but the repository's comes through a connector, with no browser and no history to read; step 1
+  says how a cloud run reads GitHub and a codebase's files, and step 2 its attachments.
+- While the routines run in the cloud (`_meta/state/routine-host.yaml` has `runner: "cloud"`), a
+  session on a computer exports and sweeps nothing: the cloud's sweep reads every feed three times
+  a day, and a second reader would read the same mail twice. Say so in one line.
 
 ## Run
 
@@ -48,20 +55,33 @@ export; the tool decides.
    one a `repository` source names (its `repo` key) (`identifiers.repo`, `text` its title and
    description, `attachments` its `url`),
    never the space's own machinery pull requests (`chore: sync`, `chore: pins`,
-   `chore: release`, `chore: structure`). Export them with `gh pr list -R <repo> --state merged
-   --search "merged:>=<since> NOT chore in:title" --limit 200 --json
-   number,title,body,mergedAt,baseRefName,author,url` (the search, not a filter afterwards: the
-   machinery pull requests outnumber the rest and would fill any limit), `id`
-   `<repo>#<number>`. Then list each one's files (`gh pr view <number> -R <repo> --json
-   files,mergeCommit`) and keep a `.md` or `.mdx` file that is under `docs/`, `specs/` or
-   `.kiro/specs/`, or under any folder named `adr` or `decisions`, or whose file name contains
+   `chore: release`, `chore: structure`). Read them through GitHub's REST API alone, as a cloud run
+   must (it refuses GraphQL, so no pull request or repository subcommand of gh): each call is gh api
+   and one word, its endpoint, with nothing after it (no flag, no filter, no paging option). The
+   pull requests merged since the cursor:
+   `gh api search/issues'?q=repo:<repo>+is:pr+is:merged+merged:>=<since>+NOT+chore+in:title&per_page=100'`
+   (the search, not a filter afterwards: the machinery pull requests outnumber the rest and would
+   fill any page; the quotes, opened before the `?`, keep its `?`, `&` and `>` from the shell, as
+   zsh, a Mac's shell, refuses a `?` left outside them; while `total_count` says there are more,
+   add `&page=2` and on inside the quotes), each item's `number`, `title`, `body`, `user` and
+   `html_url`, `id` `<repo>#<number>`. Then each one's merge commit
+   (`gh api repos/<repo>/pulls/<number>`: `merge_commit_sha`, `merged_at`) and its files
+   (`gh api repos/<repo>/pulls/<number>/files'?per_page=100'`: each `filename`), and keep a `.md`
+   or `.mdx` file that is under `docs/`, `specs/` or `.kiro/specs/`, or under any folder named
+   `adr` or `decisions`, or whose file name contains
    `design`; nothing else (`src/design.py` stays out). Each kept file is one `document` record:
-   `id` `<repo>@<merge commit>:<path>`, `text` the file's content at the merge commit,
-   `identifiers.repo`, `attachments` its permalink
-   `https://github.com/<repo>/blob/<commit>/<path>`. `audience` is the one `_meta/state/links.json`
-   gives (a source's declared one for its `repo`), copied as is. `id` is the system's own id, stable across runs. A backfill (a person's first 90 days, or a project's
-   history back to its first mention) re-reads older records in full with the same `id` and
-   adds `"backfill": true`: the sweep reads them behind the feed's mark and deepens their pages.
+   `id` `<repo>@<merge commit>:<path>`, `text` the file's content, `identifiers.repo`,
+   `attachments` its permalink `https://github.com/<repo>/blob/<commit>/<path>`. The content is
+   the file as a clone on the repository's default branch holds it (the pull request's
+   `base.repo.default_branch`): in a cloud run, `/home/user/<codebase>/<path>`, the codebase's
+   clone beside the workspace (`<codebase>` the repository's name after its owner); on a
+   computer, the codebase's checkout, only while that checkout is on that branch and the file
+   has no change there. Any other file is left out and named in your run line.
+   `audience` is the one `_meta/state/links.json` gives (a source's declared one for its
+   `repo`), copied as is. `id` is the system's own id, stable across runs. A backfill (a
+   person's first 90 days, or a project's history back to its first mention) re-reads older
+   records in full with the same `id` and adds `"backfill": true`: the sweep reads them behind
+   the feed's mark and deepens their pages.
    A record exported by research for a subject carries `"research": "<subject id>"`; its page
    keeps it, so the router decides it for that subject even when the text never names it.
    Private at the door: before writing a record decide whether it is `company`, `personal`,
@@ -72,16 +92,26 @@ export; the tool decides.
    morning email asks about it and one word brings it in. The workspace's own briefings and
    notices (from the owner to the owner) stay in the feed for the reply reader; the sweep never
    makes pages of them.
-2. Attachments: `python _meta/tools/sweep.py <root> --attachments` lists, one per line,
-   `<record id> <subject> <file name>` for every attachment not read yet (with `routing:` in
-   `space.yaml`, on every company record; without it, on threads of exactly one subject). Read
-   each, in this order: the mail connector's attachment reader; else the browser, opening the
-   message in the mail web app and reading the attachment in its preview, never downloading;
-   else leave it for the daily list the owner approves. Append it to the same feed file as a
-   document record of its own: `id` `<record id>/<file name>`, `subject` the file name as it is,
-   `text` its full text (a file with no text, such as an image: empty `text`, so it is not listed
-   again; it gets no witness page), `read_via: connector | preview | approved_batch`, and `from`, `to`, `cc`, `at` and
-   `identifiers` copied from its mail.
+2. Attachments: `python _meta/tools/sweep.py <root> --attachments` lists one attachment per
+   line, the record id, its subject and the file name separated by a tab each, for every
+   attachment not read yet (with `routing:` in `space.yaml`, on every company record; without it,
+   on threads of exactly one subject), then those an earlier run could not read, whose subject is
+   empty (`<record id>\t\t<name>`). Read each, in this order: the mail connector's attachment
+   reader; else the browser, opening the message in the mail web app and reading the attachment
+   in its preview, never downloading (a cloud run has no browser); else leave it for the daily
+   list the owner approves, and note it:
+   `python _meta/tools/sweep.py <root> --attachment-unread <record id> <name>`, so every later
+   run, a cloud run's fresh clone included, lists it again until it is read. Append what you read
+   to the same feed file as a document record of its own: `id` `<record id>/<file name>`,
+   `subject` the file name as it is, `text` its full text (a file with no text, such as an image:
+   empty `text`, then `python _meta/tools/sweep.py <root> --attachment-read <record id> <name>`,
+   so it is not listed again; it gets no witness page), `read_via: connector | preview |
+   approved_batch`, and `from`, `to`, `cc`, `at` and `identifiers` copied from its mail. In
+   these two commands, a name holding anything but letters, digits, `.`, `-` and `_` goes in
+   single quotes, each single quote in it written as `'"'"'`: `Ada's "final" $5.pdf` is
+   `'Ada'"'"'s "final" $5.pdf'`. A name holding a line break is left unmarked and named in your
+   run line. A name that starts with `--` is left unmarked and named there too: sweep.py reads it
+   as a flag.
 3. `python _meta/tools/sweep.py <root>` (`--dry-run` prints the plan and writes nothing).
 4. With `routing:` in `space.yaml`: route what the sweep wrote, as
    `.claude/skills/route/SKILL.md` says. The sweep itself then releases nothing.

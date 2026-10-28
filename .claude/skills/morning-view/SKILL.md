@@ -47,8 +47,10 @@ _meta/tools/morning_view.py <root> sent-today` first; exit 0 means a briefing al
 today (whichever routine recorded it), so skip the send and say so. Send always, quiet or
 not, because a missing briefing means the routine broke; on a failed send, try once more,
 then record the failure and leave the page standing. Record the send with the tool, never by
-hand: `python _meta/tools/morning_view.py <root> record-send --id <message id> [--cost <n>]`,
-or `record-send --failed "<reason>"`.
+hand: `python _meta/tools/morning_view.py <root> record-send --id <message id> --to <address>
+[--cost <n>]`, or `record-send --failed "<reason>"`. `--to` takes every recipient the sent
+message reads back with, each address alone, all after the one `--to` with a space between
+them; any address but the person's records a failed send and one security item.
 
 ## Never
 
@@ -67,8 +69,9 @@ Run the morning view for the space at <root> as <person> (daily chain, after rel
 2. Run `python _meta/tools/morning_view.py <root> sent-today`; exit 0 means skip the send.
    Otherwise send _meta/state/private/morning-payload.json exactly as rendered with the mail
    connector, from <person>'s own mailbox to its `to` address, read the sent message back
-   and run `python _meta/tools/morning_view.py <root> record-send --id <message id>`. One
-   briefing per day; send even when the list is empty.
+   and run `python _meta/tools/morning_view.py <root> record-send --id <message id> --to <address>`,
+   every recipient the read-back shows after the one `--to`. One briefing per day; send even
+   when the list is empty.
 3. Commit nothing. Report: sent or not, the message id, the counts the subject line shows.
 ```
 

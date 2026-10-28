@@ -215,7 +215,7 @@ def test_every_command_the_routine_prompts_name_fits_the_guard(tmp_path):
         assert named, prompt.name
         for command in named:
             filled = command.replace("<root>", ws.resolve().as_posix()).replace("<file>", "x.json").replace(
-                "<message id>", "m-1")
+                "<message id>", "m-1").replace("<address>", "ada@example.test")
             assert passes(path, filled), (prompt.name, filled)
 
 

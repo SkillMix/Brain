@@ -72,8 +72,9 @@ def _add_mount(root: Path, name: str, repo, path: str) -> bool:
 def mount_space(root, name: str, url, path: str | None = None, online: bool = True,
                 dry_run: bool = False) -> bool:
     """Mount another space read-only: its row in space.yaml and, online, the setup verb
-    `git submodule add -b main <url> mounts/<name>`; the sync script lands both. True when the
-    row is new."""
+    `git submodule add -b main <url> mounts/<name>`; the sync script lands both on its protected
+    branch, the new mount's pin with its address in `.gitmodules`, after the person's click.
+    True when the row is new."""
     root = Path(root).resolve()
     path = path or f"mounts/{name}"
     if dry_run:

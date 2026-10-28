@@ -9,13 +9,25 @@ is recorded as `{"step", "error"}` and the next step runs on yesterday's output;
 that is not present yet is skipped with a note. Every chain run appends one run line to
 `_meta/state/runs.jsonl`.
 
+A cloud run (`--cloud`) leaves to the computer's sync what needs the computer, the person's click
+or one writer: the sweep chain skips the transcripts scan and settles the outbox after the reply
+step, where the mail feed is read; the daily chain skips template sync, the two request steps, the
+release leg and the outbox, and asks the link check without GraphQL. The computer's sync then
+scans the transcripts at most every TRANSCRIPTS_HOURS and runs template sync when
+`_template_sync_due` says so (`sync.Run.computer_leg`).
+
+`chain.py gate <workspace>` is the first step of every task prompt a computer runs: it prints
+nothing and exits 0 when this computer may run the chains now, else one sentence and exit 3
+(the routines run in the cloud, on another computer, are paused, or the record is unclear).
+
 The virtual clock walks `SPACE_NOW` forward over a number of scaled days (`time_scale`
 from the first root's space.yaml), runs the sweep chain for every root at every step and
 the daily chain once per day, and can apply a fixture's verdicts after a given day.
 `SPACE_NOW` is restored afterwards.
 
-    python chain.py sweep [root]
-    python chain.py daily [root] [--person <name>] [--shadow] [--offline name=path ...]
+    python chain.py sweep [root] [--cloud]
+    python chain.py daily [root] [--person <name>] [--shadow] [--offline name=path ...] [--cloud]
+    python chain.py gate [workspace]
     python chain.py virtual --days N --roots a b c [--steps 3] [--persons a=Ada ...]
                             [--offline name=path ...] [--verdicts verdicts.yaml --after-day N]
 """
@@ -39,6 +51,9 @@ import spaceyaml  # noqa: E402
 RUNS_LOG = Path("_meta") / "state" / "runs.jsonl"
 ANSWERS_PATH = Path("_meta") / "tests" / "answers.yaml"
 LEAKS_PATH = Path("_meta") / "tests" / "leaks.yaml"
+# While the routines run in the cloud, the computer's sync scans the transcripts, the sweep chain's first
+# step, at most this often: the session files are on the computer, and the cloud sweep never reads them.
+TRANSCRIPTS_HOURS = 6
 
 
 # ----- steps -------------------------------------------------------------------------
@@ -128,7 +143,9 @@ def _mark_stale(space: spaceyaml.Space, ctx: dict, now: dt.datetime) -> None:
 
 def _template_sync_due(space: spaceyaml.Space, now: dt.datetime) -> bool:
     """Once a scaled week, where a provenance file names the template or onboarding made the
-    space from it (it stamps no provenance; the first sync does); never in the fixture."""
+    space from it (it stamps no provenance; the first sync does); never in the fixture. The daily
+    chain asks it, and so does the computer's sync while the routines run in the cloud
+    (`sync.Run.computer_leg`)."""
     state = space.root / "_meta" / "state"
     if space.mode == "fixture" or not ((state / "template-version.yaml").exists() or (state / "onboard.yaml").exists()):
         return False
@@ -184,20 +201,26 @@ def _started(space: spaceyaml.Space, routine: str) -> None:
 
 # ----- the two chains ----------------------------------------------------------------
 
-def sweep_chain(root, now: dt.datetime | None = None) -> dict:
-    """(journal records →) sweep → distill → check, each on the files the previous step wrote."""
+def sweep_chain(root, now: dt.datetime | None = None, cloud: bool = False) -> dict:
+    """(journal records →) sweep → distill → check, each on the files the previous step wrote.
+
+    In a cloud run (`cloud`) the transcripts scan is the computer's sync's, since the session files
+    are on the computer, and the outbox is settled right after the reply step, since the cloud
+    exports the mail feed it reads in the sweep and nowhere else."""
     root = Path(root)
     space = spaceyaml.load(root)
     now = now or space.now()
     ctx = _context("sweep_chain", root, now)
     _started(space, "sweep_chain")
-    if space.profile == "personal" and (space.data.get("transcripts") or {}).get("path"):
+    if not cloud and space.profile == "personal" and (space.data.get("transcripts") or {}).get("path"):
         _step(ctx, "transcripts", "transcripts", "scan", root, now=now)
     if space.profile == "personal":   # notes with a pointer to linked code become records to sweep
         _step(ctx, "journal_records", "link", "journal_records", root)
     _step(ctx, "sweep", "sweep", "run", root, now=now)
     if space.profile == "personal":
         _step(ctx, "reply", "reply", "run", root, now=now)
+    if cloud and (root / "outbox").is_dir():
+        _step(ctx, "outbox_reconcile", "outbox_reconcile", "run", root, now=now)
     _step(ctx, "distill", "distill", "run", root, now=now)
     _step(ctx, "check", "check", "run", root, now=now)
     if space.profile == "personal":   # evidence moves the issues this person's tracker made
@@ -207,25 +230,33 @@ def sweep_chain(root, now: dt.datetime | None = None) -> dict:
 
 
 def daily(root, person: str | None = None, now: dt.datetime | None = None, shadow: bool = False,
-          offline_roots: dict | None = None) -> dict:
+          offline_roots: dict | None = None, cloud: bool = False) -> dict:
     """status → access → link check → requests → release (listed items only) → outbox reconcile
-    → morning view → answer and leak tests."""
+    → morning view → answer and leak tests.
+
+    In a cloud run (`cloud`) the computer's sync keeps four steps. Template sync stays there
+    because the machinery it changes needs the person's click, and a cloud run never lands a
+    protected change. The two request steps and the release leg stay there so that two writers
+    never answer or ship the same item. The outbox is the cloud sweep's, and the link check runs
+    without GraphQL, which a cloud run refuses."""
     root = Path(root)
     space = spaceyaml.load(root)
     now = now or space.now()
     person = person or space.owner
     ctx = _context("daily", root, now)
     _started(space, "daily")
-    if _template_sync_due(space, now):
+    if not cloud and _template_sync_due(space, now):
         _step(ctx, "template_sync", "template_sync", "guarded", root)
     _step(ctx, "status", "status", "run", root, now=now)
     _step(ctx, "access", "access", "run", root, now=now)   # readers on the host against the audience
-    _step(ctx, "link_check", "link", "check", root, now=now)   # the codebases linked to subjects homed here
-    _step(ctx, "requests_collect", "request", "collect", root, now=now, offline_roots=offline_roots)
-    _step(ctx, "requests_answer", "request", "answer", root, now=now, offline_roots=offline_roots)
-    _step(ctx, "release", "release", "ship", root, now=now, offline_roots=offline_roots)
-    if (root / "outbox").is_dir():
-        _step(ctx, "outbox_reconcile", "outbox_reconcile", "run", root, now=now)
+    _step(ctx, "link_check", "link", "check", root, now=now,   # the codebases linked to subjects homed here
+          graphql=not cloud)
+    if not cloud:
+        _step(ctx, "requests_collect", "request", "collect", root, now=now, offline_roots=offline_roots)
+        _step(ctx, "requests_answer", "request", "answer", root, now=now, offline_roots=offline_roots)
+        _step(ctx, "release", "release", "ship", root, now=now, offline_roots=offline_roots)
+        if (root / "outbox").is_dir():
+            _step(ctx, "outbox_reconcile", "outbox_reconcile", "run", root, now=now)
     _step(ctx, "morning_view", "morning_view", "run", root, person, now=now, shadow=shadow)
     if (root / ANSWERS_PATH).exists():
         _step(ctx, "answers", "tests_run", "answers", root, now=now, roots=offline_roots)
@@ -233,6 +264,41 @@ def daily(root, person: str | None = None, now: dt.datetime | None = None, shado
         _step(ctx, "leaks", "tests_run", "leaks", root, roots=offline_roots, now=now)
     _run_line(space, ctx, now)
     return ctx
+
+
+# ----- the gate ----------------------------------------------------------------------
+
+IN_THE_CLOUD = "your routines run in the cloud"
+GATED = 3   # the exit of `chain.py gate` when this computer must not run the chains now
+
+
+def gate(workspace, now: dt.datetime | None = None) -> str | None:
+    """Why this computer must not run the chains now; None to go on. The first step of every
+    task prompt a computer runs (`chain.py gate <workspace>`), since the app's own scheduled tasks
+    never read the routine host record: the routines run in the cloud, paused or not
+    (IN_THE_CLOUD), another computer is the host ("they run on <name>"), the record is not one
+    (`routine.UNCLEAR`), or they are paused ("paused until <time>", in this computer's time, or in
+    the record's own for a time this computer cannot put in its own).
+    This computer as the host goes on through either of its runners, and so does a workspace with
+    no record at all: a space that never claimed runs as it always has."""
+    import routine
+    record = routine.host(workspace)
+    if record is None:
+        return None
+    if record.get("unclear"):
+        return routine.UNCLEAR
+    if record["runner"] == "cloud":
+        return IN_THE_CLOUD
+    if record["machine"] != routine.this_machine():
+        return f"they run on {record['name'] or 'another computer'}"
+    until = routine.paused_until(record, now or dt.datetime.now(dt.timezone.utc))
+    if until is not None:
+        try:
+            until = until.astimezone()
+        except (OSError, OverflowError, ValueError):   # Windows has no local time past the year 3000: the record's own
+            pass
+        return f"paused until {until:%Y-%m-%d %H:%M}"
+    return None
 
 
 # ----- the virtual clock -------------------------------------------------------------
@@ -418,11 +484,15 @@ def main(argv=None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     sweep = sub.add_parser("sweep")
     sweep.add_argument("root", nargs="?", default=".")
+    sweep.add_argument("--cloud", action="store_true")
     day = sub.add_parser("daily")
     day.add_argument("root", nargs="?", default=".")
     day.add_argument("--person")
     day.add_argument("--shadow", action="store_true")
     day.add_argument("--offline", nargs="*", default=[], metavar="name=path")
+    day.add_argument("--cloud", action="store_true")
+    held = sub.add_parser("gate")
+    held.add_argument("workspace", nargs="?", default=".")
     places = sub.add_parser("spaces")
     places.add_argument("root", nargs="?", default=".")
     places.add_argument("--person")
@@ -437,14 +507,20 @@ def main(argv=None) -> int:
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     offline = {k: Path(v) for k, v in _pairs(getattr(args, "offline", [])).items()} or None
+    if args.command == "gate":
+        why = gate(Path(args.workspace))
+        if why:
+            print(f"The chains do not run on this computer now: {why}.")
+        return GATED if why else 0
     if args.command == "spaces":
         for root in spaces_on_machine(Path(args.root), args.person):
             print(root.as_posix())
         return 0
     if args.command == "sweep":
-        result = sweep_chain(Path(args.root))
+        result = sweep_chain(Path(args.root), cloud=args.cloud)
     elif args.command == "daily":
-        result = daily(Path(args.root), args.person, shadow=args.shadow, offline_roots=offline)
+        result = daily(Path(args.root), args.person, shadow=args.shadow, offline_roots=offline,
+                       cloud=args.cloud)
     else:
         roots = [Path(r) for r in args.roots]
         verdicts = load_verdicts(args.verdicts, roots) if args.verdicts else None

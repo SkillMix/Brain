@@ -2796,6 +2796,57 @@ def test_a_pause_that_has_passed_is_no_pause(tmp_path):
     assert not any(r["text"].startswith("Routines paused") for r in onboarding_page.sections(ws, {}, NOW)["waiting"])
 
 
+class _OnWindows(dt.datetime):
+    """A moment as Windows turns it into its own local time: past the year 3000 it cannot (OSError)."""
+
+    def astimezone(self, tz=None):
+        if tz is None and self.year > 3000:
+            raise OSError(22, "Invalid argument")
+        return super().astimezone(tz)
+
+
+def test_a_pause_past_what_this_computers_clock_can_say_still_holds_the_run(tmp_path, monkeypatch):
+    """A pause far ahead holds the run, the safe side, said as the record keeps it, and never crashes the hold."""
+    ws = workspace(tmp_path)
+    routine.claim_host(ws, "os", NOW)
+    routine.set_pause(ws, dt.datetime(3001, 1, 2, 6, 30, tzinfo=dt.timezone.utc))
+    real = routine._moment
+    monkeypatch.setattr(routine, "_moment", lambda value: (lambda m: m and _OnWindows.fromisoformat(m.isoformat()))(
+        real(value)))
+    with pytest.raises(OSError):
+        routine.paused_until(routine.host(ws), NOW).astimezone()   # what the hold met on Windows
+    assert routine._held(ws, NOW) == ("paused", "paused until 3001-01-02 06:30")
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")
+    called = []
+    assert routine.main([str(ws / "_meta/state/routines/sweep-chain.md")], run=lambda *a, **k: called.append(a)) == 0
+    line, = runs_of(ws)
+    assert called == [] and line["outcome"] == "paused" and line["why"] == "paused until 3001-01-02 06:30"
+
+
+@pytest.mark.parametrize("error", [OSError(22, "Invalid argument"), OverflowError("date value out of range")])
+def test_a_pause_without_a_zone_this_computers_clock_cannot_place_reads_as_unclear(tmp_path, monkeypatch, error):
+    """A moment written without a zone is this computer's own time, and its clock may not place one (Windows raises
+    OSError for 9999-12-31T00:00:00): that pause is no moment, so the record reads as unclear and holds every run,
+    never a crash in reading the record or in the hold."""
+    import types
+
+    class Unplaced(dt.datetime):
+        def astimezone(self, tz=None):
+            if tz is None and self.tzinfo is None:
+                raise error
+            return super().astimezone(tz)
+    ws = workspace(tmp_path)
+    routine.claim_host(ws, "os", NOW)
+    path = ws / routine.HOST
+    naive = path.read_text(encoding="utf-8").replace("paused_until: null", 'paused_until: "9999-12-31T00:00:00"')
+    path.write_text(naive, encoding="utf-8")
+    monkeypatch.setattr(routine, "dt", types.SimpleNamespace(**{**vars(dt), "datetime": Unplaced}))
+    assert routine._moment("9999-12-31T00:00:00") is None
+    assert routine._moment("9999-12-31T00:00:00+00:00") is not None   # a moment with its zone needs no clock
+    assert routine.host(ws) == {"unclear": True}
+    assert routine._held(ws, NOW) == ("away", routine.UNCLEAR)
+
+
 def test_the_record_is_one_line_per_key_with_the_claim_apart_from_the_pause(tmp_path, monkeypatch):
     ws = workspace(tmp_path)
     monkeypatch.setattr(routine, "machine_name", lambda: "Ada's \"desk\" PC: 100% \\ yes")
@@ -2867,6 +2918,12 @@ def test_no_routine_may_move_pause_or_unregister_the_routines(tmp_path):
     rules = routine.routine_settings(ws, "", [ws])["permissions"]
     for path in ("_meta/state/routine-host.yaml", "_meta/state/onboard.yaml"):
         assert path in routine.PROTECTED_EDITS and f"Edit(//**/{path})" in rules["deny"]
+
+
+def test_no_routine_may_edit_a_mounts_git_file(tmp_path):
+    """A mount's .git is a file that names its git folder; a status in the root runs that folder's config."""
+    ws = workspace(tmp_path)
+    assert "Edit(//**/.git)" in routine.routine_settings(ws, "", [ws])["permissions"]["deny"]
 
 
 def test_without_a_record_a_build_claims_this_computer_once_its_tasks_are_registered(tmp_path, monkeypatch):
@@ -3091,7 +3148,8 @@ def test_a_machine_id_file_that_holds_no_id_is_made_again(tmp_path):
     import sync
     kept = Path.home() / ".spaces" / "machine-id"
     kept.parent.mkdir(parents=True, exist_ok=True)
-    for text in ("", "not an id\n", "m-\n", "m-" + "x" * 80 + "\n", "m-ok\nm-two\n"):
+    for text in ("", "not an id\n", "m-\n", "m-" + "x" * 80 + "\n", "m-ok\nm-two\n",
+                 f"{routine.CLOUD_MACHINE}\n"):   # the cloud's machine is no computer's id: a move would record it
         kept.write_text(text, encoding="utf-8")
         assert routine.this_machine() == sync.hostname() and kept.read_text(encoding="utf-8").strip() == sync.hostname()
     kept.write_text("m-1a2b3c4d\n", encoding="utf-8")   # one made on this computer before: kept as it is
@@ -3129,3 +3187,339 @@ def test_a_run_held_back_by_its_condition_or_a_pause_leaves_its_line_and_starts_
     prompt.write_text("---\nname: odd\nonly_while: the moon is full\n---\nx\n", encoding="utf-8")
     assert routine.main([str(prompt)], run=lambda *a, **k: called.append(a)) == 0 and called == []
     assert log.read_text(encoding="utf-8").count("nothing to read") == 2 and not routine.lock_path(ws).exists()
+
+
+# ----- the cloud runner: two scheduled tasks every computer steps aside for --------------------------------
+CLOUD_TASKS = {"sweep": "trig_01AAAAAAAA", "daily": "trig_01BBBBBBBB"}
+CLOUD_ROOTS = ["ada/ada-space", "ada/ada-brain"]
+CLOUD_GRANT = {"read": ["mcp__mail__get_thread"], "write": ["mcp__tracker__create_issue"],
+               "send": ["mcp__mail__send_message"]}
+
+
+def cloud_hosted(ws, zone: str = "Europe/Amsterdam", now=NOW) -> dict:
+    return routine.claim_cloud(ws, CLOUD_TASKS, zone, CLOUD_ROOTS, CLOUD_GRANT, now)
+
+
+def test_a_cloud_claim_reads_back_with_its_tasks_zone_roots_and_grant(tmp_path, monkeypatch):
+    ws = workspace(tmp_path)
+    rec = cloud_hosted(ws)
+    assert (rec["runner"], rec["machine"], rec["name"], rec["tasks"]["daily"], rec["timezone"], rec["roots"]) == \
+           ("cloud", "m-cloud", "the cloud", "trig_01BBBBBBBB", "Europe/Amsterdam", CLOUD_ROOTS)
+    assert rec["grant"] == CLOUD_GRANT and rec["paused_until"] is None and routine.host(ws) == rec
+    assert routine.RUNNERS == ("os", "harness", "cloud") and routine.MACHINE.fullmatch(routine.CLOUD_MACHINE)
+    lines = [line for line in (ws / routine.HOST).read_text(encoding="utf-8").splitlines() if not line.startswith("#")]
+    assert [line.split(":", 1)[0] for line in lines] == ["machine", "name", "runner", "since", "tasks", "timezone",
+                                                         "roots", "grant", "computer", "paused_until"]
+    on(monkeypatch, "m-desktop")
+    back = routine.claim_host(ws, "os", NOW)   # the routines taken back: a computer's record carries none of it
+    assert back["runner"] == "os" and not {*routine.CLOUD_KEYS, "computer"} & set(back)
+
+
+def test_a_cloud_claim_names_the_computer_the_move_ran_on(tmp_path, monkeypatch):
+    """The move names the computer it ran on (`computer`, its id), the one that keeps the computer's leg
+    (`sync.Run.keeps_leg`), never the cloud's machine; a pause made on another computer keeps it."""
+    ws = workspace(tmp_path)
+    on(monkeypatch, "m-desktop")
+    rec = cloud_hosted(ws)
+    assert (rec["machine"], rec["computer"]) == (routine.CLOUD_MACHINE, "m-desktop") and routine.host(ws) == rec
+    on(monkeypatch, "m-laptop")
+    paused = routine.set_pause(ws, NOW + dt.timedelta(hours=2))
+    assert paused["computer"] == "m-desktop" and routine.paused_until(paused, NOW) is not None
+    assert routine.set_pause(ws, None)["computer"] == "m-desktop"
+    again = cloud_hosted(ws, now=NOW + dt.timedelta(hours=1))   # moved again, from this computer: it keeps the leg now
+    assert again["computer"] == "m-laptop" and routine.host(ws) == again
+
+
+def test_a_cloud_record_that_names_no_computer_is_still_clear(tmp_path, monkeypatch):
+    """A record the move wrote before it named a computer: every computer keeps the leg (`sync.Run.keeps_leg`), and a
+    pause writes no computer into it."""
+    ws = workspace(tmp_path)
+    cloud_hosted(ws)
+    path = ws / routine.HOST
+    path.write_text("".join(f"{line}\n" for line in path.read_text(encoding="utf-8").splitlines()
+                            if not line.startswith("computer:")), encoding="utf-8")
+    rec = routine.host(ws)
+    assert rec["runner"] == "cloud" and "computer" not in rec and routine.cloud_gate(ws, NOW) is None
+    assert "computer" not in routine.set_pause(ws, NOW + dt.timedelta(hours=2))
+    assert "computer:" not in path.read_text(encoding="utf-8")
+
+
+def test_a_computer_claim_never_names_the_cloud(tmp_path):
+    ws = workspace(tmp_path)
+    with pytest.raises(ValueError, match="claim_cloud"):
+        routine.claim_host(ws, "cloud", NOW)
+    assert routine.host(ws) is None
+
+
+def test_every_computer_steps_aside_for_the_cloud(tmp_path, monkeypatch):
+    ws = workspace(tmp_path)
+    cloud_hosted(ws)
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")
+    for machine in ("m-desktop", "m-laptop", routine.CLOUD_MACHINE):
+        on(monkeypatch, machine)
+        assert routine.gate(ws, NOW) == "they run in the cloud"
+        called = []
+        assert routine.main([str(ws / "_meta/state/routines/sweep-chain.md")], run=lambda *a, **k: called.append(a)) == 0
+        assert called == [] and not (ws / "_meta/state/runs.jsonl").exists()   # another runner's: no line here
+    routine.set_pause(ws, NOW + dt.timedelta(hours=8))
+    assert routine.gate(ws, NOW) == "they run in the cloud"   # paused or not, no computer runs them
+
+
+@pytest.mark.parametrize("key, line", [
+    ("tasks", 'tasks: {"sweep": null, "daily": "trig_01BBBBBBBB"}'), ("tasks", 'tasks: {"sweep": "trig_01AAAAAAAA"}'),
+    ("tasks", 'tasks: {"sweep": "trig_", "daily": "trig_01BBBBBBBB"}'), ("grant", "grant: null"),
+    ("grant", 'grant: {"read": [], "write": []}'), ("grant", 'grant: {"read": ["Bash"], "write": [], "send": []}'),
+    ("roots", 'roots: ["not a repository"]'), ("roots", "roots: []"), ("timezone", "timezone: 7"),
+    ("timezone", 'timezone: "Mars; rm -rf /"'), ("roots", None), ("machine", 'machine: "m-desktop"'),
+    ("computer", 'computer: "m-cloud"'), ("computer", 'computer: "desktop"'), ("computer", "computer: null"),
+    ("computer", 'computer: ["m-desktop"]'), ("computer", "computer: 7")])
+def test_a_cloud_task_id_or_grant_that_is_none_makes_the_record_unclear(tmp_path, key, line):
+    ws = workspace(tmp_path)
+    cloud_hosted(ws)
+    path = ws / routine.HOST
+    kept = [line if old.startswith(f"{key}:") else old for old in path.read_text(encoding="utf-8").splitlines()]
+    path.write_text("".join(f"{old}\n" for old in kept if old is not None), encoding="utf-8")
+    assert routine.host(ws) == {"unclear": True}
+    assert routine.gate(ws, NOW) == routine.UNCLEAR and routine.cloud_gate(ws, NOW) == routine.UNCLEAR
+
+
+def test_the_clouds_machine_with_a_computers_runner_is_unclear(tmp_path):
+    ws = workspace(tmp_path)
+    (ws / routine.HOST).write_text('machine: "m-cloud"\nname: "the cloud"\nrunner: "os"\nsince: "x"\n', encoding="utf-8")
+    assert routine.host(ws) == {"unclear": True}
+
+
+def test_a_cloud_claim_of_the_wrong_shape_is_refused_and_writes_nothing(tmp_path):
+    ws = workspace(tmp_path)
+    for tasks, zone, roots, grant in (({"sweep": None, "daily": "trig_01BBBBBBBB"}, "UTC", CLOUD_ROOTS, CLOUD_GRANT),
+                                      (CLOUD_TASKS, "", CLOUD_ROOTS, CLOUD_GRANT),
+                                      (CLOUD_TASKS, "UTC", ["ada"], CLOUD_GRANT),
+                                      (CLOUD_TASKS, "UTC", CLOUD_ROOTS, None)):
+        with pytest.raises(ValueError):
+            routine.claim_cloud(ws, tasks, zone, roots, grant, NOW)
+    assert routine.host(ws) is None
+
+
+def test_a_pause_keeps_the_cloud_claims_keys(tmp_path):
+    ws = workspace(tmp_path)
+    rec = cloud_hosted(ws)
+    paused = routine.set_pause(ws, NOW + dt.timedelta(hours=2))
+    assert routine.paused_until(paused, NOW) is not None
+    assert {k: paused[k] for k in routine.CLOUD_KEYS} == {k: rec[k] for k in routine.CLOUD_KEYS}
+    again = routine.claim_cloud(ws, {"sweep": "trig_02CCCCCCCC", "daily": "trig_02DDDDDDDD"}, "Europe/Amsterdam",
+                                CLOUD_ROOTS, CLOUD_GRANT, NOW + dt.timedelta(hours=1))
+    assert again["tasks"]["sweep"] == "trig_02CCCCCCCC" and again["paused_until"] == paused["paused_until"]   # no resume
+    resumed = routine.set_pause(ws, None)
+    assert resumed["paused_until"] is None and resumed["grant"] == CLOUD_GRANT and resumed["roots"] == CLOUD_ROOTS
+
+
+def test_the_cloud_gate_goes_on_only_for_a_cloud_record_not_paused(tmp_path, monkeypatch):
+    ws = workspace(tmp_path)
+    assert routine.cloud_gate(ws, NOW) == "nothing says your routines run in the cloud"
+    on(monkeypatch, "m-desktop")
+    monkeypatch.setattr(routine, "machine_name", lambda: "ADA-DESKTOP")
+    routine.claim_host(ws, "os", NOW)
+    assert routine.cloud_gate(ws, NOW) == "they run on ADA-DESKTOP"
+    (ws / routine.HOST).write_text("machine: [\n", encoding="utf-8")
+    assert routine.cloud_gate(ws, NOW) == routine.UNCLEAR
+    cloud_hosted(ws)
+    assert routine.cloud_gate(ws, NOW) is None
+    routine.set_pause(ws, NOW + dt.timedelta(hours=2))
+    assert routine.cloud_gate(ws, NOW).startswith("paused until")
+    assert routine.cloud_gate(ws, NOW + dt.timedelta(hours=3)) is None
+
+
+def _zone_data(name: str) -> bool:
+    """Whether this computer knows the zone (Windows has no zone data without the tzdata package)."""
+    from zoneinfo import ZoneInfo
+    try:
+        ZoneInfo(name)
+    except Exception:   # noqa: BLE001 - no zone data at all, or not this zone
+        return False
+    return True
+
+
+def test_a_pause_set_in_local_time_stops_a_utc_cloud_run_until_then(tmp_path):
+    ws = workspace(tmp_path)
+    cloud_hosted(ws, "America/New_York")
+    new_york = dt.timezone(dt.timedelta(hours=-4))   # New York on 28 October 2026, without zone data
+    routine.set_pause(ws, dt.datetime(2026, 10, 28, 6, 0, tzinfo=new_york))
+    before = dt.datetime(2026, 10, 28, 9, 59, tzinfo=dt.timezone.utc)
+    assert routine.cloud_gate(ws, before) == "paused until 2026-10-28 06:00"   # said in the person's own time
+    assert routine.cloud_gate(ws, dt.datetime(2026, 10, 28, 10, 1, tzinfo=dt.timezone.utc)) is None
+    routine.set_pause(ws, dt.datetime(2026, 10, 28, 10, 0, tzinfo=dt.timezone.utc))   # the same moment, kept in UTC
+    if _zone_data("America/New_York"):
+        assert routine.cloud_gate(ws, before) == "paused until 2026-10-28 06:00"
+    else:
+        assert routine.cloud_gate(ws, before) == "paused until 2026-10-28 10:00"   # the moment as it was kept
+
+
+def test_two_merged_claims_one_cloud_one_os_leave_nobody_running(tmp_path, monkeypatch):
+    ws = workspace(tmp_path)
+    cloud_hosted(ws)
+    cloud = (ws / routine.HOST).read_text(encoding="utf-8")
+    on(monkeypatch, "m-desktop")
+    routine.claim_host(ws, "os", NOW)
+    (ws / routine.HOST).write_text(cloud + (ws / routine.HOST).read_text(encoding="utf-8"), encoding="utf-8")
+    assert routine.host(ws) == {"unclear": True}   # a union merge kept both claims
+    assert routine.gate(ws, NOW) == routine.UNCLEAR and routine.cloud_gate(ws, NOW) == routine.UNCLEAR
+
+
+def test_the_extra_allow_rules_join_only_a_guarded_profile(tmp_path):
+    import cloud
+    ws = workspace(tmp_path)
+    extra = (*cloud.EXTRA_ALLOW, "Bash(gh api orgs/*)")   # the cloud's own, and one more: each joins in its order
+    allow = routine.routine_settings(ws, "", [ws], extra_allow=extra)["permissions"]["allow"]
+    last_tool = max(i for i, rule in enumerate(allow) if "_meta/tools/" in rule)   # they come right after it
+    assert [allow.index(rule) for rule in extra] == list(range(last_tool + 1, last_tool + 1 + len(extra)))
+    others = ("mcp__mail__trash_message", "Edit(//**)", "Bash")   # only Bash shapes join
+    assert not set(others) & set(routine.routine_settings(ws, "", [ws], extra_allow=others)["permissions"]["allow"])
+    unguarded = routine.routine_settings(ws, "", [ws], profile=tmp_path / "a$b" / "p.json", extra_allow=extra)
+    assert not set(extra) & set(unguarded["permissions"]["allow"]) and "Bash" in unguarded["permissions"]["deny"]
+
+
+def guarded(path: Path, data: dict):
+    """bash_guard's answer for a command under the profile `data`, written to `path`: None when it runs."""
+    import bash_guard
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return lambda command: bash_guard.check(path, {"tool_input": {"command": command}})
+
+
+def test_a_cloud_profile_runs_sync_only_as_its_chains_landing(tmp_path):
+    """With `cloud_chain` (a cloud run's begin) sync.py runs only as that run's landing, `--root <root> --cloud
+    <chain>`, each root as itself; without it (a computer's routine) the landing takes its arguments as before."""
+    ws, other = workspace(tmp_path), make_space(tmp_path / "brain")
+    path = tmp_path / "cloud.json"
+    check = guarded(path, routine.routine_settings(ws, "", [ws, other], profile=path, cloud_chain="daily"))
+    sync_py = lambda root: f"python3 {root.as_posix()}/_meta/tools/sync.py"   # noqa: E731
+    for place in (ws, other):
+        assert check(f"{sync_py(place)} --root {place.as_posix()} --cloud daily") is None, place
+    for command in (f"{sync_py(ws)} --root {ws.as_posix()}", f"{sync_py(ws)} --root {ws.as_posix()} --cloud sweep",
+                    f"{sync_py(ws)} --root {other.as_posix()} --cloud daily",
+                    f"{sync_py(ws)} --root {ws.as_posix()} --release-leg",
+                    f"python3 _meta/tools/sync.py --root {ws.as_posix()} --cloud daily"):
+        assert check(command) is not None, command
+    assert check(f"python3 {ws.as_posix()}/_meta/tools/status.py {ws.as_posix()} --json") is None   # the rest as before
+    path = tmp_path / "computer.json"
+    check = guarded(path, routine.routine_settings(ws, "", [ws, other], profile=path))
+    for command in (f"{sync_py(ws)} --root {ws.as_posix()}", f"{sync_py(ws)} --root {ws.as_posix()} --release-leg",
+                    "python3 _meta/tools/sync.py --root . --release-leg"):
+        assert check(command) is None, command
+    with pytest.raises(ValueError):
+        routine.routine_settings(ws, "", [ws], profile=path, cloud_chain="nightly")
+
+
+def test_no_routine_runs_the_merge_driver_from_its_shell(tmp_path):
+    """`sync.py --merge-latest` is the driver git runs itself mid-merge, outside every hook; from a routine's shell it
+    would write any file it is given, space.yaml or the rules among them, past the edit rules. However it is spelled
+    (an abbreviation argparse takes, a quote the shell drops), a routine's shell never runs it, on a computer or in
+    the cloud."""
+    ws = workspace(tmp_path)
+    sync_py = f"python3 {ws.as_posix()}/_meta/tools/sync.py"
+    target = f"{ws.as_posix()}/space.yaml"
+    for chain in (None, "sweep"):
+        path = tmp_path / f"{chain}.json"
+        check = guarded(path, routine.routine_settings(ws, "", [ws], profile=path, cloud_chain=chain))
+        for command in (f"{sync_py} --merge-latest a {target} b", f"{sync_py} --merge a {target} b",
+                        f"{sync_py} --mer a {target} b", f"{sync_py} '--merge-latest' a {target} b",
+                        f"{sync_py} --'merge'-latest a {target} b", f'{sync_py} "--merge-latest" a {target} b',
+                        f"{sync_py} --root {ws.as_posix()} --merge-latest a {target} b",
+                        f"python3 _meta/tools/sync.py --merge-latest a {target} b",
+                        f"{sync_py} {{--m,X}}erge-latest a {target} b", f"{sync_py} --me[r]ge-latest a {target} b",
+                        f"{sync_py} --me?ge-latest a {target} b", f"{sync_py} --me* a {target} b",
+                        f"{sync_py} --root {ws.as_posix()} {{--m,X}}erge-latest a {target} b",
+                        f"python3 _meta/tools/sync.py --root . {{--m,X}}erge-latest a {target} b"):
+            assert check(command) is not None, (chain, command)
+
+
+def test_a_computers_routine_runs_sync_only_as_its_landing(tmp_path):
+    """On a computer sync.py runs as the landing and its release leg, each root as itself, and nothing else: no
+    word a shell could expand into another flag gets past an exact command."""
+    ws, other = workspace(tmp_path), make_space(tmp_path / "brain")
+    path = tmp_path / "computer.json"
+    check = guarded(path, routine.routine_settings(ws, "", [ws, other], profile=path))
+    sync_py = lambda root: f"python3 {root.as_posix()}/_meta/tools/sync.py"   # noqa: E731
+    for place in (ws, other):
+        for leg in ("", " --release-leg"):
+            assert check(f"{sync_py(place)} --root {place.as_posix()}{leg}") is None, (place, leg)
+    for root in (".", ws.as_posix()):
+        assert check(f"python3 _meta/tools/sync.py --root {root} --release-leg") is None, root
+    for command in (f"{sync_py(ws)} --root {other.as_posix()}", f"{sync_py(ws)} --root {ws.as_posix()} --no-push",
+                    f"{sync_py(ws)} --root {ws.as_posix()} --only space.yaml", f"{sync_py(ws)} --root {ws.as_posix()} "
+                    "--message x", f"{sync_py(ws)} --root {ws.as_posix()} --release-leg --root {other.as_posix()}",
+                    f"{sync_py(ws)} --root {ws.as_posix()} --cloud daily", f"{sync_py(ws)} --root {ws.as_posix()} "
+                    "{--release-leg,--no-push}", f"{sync_py(ws)} --root {ws.as_posix()} --release-leg*",
+                    f"python3 _meta/tools/sync.py --root {other.as_posix()} --release-leg"):
+        assert check(command) is not None, command
+
+
+def test_a_routine_reads_a_codebase_named_for_graphql_and_never_graphql_itself(tmp_path):
+    """GraphQL is refused by its endpoint word, never by a word in a repository's name."""
+    ws = workspace(tmp_path)
+    path = tmp_path / "p.json"
+    check = guarded(path, routine.routine_settings(ws, "", [ws], profile=path))
+    for read in ("gh api search/issues'?q=repo:acme/graphql-gateway+is:pr+is:merged&per_page=100'",
+                 "gh api repos/acme/graphql-gateway/pulls/5", "gh api repos/acme/graphql-gateway/pulls/5/files"):
+        assert check(read) is None, read
+    for call in ("gh api graphql", "gh api graphql -f query=x", "gh api /graphql", "gh api repos/../graphql/pulls/5",
+                 "gh api search/issues/../../graphql", "gh api https://api.github.com/graphql",
+                 "gh api HTTPS://api.github.com/graphql", "gh api repos/%2e%2e/graphql", "gh api repos/%2E%2E/graphql",
+                 "gh api ./graphql", "gh api .//graphql", "gh api ././graphql", "gh api //graphql"):
+        assert check(call) is not None, call
+    import bash_guard
+    denied = bash_guard._patterns(routine.REST_ONE_WORD, False)   # layer 2 alone, whatever the allow list says
+    for call in ("gh api https://api.github.com/graphql", "gh api HTTPS://api.github.com/graphql",
+                 "gh api repos/%2e%2e/graphql", "gh api repos/%2E%2E/graphql", "gh api ./graphql", "gh api .//graphql",
+                 "gh api ././graphql", "gh api //graphql"):
+        assert any(rule.fullmatch(call) for rule in denied), call
+    assert not any("*graphql" in rule for rule in routine.REST_ONE_WORD)
+
+
+def test_no_cloud_run_edits_the_guard_plugin_or_its_marketplace(tmp_path):
+    ws = workspace(tmp_path)
+    deny = routine.routine_settings(ws, "", [ws])["permissions"]["deny"]
+    for pattern in ("_meta/plugins/**", ".claude-plugin/**"):
+        assert pattern in routine.PROTECTED_EDITS and f"Edit(//**/{pattern})" in deny
+
+
+def test_a_root_whose_owner_or_name_is_only_dots_is_no_repository(tmp_path):
+    """A repository is owner/name with neither part dots alone, the rule `ghrest` reads an origin by."""
+    import ghrest
+    refused = ("./ada-space", "../ada-space", ".../ada-space", "ada/.", "ada/..", "ada/...", "../..")
+    taken = ("ada/ada-space", "ada/.github", "ada.dev/ada..space", "_a-da/x_", ".ada/..x")
+    for slug in (*refused, *taken):
+        same = all(ghrest.SEGMENT.fullmatch(part) for part in slug.split("/"))
+        assert bool(routine.SLUG.fullmatch(slug)) == same == (slug in taken), slug
+    ws = workspace(tmp_path)
+    with pytest.raises(ValueError):
+        routine.claim_cloud(ws, CLOUD_TASKS, "UTC", ["ada/.."], CLOUD_GRANT, NOW)
+    assert routine.host(ws) is None
+    cloud_hosted(ws)
+    path = ws / routine.HOST
+    path.write_text(path.read_text(encoding="utf-8").replace('"ada/ada-brain"', '"../ada-brain"'), encoding="utf-8")
+    assert routine.host(ws) == {"unclear": True}
+
+
+def test_an_extra_allow_rule_that_runs_over_a_line_is_dropped(tmp_path):
+    ws = workspace(tmp_path)
+    split = ("Bash(gh api repos/*\n)", "Bash(gh api repos/*)\n", "Bash(gh api\rrepos/*)", "Bash(gh api repos/*\r)",
+             "Bash(\r\nrm -rf /)")
+    allow = routine.routine_settings(ws, "", [ws], extra_allow=(*split, "Bash(gh api repos/*)"))["permissions"]["allow"]
+    assert "Bash(gh api repos/*)" in allow and not set(split) & set(allow)
+    assert not any("\n" in rule or "\r" in rule for rule in allow)
+
+
+@pytest.mark.parametrize("wrong, said", [
+    (("tasks",), "The cloud's record needs its tasks in the shape the record keeps."),
+    (("timezone", "roots"), "The cloud's record needs its timezone and roots in the shape the record keeps."),
+    (("tasks", "timezone", "roots"), "The cloud's record needs its tasks, timezone and roots in the shape the record "
+                                     "keeps."),
+    (("tasks", "timezone", "roots", "grant"), "The cloud's record needs its tasks, timezone, roots and grant in the "
+                                              "shape the record keeps.")])
+def test_a_cloud_claim_of_the_wrong_shape_says_so_in_one_sentence(tmp_path, wrong, said):
+    bad = {"tasks": {"sweep": None}, "timezone": "", "roots": ["ada"], "grant": None}
+    given = {"tasks": CLOUD_TASKS, "timezone": "UTC", "roots": CLOUD_ROOTS, "grant": CLOUD_GRANT}
+    given.update({key: bad[key] for key in wrong})
+    with pytest.raises(ValueError) as refused:
+        routine.claim_cloud(workspace(tmp_path), given["tasks"], given["timezone"], given["roots"], given["grant"], NOW)
+    assert str(refused.value) == said

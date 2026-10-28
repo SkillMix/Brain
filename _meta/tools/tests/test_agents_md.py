@@ -1,5 +1,12 @@
+import pytest
+
 import agents_md
-from conftest import make_space
+from conftest import TEMPLATE, make_space
+
+RULE_SEVEN = ("Agents edit files. The sync script commits: on the computer every 15 minutes, and once at the end of "
+              "a cloud routine run. The platform merges. No session runs a git write itself.")
+template_only = pytest.mark.skipif(not (TEMPLATE / ".github" / "template-marker").exists(),
+                                   reason="reads the template's own rules.md and docs, which a space keeps as its own")
 
 
 def test_project_profile_has_no_desk_words(tmp_path):
@@ -88,3 +95,23 @@ def test_help_prints_usage_and_writes_nothing(tmp_path, monkeypatch, capsys):
 def test_session_start_shows_needs_you_once_a_day(tmp_path):
     root = make_space(tmp_path / "ada")
     assert "needs_you.py --once-a-day" in agents_md.render(root)
+
+
+@template_only
+def test_rule_seven_names_the_cloud_landing():
+    """A cloud routine run lands its own files once, at its end, through the sync script (cloud routines, spec 5)."""
+    rules = " ".join((TEMPLATE / "rules.md").read_text(encoding="utf-8").split())
+    assert f"7. {RULE_SEVEN} 8." in rules
+
+
+@template_only
+def test_the_shape_restates_rule_seven_in_rules_md_words():
+    """docs/shape-1.md restates the hard rules for a tool, so its rule 7 keeps rules.md's words."""
+    shape = " ".join((TEMPLATE / "docs" / "shape-1.md").read_text(encoding="utf-8").split())
+    assert f"7. {RULE_SEVEN.removesuffix('.')}, and nothing writes directly into another space." in shape
+
+
+def test_the_contract_says_rule_seven_as_rules_md_does(tmp_path):
+    root = make_space(tmp_path / "ada")
+    assert RULE_SEVEN in " ".join(agents_md.render(root).split())
+    assert agents_md.main([str(root)]) == 0 and agents_md.main([str(root), "--check"]) == 0

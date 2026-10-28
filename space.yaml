@@ -45,8 +45,10 @@ left_out_except: []
 # What never leaves this space (whole-word terms). The charter explains these in words.
 never_leaves: [equity, settlement, termination, legal position, medical, salary]
 
-# Paths whose pull requests wait for the owner instead of merging on green.
-protected: [identity/, rules.md, space.yaml, .claude/, _meta/tools/, .github/]
+# Paths whose pull requests wait for the owner instead of merging on green. A space may add to
+# this list; the gate guards every entry here even where a space's list leaves it out.
+protected: [identity/, rules.md, space.yaml, .claude/, _meta/tools/, .github/, CLAUDE.md, AGENTS.md,
+            .gitignore, .gitattributes, .gitmodules, _meta/templates/, _meta/plugins/, .claude-plugin/]
 
 # Connected systems and who can already read their records (owner | crew | everyone | [names]).
 sources: []                # [{name: mail, adapter: gmail, audience: owner}]

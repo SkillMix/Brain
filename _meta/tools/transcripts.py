@@ -17,6 +17,10 @@ share captured over four scaled weeks. With `switch: on`, each finished session 
 missed becomes a witness page under `knowledge/sources/` in this personal space only: what
 the person asked and how the session ended, no attachment, no subject. With `routing:` the
 router reads it like any record and decides what, if anything, informs a subject's home.
+When `path` is not a folder on this computer (a cloud run, a second laptop), the scan reports
+`path: missing` and writes nothing, so the last scan's sessions and capture rate stay. A scan that
+finds the same sessions as the last one leaves `sessions.yaml` as it is, so the sync has nothing to
+land. While the routines run in the cloud, the computer's sync runs the scan (`sync.Run.computer_leg`).
 
     python transcripts.py [root] scan
 """
@@ -153,6 +157,15 @@ def _witness(root: Path, session: dict, now: dt.datetime, space: spaceyaml.Space
     return pages.write(target, fm, body)
 
 
+def _rows(root: Path) -> list | None:
+    """The session rows `sessions.yaml` holds now; None when there is no such file, or it cannot be read."""
+    try:
+        data = yaml.safe_load((root / SESSIONS).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return None
+    return data.get("sessions") if isinstance(data, dict) else None
+
+
 def scan(root, now: dt.datetime | None = None) -> dict:
     root = Path(root)
     space = spaceyaml.load(root)
@@ -162,13 +175,16 @@ def scan(root, now: dt.datetime | None = None) -> dict:
     if space.profile != "personal" or not cfg.get("path"):
         return report
     base = Path(cfg["path"])
+    if not base.is_dir():   # not this computer's sessions (a cloud run, another laptop): count nothing
+        report["path"] = "missing"
+        return report
     notes = _journal_texts(root)
     rows = []
     since = now - space.scale(WINDOW_DAYS * 24)
     exclude = [str(x).lower() for x in cfg.get("exclude") or []]
     words = [str(x).lower().strip() for x in cfg.get("exclude_words") or [] if str(x).strip()]
     # top-level session files only (a harness keeps sub-agents' transcripts deeper), recent ones
-    files = sorted(p for p in base.glob("*/*.jsonl")) if base.is_dir() else []
+    files = sorted(p for p in base.glob("*/*.jsonl"))
     for path in files:
         if dt.datetime.fromtimestamp(path.stat().st_mtime, dt.timezone.utc) < since:
             continue
@@ -191,9 +207,10 @@ def scan(root, now: dt.datetime | None = None) -> dict:
             if not target.exists():
                 _witness(root, session, now, space)
                 report["witnessed"] += 1
-    (root / SESSIONS).parent.mkdir(parents=True, exist_ok=True)
-    (root / SESSIONS).write_text(yaml.safe_dump({"scanned_at": pages.iso(now), "sessions": rows},
-                                                sort_keys=False), encoding="utf-8", newline="\n")
+    if rows != _rows(root):   # the same sessions as last time: the file, and its time, stay as they are
+        (root / SESSIONS).parent.mkdir(parents=True, exist_ok=True)
+        (root / SESSIONS).write_text(yaml.safe_dump({"scanned_at": pages.iso(now), "sessions": rows},
+                                                    sort_keys=False), encoding="utf-8", newline="\n")
     with (root / "_meta" / "state" / "runs.jsonl").open("a", encoding="utf-8", newline="\n") as fh:
         fh.write(json.dumps({"routine": "transcripts", "at": pages.iso(now), "space": space.name,
                              "cost_tokens": 0, "notes": report}) + "\n")

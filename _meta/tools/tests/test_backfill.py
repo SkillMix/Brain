@@ -1825,6 +1825,22 @@ def test_readings_and_the_plan_are_kept_only_on_the_computer_that_runs_the_routi
     assert backfill.main([str(ws), "reading", PHRASE, NIGHT]) == 0 and backfill.load(ws)["reading"]["week_pct"] == 40
 
 
+def test_a_history_read_cannot_start_while_the_routines_run_in_the_cloud(tmp_path, capsys):
+    """The history is read on a computer only: while the routines run in the cloud, every command that writes its
+    notes refuses with the one sentence that says how to bring them back, on any computer."""
+    ws = planned(tmp_path)
+    routine.claim_cloud(ws, {"sweep": "trig_01AAAAAAAA", "daily": "trig_01BBBBBBBB"}, "Europe/Amsterdam",
+                        ["ada/ws"], {"read": [], "write": [], "send": []}, AT_14H)
+    before = backfill.load(ws)
+    for words in (("start",), ("reading", PHRASE), ("calibrate", "--before", "3", "--after", "13"),
+                  ("plan", "--counts", "2026-10=10")):
+        assert backfill.main([str(ws), *words, NIGHT]) == 2, words
+        assert capsys.readouterr().err.strip() == f"backfill: {backfill.CLOUD_WHY}", words
+    assert backfill.load(ws) == before
+    assert backfill.CLOUD_WHY == ("Your routines run in the cloud, and the history is read only on a computer: say "
+                                  "'run my routines here' first.")
+
+
 def test_the_history_phase_on_a_computer_that_does_not_run_the_routines_writes_nothing(tmp_path, monkeypatch):
     ws, started = history_world(tmp_path, monkeypatch)
     hosted_elsewhere(ws, monkeypatch)
