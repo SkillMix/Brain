@@ -169,9 +169,11 @@ back to back, and nothing a record or the person settled is asked again.
   owner merges once instead of a protected half that fails on a tree without the folders.
 - **A company site that moved is read where it moved to.** The site's reader may fetch only the
   company's domain and its `www.` twin, so a domain that redirects to another host (a `.nl` that
-  moved to a `.com`) came back with nothing and the build said the site gave nothing to keep. The
-  reader now says where the site sent it, and the research reads once more on that host, keeping
-  what the first read found on the pages that did not move; the company's domain stays the one given.
+  moved to a `.com`) came back with nothing and the build said the site gave nothing to keep. When
+  the reader says the site sent it elsewhere, the domain's own server is asked where it redirects,
+  and the research reads once more on the host it really lands on, never one a page names; it keeps
+  what the first read found on the pages that did not move, and the company's domain stays the one
+  given.
 - **Task names another Windows account holds.** Where another account on the computer already has
   the space's task names, Windows said only "Access is denied". The row now says the name is
   another account's (Windows' own words for it are read in the computer's display language too),

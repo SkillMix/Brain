@@ -34,6 +34,8 @@ import os
 import re
 import stat
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -233,15 +235,41 @@ def hosts_of(rules: list) -> list:
     return [r[len("WebFetch(domain:"):-1] for r in rules]
 
 
-def moved_host(answer: dict, domain) -> str | None:
-    """The host the site's read says the site sent it to, when that is a host other than the domain and its
-    `www.` twin; None for no answer, the same site, or anything that is not an http(s) address or a host."""
-    said = str((answer or {}).get("moved_to") or "").strip().lower()
+REDIRECT_SECONDS = 15   # how long the domain's own server may take to say where it sends a visitor
+
+
+def _final_url(url: str) -> str | None:
+    """Where `url` lands after the redirects its servers answer with, as urllib follows them; None when nothing
+    answers. A last server that answers with an error is still where the redirects led."""
+    try:
+        with urllib.request.urlopen(url, timeout=REDIRECT_SECONDS) as res:
+            return res.geturl()
+    except urllib.error.HTTPError as err:
+        return err.geturl()
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+
+
+def _web_host(address) -> str | None:
+    """The host of an http(s) address, or of a bare host; None for anything else."""
+    said = str(address or "").strip().lower()
     parts = urlsplit(said if "://" in said else "https://" + said)
     host = parts.hostname or ""
-    if parts.scheme not in ("http", "https") or not HOST.fullmatch(host):
+    return host if parts.scheme in ("http", "https") and HOST.fullmatch(host) else None
+
+
+def moved_host(answer: dict, domain) -> str | None:
+    """The host the company's domain sends its visitors to, when the site's read says it moved (`moved_to`) and the
+    domain's own server, asked once (`_final_url`), says so too: the host its redirects land on, never the one the read
+    names, whose words come from pages anyone who writes on the site can fill. None for no move, a move to the domain
+    or its `www.` twin, a domain that does not answer, or one that lands on no web page (the review of #61)."""
+    own = hosts_of(web_rules(domain))
+    said = _web_host((answer or {}).get("moved_to"))
+    if not said or said in own:
         return None
-    return None if host in hosts_of(web_rules(domain)) else host
+    landed = _final_url(f"https://{own[0]}/") if own else None
+    host = _web_host(landed) if landed and "://" in landed else None
+    return None if not host or host in own else host
 
 
 def register_host(domain) -> str | None:

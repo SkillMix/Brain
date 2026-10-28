@@ -16,6 +16,7 @@ import apps
 import doctor
 import gate
 import onboard
+import research
 import routine
 import spaceyaml
 import start
@@ -495,12 +496,25 @@ THERE = {"name": "Lantern Works", "records": [
     {"title": "What we do", "url": "https://lanternworks.test/", "about": "identity", "text": "Wayfinding for ports."}]}
 
 
+def lands_on(monkeypatch, landed) -> list:
+    """Where the company's domain lands after its server's redirects (`research._final_url`); the addresses asked."""
+    asked = []
+
+    def final(url):
+        asked.append(url)
+        return landed
+    monkeypatch.setattr(research, "_final_url", final, raising=False)
+    return asked
+
+
 def test_a_site_that_moved_to_another_host_is_read_on_that_host(phase, capsys, tmp_path):
     the_home(tmp_path)
     the_apps()
+    asked = lands_on(phase, "https://lanternworks.test/")
     readers = Readers(phase, {"site": lambda prompt: THERE if "https://lanternworks.test/" in prompt else MOVED})
     code, _ = research_run(capsys)
     first, second = readers.asked("site")
+    assert asked == ["https://lanternworks.example/"]
     assert first["tools"] == ["WebFetch(domain:lanternworks.example)", "WebFetch(domain:www.lanternworks.example)"]
     assert "moved_to" in first["schema"]["properties"] and "moved_to" in first["prompt"]
     assert second["tools"] == ["WebFetch(domain:lanternworks.test)", "WebFetch(domain:www.lanternworks.test)"]
@@ -517,6 +531,7 @@ def test_what_the_first_read_found_is_kept_when_part_of_the_site_moved(phase, ca
     # the review of #61: the read on the host the site moved to replaced the first read's records
     the_home(tmp_path)
     the_apps()
+    lands_on(phase, "https://lanternworks.test/")
     Readers(phase, {"site": lambda prompt: THERE if "https://lanternworks.test/" in prompt else HERE})
     code, _ = research_run(capsys)
     assert code == 0 and "site" in research_journal()["sources_done"]
@@ -527,6 +542,7 @@ def test_what_the_first_read_found_is_kept_when_part_of_the_site_moved(phase, ca
 def test_a_second_read_that_finds_nothing_keeps_the_first_read(phase, capsys, tmp_path):
     the_home(tmp_path)
     the_apps()
+    lands_on(phase, "https://lanternworks.test/")
     Readers(phase, {"site": lambda prompt: {"records": []} if "https://lanternworks.test/" in prompt else HERE})
     code, _ = research_run(capsys)
     assert code == 0 and "site" in research_journal()["sources_done"]
@@ -536,10 +552,59 @@ def test_a_second_read_that_finds_nothing_keeps_the_first_read(phase, capsys, tm
 def test_a_site_that_says_it_moved_to_itself_or_to_no_host_is_read_once(phase, capsys, tmp_path):
     the_home(tmp_path)
     the_apps()
+    asked = lands_on(phase, "https://lanternworks.test/")
     for moved in ("https://www.lanternworks.example/", "not a host", "file:///etc/passwd", ""):
         readers = Readers(phase, {"site": {"records": [], "moved_to": moved}})
         research_run(capsys)
-        assert len(readers.asked("site")) == 1, moved
+        assert len(readers.asked("site")) == 1 and asked == [], moved   # nothing to ask the domain about
+
+
+def test_a_page_that_says_the_site_moved_is_not_taken_at_its_word(phase, capsys, tmp_path):
+    # the review of #61: the host came from the reader's moved_to, which anyone who writes on the site can put there
+    the_home(tmp_path)
+    the_apps()
+    for landed in ("https://www.lanternworks.example/", "https://lanternworks.example/about", None,
+                   "ftp://lanternworks.test/"):   # the domain stays on itself, cannot be reached, or lands on no web page
+        asked = lands_on(phase, landed)
+        readers = Readers(phase, {"site": lambda prompt: THERE if "https://lanternworks.test/" in prompt else MOVED})
+        research_run(capsys)
+        assert len(readers.asked("site")) == 1 and asked == ["https://lanternworks.example/"], landed
+
+
+def test_the_host_the_domain_really_redirects_to_is_read_not_the_one_a_page_names(phase, capsys, tmp_path):
+    the_home(tmp_path)
+    the_apps()
+    lands_on(phase, "https://lanternworks.test/en/")
+    elsewhere = {"records": [], "moved_to": "https://other.test/"}
+    readers = Readers(phase, {"site": lambda prompt: THERE if "https://lanternworks.test/" in prompt else elsewhere})
+    code, _ = research_run(capsys)
+    first, second = readers.asked("site")
+    assert second["tools"] == ["WebFetch(domain:lanternworks.test)", "WebFetch(domain:www.lanternworks.test)"]
+    assert code == 0 and [r["url"] for r in records_on_disk() if r["id"].startswith("site")] == ["https://lanternworks.test/"]
+
+
+def test_where_a_domain_lands_is_asked_of_its_own_server():
+    import http.server
+    import threading
+
+    class Hops(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(301 if self.path == "/" else 403)   # the last host answers, if only with an error
+            if self.path == "/":
+                self.send_header("Location", "/moved")
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+    server = http.server.HTTPServer(("127.0.0.1", 0), Hops)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        assert research._final_url(base + "/") == base + "/moved"
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert research._final_url(base + "/") is None   # nothing answers
 
 
 # ----- #6: task names another account on the computer holds -------------------------------------------------

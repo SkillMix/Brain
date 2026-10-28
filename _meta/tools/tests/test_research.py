@@ -446,6 +446,7 @@ def phase(monkeypatch):
                         {"name": "Ada Okafor", "email": ADA, "login": "ada-okafor"})
     monkeypatch.setattr(reader, "read", nothing)
     monkeypatch.setattr(reader, "read_files", nothing)
+    monkeypatch.setattr(research, "_final_url", nothing)   # nor ask a real server where a domain redirects
     return monkeypatch
 
 
