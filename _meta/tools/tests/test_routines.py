@@ -3354,6 +3354,103 @@ def test_the_extra_allow_rules_join_only_a_guarded_profile(tmp_path):
     assert not set(extra) & set(unguarded["permissions"]["allow"]) and "Bash" in unguarded["permissions"]["deny"]
 
 
+def guarded(path: Path, data: dict):
+    """bash_guard's answer for a command under the profile `data`, written to `path`: None when it runs."""
+    import bash_guard
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return lambda command: bash_guard.check(path, {"tool_input": {"command": command}})
+
+
+def test_a_cloud_profile_runs_sync_only_as_its_chains_landing(tmp_path):
+    """With `cloud_chain` (a cloud run's begin) sync.py runs only as that run's landing, `--root <root> --cloud
+    <chain>`, each root as itself; without it (a computer's routine) the landing takes its arguments as before."""
+    ws, other = workspace(tmp_path), make_space(tmp_path / "brain")
+    path = tmp_path / "cloud.json"
+    check = guarded(path, routine.routine_settings(ws, "", [ws, other], profile=path, cloud_chain="daily"))
+    sync_py = lambda root: f"python3 {root.as_posix()}/_meta/tools/sync.py"   # noqa: E731
+    for place in (ws, other):
+        assert check(f"{sync_py(place)} --root {place.as_posix()} --cloud daily") is None, place
+    for command in (f"{sync_py(ws)} --root {ws.as_posix()}", f"{sync_py(ws)} --root {ws.as_posix()} --cloud sweep",
+                    f"{sync_py(ws)} --root {other.as_posix()} --cloud daily",
+                    f"{sync_py(ws)} --root {ws.as_posix()} --release-leg",
+                    f"python3 _meta/tools/sync.py --root {ws.as_posix()} --cloud daily"):
+        assert check(command) is not None, command
+    assert check(f"python3 {ws.as_posix()}/_meta/tools/status.py {ws.as_posix()} --json") is None   # the rest as before
+    path = tmp_path / "computer.json"
+    check = guarded(path, routine.routine_settings(ws, "", [ws, other], profile=path))
+    for command in (f"{sync_py(ws)} --root {ws.as_posix()}", f"{sync_py(ws)} --root {ws.as_posix()} --release-leg",
+                    "python3 _meta/tools/sync.py --root . --release-leg"):
+        assert check(command) is None, command
+    with pytest.raises(ValueError):
+        routine.routine_settings(ws, "", [ws], profile=path, cloud_chain="nightly")
+
+
+def test_no_routine_runs_the_merge_driver_from_its_shell(tmp_path):
+    """`sync.py --merge-latest` is the driver git runs itself mid-merge, outside every hook; from a routine's shell it
+    would write any file it is given, space.yaml or the rules among them, past the edit rules. However it is spelled
+    (an abbreviation argparse takes, a quote the shell drops), a routine's shell never runs it, on a computer or in
+    the cloud."""
+    ws = workspace(tmp_path)
+    sync_py = f"python3 {ws.as_posix()}/_meta/tools/sync.py"
+    target = f"{ws.as_posix()}/space.yaml"
+    for chain in (None, "sweep"):
+        path = tmp_path / f"{chain}.json"
+        check = guarded(path, routine.routine_settings(ws, "", [ws], profile=path, cloud_chain=chain))
+        for command in (f"{sync_py} --merge-latest a {target} b", f"{sync_py} --merge a {target} b",
+                        f"{sync_py} --mer a {target} b", f"{sync_py} '--merge-latest' a {target} b",
+                        f"{sync_py} --'merge'-latest a {target} b", f'{sync_py} "--merge-latest" a {target} b',
+                        f"{sync_py} --root {ws.as_posix()} --merge-latest a {target} b",
+                        f"python3 _meta/tools/sync.py --merge-latest a {target} b",
+                        f"{sync_py} {{--m,X}}erge-latest a {target} b", f"{sync_py} --me[r]ge-latest a {target} b",
+                        f"{sync_py} --me?ge-latest a {target} b", f"{sync_py} --me* a {target} b",
+                        f"{sync_py} --root {ws.as_posix()} {{--m,X}}erge-latest a {target} b",
+                        f"python3 _meta/tools/sync.py --root . {{--m,X}}erge-latest a {target} b"):
+            assert check(command) is not None, (chain, command)
+
+
+def test_a_computers_routine_runs_sync_only_as_its_landing(tmp_path):
+    """On a computer sync.py runs as the landing and its release leg, each root as itself, and nothing else: no
+    word a shell could expand into another flag gets past an exact command."""
+    ws, other = workspace(tmp_path), make_space(tmp_path / "brain")
+    path = tmp_path / "computer.json"
+    check = guarded(path, routine.routine_settings(ws, "", [ws, other], profile=path))
+    sync_py = lambda root: f"python3 {root.as_posix()}/_meta/tools/sync.py"   # noqa: E731
+    for place in (ws, other):
+        for leg in ("", " --release-leg"):
+            assert check(f"{sync_py(place)} --root {place.as_posix()}{leg}") is None, (place, leg)
+    for root in (".", ws.as_posix()):
+        assert check(f"python3 _meta/tools/sync.py --root {root} --release-leg") is None, root
+    for command in (f"{sync_py(ws)} --root {other.as_posix()}", f"{sync_py(ws)} --root {ws.as_posix()} --no-push",
+                    f"{sync_py(ws)} --root {ws.as_posix()} --only space.yaml", f"{sync_py(ws)} --root {ws.as_posix()} "
+                    "--message x", f"{sync_py(ws)} --root {ws.as_posix()} --release-leg --root {other.as_posix()}",
+                    f"{sync_py(ws)} --root {ws.as_posix()} --cloud daily", f"{sync_py(ws)} --root {ws.as_posix()} "
+                    "{--release-leg,--no-push}", f"{sync_py(ws)} --root {ws.as_posix()} --release-leg*",
+                    f"python3 _meta/tools/sync.py --root {other.as_posix()} --release-leg"):
+        assert check(command) is not None, command
+
+
+def test_a_routine_reads_a_codebase_named_for_graphql_and_never_graphql_itself(tmp_path):
+    """GraphQL is refused by its endpoint word, never by a word in a repository's name."""
+    ws = workspace(tmp_path)
+    path = tmp_path / "p.json"
+    check = guarded(path, routine.routine_settings(ws, "", [ws], profile=path))
+    for read in ("gh api search/issues'?q=repo:acme/graphql-gateway+is:pr+is:merged&per_page=100'",
+                 "gh api repos/acme/graphql-gateway/pulls/5", "gh api repos/acme/graphql-gateway/pulls/5/files"):
+        assert check(read) is None, read
+    for call in ("gh api graphql", "gh api graphql -f query=x", "gh api /graphql", "gh api repos/../graphql/pulls/5",
+                 "gh api search/issues/../../graphql", "gh api https://api.github.com/graphql",
+                 "gh api HTTPS://api.github.com/graphql", "gh api repos/%2e%2e/graphql", "gh api repos/%2E%2E/graphql",
+                 "gh api ./graphql", "gh api .//graphql", "gh api ././graphql", "gh api //graphql"):
+        assert check(call) is not None, call
+    import bash_guard
+    denied = bash_guard._patterns(routine.REST_ONE_WORD, False)   # layer 2 alone, whatever the allow list says
+    for call in ("gh api https://api.github.com/graphql", "gh api HTTPS://api.github.com/graphql",
+                 "gh api repos/%2e%2e/graphql", "gh api repos/%2E%2E/graphql", "gh api ./graphql", "gh api .//graphql",
+                 "gh api ././graphql", "gh api //graphql"):
+        assert any(rule.fullmatch(call) for rule in denied), call
+    assert not any("*graphql" in rule for rule in routine.REST_ONE_WORD)
+
+
 def test_no_cloud_run_edits_the_guard_plugin_or_its_marketplace(tmp_path):
     ws = workspace(tmp_path)
     deny = routine.routine_settings(ws, "", [ws])["permissions"]["deny"]

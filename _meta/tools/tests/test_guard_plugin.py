@@ -106,6 +106,28 @@ def test_before_begin_only_begin_runs(tmp_path):
     assert decide("send", {"to": ADA, "subject": "Your morning", "body": "Hello."}, env) == "deny"
 
 
+def test_before_begin_a_begin_names_its_own_clone_twice(tmp_path):
+    """The begin a task's prompt gives runs the workspace's own cloud.py on that workspace. A begin that runs
+    another attached clone's cloud.py, or names another clone as the workspace, would hand the run to that clone's
+    code and guards, in either order, so it is refused."""
+    env = {"CLAUDE_CODE_REMOTE": "true", "HOME": str(tmp_path)}
+    for script, workspace in (("client-app", "ada-space"), ("ada-space", "client-app"),
+                              ("ada-space", "ada-space2"), ("ada-space2", "ada-space")):
+        for rest in ("--chain sweep", "--chain daily --proof", "--chain sweep --proof --grant eyJyZWFkIjpbXX0"):
+            command = f"python3 /home/user/{script}/_meta/tools/cloud.py begin /home/user/{workspace} {rest}"
+            assert decide("bash", {"command": command}, env) == "deny", command
+    assert decide("bash", {"command": BEGIN.replace("ada-space", "client-app")}, env) == "allow"   # the same twice
+
+
+def test_before_begin_only_the_shell_runs_begin(tmp_path):
+    """A call of another tool whose input carries the begin command is not begin."""
+    guard = load_guard()
+    env = {"CLAUDE_CODE_REMOTE": "true", "HOME": str(tmp_path)}
+    for mode in ("task", "connector", "send"):
+        raw = json.dumps(payload(mode, {"command": BEGIN, "description": "c", "prompt": "p"})).encode()
+        assert guard.main([mode], raw, env) == 2, mode
+
+
 def test_before_begin_a_proof_may_carry_the_tasks_grant_as_one_word(tmp_path):
     """A proof run's begin carries the task's grant (`cloud.begin_command`): one base64url word right after
     `--proof`, nothing else changes in the command's shape."""
@@ -197,6 +219,31 @@ def test_the_guard_writes_nothing(cloud):
     decide("send", {"to": ADA, "subject": "s", "body": "b"}, cloud["env"])
     decide("connector", {}, cloud["env"], tool=MAIL_TRASH)
     assert sorted(p for p in cloud["home"].parent.rglob("*")) == before
+
+
+def test_a_cloud_run_lands_through_sync_only_as_its_own_chains_landing(tmp_path):
+    """The profile `cloud.py begin` writes lets sync.py run as the cloud prompt's last step and in no other shape:
+    each root landed as itself, on the task's own chain. Without `--cloud` it would be the computer's landing, and
+    `--merge-latest` is git's merge driver, which git runs itself, never the agent's shell."""
+    import cloud
+    ws = make_space(tmp_path / "ada-space").resolve()
+    other = make_space(tmp_path / "ada-harbor").resolve()
+    tools = ws / "_meta" / "tools"
+    tools.mkdir(parents=True, exist_ok=True)
+    shutil.copy(bash_guard.__file__, tools / "bash_guard.py")
+    shutil.copy(send_guard.__file__, tools / "send_guard.py")
+    cloud.write_profile(ws, [ws, other], "sweep", {"read": [MAIL_READ], "write": [], "send": [MAIL_SEND]}, ADA)
+    env = {**CLOUD, "HOME": str(Path.home())}
+    sync = lambda root, rest: f"python3 {root.as_posix()}/_meta/tools/sync.py {rest}"   # noqa: E731
+    for root in (ws, other):
+        assert decide("bash", {"command": sync(root, f"--root {root.as_posix()} --cloud sweep")}, env) == "allow"
+    for command in (sync(ws, f"--root {ws.as_posix()}"), sync(ws, f"--root {ws.as_posix()} --cloud daily"),
+                    sync(ws, f"--root {other.as_posix()} --cloud sweep"), sync(ws, f"--cloud sweep --root {ws.as_posix()}"),
+                    sync(ws, f"--root {ws.as_posix()} --cloud sweep --no-push"),
+                    sync(ws, f"--root {ws.as_posix()} --release-leg"), sync(ws, f"--root {ws.as_posix()} --cloud 'sweep'"),
+                    sync(ws, f"--merge-latest a {ws.as_posix()}/space.yaml b"), sync(ws, f"--merge a {ws.as_posix()}/space.yaml b"),
+                    sync(ws, ""), f"python3 _meta/tools/sync.py --root {ws.as_posix()} --cloud sweep"):
+        assert decide("bash", {"command": command}, env) == "deny", command
 
 
 # ----- failing closed ----------------------------------------------------------------------------------------

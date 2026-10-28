@@ -166,7 +166,22 @@ READ_ONLY =("Bash(gh pr view *)", "Bash(gh pr list *)", "Bash(git status *)", "B
 # run's guard refuses it (`cloud.GH_DENY`), however a flag is spelled. The query goes in quotes that open before its
 # `?` (`search/issues'?q=...'`), since zsh, a Mac's login shell, refuses a `?` outside quotes that matches no file.
 REST_READS = ("Bash(gh api search/issues*)", "Bash(gh api repos/*/pulls/*)")
-REST_ONE_WORD = ("Bash(gh api * *)", "Bash(gh api *\t*)", "Bash(gh api *graphql*)")
+# GraphQL by its endpoint, never by a word inside a repository's name (`acme/graphql-gateway` is read like any other):
+# the endpoint word, a full URL (gh takes any endpoint holding `://` as one; no read is one), an endpoint that starts
+# with `/` or `.` (gh cleans `./graphql` and `.//graphql` to the word; every read starts `repos/` or `search/`), a path
+# that climbs back out of the word an allow rule starts it with, and a percent escape, which could spell that climb.
+GRAPHQL = ("Bash(gh api graphql*)", "Bash(gh api /*)", "Bash(gh api .*)", "Bash(gh api *://*)", "Bash(gh api */../*)",
+           "Bash(gh api *%*)")
+REST_ONE_WORD = ("Bash(gh api * *)", "Bash(gh api *\t*)", *GRAPHQL)
+# Of sync.py the shell never runs `--merge-latest`, the driver git runs itself mid-merge, outside every hook: given
+# any file it writes it, past the edit rules. sync.py is allowed only in exact commands, the landing (SYNC_LEGS on a
+# computer, `--cloud <chain>` in the cloud), so no word the shell expands (`{--m,X}erge-latest`, `--me[r]ge-latest`)
+# gets through. These denies are the text-only backstop: the flag abbreviated (argparse takes `--mer`) or with a
+# quote the shell drops (`--'merge'-latest`); no routine passes sync.py a quoted word.
+SYNC_NEVER = ("--mer", "'", '"')
+# A computer's landing (the sweep chain's release leg, the sync skill's land now), each root as itself.
+SYNC_LEGS = ("", " --release-leg")
+CLOUD_CHAINS = ("sweep", "daily")   # a cloud run's chains (`cloud.CHAINS`), each landing on its own branch
 # The built-in tools a routine has (`--tools`, Ruling R30): the shell its tools run in, the files, and
 # ToolSearch, which loads a connector's tools. Web, PowerShell, agents and schedules are left out; the
 # profile denies them by name too (`reader.DENIED`), so one a later version adds under such a name stays out.
@@ -385,14 +400,16 @@ def roots_of(workspace: Path) -> list:
 
 
 def routine_settings(workspace, body: str, roots=None, person: str = "", read_tools=(), write_tools=(),
-                     send_tools=(), known_tools=None, profile=None, shell: str | None = None, extra_allow=()) -> dict:
+                     send_tools=(), known_tools=None, profile=None, shell: str | None = None, extra_allow=(),
+                     cloud_chain: str | None = None) -> dict:
     """The profile one routine run adds to the space's own (`claude --settings`, written to `profile`). Deny
     rules win over every allow rule in every scope, so the space's own profile cannot widen these, and
     `"disableAllHooks": false` keeps its hooks on whatever the person's own settings say.
 
     Bash runs only the routine tools (cloud.py for its proof line alone, `ROUTINE_VERBS`; its begin and trigger
-    are denied in any spelling, CLOUD_ONLY) and the read-only gh and git commands, GitHub's REST reads among them
-    as one word each (REST_READS, REST_ONE_WORD): a PreToolUse hook on Bash
+    are denied in any spelling, CLOUD_ONLY; sync.py only as the landing, in exact commands, never as git's merge
+    driver, SYNC_NEVER) and the read-only gh and git commands, GitHub's REST reads among them as one word each
+    (REST_READS, REST_ONE_WORD, GraphQL refused by its endpoint, GRAPHQL): a PreToolUse hook on Bash
     (`bash_guard.py <profile>`, the workspace's own) lets through one plain command of a shape this profile
     allows, so a Bash allow in the person's own settings never widens a routine. When that hook's command
     cannot be written, Bash is denied outright. The other built-in tools a routine could reach out with are
@@ -414,8 +431,17 @@ def routine_settings(workspace, body: str, roots=None, person: str = "", read_to
 
     `extra_allow` adds Bash shapes of the caller's own (`Bash(<pattern>)` on one line; anything else, a rule that
     runs over a line among them, is dropped) right after the tool rules, only while the Bash guard is written: a
-    cloud run's read-only `gh api` calls (`cloud.py`)."""
+    cloud run's read-only `gh api` calls (`cloud.py`).
+
+    Without `cloud_chain` sync.py runs only as a computer's landing: `<root>/_meta/tools/sync.py --root <root>`,
+    alone or with `--release-leg` (SYNC_LEGS), each root as itself, and `_meta/tools/sync.py --root .` (or the
+    workspace) the same way from the workspace. `cloud_chain` is a cloud run's chain (`cloud.py begin`,
+    CLOUD_CHAINS): sync.py then runs only as that run's landing, `<root>/_meta/tools/sync.py --root <root> --cloud
+    <chain>`, each root as itself, never the computer's landing (no `--cloud`, which pushes a machine's branch) or
+    another chain's. ValueError for a chain that is none."""
     import reader
+    if cloud_chain is not None and cloud_chain not in CLOUD_CHAINS:
+        raise ValueError(f"no cloud chain {cloud_chain!r}: {', '.join(CLOUD_CHAINS)}")
     workspace = Path(workspace).resolve()
     tools_dir = workspace / "_meta" / "tools"
     roots = [Path(r).resolve() for r in (roots or [workspace])]
@@ -434,10 +460,16 @@ def routine_settings(workspace, body: str, roots=None, person: str = "", read_to
                                   for mode in (None, "--task", "--connectors"))
     except ValueError:   # a path the hook's command cannot carry: no Bash, Task or connector at all, rather than unguarded
         bash = task = connectors = None
-    shapes = [f"{tool} {ROUTINE_VERBS[tool]}" if tool in ROUTINE_VERBS else tool for tool in ROUTINE_TOOLS]
+    shapes = [f"{tool} {ROUTINE_VERBS[tool]}" if tool in ROUTINE_VERBS else tool for tool in ROUTINE_TOOLS
+              if tool != "sync.py"]
     allow = [f"Bash({py} _meta/tools/{shape} *)" for py in pys for shape in shapes] if bash else []
     allow += [f"Bash({py} {place}/_meta/tools/{shape} *)"
               for place in places for py in pys for shape in shapes] if bash else []
+    legs = [f" --cloud {cloud_chain}"] if cloud_chain else list(SYNC_LEGS)
+    allow += [f"Bash({py} {place}/_meta/tools/sync.py --root {place}{leg})"
+              for place in places for py in pys for leg in legs] if bash else []
+    allow += [f"Bash({py} _meta/tools/sync.py --root {root}{leg})" for root in (".", workspace.as_posix())
+              for py in pys for leg in legs] if bash and not cloud_chain else []
     allow += [rule for rule in dict.fromkeys(_strings(list(extra_allow or [])))
               if re.fullmatch(r"Bash\(.+\)", rule) and not re.search(r"[\r\n]", rule)] if bash else []
     others = sorted({p.name for root in [workspace, *roots] for p in (root / "_meta" / "tools").glob("*.py")}
@@ -447,6 +479,7 @@ def routine_settings(workspace, body: str, roots=None, person: str = "", read_to
     deny += [f"Edit(~/{folder}/**)" for folder in (".claude", ".spaces")]
     deny += [f"Bash(*_meta/tools/{tool}*)" for tool in others]
     deny += [f"Bash(*_meta/tools/cloud.py*{verb}*)" for verb in CLOUD_ONLY]
+    deny += [f"Bash(*_meta/tools/sync.py*{text}*)" for text in SYNC_NEVER]
     # `-m` puts the working folder first on the import path, so a planted module would run;
     # `--output` lets a read-only git command write a file.
     deny += ["Bash(python -m *)", "Bash(python3 -m *)", "Bash(git *--output*)", *REST_ONE_WORD]

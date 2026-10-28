@@ -9,11 +9,14 @@ that enabled the plugin is unchanged. In a cloud run it reads the state `cloud.p
 (`~/.spaces/routines/cloud.json`: `workspace`, the clone whose guards it runs; `profile`, the routine profile
 `begin` wrote with `routine.routine_settings`; `person`, the address the run's mail may go to, the grant's own;
 `chain`):
-- Before `begin` has written it, the one call that goes through is `begin` itself, one plain command (BEGIN:
+- Before `begin` has written it, the one call that goes through is `begin` itself, one plain shell command (BEGIN:
   `python3 /home/user/<repo>/_meta/tools/cloud.py begin /home/user/<repo> --chain sweep|daily`, then `--proof` or
   not, and after `--proof`, last, `--grant` or not, with the task's grant as one base64url word of at most 8192
   letters, digits, `-` and `_` (`cloud.grant_word`, `cloud.GRANT_MAX`); a repository's name in letters, digits,
-  `.`, `_` and `-`). Everything else is refused.
+  `.`, `_` and `-`, the same name twice: a clone's own cloud.py on that clone). Everything else is refused. Which
+  clone is the workspace the guard cannot tell (a task's trigger takes no environment, and nothing else a hook is
+  given is proven to name it), so the task's deny rules keep the shell out of every codebase it attaches
+  (`cloud.disallowed`), and begin refuses a workspace that is not its own script's clone.
 - After, each call goes to the workspace's own guard, as the hooks the computer's profile carries run it: Bash to
   `bash_guard.py <profile>`, Task to `bash_guard.py --task`, a connector tool to `bash_guard.py --connectors
   <profile>`, and a send tool the profile guards to `send_guard.py <person>`. A mode the profile carries no hook
@@ -54,8 +57,8 @@ BASH_MATCHER, TASK_MATCHER, CONNECTOR_MATCHER = "Bash", "Task|Agent", "mcp__.*"
 SEND_MATCHER = "mcp__.*[Ss][Ee][Nn][Dd].*"
 NAME = r"[A-Za-z0-9_-][A-Za-z0-9._-]*"   # a repository's name: no `/`, nothing a shell reads, never `.` or `..`
 GRANT = r"[A-Za-z0-9_-]{1,8192}"   # a proof's grant: base64url, no padding, nothing a shell reads (cloud.GRANT_MAX)
-BEGIN = re.compile(rf"python3 /home/user/{NAME}/_meta/tools/cloud\.py begin /home/user/{NAME} --chain (?:sweep|daily)"
-                   rf"(?: --proof(?: --grant {GRANT})?)?")
+BEGIN = re.compile(rf"python3 /home/user/(?P<clone>{NAME})/_meta/tools/cloud\.py begin /home/user/(?P=clone) "
+                   rf"--chain (?:sweep|daily)(?: --proof(?: --grant {GRANT})?)?")
 WHY = "a cloud routine runs only what the guard profile of its run allows"
 BEFORE = "a cloud run starts with cloud.py begin, and nothing runs before it"
 NONE = {"bash": "no shell", "task": "no agent", "connector": "no connector tool"}

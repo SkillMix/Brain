@@ -9,15 +9,18 @@ plugin lets through before it (`_meta/plugins/spaces-guard/guard.py`), and then 
 state the guard reads is there already. Then it:
 
 1. steps aside, writing nothing at all, unless the routine host record says the routines run in the
-   cloud and are not paused (`routine.cloud_gate`); a proof run, which comes before the move, skips
-   only this check;
+   cloud and are not paused (`routine.cloud_gate`), and stops, writing nothing either, while a proof
+   on main shows a refusal missing that no later proof showed again (`onboard.cloud_unrefused`: the
+   routines are stopped); a proof run, which comes before the move or proves the tasks again, skips
+   only these checks;
 2. finds the clones under /home/user whose space the person owns, the workspace first, never a
    codebase the sweep's task attaches, whatever its space.yaml says (`roots`), and carries the
    chain's earlier run that never merged into each (`sync.carry`), before anything is exported,
    so the cursors and watermarks already hold what that run read. A carry that conflicts or fails
-   stops the run with one item on Needs you, since the clone may not be safe to work on; a branch
-   someone else pushed a protected change to is not used, which is one security item, and the run
-   goes on (its push replaces that branch); a branch the person closed is left quietly;
+   stops the run, writing nothing, since the clone may not be safe to work on: the run's log says
+   why, and nothing the run wrote could land; a branch someone else pushed a protected change to is
+   not used, which is one security item, and the run goes on (its push replaces that branch); a
+   branch the person closed is left quietly;
 3. initialises each clone's mounts at their pins, one at a time; a mount whose repository the task
    did not attach is named, never an error;
 4. writes the run's guard profile outside every repository (`routine.routine_settings` from the
@@ -39,8 +42,9 @@ tools it grants in `~/.spaces/cloud-<chain>.json`, which `onboard.py --routines-
 the move. `proof-line` writes a proof run's line: which of the refusals the profile owes it saw.
 
     python3 cloud.py begin <workspace> --chain sweep|daily [--proof [--grant <the task's grant>]]
-                                # JSON; exit 3 when the run stops, 2 when it may not begin (begun, a --grant
-                                # that is none, one without --proof, or one while the record is unclear)
+                                # JSON; exit 3 when the run stops, 2 when it may not begin (begun, a workspace
+                                # that is not this script's clone, a --grant that is none, one without --proof,
+                                # or one while the record is unclear)
     python cloud.py trigger <workspace> --chain sweep|daily [--proof] [--timezone <IANA zone>]
     python3 cloud.py proof-line [<workspace>] --chain sweep|daily --guard yes|no --edit yes|no --tool yes|no
                                 [--send yes|no]                         # --send for the daily, and only for it
@@ -88,8 +92,8 @@ EXTRA_ALLOW = ("Bash(gh api repos/*)",)
 # So a `gh api` call goes through only as one word, its endpoint: anything after a space or a tab is refused, however
 # it is spelled (`-X PUT`, `-iXPUT`, `'-XPUT'`, `{-XPUT,}`). A word that starts with `repos/` or `search/` cannot
 # turn into a flag through a quote, a glob or a brace, so no write is left. A read needs no flag: its endpoint word
-# carries the query, URL-encoded. GraphQL, `gh pr` and `gh repo` are refused whole.
-GH_DENY = ("Bash(gh api * *)", "Bash(gh api *\t*)", "Bash(gh api *graphql*)", "Bash(gh pr *)", "Bash(gh repo *)")
+# carries the query, with `+` for a space and no percent escape (one is refused). GraphQL (by its endpoint, `routine.GRAPHQL`), `gh pr` and `gh repo` are refused whole.
+GH_DENY = ("Bash(gh api * *)", "Bash(gh api *\t*)", *routine.GRAPHQL, "Bash(gh pr *)", "Bash(gh repo *)")
 # The task's text-only backstops beside them (spec 4.7, layer 2): no git, and no gh but `gh api`.
 GH_OTHERS = ("Bash(git *)", "Bash(gh auth *)", "Bash(gh workflow *)", "Bash(gh run *)", "Bash(gh release *)",
              "Bash(gh secret *)", "Bash(gh variable *)", "Bash(gh issue *)", "Bash(gh gist *)", "Bash(gh label *)",
@@ -107,8 +111,6 @@ GRANT_JSON_MAX = 1024 * 1024
 # every python3 the guard and the tools start. The clones in /home/user, and /tmp, stay open.
 SYSTEM = ("bin", "boot", "dev", "etc", "lib", "lib32", "lib64", "libx32", "media", "mnt", "opt", "proc", "root", "run",
           "sbin", "srv", "sys", "usr", "var")
-TEMPLATE_ORIGIN = Path("_meta") / "state" / "template-origin.yaml"
-TEMPLATE_VERSION = Path("_meta") / "state" / "template-version.yaml"
 NO_ZONE = ("Your time zone is not known on this computer, so the task's hours cannot be set: give it as "
            "--timezone with its IANA name, as Europe/Amsterdam.")
 NOT_A_ZONE = "{zone} is not a time zone: give its IANA name, as Europe/Amsterdam."
@@ -122,6 +124,10 @@ UNCLEAR_GRANT = ("The routine host record is unclear, so a proof run's --grant c
                  "nothing was done.")
 TOO_MANY = (f"The task's grant names too many tools to fit its proof run's begin command (at most {GRANT_MAX} "
             "characters), so no task was rendered.")
+NO_GRANT = ("None of your apps is granted to your routines, so the cloud's task would have nothing to read: connect "
+            "your apps first. No task was rendered.")
+NOT_OWN = ("This begin names {workspace} as the workspace, but its own script is in {own}: a run begins in its own "
+           "workspace, so nothing was done.")
 
 
 def soft_deny(person: str) -> list:
@@ -137,6 +143,11 @@ def soft_deny(person: str) -> list:
 def home() -> Path:
     """The cloud's home, where each attached repository is cloned (`SPACES_CLOUD_HOME` in a test)."""
     return Path(os.environ.get("SPACES_CLOUD_HOME") or str(HOME))
+
+
+def own_clone() -> Path:
+    """The checkout this script is in."""
+    return Path(__file__).resolve().parents[2]
 
 
 def state_path() -> Path:
@@ -315,17 +326,6 @@ def _short(head, now: dt.datetime) -> str:
     return str(head)[:8] if head else now.strftime("%Y%m%d")
 
 
-def _stopped_item(chain: str, name: str, head, said: str, conflict: bool, now: dt.datetime) -> dict:
-    if conflict:
-        recommendation = (f"open the cloud/{chain} pull request in {name} and keep the side you want, or close it: the "
-                          "next cloud run then starts again from main")
-    else:
-        recommendation = "read the run's log on claude.ai; the next run tries again"
-    return _item(f"cloud-stopped-{chain}-{_short(head, now)}", "request",
-                 f"The cloud {WORDS[chain]} stopped before it began: {said}.", recommendation,
-                 f"the cloud {WORDS[chain]} stops at every run until its last run's work can be brought in")
-
-
 def _pushed_item(chain: str, name: str, head, count: int, now: dt.datetime) -> dict:
     files = "1 protected file" if count == 1 else f"{count} protected files"
     return _item(f"cloud-branch-{chain}-{_short(head, now)}", "security",
@@ -424,8 +424,9 @@ def _granted(workspace: Path, record, given: dict | None = None) -> dict:
 
 def write_profile(workspace: Path, roots_: list, chain: str, grant: dict, person: str) -> Path:
     """The run's guard profile, written as the computer writes a routine's (`routine.routine_settings`) from the
-    task's grant, with the cloud's `gh api` reads allowed and every other `gh api` call denied (GH_DENY), then the
-    state the guard plugin reads. Every other tool of the grant is denied by name."""
+    task's grant, with the cloud's `gh api` reads allowed and every other `gh api` call denied (GH_DENY), and sync.py
+    allowed only as this chain's landing of each root (`cloud_chain`), then the state the guard plugin reads. Every
+    other tool of the grant is denied by name."""
     path = profile_path(chain)
     path.parent.mkdir(parents=True, exist_ok=True)
     own = task_grant(grant, chain)
@@ -435,7 +436,8 @@ def write_profile(workspace: Path, roots_: list, chain: str, grant: dict, person
     except (OSError, UnicodeDecodeError):
         body = ""
     data = routine.routine_settings(workspace, body, roots_, person, own["read"], own["write"], own["send"],
-                                    known_tools=_tools(grant), profile=path, shell="/bin/sh", extra_allow=EXTRA_ALLOW)
+                                    known_tools=_tools(grant), profile=path, shell="/bin/sh", extra_allow=EXTRA_ALLOW,
+                                    cloud_chain=chain)
     deny = data["permissions"]["deny"]
     deny += [rule for rule in GH_DENY if rule not in deny]
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8", newline="\n")
@@ -541,14 +543,17 @@ def _pin_item(stale: list, began: dt.datetime) -> dict:
 
 def begin(workspace: Path, chain: str, proof: bool = False, now=None, gh=None, grant: dict | None = None) -> dict:
     """Start a cloud run (the module's steps 1 to 6): {"stopped": why} when the run must not go on, else {"roots",
-    "unreachable", "carried", "cursors" (the sweep's), "items"}, with paths as POSIX text. A stop at the gate writes
-    nothing at all; a carry that conflicts or fails stops with its item (`"items"`) and writes no profile, so the
-    guard keeps letting `begin` alone through.
+    "unreachable", "carried", "cursors" (the sweep's), "items"}, with paths as POSIX text. A stop writes nothing at
+    all, no profile either, so the guard keeps letting `begin` alone through and the run can land nothing.
 
-    That item stays in the clone: without a profile the run cannot land anything, `sync.py --cloud` included. The
-    person hears of a stopped run only through what lands elsewhere: the computer's sync adopting the open pull
-    request of the branch that would not carry, or, on a quiet branch that has none, the other chain's begin naming
-    this chain as silent (`silence`).
+    A stop is said in the run's log alone: nothing a stopped run writes could land, `sync.py --cloud` included. The
+    person hears of a carry that stopped a run only through what lands elsewhere: the computer's sync adopting the
+    open pull request of the branch that would not carry, or, on a quiet branch that has none, the other chain's
+    begin naming this chain as silent (`silence`). The stop a proof's missing refusal makes is the one the person's
+    own surfaces say already (`onboard.cloud_stopped`).
+
+    In the cloud's home, a begin runs on the clone its own script is in (`own_clone`): one that names another clone
+    as the workspace is refused, so that clone's guards and person never become the run's.
 
     `grant` is a proof run's: the task's grant its begin command carries (`_granted`), which after the move only
     narrows the record's. ValueError, writing nothing, for a grant without `proof` or one that is none
@@ -563,6 +568,9 @@ def begin(workspace: Path, chain: str, proof: bool = False, now=None, gh=None, g
     if os.path.lexists(state_path()):
         raise ValueError(BEGUN)
     workspace = Path(workspace).resolve()
+    own = own_clone()
+    if own.parent == home().resolve() and own != workspace:
+        raise ValueError(NOT_OWN.format(workspace=workspace.as_posix(), own=own.as_posix()))
     space = spaceyaml.load(workspace)
     now = now or space.now()
     record = routine.host(workspace)
@@ -572,16 +580,17 @@ def begin(workspace: Path, chain: str, proof: bool = False, now=None, gh=None, g
         why = routine.cloud_gate(workspace, now)
         if why:
             return {"stopped": why}
+        missing = onboard.cloud_unrefused(workspace)   # this clone's runs.jsonl: main's
+        if missing:
+            return {"stopped": onboard.unrefused_sentence(workspace, missing)}
     found = roots(workspace, record)
     add, carried = [], []
     for root in found:
         done = sync.carry(root, chain, gh)
         name = spaceyaml.load(root).name
         if done.get("conflict") or done.get("error"):
-            said = (f"the last cloud run's branch conflicts with main in {name}" if done.get("conflict") else
-                    f"the last cloud run's branch could not be brought into {name}: {done['error']}")
-            item = _stopped_item(chain, name, done.get("head"), said, bool(done.get("conflict")), now)
-            return {"stopped": said, "items": write_items(workspace, add + [item])}
+            return {"stopped": f"the last cloud run's branch conflicts with main in {name}" if done.get("conflict")
+                    else f"the last cloud run's branch could not be brought into {name}: {done['error']}"}
         if done.get("skipped") == "protected":
             add.append(_pushed_item(chain, name, done.get("head"), int(done.get("protected") or 0), now))
         elif done.get("carried"):
@@ -595,7 +604,7 @@ def begin(workspace: Path, chain: str, proof: bool = False, now=None, gh=None, g
     result = {"roots": [r.as_posix() for r in found], "unreachable": unreachable, "carried": carried}
     if chain == "sweep":
         result["cursors"] = {root.as_posix(): cursors(root, now, proof) for root in found}
-    drop = [f"cloud-stopped-{chain}-"]
+    drop = []
     if not proof:
         quiet = silence(found, workspace, chain, record, now)
         add += [quiet] if quiet else []
@@ -674,30 +683,14 @@ def repositories(workspace: Path, chain: str) -> tuple:
     return spaces, [slug for slug in _unique(codebases) if slug.lower() not in taken]
 
 
-def _template_repo(workspace: Path, fallback: str) -> str:
-    """The template repository the space came from (`template-origin.yaml`, else `template-version.yaml`), else the
-    workspace's own, which carries the same plugin."""
-    for rel in (TEMPLATE_ORIGIN, TEMPLATE_VERSION):
-        try:
-            data = yaml.safe_load((Path(workspace) / rel).read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, yaml.YAMLError):
-            continue
-        slug = _slug(data.get("repo")) if isinstance(data, dict) and data.get("repo") else None
-        if slug:
-            return slug
-    return fallback
-
-
-def _plugin_fields(workspace: Path, fallback: str) -> dict:
+def _plugin_fields(own: str) -> dict:
     """The fields that enable the guard plugin in the task (spec 4.7, layer 1), in one place: the platform's shape
-    for them is not proven yet. The marketplace is the template repository's, as the plan says, and the trade-off
-    is open: the task does not attach that repository, which may be private, so the plugin may not load (the proof
-    run's guard check then fails, and nothing moves); and the run takes the guard from the template's main as it is
-    now, which the person never clicked through. The workspace's own marketplace is attached and holds the guard as
-    the person's click landed it."""
+    for them is not proven yet. The marketplace is the workspace's own (`own`, owner/name), its
+    `.claude-plugin/marketplace.json`, which template sync carries: the task attaches that repository, and its main
+    holds the guard as the person's click landed it. Should the plugin not load, the proof run's guard check fails
+    and nothing moves."""
     return {"enabled_plugins": [f"{PLUGIN}@{MARKETPLACE}"],
-            "extra_marketplaces": {MARKETPLACE: {"source": {"source": "github",
-                                                            "repo": _template_repo(workspace, fallback)}}}}
+            "extra_marketplaces": {MARKETPLACE: {"source": {"source": "github", "repo": own}}}}
 
 
 def _identity_rules(workspace: Path, repos: list) -> list:
@@ -713,7 +706,7 @@ def _identity_rules(workspace: Path, repos: list) -> list:
     return [f"Edit(/{clone}/{pattern})" for clone in dict.fromkeys(clones) for pattern in routine.PROTECTED_IN_ROOT]
 
 
-def disallowed(workspace: Path, repos: list, granted: list, known: list) -> list:
+def disallowed(workspace: Path, repos: list, granted: list, known: list, codebases=()) -> list:
     """The task's deny rules (spec 4.7, layer 2), which the platform enforces whatever the guard does: an edit to any
     protected path, the `.git` file in each mount (it names the mount's git folder, whose config a status in the root
     runs; `.git/**` covers a folder only), the person's identity, any dot-entry of the home folder (`.spaces` and
@@ -723,8 +716,10 @@ def disallowed(workspace: Path, repos: list, granted: list, known: list) -> list
     start; /home/user and /tmp stay open); every built-in tool the computer's profile denies that a routine does
     not use, and the GitHub connector; every connector tool the computer has seen (`known`) that
     this task is not granted, by name, the tools of its own connectors among them, as the computer's profile denies
-    them; and the shell shapes the computer denies, with the text-only backstops (git, any `gh api` call but one
-    endpoint word, GraphQL, the rest of gh)."""
+    them; the shell shapes the computer denies, with the text-only backstops (git, any `gh api` call but one
+    endpoint word, GraphQL, the rest of gh, sync.py as git's merge driver); and any shell command that names the
+    clone of a codebase the task attaches (`codebases`, owner/name; a name a space's clone has is never one): people
+    other than the person can push to one, so no begin and no tool of its own runs from it, or on it."""
     import chain as chains
     import reader
     deny = [f"Edit(//**/{pattern})" for pattern in routine.PROTECTED_EDITS]
@@ -740,6 +735,11 @@ def disallowed(workspace: Path, repos: list, granted: list, known: list) -> list
     tools = {p.name for root in chains.spaces_on_machine(workspace) for p in (root / "_meta" / "tools").glob("*.py")}
     deny += [f"Bash(*_meta/tools/{tool}*)" for tool in sorted(tools - set(routine.ROUTINE_TOOLS))]
     deny += ["Bash(python -m *)", "Bash(python3 -m *)", "Bash(git *--output*)", *GH_DENY, *GH_OTHERS]
+    deny += [f"Bash(*_meta/tools/sync.py*{text}*)" for text in routine.SYNC_NEVER]
+    spaces = {slug.split("/")[1] for slug in repos if slug not in codebases}
+    for name in dict.fromkeys(slug.split("/")[1] for slug in codebases):
+        if name not in spaces:
+            deny += [f"Bash(*{HOME}/{name}/*)", f"Bash(*{HOME}/{name})", f"Bash(*{HOME}/{name} *)"]
     return list(dict.fromkeys(deny))
 
 
@@ -770,15 +770,17 @@ def cron(times: list, zone: str) -> str:
 def trigger(workspace: Path, chain: str, proof: bool = False, timezone: str | None = None) -> dict:
     """The `RemoteTrigger` body of the chain's task, rendered from the space files: its name, its schedule in the
     person's zone (`timezone`, else the record's, else this computer's), never enabled (the agent enables it once
-    proved); the connectors it may call with their tools; the repositories it attaches; the tools it may and may
-    not use; the guard plugin; the limits in words; and the prompt (`_prompt`), which gives the begin command to run
-    first (with `proof`, carrying the task's grant, and then the Proof section only). The body, with the space
-    repositories as `roots` (not the codebases it attaches: `roots` are the clones a run may work in) and the
-    task's grant as `grant`, is kept in `~/.spaces/cloud-<chain>.json` for the move
+    proved); the connectors it may call with their tools, of the grant this computer's verdicts and probe give
+    (`routine.grant`), or, on a computer with no probe while the routines run in the cloud (one that replaced the
+    computer they moved from: its build does not probe then), the grant the move recorded; the repositories it
+    attaches; the tools it may and may not use; the guard plugin; the limits in words; and the prompt (`_prompt`),
+    which gives the begin command to run first (with `proof`, carrying the task's grant, and then the Proof section
+    only). The body, with the space repositories as `roots` (not the codebases it attaches: `roots` are the clones a
+    run may work in) and the task's grant as `grant`, is kept in `~/.spaces/cloud-<chain>.json` for the move
     (`onboard.routines_cloud`). A connection is named as the computer's connector is, so its tools keep the names
     the grant gives them; the agent adds each one's connector and address from the account. ValueError, writing
-    nothing, for a zone that is none, a prompt with no daily hours, a workspace with no repository on GitHub, or,
-    with `proof`, a grant too long for the begin command."""
+    nothing, for a zone that is none, a prompt with no daily hours, a workspace with no repository on GitHub, a grant
+    with no tool at all (NO_GRANT), or, with `proof`, a grant too long for the begin command."""
     import ghrest
     import reader
     _check(chain)
@@ -798,8 +800,11 @@ def trigger(workspace: Path, chain: str, proof: bool = False, timezone: str | No
     if not own or not spaces or spaces[0] != own:
         raise ValueError(NO_REPOSITORY)
     repos = spaces + codebases
-    got = routine.grant(workspace)
-    full = {part: list(got.get(part) or []) for part in routine.GRANT_KEYS}
+    moved = record.get("grant") if not record.get("unclear") and record.get("runner") == "cloud" else None
+    got = moved if isinstance(moved, dict) and not routine.read_probe() else routine.grant(workspace)
+    full = {part: [t for t in got.get(part) or [] if isinstance(t, str)] for part in routine.GRANT_KEYS}
+    if not _tools(full):
+        raise ValueError(NO_GRANT)
     grant = task_grant(full, chain)
     granted = _tools(grant)
     connections = {}
@@ -808,8 +813,8 @@ def trigger(workspace: Path, chain: str, proof: bool = False, timezone: str | No
     known = list(dict.fromkeys([*reader._known(None), *_tools(full)]))
     context = {"sources": [{"git_repository": {"url": f"https://github.com/{slug}"}} for slug in repos],
                "allowed_tools": [*routine.ROUTINE_BUILTINS, "Agent", *granted],
-               "disallowed_tools": disallowed(workspace, repos, granted, known),
-               **_plugin_fields(workspace, own),
+               "disallowed_tools": disallowed(workspace, repos, granted, known, codebases),
+               **_plugin_fields(own),
                "auto_mode_soft_deny": soft_deny(space.owner)}
     event = {"uuid": str(uuid.uuid4()), "session_id": "", "type": "user", "parent_tool_use_id": None,
              "message": {"role": "user", "content": _prompt(space.owner, own.split("/")[1], chain, proof,

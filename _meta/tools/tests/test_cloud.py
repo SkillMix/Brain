@@ -163,6 +163,44 @@ def test_the_cli_exits_three_and_prints_why_when_it_steps_aside(ada, capsys):
     assert json.loads(capsys.readouterr().out) == {"stopped": routine.NO_CLOUD}
 
 
+def test_a_real_run_stays_stopped_while_a_proof_shows_a_refusal_missing(ada, capsys):
+    """While a proof on main shows a refusal missing that no later proof showed again, the routines are stopped, and
+    begin holds that in code: a real run of either task stops, writing nothing, with the sentence the person reads.
+    A proof run still begins, so a proof that shows every refusal again can end the stop."""
+    in_the_cloud(ada)
+    put(ada / "_meta" / "state" / "runs.jsonl", json.dumps(
+        {"routine": "cloud-proof", "chain": "daily", "guard": True, "edit": True, "tool": True, "send": False,
+         "at": "2026-10-27T08:00:00Z"}) + "\n")
+    said = onboard.unrefused_sentence(ada, {"daily": ["send"]})
+    assert said.startswith("Your routines are stopped")
+    for chain in cloud.CHAINS:
+        assert cloud.begin(ada, chain, now=NOW) == {"stopped": said}
+    assert items_of(ada) == [] and not (Path.home() / ".spaces" / "routines").exists()
+    assert cloud.main(["begin", str(ada), "--chain", "sweep"]) == cloud.STOPPED
+    assert json.loads(capsys.readouterr().out) == {"stopped": said}
+    assert "stopped" not in cloud.begin(ada, "daily", proof=True, now=NOW)   # a re-proof runs
+    next_run()
+    cloud.proof_line(ada, "daily", guard=True, edit=True, tool=True, send=True, now=NOW)
+    assert "stopped" not in cloud.begin(ada, "daily", now=NOW)
+
+
+def test_begin_runs_only_on_the_clone_its_own_script_is_in(ada, machine, tmp_path, monkeypatch):
+    """A begin run from a clone in the cloud's home is that clone's cloud.py on that clone: one that names another
+    clone as the workspace is refused, writing nothing, so that clone's guards and owner never become the run's."""
+    in_the_cloud(ada)
+    origin_space(tmp_path, "ada-harbor", profile="project")
+    harbor = cloned(machine, tmp_path, "ada-harbor", "ada/ada-harbor")
+    monkeypatch.setattr(cloud, "own_clone", lambda: harbor)
+    with pytest.raises(ValueError, match="its own"):
+        cloud.begin(ada, "sweep", now=NOW)
+    with pytest.raises(ValueError, match="its own"):
+        cloud.begin(ada, "daily", proof=True, now=NOW, grant=cloud.task_grant(GRANT, "daily"))
+    assert cloud.main(["begin", str(ada), "--chain", "sweep", "--proof"]) == 2
+    assert untouched(ada) and untouched(harbor)
+    monkeypatch.setattr(cloud, "own_clone", lambda: ada)
+    assert cloud.begin(ada, "sweep", now=NOW)["roots"][0] == ada.as_posix()
+
+
 # ----- begin: the carry ------------------------------------------------------------------------------------------
 def test_begin_carries_the_last_run_before_printing_the_cursors(ada, tmp_path):
     in_the_cloud(ada)
@@ -198,28 +236,24 @@ def stub_carry(monkeypatch, **said):
     return seen
 
 
-def test_a_carry_that_conflicts_stops_the_run_with_one_item(ada, monkeypatch):
+def test_a_carry_that_conflicts_stops_the_run_and_writes_nothing(ada, monkeypatch):
+    """A stopped run writes no profile, so nothing it wrote could land: it writes nothing at all, and says why in its
+    log alone."""
     in_the_cloud(ada)
     stub_carry(monkeypatch, conflict=True)
     result = cloud.begin(ada, "sweep", now=NOW)
-    assert result["stopped"] == "the last cloud run's branch conflicts with main in ada-space"
-    [item] = items_of(ada)
-    assert item["id"] == "cloud-stopped-sweep-01234567" and result["items"] == [item["id"]]
-    assert "conflicts with main" in item["text"] and item["recommendation"] and item["default"]
+    assert result == {"stopped": "the last cloud run's branch conflicts with main in ada-space"}
+    assert items_of(ada) == []
     assert not (Path.home() / ".spaces" / "routines").exists()   # no profile, no state: the guard lets only begin run
-    assert cloud.begin(ada, "sweep", now=NOW)["items"] == [item["id"]] and len(items_of(ada)) == 1   # once
 
 
 def test_a_carry_that_fails_stops_the_run_too(ada, monkeypatch):
     in_the_cloud(ada)
     stub_carry(monkeypatch, error="the branch could not be fetched")
     result = cloud.begin(ada, "daily", now=NOW)
-    assert result["stopped"] == ("the last cloud run's branch could not be brought into ada-space: the branch could "
-                                 "not be fetched")
-    [item] = items_of(ada)
-    assert item["id"].startswith("cloud-stopped-daily-") and "could not be fetched" in item["text"]
-    assert "log" in item["recommendation"]   # nothing to merge by hand: the next run tries again
-    assert not (Path.home() / ".spaces" / "routines").exists()
+    assert result == {"stopped": "the last cloud run's branch could not be brought into ada-space: the branch could "
+                                 "not be fetched"}
+    assert items_of(ada) == [] and not (Path.home() / ".spaces" / "routines").exists()
 
 
 def test_a_branch_with_a_protected_change_is_one_security_item_and_the_run_goes_on(ada, monkeypatch):
@@ -240,7 +274,7 @@ def test_a_branch_the_person_closed_is_left_quietly(ada, monkeypatch):
     assert "stopped" not in result and result["carried"] == [] and items_of(ada) == []
 
 
-def test_a_clean_carry_takes_back_an_earlier_stop(ada, monkeypatch):
+def test_a_clean_carry_after_a_stop_goes_on(ada, monkeypatch):
     in_the_cloud(ada)
     stub_carry(monkeypatch, conflict=True)
     cloud.begin(ada, "sweep", now=NOW)
@@ -315,18 +349,55 @@ def test_begin_writes_the_guard_profile_from_the_records_grant(ada):
     for read in ("gh api search/issues'?q=repo:ada/ada-site+is:pr+updated:>=2026-10-01&per_page=100'",
                  "gh api repos/ada/ada-site/pulls/5/files'?per_page=100'"):   # spelled as the prompts spell them
         assert check(read) is None, read
-    for refused in ("gh api search/issues'?q=x' -XPOST", "gh api graphql", "gh api repos/ada/ada-site/graphql",
-                    "gh pr list", "gh pr list --state open"):
+    for refused in ("gh api search/issues'?q=x' -XPOST", *GRAPHQL_CALLS, "gh pr list", "gh pr list --state open"):
         assert check(refused) is not None, refused
     assert {MAIL_READ, MAIL_SEARCH, TRACKER_READ, TRACKER_WRITE, MAIL_SEND} <= set(allow)
     assert MAIL_TRASH not in json.dumps(allow)
-    assert {"Bash(gh api * *)", "Bash(gh api *\t*)", "Bash(gh api *graphql*)"} <= set(deny)
+    assert {"Bash(gh api * *)", "Bash(gh api *\t*)", *routine.GRAPHQL} <= set(deny)
     hooks = {entry["matcher"] for entry in prof["hooks"]["PreToolUse"]}
     assert {"Bash", MAIL_SEND, routine.TASK_MATCHER, routine.CONNECTOR_MATCHER} <= hooks
     state = json.loads((Path.home() / ".spaces" / "routines" / "cloud.json").read_text(encoding="utf-8"))
     assert state == {"workspace": ada.as_posix(), "profile": (Path.home() / ".spaces" / "routines"
                                                                 / "cloud-sweep.settings.json").as_posix(),
                      "person": "owner@example.test", "chain": "sweep"}
+
+
+def test_begin_lets_sync_run_only_as_the_chains_own_landing(ada, machine, tmp_path, monkeypatch):
+    """sync.py runs in a cloud run only as its prompt's last step, `--root <root> --cloud <chain>`, each root landed
+    as itself on the task's own chain: without `--cloud` it is the computer's landing, which pushes a machine's
+    branch, and `--merge-latest` is git's merge driver, which git runs itself and which writes any file it is given."""
+    routine.claim_cloud(ada, TASKS, "Europe/Amsterdam", ["ada/ada-space", "ada/ada-harbor"], GRANT,
+                        NOW - dt.timedelta(hours=1))
+    origin_space(tmp_path, "ada-harbor", profile="project")
+    harbor = cloned(machine, tmp_path, "ada-harbor", "ada/ada-harbor")
+    stub_carry(monkeypatch)
+    assert cloud.begin(ada, "sweep", now=NOW)["roots"] == [ada.as_posix(), harbor.as_posix()]
+    path = Path.home() / ".spaces" / "routines" / "cloud-sweep.settings.json"
+    check = lambda command: bash_guard.check(path, {"tool_input": {"command": command}})   # noqa: E731
+    sync_py = lambda root: f"python3 {root.as_posix()}/_meta/tools/sync.py"   # noqa: E731
+    for root in (ada, harbor):
+        assert check(f"{sync_py(root)} --root {root.as_posix()} --cloud sweep") is None, root
+    for command in (f"{sync_py(ada)} --root {ada.as_posix()}", f"{sync_py(ada)} --root {ada.as_posix()} --cloud daily",
+                    f"{sync_py(ada)} --root {harbor.as_posix()} --cloud sweep",
+                    f"{sync_py(ada)} --cloud sweep --root {ada.as_posix()}",
+                    f"{sync_py(ada)} --root {ada.as_posix()} --cloud sweep --dry-run",
+                    f"{sync_py(ada)} --root {ada.as_posix()} --release-leg",
+                    f"{sync_py(ada)} --merge-latest a {ada.as_posix()}/space.yaml b",
+                    f"{sync_py(ada)} --merge-l a {ada.as_posix()}/space.yaml b",
+                    f"python3 _meta/tools/sync.py --root {ada.as_posix()} --cloud sweep"):
+        assert check(command) is not None, command
+
+
+def test_a_codebase_named_for_graphql_is_read_like_any_other(ada):
+    """GraphQL is refused by its endpoint, never by a word inside a repository's name."""
+    in_the_cloud(ada)
+    cloud.begin(ada, "sweep", now=NOW)
+    path = Path.home() / ".spaces" / "routines" / "cloud-sweep.settings.json"
+    check = lambda command: bash_guard.check(path, {"tool_input": {"command": command}})   # noqa: E731
+    for read in GRAPHQL_SLUG_READS:
+        assert check(read) is None, read
+    for refused in GRAPHQL_CALLS:
+        assert check(refused) is not None, refused
 
 
 def test_the_clouds_own_reads_are_none_a_routine_has_already():
@@ -343,6 +414,17 @@ def test_the_daily_profile_holds_only_the_send_and_its_read_back(ada):
     allow = profile_of("daily")["permissions"]["allow"]
     assert {MAIL_SEND, MAIL_READ} <= set(allow)
     assert not {MAIL_SEARCH, TRACKER_READ, TRACKER_WRITE} & set(allow)
+
+
+# The repository feed's reads of a codebase whose name holds "graphql", spelled as the prompts spell them, and calls
+# that reach GraphQL however its endpoint is written.
+GRAPHQL_SLUG_READS = (
+    "gh api search/issues'?q=repo:acme/graphql-gateway+is:pr+is:merged+merged:>=2026-10-01&per_page=100'",
+    "gh api repos/acme/graphql-gateway/pulls/5", "gh api repos/acme/graphql-gateway/pulls/5/files'?per_page=100'",
+    "gh api repos/graphql/graphql-js/pulls/5")
+GRAPHQL_CALLS = ("gh api graphql", "gh api graphql -f query=x", "gh api /graphql", "gh api repos/../graphql",
+                 "gh api search/issues/../../graphql", "gh api https://api.github.com/graphql",
+                 "gh api HTTPS://api.github.com/graphql", "gh api repos/%2e%2e/graphql", "gh api repos/%2E%2E/graphql")
 
 
 # The reads a cloud run's repository feed makes, one endpoint word each, and calls that write to GitHub however the
@@ -707,7 +789,7 @@ def test_a_pin_behind_by_less_than_three_days_or_at_the_tip_is_no_item(ada, tmp_
 # ----- the trigger -----------------------------------------------------------------------------------------------
 @pytest.fixture
 def computer(tmp_path, monkeypatch):
-    """Ada's workspace on her computer, whose origin is on GitHub, with a brain mount, a linked codebase and a repo
+    """Ada's workspace on their computer, whose origin is on GitHub, with a brain mount, a linked codebase and a repo
     source; the grant the computer's apps and probe give, and a probe that has seen two tools never granted."""
     ws = make_space(tmp_path / "ada-space", name="ada-space",
                     sources=[{"name": "mail"}, {"name": "code", "repo": "ada/ada-lib"}],
@@ -769,12 +851,19 @@ def test_the_trigger_denies_the_machinery_the_shell_shapes_and_git(computer):
         "bin", "boot", "dev", "etc", "lib", "lib32", "lib64", "libx32", "media", "mnt", "opt", "proc", "root", "run",
         "sbin", "srv", "sys", "usr", "var")}
     assert not {"Edit(//home/user/**)", "Edit(//home/**)", "Edit(//tmp/**)", "Edit(//**)"} & set(denied)
-    assert {"Bash(python -m *)", "Bash(python3 -m *)", "Bash(git *)", "Bash(gh pr *)", "Bash(gh api *graphql*)",
+    assert {"Bash(python -m *)", "Bash(python3 -m *)", "Bash(git *)", "Bash(gh pr *)", *routine.GRAPHQL,
             "Bash(gh api * *)", "Bash(gh api *\t*)",
             "Bash(*_meta/tools/routine.py*)", "Bash(*_meta/tools/sign.py*)"} <= set(denied)
     # cloud.py is a routine tool (its begin runs first, its proof-line last): no deny rule of the task names it.
     assert "cloud.py" in routine.ROUTINE_TOOLS
-    assert not any(tool in rule for rule in denied for tool in ("sweep.py", "sync.py", "cloud.py"))
+    assert not any(tool in rule for rule in denied for tool in ("sweep.py", "cloud.py"))
+    # sync.py runs as the run's landing, never as git's merge driver.
+    patterns = bash_guard._patterns(denied, False)
+    land = "python3 /home/user/ada-space/_meta/tools/sync.py --root /home/user/ada-space --cloud sweep"
+    assert not any(p.fullmatch(land) for p in patterns)
+    for flag in ("--merge-latest", "--merge", "'--merge-latest'"):
+        driver = f"python3 /home/user/ada-space/_meta/tools/sync.py {flag} a /home/user/ada-space/space.yaml b"
+        assert any(p.fullmatch(driver) for p in patterns), driver
     assert not {"Bash", "Read", "Edit", "Write", "Task"} & set(denied)
 
 
@@ -789,14 +878,100 @@ def test_the_trigger_refuses_every_spelling_of_a_github_write_by_its_text_alone(
 
 
 def test_the_trigger_enables_the_guard_plugin_and_never_runs_enabled(computer):
+    """The guard comes from the workspace's own marketplace, which the task attaches and which holds the guard as the
+    person's click landed it, never from the template's (spec 4.7)."""
     (computer / "_meta" / "state" / "template-origin.yaml").write_text("repo: ada/spaces-template\n", encoding="utf-8")
-    body = cloud.trigger(computer, "sweep", timezone="Europe/Amsterdam")
-    assert body["enabled"] is False
-    assert context(body)["enabled_plugins"] == ["spaces-guard@spaces"]
-    assert context(body)["extra_marketplaces"] == {"spaces": {"source": {"source": "github",
-                                                                         "repo": "ada/spaces-template"}}}
+    for chain in cloud.CHAINS:
+        body = cloud.trigger(computer, chain, timezone="Europe/Amsterdam")
+        assert body["enabled"] is False
+        assert context(body)["enabled_plugins"] == ["spaces-guard@spaces"]
+        assert context(body)["extra_marketplaces"] == {"spaces": {"source": {"source": "github",
+                                                                             "repo": "ada/ada-space"}}}
+        assert "https://github.com/ada/ada-space" in [s["git_repository"]["url"] for s in context(body)["sources"]]
     assert len(context(body)["auto_mode_soft_deny"]) == 5
     assert "Bash" in context(body)["allowed_tools"] and MAIL_SEND in context(body)["allowed_tools"]
+
+
+def test_the_sweeps_task_keeps_the_shell_out_of_every_codebase_it_attaches(computer):
+    """The sweep's task attaches codebases other people can push to, cloned beside the workspace: no shell command
+    of the task names one's clone, so a begin (or anything else) run from or on one is refused whatever the guard
+    does. The daily attaches none."""
+    sweep = context(cloud.trigger(computer, "sweep", timezone="Europe/Amsterdam"))["disallowed_tools"]
+    patterns = bash_guard._patterns(sweep, False)
+    refused = lambda command: any(p.fullmatch(command) for p in patterns)   # noqa: E731
+    for name in ("ada-app", "ada-site", "ada-lib"):
+        for command in (f"python3 /home/user/{name}/_meta/tools/cloud.py begin /home/user/{name} --chain sweep",
+                        f"python3 /home/user/ada-space/_meta/tools/cloud.py begin /home/user/{name} --chain sweep",
+                        f"python3 /home/user/{name}/_meta/tools/cloud.py begin /home/user/ada-space --chain sweep",
+                        f"python3 /home/user/{name}/x.py", f"ls /home/user/{name}", f"ls /home/user/{name} -a"):
+            assert refused(command), command
+    for command in (cloud.begin_command("ada-space", "sweep"), "gh api repos/ada/ada-app/pulls/5",
+                    "python3 /home/user/ada-space/_meta/tools/sync.py --root /home/user/ada-space --cloud sweep",
+                    "python3 /home/user/ada-brain/_meta/tools/sync.py --root /home/user/ada-brain --cloud sweep",
+                    "python3 /home/user/ada-application/_meta/tools/x.py"):
+        assert not refused(command), command
+    daily = context(cloud.trigger(computer, "daily", timezone="Europe/Amsterdam"))["disallowed_tools"]
+    assert not any("ada-app" in rule for rule in daily)
+
+
+def test_the_tasks_refuse_graphql_by_its_endpoint_and_not_a_codebases_name(computer):
+    denied = bash_guard._patterns(context(cloud.trigger(computer, "sweep", timezone="Europe/Amsterdam"))
+                                  ["disallowed_tools"], False)
+    for read in GRAPHQL_SLUG_READS:
+        assert not any(rule.fullmatch(read) for rule in denied), read
+    for call in GRAPHQL_CALLS:
+        assert any(rule.fullmatch(call) for rule in denied), call
+
+
+def test_the_dailys_read_back_is_the_send_connectors_own(computer, monkeypatch):
+    """The daily may read back a sent message only through the connector it sends with: another connector's
+    `get_message`, a read-only mailbox's, is the sweep's alone."""
+    other = "mcp__Gmail-readonly__get_message"
+    grant = {"read": [MAIL_READ, other, MAIL_SEARCH], "write": [], "send": [MAIL_SEND]}
+    assert cloud.task_grant(grant, "daily") == {"read": [MAIL_READ], "write": [], "send": [MAIL_SEND]}
+    assert cloud.task_grant(grant, "sweep") == grant
+    monkeypatch.setattr(routine, "grant", lambda workspace, *a, **k: {
+        **grant, "reconnect": [], "notes": [], "person": "owner@example.test", "shell": "/bin/sh"})
+    body = cloud.trigger(computer, "daily", timezone="Europe/Amsterdam")
+    assert other in context(body)["disallowed_tools"] and other not in context(body)["allowed_tools"]
+    assert body["mcp_connections"] == [{"name": "mail", "permitted_tools": ["get_message", "send_message"]}]
+
+
+def no_grant(monkeypatch) -> None:
+    """This computer grants the routines nothing, as one with no probe of its own does."""
+    monkeypatch.setattr(routine, "grant", lambda workspace, *a, **k: {
+        "read": [], "write": [], "send": [], "reconnect": [], "notes": [], "person": "owner@example.test", "shell": ""})
+
+
+def test_a_computer_without_a_probe_renders_the_moved_tasks_with_the_records_grant(computer, monkeypatch):
+    """A computer that replaced the one the routines moved from has no probe of its own (its build does not probe
+    while the routines run in the cloud): it renders the tasks with the grant the move recorded."""
+    routine.claim_cloud(computer, TASKS, "Europe/Amsterdam", ["ada/ada-space", "ada/ada-brain"], GRANT, NOW)
+    (Path.home() / ".spaces" / "probe.json").unlink()
+    no_grant(monkeypatch)
+    for chain in cloud.CHAINS:
+        body = cloud.trigger(computer, chain, timezone="Europe/Amsterdam")
+        kept = json.loads((Path.home() / ".spaces" / f"cloud-{chain}.json").read_text(encoding="utf-8"))
+        assert kept["grant"] == cloud.task_grant(GRANT, chain)
+        assert set(cloud._tools(kept["grant"])) <= set(context(body)["allowed_tools"])
+    assert kept["grant"] == {"read": [MAIL_READ], "write": [], "send": [MAIL_SEND]}
+
+
+def test_a_task_with_no_app_granted_is_never_rendered(computer, monkeypatch):
+    """A render with nothing granted would prove nothing and read nothing: it is refused in one sentence, and
+    nothing is kept. A probe on this computer is this computer's word, even beside a record that holds a grant."""
+    no_grant(monkeypatch)
+    with pytest.raises(ValueError, match="None of your apps"):
+        cloud.trigger(computer, "sweep", timezone="Europe/Amsterdam")
+    routine.claim_cloud(computer, TASKS, "Europe/Amsterdam", ["ada/ada-space", "ada/ada-brain"], GRANT, NOW)
+    with pytest.raises(ValueError, match="None of your apps"):
+        cloud.trigger(computer, "daily", timezone="Europe/Amsterdam")
+    (Path.home() / ".spaces" / "probe.json").unlink()
+    routine.claim_host(computer, "os", NOW)   # no cloud record: nothing to fall back on
+    with pytest.raises(ValueError, match="None of your apps"):
+        cloud.trigger(computer, "sweep", timezone="Europe/Amsterdam")
+    assert not any((Path.home() / ".spaces" / f"cloud-{chain}.json").exists() for chain in cloud.CHAINS)
+    assert cloud.main(["trigger", str(computer), "--chain", "sweep", "--timezone", "Europe/Amsterdam"]) == 2
 
 
 def test_the_trigger_schedule_keeps_the_persons_hours_off_the_hour(computer):
