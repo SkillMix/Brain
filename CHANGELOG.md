@@ -146,7 +146,8 @@ back to back, and nothing a record or the person settled is asked again.
   marker file it keeps until onboarding's first commit lands: a workspace's sync pull requests no
   longer run the template's own tests, and the gate no longer lets a protected change in such a
   workspace merge without the owner. The sync reruns a failed check at most three times a day, and
-  not at all when the same checks failed again after a rerun.
+  not at all when the same checks failed again after a rerun; a check whose rerun passed is rerun
+  again the next time it fails.
 - **The briefing goes to the work mailbox the app card named.** The card now says where the
   morning briefing goes: the work mailbox the routines can send from, when a second app's reader
   names the same account (a mail anyone can write cannot name it alone). The person sees it for
@@ -155,8 +156,9 @@ back to back, and nothing a record or the person settled is asked again.
   routine no longer holds the briefing because Claude is signed in on another domain.
 - **An app still connecting is not taken for one that is not connected.** When Claude's command
   line starts, connected apps can still be `pending` for a few seconds. The probe that the apps
-  step, the research and the routines' proof use looks again while one is (three looks in about
-  a minute at most) and keeps the look with the fewest still connecting, so the first apps step no
+  step, the research and the routines' proof use looks again while one is (three looks at most,
+  while the next one, as slow as the last, ends within two and a half minutes of the first) and
+  keeps the look with the fewest still connecting, so the first apps step no
   longer finds no apps and the routines' proof no longer fails an app that was only slow.
 - **The first push and the brain mount say when they did not happen.** git signs in to GitHub
   through gh in everything the tools start, as gh's own clone does, so a credential manager that
@@ -168,11 +170,12 @@ back to back, and nothing a record or the person settled is asked again.
 - **A company site that moved is read where it moved to.** The site's reader may fetch only the
   company's domain and its `www.` twin, so a domain that redirects to another host (a `.nl` that
   moved to a `.com`) came back with nothing and the build said the site gave nothing to keep. The
-  reader now says where the site sent it, and the research reads once more on that host; the
-  company's domain stays the one given.
+  reader now says where the site sent it, and the research reads once more on that host, keeping
+  what the first read found on the pages that did not move; the company's domain stays the one given.
 - **Task names another Windows account holds.** Where another account on the computer already has
   the space's task names, Windows said only "Access is denied". The row now says the name is
-  another account's, with the line an administrator runs to remove it, and
+  another account's (Windows' own words for it are read in the computer's display language too),
+  with the line an administrator runs to remove it, and
   `start.py build --task-prefix space-<letters>-` gives this computer names of its own, kept in
   `~/.spaces/settings.yaml`.
 - **The app card.** "Read <app> again" (`start.py apps --unskip <app>`) takes a skip back, with

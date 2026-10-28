@@ -897,6 +897,30 @@ def task_taken(task: str) -> str:
             "again with names of your own (`start.py build --task-prefix space-<your initials>-`)")
 
 
+def _denied_words() -> list:
+    """Windows' "Access is denied." (its error 5) as schtasks prints it: in English, and in this computer's display
+    language, as Windows itself words it (`ctypes.FormatError`, Windows only)."""
+    words = ["Access is denied."]
+    try:
+        import ctypes
+        own = ctypes.FormatError(5).strip()
+    except (ImportError, AttributeError, OSError, ValueError):
+        own = ""
+    return words + [own] if own and own not in words else words
+
+
+def _letters(text) -> str:
+    """The ASCII letters and digits of `text`, in lower case: what is left the same of a line that a console code page
+    other than the one Python decoded with garbled (only the accented letters change)."""
+    return "".join(ch for ch in str(text).casefold() if ch.isascii() and ch.isalnum())
+
+
+def access_denied(text) -> bool:
+    """Whether what schtasks said is "access is denied", in whatever language this Windows speaks."""
+    said = _letters(text)
+    return any(_letters(word) and _letters(word) in said for word in _denied_words())
+
+
 def python_cmd() -> str:
     """The interpreter that runs onboarding, for unattended text: absolute (macOS has no bare
     `python`), quoted when its path has a space."""
@@ -1177,7 +1201,7 @@ def register_task(report, label, task, root, args, minutes=None, times=None, cro
         verify = run_cmd(record["check"], dry_run)
         missing = [] if dry_run else windows_task_missing(verify.stdout or "")
         ok = res.returncode == 0 and verify.returncode == 0 and not missing
-        if not ok and "access is denied" in f"{res.stderr} {verify.stderr}".lower():
+        if not ok and access_denied(f"{res.stderr} {verify.stderr}"):
             report.add(label, False, " ".join(record["check"]), task_taken(task), needs_owner=True)
             return record
         report.add(label, ok, " ".join(record["check"]), f"{task}: hidden, on battery too, catches up" if ok
