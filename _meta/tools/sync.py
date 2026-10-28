@@ -4,7 +4,8 @@ The one tool that runs git. The OS scheduler runs it every 15 minutes; sessions 
 routines only edit files. Each run:
 
   1. take `.git/sync.lock`; skip if another run holds it or git is mid-operation
-  1a. name in stale.yaml each chain whose scheduler stopped starting it (`not_started`)
+  1a. name in stale.yaml each chain whose scheduler stopped starting it (`not_started`); while
+     the routines run in the cloud, after step 5 instead (the computer's leg, below)
   2. stage tracked changes and settled untracked text files, never under personal/,
      academic/, _scratch/, _meta/state/private/, _meta/state/feed/ or inside a mount
   3. scan the staged paths; unstage every file with a finding (count recorded, never
@@ -14,9 +15,10 @@ routines only edit files. Each run:
      computer runs the routines: `MERGE_RULES` is written into the space's own git first, so a
      space whose .gitattributes is older has it too). The rules settle what GitHub's own merge
      cannot, so no merge wedges on them: a watermark keeps the later mark key by key (the
-     `--merge-latest` driver), generated pages and state keep this checkout's side, and an item
-     under _inbound/ or _outbound/ that one side deleted stays deleted (`resolve`). A conflict
-     where origin holds only an earlier copy of this checkout's own change keeps ours
+     `--merge-latest` driver), generated pages and state keep this checkout's side (so do the
+     sessions list, the items the computer's leg writes again and template sync's provenance),
+     and an item under _inbound/ or _outbound/ that one side deleted stays deleted (`resolve`).
+     A conflict where origin holds only an earlier copy of this checkout's own change keeps ours
      (the rebuilt commits of step 6 share no history with it); any other conflict is
      aborted and recorded
   5a. when there is something to publish: run the answer tests; a question that fails is set
@@ -59,16 +61,34 @@ runs. Its own run line is written before its commit, so it lands with it; new fi
 minimum age. A protected path (`protected_paths`) never lands from the cloud, even one staged
 before the run: AGENTS.md, which the tools regenerate, is put back quietly, and any other stays in
 the clone and is one security item on Needs you. The one change there that lands is the sync's own:
-answer tests set aside or brought back (`protected_changes`). A line the secret scan hits is replaced
-by `[a line held back: <kind>]` (a private key from its BEGIN line to its END line) and the page
-lands, since the clone is thrown away; a file over 1 MB, not text, or that would not read with its
-lines held back is named in the run line. After the merge of main and the answer tests (steps 5 and
-5a), the push goes to `cloud/<chain>`, leased to the head the carry saw; refused, it carries again
-and pushes once more. Run lines, marks and stale.yaml alone open no pull request until the branch's
-oldest commit main lacks is QUIET_HOURS old, unless they hold a proof run's line; anything else
-opens one through REST and waits for its merge, merging main in again while it conflicts and
-repairing red checks once. What happened after the push is printed for the run log, and the next
-run's line says whether it carried this one.
+answer tests set aside or brought back (`protected_changes`). Nor does a path in a private zone, a
+mount or a nested checkout, or any pin, even one staged by force. Every git it starts runs with a
+mount's own file monitor off (`monitor_off`), a command a mount's git config could name. A line the
+secret scan hits is replaced by `[a line held back: <kind>]` (a private key from its BEGIN line to
+its END line) and the page lands, since the clone is thrown away; a file over 1 MB, not text, or
+that would not read with its lines held back is named in the run line. After the merge of main and
+the answer tests (steps 5 and 5a), the push goes to `cloud/<chain>`, leased to the head the carry
+saw; refused, it carries again and pushes once more. Run lines, marks and stale.yaml alone open no
+pull request until the branch's oldest commit main lacks is QUIET_HOURS old, unless they hold a
+proof run's line; anything else opens one through REST and waits for its merge, merging main in
+again while it conflicts and repairing red checks once. What happened after the push is printed for
+the run log, and the next run's line says whether it carried this one.
+
+The computer's leg (spec 4.5, `computer_leg`) runs while the workspace's routine record says the
+routines run in the cloud (`runner: cloud`; for a space that is no workspace, its owner's workspace
+on this computer). It comes right after step 5, so it reads the cloud's run lines first, and does
+what only the computer has: `not_started` moves there from step 1a, and waits for a run that merged
+main (offline, or stopped by a conflict, it would not see the cloud's lines); the transcripts scan
+runs at most every `chain.TRANSCRIPTS_HOURS`, where the session files are on this computer, its
+clock kept outside the repository (`~/.spaces/sync-leg-<space>.json`); template sync runs weekly,
+as the daily chain runs it on a computer, since its machinery changes need the person's click; a
+`cloud/<chain>` pull request open for ADOPT_MINUTES, in conflict with main or red, whose head is as
+old, is merged here with the merge rules and rides this computer's own pull request, and one that
+still conflicts is one item on Needs you; and the workspace names on Needs you a space of the
+person's that the move did not attach. All but `not_started` run only on the computer the record
+names (`keeps_leg`); a record that names none lets each computer run them, and the merge rules keep
+what two computers both write from stopping a merge. The scan and template sync wait while the
+routines are paused. What the leg wrote is committed before step 5a.
 
 `--release-leg` runs `release.ship(root)` first when that module is present.
 `--merge-latest` is the watermark driver git runs during a merge (`merge_latest`); nobody types it.
@@ -77,11 +97,12 @@ Exit 0 on success, 2 when the run was skipped, 1 on an error.
 `carry(root, chain)` is not a run of its own: a cloud run's `cloud.py begin` calls it first, to
 merge in the earlier run's `cloud/<chain>` branch, which never merged, before anything is written.
 A branch that changes a protected path (`protected_changes`) was pushed by someone else and is never
-merged.
+merged. Its git, too, runs with a mount's file monitor off.
 """
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
 import fnmatch
 import hashlib
@@ -111,7 +132,7 @@ BATCH_HOURS = 1   # journal lines and run logs alone go out at most this often
 RUNS_PATH = Path("_meta") / "state" / "runs.jsonl"
 RUN_LOGS = {"_meta/state/tests.jsonl", "_meta/state/probe.jsonl"}
 NOTABLE = ("committed", "pins", "conflict", "scan_hits", "errors", "held_tests", "restored_tests",
-           "healing", "healed", "pr_red")
+           "healing", "healed", "pr_red", "adopted")
 HEAL_STATE = "sync-heal.json"   # in the git dir: the repair waiting to be seen merged
 CHAINS = {"sweep_chain": "sweep-chain", "daily": "daily-chain"}   # run line routine: its routine prompt
 
@@ -119,23 +140,35 @@ CHAINS = {"sweep_chain": "sweep-chain", "daily": "daily-chain"}   # run line rou
 # Written into every space's own git, whatever its .gitattributes says. The record of who runs the routines merges by
 # union: two computers that claim them before either synced leave a record that reads as unclear (nobody runs) instead
 # of a conflict that wedges the sync. A watermark keeps the later mark (`merge_latest`); generated pages and state keep
-# this checkout's side, since the next status run writes them again from the files (spec 4.5a).
+# this checkout's side, since the next status run writes them again from the files (spec 4.5a). So do the files the
+# computer's leg writes again on its next run (`computer_leg`): the sessions the transcripts scan saw, the leg's own
+# items, and template sync's provenance, which every weekly sync writes again with the second it ran. Two computers
+# that both run the leg (a record that names no computer for it) fall due for template sync together, and two syncs of
+# the same release differ only in that second; they never stop a merge on any of these.
 MERGE_RULES = ("_meta/state/routine-host.yaml merge=union",
                "_meta/state/*-watermark.yaml merge=spaces-latest",
                "live/** merge=spaces-ours",
                "_meta/state/ids.yaml merge=spaces-ours",
-               "_meta/state/stale.yaml merge=spaces-ours")
+               "_meta/state/stale.yaml merge=spaces-ours",
+               "_meta/state/sessions.yaml merge=spaces-ours",
+               "_inbound/needs-you/sync.yaml merge=spaces-ours",
+               "_meta/state/template-version.yaml merge=spaces-ours")
 SETTLED_BY_DELETION = ("_inbound/", "_outbound/")   # an answer or a shipping is the later fact than any change
 CLOUD_CHAINS = ("sweep", "daily")   # each lands on its own branch, cloud/<chain>
 LEASE = "sync-cloud-lease-{}"   # in the git dir: the cloud/<chain> head the carry saw, empty when there was none
 DEEPEN, DEEPEN_TRIES = 200, 3   # a shallow clone fetches this much more history, this often, before it unshallows
 # A cloud run's landing (`--cloud`): these alone push its branch and open no pull request (`quiet_cloud`), unless the
-# run lines hold a proof run's line. The routine meter (routine-limits.jsonl) is protected, so it never lands from one.
+# run lines hold a proof run's line. The routine meter is protected, so it never lands from one.
 CLOUD_QUIET = ("_meta/state/runs.jsonl", "_meta/state/stale.yaml", "_meta/state/*-watermark.yaml")
 CLOUD_MAX_BYTES = 1_000_000   # a file larger than this, or not text, is named in the run line and never landed
 CLOUD_ITEMS = Path("_inbound") / "needs-you" / "sync-cloud.yaml"
 CLOUD_REMERGE = 3   # merges of main while the pull request conflicts with it, before it is left open
 POLL_SECONDS, WAIT_MINUTES = 20, 9   # how often a cloud run reads its pull request, and for how long at most
+# The computer's leg, while the routines run in the cloud (`computer_leg`)
+ADOPT_MINUTES = 30   # a cloud pull request open this long, in conflict or red, is merged here: its run waits less
+TEMPLATE_RETRY_HOURS = 24   # a template sync that failed is tried again after this, as the daily chain would
+LEG_STATE = "sync-leg-{}.json"   # under ~/.spaces/, beside the progress page: the leg's clocks for one space
+SYNC_ITEMS = Path("_inbound") / "needs-you" / "sync.yaml"   # the leg's items on Needs you
 HELD_LINE = "[a line held back: {}]"
 KEY_END = re.compile(r"-----END [A-Z0-9 ]*PRIVATE KEY")   # where the block a private key's BEGIN line opens ends
 # In YAML, the part of a held line that is kept: a `key: ` (in a list too), or a list's `- `; the value is held back
@@ -162,6 +195,31 @@ def git(root, *args, check: bool = False, input: str | None = None, env: dict | 
                           env=dict(os.environ, **env) if env else None)
 
 
+@contextlib.contextmanager
+def monitor_off():
+    """Every git started inside it runs with the file monitor off, a mount's git included: a mount's own git config
+    could name one, a command its git runs whenever the space's git looks into the mount (`git status`, and the diff
+    that lists a merge's conflicts). A cloud run's landing and its carry run inside it. Set through git's own
+    environment (GIT_CONFIG_COUNT with its KEY and VALUE), which git hands to a mount's git, after the config the
+    environment holds already, which keeps its effect; the environment is put back as it was after. A count git
+    would refuse is left as it is. Also a decorator."""
+    count = os.environ.get("GIT_CONFIG_COUNT") or "0"
+    if not count.isdigit():
+        yield
+        return
+    keys = ("GIT_CONFIG_COUNT", f"GIT_CONFIG_KEY_{count}", f"GIT_CONFIG_VALUE_{count}")
+    before = {key: os.environ.get(key) for key in keys}
+    os.environ.update(zip(keys, (str(int(count) + 1), "core.fsmonitor", "false")))
+    try:
+        yield
+    finally:
+        for key, value in before.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def hostname() -> str:
     """This machine's part of its sync branch names: stable per machine, never its name, which
     would put a computer's (often its person's) name into every company repository."""
@@ -185,7 +243,9 @@ def not_started(root: Path, now: dt.datetime | None = None) -> bool:
     runs whatever that scheduler does, can notice. A chain whose last run line (for one that never
     ran, the onboarding) is older than twice the longest gap in its routine's schedule is named
     in stale.yaml as `<routine> not started` since then, for the health line; the entry goes when
-    the chain runs. Written only when it changes. True when it wrote."""
+    the chain runs. Written only when it changes. True when it wrote. While the routines run in the
+    cloud the sync asks it after merging main in (`Run.computer_leg`), so the cloud's run lines are
+    read first."""
     import chain
     import onboard
     import onboarding_page
@@ -349,6 +409,39 @@ def reads_as(rel: str, text: str):
     return True
 
 
+def items_in(path: Path) -> list:
+    """The items a Needs-you file (`_inbound/needs-you/<writer>.yaml`) holds, as written; none when it is missing or
+    does not read."""
+    import yaml
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        data = {}
+    rows = data.get("items") if isinstance(data, dict) else None
+    return [i for i in rows if isinstance(i, dict)] if isinstance(rows, list) else []
+
+
+def items_out(path: Path, items: list, before: list) -> bool:
+    """`items` written to the Needs-you file at `path`, only when they are not what it held (`before`, as `items_in`
+    read it). True when it was written."""
+    import yaml
+    if items == before:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump({"items": items}, sort_keys=False, allow_unicode=True, width=100),
+                    encoding="utf-8", newline="\n")
+    return True
+
+
+def _adopt_item(number: int) -> dict:
+    """The item for a cloud pull request the computer's sync could not merge here (`Run.adopt_cloud`)."""
+    return {"id": f"cloud-adopt-{number}", "kind": "request",
+            "text": f"A cloud run's pull request #{number} conflicts with your files in a way the sync cannot settle.",
+            "recommendation": "open it and keep the side you want, or close it: the next cloud run starts again "
+                              "from main",
+            "default": "it stays open and the cloud runs keep adding to it", "depends": 1}
+
+
 class Run:
     def __init__(self, root: Path, gdir: Path, args) -> None:
         self.root, self.gdir, self.args = root, gdir, args
@@ -362,6 +455,7 @@ class Run:
         self.slug = ghrest.repo_slug(root)   # the repository the pull request calls name; None when origin names none
         self.left_out: set = set()   # a cloud run's protected paths, never landed (`keep_out`)
         self.held: set = set()   # a cloud run's files over CLOUD_MAX_BYTES or not text, never landed
+        self.behind = False   # origin/main could not be merged in (`merge_in`): its run lines are not here
 
     # ----- lock ------------------------------------------------------------
     def lock(self) -> bool:
@@ -390,11 +484,13 @@ class Run:
         print(f"sync: {text}")
 
     # ----- chains --------------------------------------------------------------
-    def watch_chains(self) -> None:
+    def watch_chains(self) -> bool:
+        """`not_started`, never in the way of landing: True when it wrote stale.yaml."""
         try:
-            not_started(self.root, self.now)
+            return bool(not_started(self.root, self.now))
         except Exception as exc:  # never in the way of landing
             self.error(f"not started check: {type(exc).__name__}: {str(exc)[:200]}")
+            return False
 
     # ----- release leg -------------------------------------------------------
     def release_leg(self) -> None:
@@ -448,11 +544,13 @@ class Run:
         return [line.split(None, 1)[1].strip() for line in done.stdout.splitlines() if " " in line]
 
     def excluded(self, rel: str, subs: list[str]) -> bool:
+        """Whether no sync stages `rel`: a private zone, a mount (`subs`), or a nested checkout, its own gitlink
+        included (a checkout .gitmodules does not name, staged at its own path)."""
         if rel.startswith(PRIVATE_ZONES):
             return True
         if any(rel == s or rel.startswith(s + "/") for s in subs):
             return True
-        parent = Path(rel).parent
+        parent = Path(rel)
         while parent != Path("."):
             if (self.root / parent / ".git").exists():  # a nested checkout
                 return True
@@ -479,7 +577,10 @@ class Run:
 
     def candidates(self) -> list[str]:
         subs = self.submodules()
-        done = git(self.root, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames", check=True)
+        # A cloud run's status still looks into each mount, so a pin move is seen, but a mount's own git config
+        # must not start a command there: its file monitor is off (a `-c` reaches the mounts' git too).
+        status = ("-c", "core.fsmonitor=false", "status") if self.cloud else ("status",)
+        done = git(self.root, *status, "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames", check=True)
         chosen: list[str] = []
         for item in done.stdout.split("\0"):
             if len(item) < 4:
@@ -590,18 +691,32 @@ class Run:
     def unstage(self) -> None:
         """In a cloud run, the last word before each commit, which takes the whole index: whatever is staged
         and may not land is taken out of it, a deletion included, whoever staged it. That is a protected
-        change (`protected_changes`, against HEAD) and a file `keep_out` or `hold_lines` held. `keep_out`
-        names them for the run line and the security item; this keeps them out of the commit."""
-        out = git(self.root, "diff", "--cached", "--name-only", "--no-renames", "-z", check=True).stdout
-        staged = [p for p in out.split("\0") if p]
+        change (`protected_changes`, against HEAD), a file `keep_out` or `hold_lines` held, a path no sync
+        ever stages (`excluded`: a private zone, a mount, a nested checkout), even one staged by force, and
+        any gitlink staged, with a checkout behind it or none: a cloud run moves no pin. `keep_out` names the
+        first two for the run line and the security item; this keeps them all out of the commit. A private
+        path's name is never printed."""
+        out = git(self.root, "diff", "--cached", "--raw", "--no-renames", "-z", check=True).stdout
+        fields = out.split("\0")   # ":<old mode> <new mode> <old id> <new id> <status>", then its path
+        staged, links = [], set()
+        for meta, rel in zip(fields[0::2], fields[1::2]):
+            if rel:
+                staged.append(rel)
+                if meta.split()[1:2] == ["160000"]:   # a gitlink
+                    links.add(rel)
         guarded = protected_changes(self.root, staged, ["HEAD"], ":")
-        drop = guarded + [rel for rel in staged if rel in self.held and rel not in guarded]
+        subs = self.submodules()
+        private = [rel for rel in staged if rel not in guarded and (rel in links or self.excluded(rel, subs))]
+        drop = list(dict.fromkeys(guarded + private + [rel for rel in staged if rel in self.held]))
         if not drop:
             return
         for rel in guarded:
             if rel not in self.left_out:
                 print(f"left out: {rel} is protected")
                 self.left_out.add(rel)
+        if private:
+            print(f"left out: {len(private)} staged path(s) in a private zone, a mount or a nested checkout, "
+                  "or a pin")
         self.pathspec("reset", "-q", rels=drop)
 
     def scan_staged(self) -> None:
@@ -810,6 +925,7 @@ class Run:
         self.merge_rules()
         if git(self.root, "fetch", "--quiet", "--prune", "--no-recurse-submodules", "origin").returncode != 0:
             self.error("fetch failed")
+            self.behind = True
             return
         if not self.has_origin_main():
             return
@@ -817,6 +933,7 @@ class Run:
         done = git(self.root, "merge", "--no-edit", "origin/main")
         if done.returncode != 0 and not self.settle():
             git(self.root, "merge", "--abort")
+            self.behind = True
             self.notes["conflict"] = True
             print("merge: conflict with origin/main; aborted, next run retries")
             return
@@ -1161,6 +1278,317 @@ class Run:
         print(f"pull request #{number} opened for {branch}")
         return number
 
+    # ----- the computer's leg, while the routines run in the cloud (spec 4.5) -----------------
+    def workspace(self) -> Path | None:
+        """The workspace whose routine record speaks for this space: this space when it is personal, else its
+        owner's personal workspace on this computer (`~/.spaces/spaces.yaml`, the list `chain.spaces_on_machine`
+        reads). None when there is none."""
+        if self.space.profile == "personal":
+            return self.root
+        import yaml
+        try:
+            rows = (yaml.safe_load((Path.home() / ".spaces" / "spaces.yaml").read_text(encoding="utf-8"))
+                    or {}).get("spaces") or []
+        except (OSError, UnicodeDecodeError, AttributeError, yaml.YAMLError):
+            rows = []
+        for row in rows if isinstance(rows, list) else []:
+            root = Path(str(row["root"])) if isinstance(row, dict) and row.get("root") else None
+            if root is None or not (root / "space.yaml").is_file():
+                continue
+            try:
+                other = spaceyaml.load(root)
+            except Exception:
+                continue
+            if other.profile == "personal" and self.space.owner and other.owner == self.space.owner:
+                return root.resolve()
+        return None
+
+    def cloud_host(self) -> tuple | None:
+        """(the workspace, its routine record) when that record says the routines run in the cloud (`runner:
+        cloud`): then the computer's leg runs (`computer_leg`). None otherwise, and for a record that cannot be
+        read, which stops no landing."""
+        try:
+            import routine
+            workspace = self.workspace()
+            record = routine.host(workspace) if workspace is not None else None
+        except Exception:
+            return None
+        if not record or record.get("unclear") or record.get("runner") != "cloud":
+            return None
+        return workspace, record
+
+    @staticmethod
+    def keeps_leg(record: dict) -> bool:
+        """Whether this computer does the leg's writing steps (`computer_leg`): the one the record names
+        (`computer`, its id as `routine.this_machine` makes it), as one computer ran the chains before the move.
+        Two computers that both did them would each scan their own sessions, sync the template and name their
+        own spaces, and conflict on what they wrote. A record that names no computer lets every one do them;
+        the merge rules keep what they write again from stopping a merge (`MERGE_RULES`)."""
+        import routine
+        named = record.get("computer")
+        return not named or named == routine.this_machine()
+
+    def computer_leg(self, now: dt.datetime) -> dict:
+        """What only the computer has, while the routines run in the cloud (spec 4.5), right after main is
+        merged in, so that the cloud's run lines are read first. In order: `not_started`, which waited for the
+        merge; the transcripts scan (`scan_transcripts`); template sync (`sync_template`); the cloud pull
+        requests nothing could merge (`adopt_cloud`); and, in the workspace, the spaces the cloud does not
+        read (`name_unattached`). `not_started` runs on every computer, and not at all when main could not be
+        merged in (the fetch failed, or the merge stopped): without the cloud's run lines it would name chains
+        that ran, and stale.yaml stays as it was until a run merges main. The rest write files, so they run on
+        the computer the record names (`keeps_leg`); a record that names none lets every computer run them, and
+        the merge rules keep what two computers both write from stopping a merge. While the routines are
+        paused, the scan and template sync wait, as the chains that ran them would. Each step's outcome goes
+        into the run line's notes; a step that fails is said and the next one runs, since the landing must
+        still happen. What the leg wrote is committed with this run. A merge that moved the routines back to
+        a computer leaves only `not_started`. The outcomes, as those notes."""
+        import routine
+        done: dict = {}
+        if not self.behind and self.watch_chains():
+            done["not_started"] = True
+        host = self.cloud_host()
+        if host is not None and self.keeps_leg(host[1]):
+            workspace, record = host
+            steps = [] if routine.paused_until(record, now) else [
+                ("transcripts", "transcripts scan", self.scan_transcripts),
+                ("template_sync", "template sync", self.sync_template)]
+            steps.append(("adopted", "adopting cloud pull requests", self.adopt_cloud))
+            if Path(workspace).resolve() == self.root.resolve():
+                steps.append(("unattached", "naming the spaces the cloud does not read",
+                              lambda moment: self.name_unattached(record)))
+            for key, what, step in steps:
+                try:
+                    outcome = step(now)
+                except Exception as exc:
+                    self.error(f"{what} failed: {type(exc).__name__}")
+                    continue
+                if outcome:
+                    done[key] = outcome
+        self.notes.update(done)
+        self.stage_and_commit()
+        return done
+
+    def leg_state(self, **changes) -> dict:
+        """The leg's clocks for this space, kept on this computer, never in the repository
+        (`~/.spaces/sync-leg-<space>.json`, beside the progress page): when it last scanned the transcripts
+        (`transcripts`) and when a template sync last failed (`template_sync_failed`). `changes` set those
+        keys (None takes one out); the file is written only when that changes it, and one that cannot be
+        written leaves the step to run again next time."""
+        path = Path.home() / ".spaces" / LEG_STATE.format(self.space.name)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        data = data if isinstance(data, dict) else {}
+        if changes:
+            new = {key: value for key, value in {**data, **changes}.items() if value is not None}
+            if new != data:
+                try:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(json.dumps(new, sort_keys=True), encoding="utf-8")
+                except OSError:
+                    pass
+            data = new
+        return data
+
+    def since(self, key: str, now: dt.datetime) -> dt.timedelta | None:
+        """How long ago `leg_state` says `key` happened; None when it never did, or when it says a time after
+        `now` (a clock that went back)."""
+        try:
+            then = pages.parse_iso(self.leg_state().get(key))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return now - then if then <= now else None
+
+    def scan_transcripts(self, now: dt.datetime) -> dict | None:
+        """The transcripts scan (`transcripts.scan`), the sweep chain's first step on a computer, at most every
+        `chain.TRANSCRIPTS_HOURS`, and only where the session files are on this computer: a cloud sweep never
+        reads them. A scan that fails waits as long, so it is said once, not every run. Its report; None when
+        it did not run."""
+        import chain
+        import transcripts
+        folder = transcripts.settings(self.space).get("path")
+        if self.space.profile != "personal" or not folder or not Path(folder).is_dir():
+            return None
+        ago = self.since("transcripts", now)
+        if ago is not None and ago < self.space.scale(chain.TRANSCRIPTS_HOURS):
+            return None
+        self.leg_state(transcripts=pages.iso(now))
+        return transcripts.scan(self.root, now)
+
+    def sync_template(self, now: dt.datetime) -> dict | None:
+        """Template sync with the tests around it (`template_sync.guarded`), when the daily chain on a computer
+        would run it (`chain._template_sync_due`: weekly, or the day the person said yes to a release). Its
+        machinery changes wait for the person's click (`split`), and a cloud run never lands a protected
+        change. One that failed is tried again TEMPLATE_RETRY_HOURS later, not every run. What it changed;
+        None when it did not run."""
+        import chain
+        failed = self.since("template_sync_failed", now)
+        if failed is not None and failed < self.space.scale(TEMPLATE_RETRY_HOURS):
+            return None
+        if not chain._template_sync_due(self.space, now):
+            return None
+        import template_sync
+        try:
+            report = template_sync.guarded(self.root)
+        except Exception:
+            self.leg_state(template_sync_failed=pages.iso(now))
+            raise
+        self.leg_state(template_sync_failed=None)
+        return {"added": len(report.added), "updated": len(report.updated), "reverted": bool(report.reverted)}
+
+    def adopt_cloud(self, now: dt.datetime) -> list:
+        """The `cloud/<chain>` pull requests of this repository that nothing will merge, merged into this
+        checkout with the merge rules (`adopt`), so that they ride this computer's own sync pull request, which
+        it repairs as it repairs its own (`heal`); once that lands, GitHub marks them merged. One is adopted when
+        it was opened ADOPT_MINUTES ago or more and conflicts with main or has a failed check (`stuck`), and its
+        head is as old (`adopt`): a cloud run waits for its own for less. One whose merge here still conflicts is
+        aborted and becomes one item on Needs you (`cloud-adopt-<n>`), which goes once it is adopted or no
+        longer open. A fork's pull request is never one. The numbers adopted."""
+        if self.slug is None or not self.has_origin_main():
+            return []
+        listed, complete = [], True
+        for chain_name in CLOUD_CHAINS:
+            branch = f"cloud/{chain_name}"
+            pulls = ghrest.open_pulls(self.gh, self.slug, head=branch)
+            if pulls is None:
+                complete = False   # what could not be read says nothing about what is gone
+                continue
+            listed += [(chain_name, pull) for pull in pulls if pull["head_ref"] == branch and not pull["cross_repo"]]
+        adopted, conflicts, committed = [], [], False
+        for chain_name, pull in listed:
+            if not self.stuck(pull, now):
+                continue
+            if not committed:   # a merge stops at a local change in its way: what the leg wrote so far lands first
+                self.stage_and_commit()
+                committed = True
+            outcome = self.adopt(chain_name, pull["number"], now)
+            if outcome == "adopted":
+                adopted.append(pull["number"])
+            elif outcome == "conflict":
+                conflicts.append(pull["number"])
+        open_now = {pull["number"] for _, pull in listed}
+
+        def settled(item_id: str) -> bool:   # an item goes once its pull request was adopted or is no longer open
+            number = item_id.removeprefix("cloud-adopt-")
+            if not (item_id.startswith("cloud-adopt-") and number.isdigit()):
+                return False
+            return int(number) in adopted or (complete and int(number) not in open_now)
+        self.leg_items([_adopt_item(n) for n in conflicts], settled)
+        return adopted
+
+    def stuck(self, pull: dict, now: dt.datetime) -> bool:
+        """Whether a cloud pull request is one nothing will merge: opened ADOPT_MINUTES ago or more, still open,
+        and in conflict with main (`dirty`) or with a failed check on its head."""
+        try:
+            opened = pages.parse_iso(pull.get("created_at"))
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if now - opened < self.space.scale(ADOPT_MINUTES / 60):
+            return False
+        state = ghrest.pull_state(self.gh, self.slug, pull["number"])
+        if state is None or state["merged"] or state["state"] != "open":
+            return False
+        return state["mergeable_state"] == "dirty" or bool(
+            ghrest.failed_checks(self.gh, self.slug, state["head_sha"] or pull["head_sha"]))
+
+    def adopt(self, chain: str, number: int, now: dt.datetime) -> str:
+        """`cloud/<chain>` fetched with an explicit refspec and merged into this checkout with the merge rules
+        (`settle`, as `merge_in`): `adopted`. `conflict` when that merge still conflicts; it is aborted. `left`
+        when it was not tried, for a later run or the next cloud run, whose push replaces the branch: it could
+        not be fetched, this checkout holds it already, its head was made less than ADOPT_MINUTES before `now`
+        (a pull request opened long ago that a run carried since: that run may still be merging main in again
+        or repairing its checks), it shares no history with this checkout, a local file is in the merge's way,
+        or it changes a protected path (`_protected_moves`, before the merge and again after it, as the carry
+        checks), or what it changes could not be listed. A cloud run never lands a protected change, so such a
+        branch was pushed by someone else, and merged here its tools would run on this computer before the
+        person's click."""
+        branch, tracking = f"cloud/{chain}", f"refs/remotes/origin/cloud/{chain}"
+
+        def why(guarded) -> str:   # what `_protected_moves` said kept it out
+            return (f"what {branch} changes could not be listed; the next run tries again" if guarded is None else
+                    f"{branch} changes a protected path; left for the next cloud run, whose push replaces it")
+        if git(self.root, "fetch", "--quiet", "--no-recurse-submodules", "origin",
+               f"+refs/heads/{branch}:{tracking}").returncode != 0:
+            print(f"adopt: {branch} could not be fetched; the next run tries again")
+            return "left"
+        head = git(self.root, "rev-parse", "-q", "--verify", tracking).stdout.strip()
+        bases = git(self.root, "merge-base", "--all", "HEAD", tracking).stdout.split()
+        if not head or head in bases:
+            return "left"   # this checkout holds it already: it goes out with this computer's push
+        made = git(self.root, "show", "-s", "--format=%ct", tracking).stdout.strip()
+        if made.isdigit() and now.timestamp() - int(made) < self.space.scale(ADOPT_MINUTES / 60).total_seconds():
+            print(f"adopt: {branch} was pushed less than {ADOPT_MINUTES} minutes ago; left to its run")
+            return "left"
+        if not bases:
+            print(f"adopt: {branch} shares no history with this checkout; left alone")
+            return "left"
+        guarded = _protected_moves(self.root, bases, "HEAD", tracking)
+        if guarded is None or guarded:
+            print(f"adopt: {why(guarded)}")
+            return "left"
+        before = git(self.root, "rev-parse", "HEAD").stdout.strip()
+        if git(self.root, "merge", "--no-edit", tracking).returncode != 0:
+            if git(self.root, "rev-parse", "-q", "--verify", "MERGE_HEAD").returncode != 0:
+                print(f"adopt: a local change is in the way of {branch}; the next run tries again")
+                return "left"
+            if not self.settle():
+                git(self.root, "merge", "--abort")
+                print(f"adopt: pull request #{number} conflicts in a way the merge rules cannot settle; aborted")
+                return "conflict"
+        guarded = _protected_moves(self.root, [before], before, "HEAD")
+        if guarded != []:   # git followed a file main moved
+            if git(self.root, "reset", "-q", "--keep", before).returncode != 0:
+                what = "that changed a protected path" if guarded else "whose changes could not be listed"
+                self.error(f"an adopted {branch} {what} could not be undone")
+            else:
+                print(f"adopt: {why(guarded)}")
+            return "left"
+        print(f"adopt: pull request #{number} from {branch} merged here; it rides this computer's sync pull request")
+        return "adopted"
+
+    def name_unattached(self, record: dict) -> list:
+        """The person's spaces on this computer (`chain.spaces_on_machine`) whose repository the move to the cloud
+        did not attach (the record's `roots`): a space made after the move, which no chain reads now, neither the
+        cloud's nor this computer's. One item on the workspace's Needs you names them, a line each, and goes once
+        none is left. Its id, `cloud-roots-<hash>`, is the list's own, as `protected_item`'s is its change's: a
+        space made after the person answered is asked anew, with the others still left, and the item it replaces
+        goes. A space with no repository on GitHub is not named here: the move's own check names it. The
+        repositories named."""
+        import chain
+        attached = {str(slug).lower() for slug in record.get("roots") or []}
+        left: list = []
+        for root in chain.spaces_on_machine(self.root):
+            slug = ghrest.repo_slug(root)
+            if slug and slug.lower() not in attached and slug not in left:
+                left.append(slug)
+        item_id = "cloud-roots-" + hashlib.sha256("\n".join(sorted(left)).encode("utf-8")).hexdigest()[:8]
+        item = {"id": item_id, "kind": "request",
+                "text": "\n".join(f"Your routines in the cloud do not read {slug}: it was made after you moved them."
+                                  for slug in left),
+                "recommendation": "say 'run my routines in the cloud' again to add it",
+                "default": "it is not swept or briefed until then", "depends": 1}
+        self.leg_items([item] if left else [], lambda other: other.startswith("cloud-roots") and other != item_id)
+        return left
+
+    def leg_items(self, add: list, drop) -> None:
+        """The leg's items in this space's `_inbound/needs-you/sync.yaml`: each of `add` written, in place of one
+        with its id (one the person answered is not asked again); each other item whose id `drop` says is
+        settled taken out; the rest kept as they are. The file is written only when that changes it."""
+        import needs_you
+        path = self.root / SYNC_ITEMS
+        before = items_in(path)
+        answered = needs_you.answered_ids(self.root) if add else set()
+        adding = {item["id"]: item for item in add if item["id"] not in answered}
+        items = []
+        for item in before:
+            item_id = str(item.get("id", ""))
+            if item_id in adding:
+                items.append(adding.pop(item_id))
+            elif not drop(item_id):
+                items.append(item)
+        items_out(path, items + list(adding.values()), before)
+
     # ----- a cloud run's landing (`--cloud <chain>`) ---------------------------------
     def cloud_land(self) -> None:
         """A cloud run's landing, in order: what it may land is sorted and its run line written
@@ -1191,13 +1619,13 @@ class Run:
             self.cloud_line(len(staged))
 
     def protected_item(self) -> bool:
-        """One security item for the protected paths this run left out, in `_inbound/needs-you/sync-cloud.yaml`.
-        Its id, `cloud-protected-<chain>-<hash>`, is the change's own (the paths and what they now hold), so a
-        later, different change is asked anew, and the same change seen again is the same item, not asked
-        again once answered. Other items in the file (`cloud.py begin` writes there too) are kept as they
+        """One security item for the protected paths this run left out, in this space's own
+        `_inbound/needs-you/sync-cloud.yaml` (the sync knows only the root it lands). Its id,
+        `cloud-protected-<chain>-<hash>`, is the change's own (the paths and what they now hold), so a later,
+        different change is asked anew, and the same change seen again is the same item, not asked again
+        once answered. Other items in the file (`cloud.py begin` writes there too) are kept as they
         are. True when the file was written."""
         import needs_you
-        import yaml
         digest = hashlib.sha256()
         for rel in sorted(self.left_out):
             try:
@@ -1209,12 +1637,7 @@ class Run:
         if item_id in needs_you.answered_ids(self.root):
             return False
         path = self.root / CLOUD_ITEMS
-        try:
-            data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
-        except (OSError, UnicodeDecodeError, yaml.YAMLError):
-            data = {}
-        rows = data.get("items") if isinstance(data, dict) else None
-        before = [i for i in rows if isinstance(i, dict)] if isinstance(rows, list) else []
+        before = items_in(path)
         count = len(self.left_out)
         item = {"id": item_id, "kind": "security",
                 "text": "A cloud run changed 1 protected file; it was not landed." if count == 1 else
@@ -1224,12 +1647,7 @@ class Run:
         items = [item if i.get("id") == item_id else i for i in before]
         if item not in items:
             items.append(item)
-        if items == before:
-            return False
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(yaml.safe_dump({"items": items}, sort_keys=False, allow_unicode=True, width=100),
-                        encoding="utf-8", newline="\n")
-        return True
+        return items_out(path, items, before)
 
     def cloud_line(self, staged: int) -> None:
         """A cloud run's own run line, written before its commit so that it lands with it: how many
@@ -1345,8 +1763,10 @@ class Run:
 
     def pushed_item(self, carried: dict) -> None:
         """The security item `cloud.py begin` writes for a `cloud/<chain>` branch someone else pushed with a
-        protected change, here for one pushed after `begin` (`carried` is what the carry said of it), and
-        committed, so that it lands with this run, whose push replaces that branch."""
+        protected change, here for one pushed after `begin` (`carried` is what the carry said of it). Where
+        `begin` writes its items into the workspace, this one goes into the landed space's own
+        `_inbound/needs-you/sync-cloud.yaml`, as `protected_item`'s does: the sync knows only its own root.
+        It is committed, so that it lands with this run, whose push replaces that branch."""
         import cloud
         count = int(carried.get("protected") or 0)
         print(f"carry: cloud/{self.cloud} was pushed meanwhile with a change to {count} protected file(s); "
@@ -1547,6 +1967,7 @@ def _protected_moves(root: Path, bases: list, ours: str, theirs: str) -> list | 
     return protected_changes(root, sorted(found), bases, theirs)
 
 
+@monitor_off()
 def carry(root: Path, chain: str, gh=None) -> dict:
     """Merge the earlier cloud run's `cloud/<chain>` branch that never merged into this clone, at the
     start of a cloud run (`cloud.py begin`), before anything is exported or written. Then the cursors
@@ -1577,7 +1998,8 @@ def carry(root: Path, chain: str, gh=None) -> dict:
     the clone). In every case with `"error"` or `"conflict"` the run stops: it never works on top of
     what the carry left. A chain that is not one of `CLOUD_CHAINS` is a ValueError. Whatever
     happened, the head the fetch saw (empty when there was none) is written to `LEASE` in the git
-    dir: the cloud push is leased to it, so a run that pushed in between is never overwritten."""
+    dir: the cloud push is leased to it, so a run that pushed in between is never overwritten. Every
+    git it starts runs with a mount's file monitor off (`monitor_off`)."""
     if chain not in CLOUD_CHAINS:
         raise ValueError(f"no cloud chain {chain!r}: {', '.join(CLOUD_CHAINS)}")
     root = Path(root).resolve()
@@ -1698,6 +2120,14 @@ def main(argv=None) -> int:
     args = parse(sys.argv[1:] if argv is None else argv)
     if args.merge_latest:   # git runs the watermark driver mid-merge: no lock, no run line
         return merge_latest(*(Path(p) for p in args.merge_latest))
+    if args.cloud:   # every git a cloud run's landing starts, a mount's included, with the file monitor off
+        with monitor_off():
+            return sync_once(args)
+    return sync_once(args)
+
+
+def sync_once(args) -> int:
+    """One run of the sync, as `main` read its arguments: the exit code."""
     doctor.use_tools()   # git and gh that onboarding installed under ~/.spaces/tools
     root = Path(args.root).resolve()
     gdir = git_dir(root)
@@ -1716,7 +2146,9 @@ def main(argv=None) -> int:
         if args.cloud:
             run.cloud_land()
         else:
-            if not args.only and not run.dry:
+            # while the routines run in the cloud, the computer's leg runs after the merge, `not_started` with it
+            leg = not args.only and not run.dry and run.cloud_host() is not None
+            if not args.only and not run.dry and not leg:
                 run.watch_chains()
             if args.release_leg and not args.only:
                 run.release_leg()
@@ -1725,6 +2157,8 @@ def main(argv=None) -> int:
             if not args.only:
                 run.advance_pins()
             run.merge_in()
+            if leg:
+                run.computer_leg(run.now)
             if not args.only:
                 run.set_aside_tests()
                 if not run.dry and not args.no_push:

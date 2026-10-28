@@ -18,7 +18,9 @@ missed becomes a witness page under `knowledge/sources/` in this personal space 
 the person asked and how the session ended, no attachment, no subject. With `routing:` the
 router reads it like any record and decides what, if anything, informs a subject's home.
 When `path` is not a folder on this computer (a cloud run, a second laptop), the scan reports
-`path: missing` and writes nothing, so the last scan's sessions and capture rate stay.
+`path: missing` and writes nothing, so the last scan's sessions and capture rate stay. A scan that
+finds the same sessions as the last one leaves `sessions.yaml` as it is, so the sync has nothing to
+land. While the routines run in the cloud, the computer's sync runs the scan (`sync.Run.computer_leg`).
 
     python transcripts.py [root] scan
 """
@@ -155,6 +157,15 @@ def _witness(root: Path, session: dict, now: dt.datetime, space: spaceyaml.Space
     return pages.write(target, fm, body)
 
 
+def _rows(root: Path) -> list | None:
+    """The session rows `sessions.yaml` holds now; None when there is no such file, or it cannot be read."""
+    try:
+        data = yaml.safe_load((root / SESSIONS).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return None
+    return data.get("sessions") if isinstance(data, dict) else None
+
+
 def scan(root, now: dt.datetime | None = None) -> dict:
     root = Path(root)
     space = spaceyaml.load(root)
@@ -196,9 +207,10 @@ def scan(root, now: dt.datetime | None = None) -> dict:
             if not target.exists():
                 _witness(root, session, now, space)
                 report["witnessed"] += 1
-    (root / SESSIONS).parent.mkdir(parents=True, exist_ok=True)
-    (root / SESSIONS).write_text(yaml.safe_dump({"scanned_at": pages.iso(now), "sessions": rows},
-                                                sort_keys=False), encoding="utf-8", newline="\n")
+    if rows != _rows(root):   # the same sessions as last time: the file, and its time, stay as they are
+        (root / SESSIONS).parent.mkdir(parents=True, exist_ok=True)
+        (root / SESSIONS).write_text(yaml.safe_dump({"scanned_at": pages.iso(now), "sessions": rows},
+                                                    sort_keys=False), encoding="utf-8", newline="\n")
     with (root / "_meta" / "state" / "runs.jsonl").open("a", encoding="utf-8", newline="\n") as fh:
         fh.write(json.dumps({"routine": "transcripts", "at": pages.iso(now), "space": space.name,
                              "cost_tokens": 0, "notes": report}) + "\n")

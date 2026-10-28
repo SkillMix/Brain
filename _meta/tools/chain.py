@@ -9,10 +9,12 @@ is recorded as `{"step", "error"}` and the next step runs on yesterday's output;
 that is not present yet is skipped with a note. Every chain run appends one run line to
 `_meta/state/runs.jsonl`.
 
-A cloud run (`--cloud`) leaves to the computer's sync what needs the computer or must have one
-writer: the sweep chain skips the transcripts scan and settles the outbox after the reply step,
-where the mail feed is read; the daily chain skips template sync, the two request steps, the
-release leg and the outbox, and asks the link check without GraphQL.
+A cloud run (`--cloud`) leaves to the computer's sync what needs the computer, the person's click
+or one writer: the sweep chain skips the transcripts scan and settles the outbox after the reply
+step, where the mail feed is read; the daily chain skips template sync, the two request steps, the
+release leg and the outbox, and asks the link check without GraphQL. The computer's sync then
+scans the transcripts at most every TRANSCRIPTS_HOURS and runs template sync when
+`_template_sync_due` says so (`sync.Run.computer_leg`).
 
 `chain.py gate <workspace>` is the first step of every task prompt a computer runs: it prints
 nothing and exits 0 when this computer may run the chains now, else one sentence and exit 3
@@ -49,6 +51,9 @@ import spaceyaml  # noqa: E402
 RUNS_LOG = Path("_meta") / "state" / "runs.jsonl"
 ANSWERS_PATH = Path("_meta") / "tests" / "answers.yaml"
 LEAKS_PATH = Path("_meta") / "tests" / "leaks.yaml"
+# While the routines run in the cloud, the computer's sync scans the transcripts, the sweep chain's first
+# step, at most this often: the session files are on the computer, and the cloud sweep never reads them.
+TRANSCRIPTS_HOURS = 6
 
 
 # ----- steps -------------------------------------------------------------------------
@@ -138,7 +143,9 @@ def _mark_stale(space: spaceyaml.Space, ctx: dict, now: dt.datetime) -> None:
 
 def _template_sync_due(space: spaceyaml.Space, now: dt.datetime) -> bool:
     """Once a scaled week, where a provenance file names the template or onboarding made the
-    space from it (it stamps no provenance; the first sync does); never in the fixture."""
+    space from it (it stamps no provenance; the first sync does); never in the fixture. The daily
+    chain asks it, and so does the computer's sync while the routines run in the cloud
+    (`sync.Run.computer_leg`)."""
     state = space.root / "_meta" / "state"
     if space.mode == "fixture" or not ((state / "template-version.yaml").exists() or (state / "onboard.yaml").exists()):
         return False
@@ -227,9 +234,11 @@ def daily(root, person: str | None = None, now: dt.datetime | None = None, shado
     """status → access → link check → requests → release (listed items only) → outbox reconcile
     → morning view → answer and leak tests.
 
-    In a cloud run (`cloud`) template sync, the two request steps and the release leg are the
-    computer's sync's, so two writers never answer or ship the same item, and the outbox is the
-    cloud sweep's; the link check runs without GraphQL, which a cloud run refuses."""
+    In a cloud run (`cloud`) the computer's sync keeps four steps. Template sync stays there
+    because the machinery it changes needs the person's click, and a cloud run never lands a
+    protected change. The two request steps and the release leg stay there so that two writers
+    never answer or ship the same item. The outbox is the cloud sweep's, and the link check runs
+    without GraphQL, which a cloud run refuses."""
     root = Path(root)
     space = spaceyaml.load(root)
     now = now or space.now()
@@ -246,8 +255,8 @@ def daily(root, person: str | None = None, now: dt.datetime | None = None, shado
         _step(ctx, "requests_collect", "request", "collect", root, now=now, offline_roots=offline_roots)
         _step(ctx, "requests_answer", "request", "answer", root, now=now, offline_roots=offline_roots)
         _step(ctx, "release", "release", "ship", root, now=now, offline_roots=offline_roots)
-    if not cloud and (root / "outbox").is_dir():
-        _step(ctx, "outbox_reconcile", "outbox_reconcile", "run", root, now=now)
+        if (root / "outbox").is_dir():
+            _step(ctx, "outbox_reconcile", "outbox_reconcile", "run", root, now=now)
     _step(ctx, "morning_view", "morning_view", "run", root, person, now=now, shadow=shadow)
     if (root / ANSWERS_PATH).exists():
         _step(ctx, "answers", "tests_run", "answers", root, now=now, roots=offline_roots)
