@@ -1881,7 +1881,9 @@ def phase_history(args) -> dict:
     Once part 1 has been started the journal's history says `in_background`: the setup counts as finished.
     On a computer that does not run the routines (`backfill.elsewhere_why`) it writes nothing: the history's notes
     are kept where the routines run, and the phase is done here (R45, I-1). While they run in the cloud it writes
-    nothing either: the history is read only on a computer, so the routines come back to one first."""
+    nothing either: with no plan ever made it says the history is read only on a computer, so the routines come
+    back to one first; a plan made before the move is said as it stands, as for any record (`_history_state`), and
+    so are notes on one that cannot be read."""
     import backfill
     journal, now = setup_journal.load(), _now()
     counts = history_counts(journal)
@@ -1891,6 +1893,11 @@ def phase_history(args) -> dict:
     if args.dry_run:
         return {"phase": "history", "state": "pending", "counts": counts, "why": "dry run: nothing is planned"}
     elsewhere = backfill.elsewhere_why(workspace)
+    made = backfill.load(workspace) if elsewhere == backfill.CLOUD_WHY else {}   # a plan made before the move
+    if made.get("broken"):
+        return {"phase": "history", "state": "waiting", "why": backfill.BROKEN_WHY, "counts": counts}
+    if made.get("parts"):
+        return {"phase": "history", **_history_state(workspace, counts)}
     if elsewhere:   # two computers writing the history's notes would stop this one's sync; the cloud reads none of it
         return {"phase": "history", "state": "done", "counts": counts, "why": elsewhere}
     text = (getattr(args, "reading", None) or "").strip()
@@ -1942,10 +1949,20 @@ def phase_history(args) -> dict:
         result["waited"] = _wait_part(workspace, args.wait_part)
         if args.wait_part == "p1" and result["waited"].get("status") in ("done", "paused"):   # shown to the person: a resume knows
             setup_journal.set_phase("history", "running", part1_waited=result["waited"]["status"])
+    result.update(_history_state(workspace, counts, why))
+    return result
+
+
+def _history_state(workspace: Path, counts: dict, why: str = "") -> dict:
+    """Where the history stands, as its progress file says, in the phase's words: `state` (`done` once no part is left,
+    `waiting` for the person, a held plan or a sign-in that ran out, else `running`), the `parts`, `current_by`, the
+    `counts`, `window_days`, `shortened_because` when the window was cut, and a plain `why`: the state's own, else
+    `why`. It writes nothing."""
+    import backfill
     state = backfill.load(workspace)
     waiting = state.get("waiting") or next((p.get("why") for p in state.get("parts") or []
                                            if p.get("status") == "paused" and (p.get("runs") or [{}])[-1].get("outcome") == "auth"), None)
-    result.update(state="done" if not backfill.active(workspace) else "waiting" if waiting else "running",
+    result = dict(state="done" if not backfill.active(workspace) else "waiting" if waiting else "running",
                   parts=state.get("parts") or [], current_by=state.get("current_by"), counts=counts,
                   window_days=state.get("window_days"))
     if state.get("shortened_because"):

@@ -932,22 +932,28 @@ HOST_UNCLEAR = ("Which computer runs your routines is unclear, so none of them r
 HOST_ELSEWHERE = "Your routines run on {name}. Say 'run my routines here' to run them on this computer."
 HOST_CLOUD = ("Your routines run in the cloud, as two scheduled tasks. Say 'run my routines here' to bring them to this "
               "computer.")
+HOST_STOPPED = ("Your routines are stopped: the cloud no longer refuses {what}, so its two scheduled tasks stay off. "
+                "Say 'run my routines here' to run them on this computer.")
 
 
 def _host_rows(ws, now) -> list:
     """The lines on where the routines run, from the record every computer reads (`routine.host`); only read.
     Paused: until when. Unclear: that none runs. Another computer: that they run there, or, once the sync script saw
     them not start, since when they have not. The cloud is no computer, so it is never named as one: they run there as
-    two scheduled tasks, or have not since when. A routine paused, or one nobody may run, is not one the scheduler
-    failed to start, so then no `not started` line; with nothing recorded, those lines are as the sync script wrote."""
+    two scheduled tasks, or have not since when. Stopped (`onboard.cloud_stopped`: in the cloud, whose two tasks stay
+    off once a proof showed a refusal missing): that they are, what the cloud no longer refuses, and 'run my routines
+    here', in place of both. A routine paused, or one nobody may run, is not one the scheduler failed to start, so
+    then no `not started` line; with nothing recorded, those lines are as the sync script wrote."""
+    import onboard
     import routine
-    until, away, cloud = None, "", False
+    until, away, cloud, stopped = None, "", False, {}
     try:
         record = routine.host(ws) if ws else None
         if record is not None and not record.get("unclear"):
             until, cloud = routine.paused_until(record, now), record["runner"] == "cloud"
             mine = record["machine"] == routine.this_machine()
             away = "" if cloud or mine else (_text(record["name"]) or "another computer")   # the cloud is no computer
+            stopped = onboard.cloud_stopped(ws) if cloud else {}
     except Exception:   # never a file it could not read (`routine.host` reads that as unclear): said, not hidden
         return [_could_not_read("Where your routines run")]
     if record is None:
@@ -958,6 +964,8 @@ def _host_rows(ws, now) -> list:
                               "sooner.")] if until else []
     if not (away or cloud):
         return rows or _missed_rows(ws, now)
+    if stopped:   # nothing runs them, so a run the sync script saw not start says nothing more
+        return rows + [_fact("Routines", HOST_STOPPED.format(what=onboard.unrefused_words(stopped)))]
     there = HOST_CLOUD if cloud else HOST_ELSEWHERE.format(name=away)
     return rows + (([] if until else _missed_rows(ws, now, away, cloud)) or [_fact("Routines", there)])
 

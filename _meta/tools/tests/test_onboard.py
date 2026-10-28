@@ -1480,6 +1480,28 @@ def test_the_check_names_the_two_tasks_the_routines_already_run_as(tmp_path, mon
     assert "update" in already
 
 
+def test_the_check_says_the_routines_are_stopped_rather_than_that_they_already_run_in_the_cloud(
+        tmp_path, monkeypatch, capsys):
+    """The record says cloud, so this computer's own tasks step aside, and a proof showed a refusal missing, so the
+    cloud's two tasks stay off: nothing runs the routines, and the check says so, with 'run my routines here'."""
+    ada = cloud_ready(tmp_path, monkeypatch)
+    github(monkeypatch, {"ada/ada": (True, True), "example/brain": (False, None)})
+    proof(ada, "sweep", hours_ago=72, tool=False)
+    proof(ada, "daily", hours_ago=72)
+    assert onboard.cloud_stopped(ada) == {}   # tasks made new for the proof: the routines run where they ran
+    cloud_hosted(ada)
+    assert onboard.cloud_stopped(ada) == {"sweep": ["tool"]}
+    assert onboard.main(["--routines-cloud", "--check", str(ada)]) == 0
+    clear, stopped = capsys.readouterr().out.strip().splitlines()
+    assert clear == onboard.CLOUD_CLEAR and stopped == onboard.unrefused_sentence(ada, {"sweep": ["tool"]})
+    assert stopped.startswith("Your routines are stopped") and "run my routines here" in stopped
+    assert "already run in the cloud" not in stopped
+    proof(ada, "sweep", hours_ago=60)   # proved again since: they run in the cloud again
+    assert onboard.cloud_stopped(ada) == {}
+    assert onboard.main(["--routines-cloud", "--check", str(ada)]) == 0
+    assert "already run in the cloud" in capsys.readouterr().out
+
+
 def answers(routes: dict):
     """A `gh` that answers each REST route with (exit code, JSON or text); any other route is not found."""
     calls = []
@@ -1650,7 +1672,7 @@ def test_flags_that_do_not_go_together_are_refused_plainly(tmp_path, capsys, fla
 
 
 SKILL = TEMPLATE / ".claude" / "skills" / "onboard"
-PHRASES = ("pause my routines", "resume my routines", "run my routines here")
+PHRASES = ("pause my routines", "resume my routines", "run my routines here", "run my routines in the cloud")
 
 
 def test_the_cloud_sentence_reaches_the_onboard_skill_with_its_proof_before_the_move():
@@ -1714,7 +1736,7 @@ def test_is_this_set_up_says_the_cloud_row_though_it_does_not_fail():
     assert onboard.CLOUD_STEP == "routines in the cloud"
 
 
-def test_the_three_routine_phrases_reach_the_onboard_skill():
+def test_the_routine_phrases_reach_the_onboard_skill():
     description = (SKILL / "SKILL.md").read_text(encoding="utf-8").split("---")[1]
     instruction = " ".join((TEMPLATE / "_meta" / "templates" / "personal-instruction.md").read_text(encoding="utf-8").split())
     routing = instruction[instruction.index("The toolbox is in"):]

@@ -277,7 +277,8 @@ def gate(workspace, now: dt.datetime | None = None) -> str | None:
     task prompt a computer runs (`chain.py gate <workspace>`), since the app's own scheduled tasks
     never read the routine host record: the routines run in the cloud, paused or not
     (IN_THE_CLOUD), another computer is the host ("they run on <name>"), the record is not one
-    (`routine.UNCLEAR`), or they are paused ("paused until <time>", in this computer's time).
+    (`routine.UNCLEAR`), or they are paused ("paused until <time>", in this computer's time, or in
+    the record's own for a time this computer cannot put in its own).
     This computer as the host goes on through either of its runners, and so does a workspace with
     no record at all: a space that never claimed runs as it always has."""
     import routine
@@ -292,7 +293,11 @@ def gate(workspace, now: dt.datetime | None = None) -> str | None:
         return f"they run on {record['name'] or 'another computer'}"
     until = routine.paused_until(record, now or dt.datetime.now(dt.timezone.utc))
     if until is not None:
-        return f"paused until {until.astimezone():%Y-%m-%d %H:%M}"
+        try:
+            until = until.astimezone()
+        except (OSError, OverflowError, ValueError):   # Windows has no local time past the year 3000: the record's own
+            pass
+        return f"paused until {until:%Y-%m-%d %H:%M}"
     return None
 
 

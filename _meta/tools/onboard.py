@@ -25,9 +25,10 @@ them only where nothing else runs them, `--routines-here` moves them to this com
 passed there, and `--pause` (until 06:00 the next morning, or `--until`) and `--resume` hold them.
 While they run in the cloud, no computer registers them, and a pause reaches the cloud once the sync
 lands it. `--routines-cloud --check` names what keeps them from moving there, and the two tasks they
-already run as when they run there; `--routines-cloud` with the two tasks and the person's zone moves
-them, once the newest proof run of each task showed every refusal. While they run there, `--check` names
-the two tasks and when each chain last wrote a run line, or that a proof stopped them.
+already run as when they run there, or that a proof stopped them; `--routines-cloud` with the two
+tasks and the person's zone moves them, once the newest proof run of each task showed every refusal.
+While they run there, `--check` names the two tasks and when each chain last wrote a run line, or that
+a proof stopped them.
 """
 from __future__ import annotations
 
@@ -1956,16 +1957,30 @@ def cloud_unrefused(workspace) -> dict:
     return missing
 
 
+def cloud_stopped(workspace) -> dict:
+    """{chain: the refusals the cloud did not make} while the routines are stopped, else {}. Stopped is three things at
+    once: the record says they run in the cloud, so every computer's own tasks step aside and are off; and a proof
+    showed a refusal missing that no later proof showed again (`cloud_unrefused`), so the cloud's two tasks, proved
+    in place, stay off. Nothing runs them until the person moves them here. A refusal missing under any other record
+    came from tasks made new for a proof: the routines run where they ran."""
+    return cloud_unrefused(workspace) if _cloud_tasks(workspace) else {}
+
+
+def unrefused_words(missing: dict) -> str:
+    """What the cloud does not refuse, in the person's words (REFUSED), for `missing` as `cloud_unrefused` gives it."""
+    seen = [words for refusal, words in REFUSED.items() if any(refusal in found for found in missing.values())]
+    return seen[0] if len(seen) == 1 else f"{', '.join(seen[:-1])} or {seen[-1]}"
+
+
 def unrefused_sentence(workspace, missing: dict) -> str:
     """The one sentence a move refused for a refusal missing says: which task's proof showed it, and what the cloud
-    does not refuse, in the person's words (REFUSED). While the routines run in the cloud its two tasks were proved
-    in place, so they are off and stay off: the routines are stopped until the person moves them here
-    (CLOUD_STOPPED); else they stay where they run (CLOUD_UNREFUSED)."""
+    does not refuse (`unrefused_words`). While the routines run in the cloud its two tasks were proved in place, so
+    they are off and stay off: the routines are stopped until the person moves them here (CLOUD_STOPPED); else they
+    stay where they run (CLOUD_UNREFUSED)."""
     chains = [chain for chain in CLOUD_CHAINS if chain in missing]
     proof = (f"{chains[0]} task's proof run shows" if len(chains) == 1
              else f"{' and '.join(chains)} tasks' proof runs show")
-    seen = [words for refusal, words in REFUSED.items() if any(refusal in missing[chain] for chain in chains)]
-    what = seen[0] if len(seen) == 1 else f"{', '.join(seen[:-1])} or {seen[-1]}"
+    what = unrefused_words({chain: missing[chain] for chain in chains})
     return (CLOUD_STOPPED if _cloud_tasks(workspace) else CLOUD_UNREFUSED).format(proof=proof, what=what)
 
 
@@ -3324,8 +3339,10 @@ def main(argv=None) -> int:
         if args.check:
             blockers = cloud_blockers(root)
             print("\n".join(blockers) or CLOUD_CLEAR)
-            running = _cloud_tasks(root)
-            if running:   # moving again (a space made since): the two tasks they run as are proved, never made twice
+            running, stopped = _cloud_tasks(root), cloud_stopped(root)
+            if stopped:   # the two tasks are off and stay off: nothing runs the routines until they move here
+                print(unrefused_sentence(root, stopped))
+            elif running:   # moving again (a space made since): the two tasks they run as are proved, never made twice
                 print(CLOUD_ALREADY.format(**running))
             return 1 if blockers else 0
         done, said, to_turn_off = routines_cloud(root, {"sweep": args.sweep, "daily": args.daily}, args.timezone)

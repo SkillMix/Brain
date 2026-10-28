@@ -1000,6 +1000,48 @@ def test_routines_in_the_cloud_are_no_other_computer_on_the_page(tmp_path, monke
     assert not any("on the cloud" in t for t in quiet + texts + on_this_one)
 
 
+def proved(ws, chain, at, **seen) -> None:
+    """One proof line as a cloud run lands it (`cloud.py proof-line`): every refusal seen, unless `seen` says not."""
+    run_line(ws, "cloud-proof", at, **{"chain": chain, "guard": True, "edit": True, "tool": True,
+                                       **({"send": True} if chain == "daily" else {}), **seen})
+
+
+def test_routines_the_cloud_stopped_are_said_stopped_and_offered_here(tmp_path, monkeypatch):
+    """The record says cloud, so this computer's own tasks step aside, and a proof showed a refusal missing, so the
+    cloud's two tasks stay off: the routines run nowhere. The page says so where it says where they run, with what
+    the cloud no longer refuses and 'run my routines here', and no line that they run in the cloud or missed a run."""
+    assert page.HOST_STOPPED == ("Your routines are stopped: the cloud no longer refuses {what}, so its two scheduled "
+                                 "tasks stay off. Say 'run my routines here' to run them on this computer.")
+    said = page.HOST_STOPPED.format(what="a change to a protected file")
+
+    def stopped(ws, journal):
+        in_the_cloud(ws, monkeypatch)
+        proved(ws, "sweep", "2026-10-23T09:00:00+02:00", edit=False)
+        proved(ws, "daily", "2026-10-23T09:10:00+02:00")
+        stale(ws, "daily not started", since="2026-10-23T06:30:00+02:00")
+    rows = rows_of(tmp_path, "waiting", stopped)
+    assert [(r["label"], r["text"]) for r in rows] == [("Routines", said)]
+
+    def paused(ws, journal):
+        stopped(ws, journal)
+        routine.set_pause(ws, "2026-10-25T06:00:00+02:00")
+    texts = [r["text"] for r in rows_of(tmp_path / "paused", "waiting", paused)]
+    assert texts == ["Routines paused until tomorrow at 06:00. Say 'resume my routines' to start them sooner.", said]
+
+    def mended(ws, journal):
+        stopped(ws, journal)
+        proved(ws, "sweep", "2026-10-23T11:00:00+02:00")   # proved again since: the refusals hold now
+    assert [r["text"] for r in rows_of(tmp_path / "mended", "waiting", mended)] == [
+        "Your routines haven't run in the cloud since 23 October; say 'run my routines here' to bring them to this "
+        "computer."]
+
+    def made_new(ws, journal):   # tasks made new for a proof: the routines run where they ran
+        hosted(ws, monkeypatch=monkeypatch, here="m-laptop")
+        proved(ws, "sweep", "2026-10-23T09:00:00+02:00", edit=False)
+    assert [r["text"] for r in rows_of(tmp_path / "new", "waiting", made_new)] == [
+        "Your routines run on ADA-DESKTOP. Say 'run my routines here' to run them on this computer."]
+
+
 def test_the_computers_name_is_escaped_on_the_page(tmp_path, monkeypatch):
     ws, journal = lantern_works_after_part_1(tmp_path)
     hosted(ws, name='<img src=x onerror="alert(1)">', monkeypatch=monkeypatch, here="m-laptop")

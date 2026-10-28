@@ -363,6 +363,26 @@ def test_the_gate_stops_a_paused_space(tmp_path, capsys, desktop):
     assert "paused until" in capsys.readouterr().out
 
 
+class _NoLocalTime(dt.datetime):
+    """A moment this computer cannot put in its own time, as Windows cannot past the year 3000."""
+
+    def astimezone(self, tz=None):
+        raise OSError(22, "Invalid argument")
+
+
+def test_a_pause_this_computer_cannot_put_in_its_own_time_still_stops_the_chains(tmp_path, capsys, desktop,
+                                                                                    monkeypatch):
+    """A pause is a pause however far off it ends: the gate says it in the record's own time and exits 3, never 1."""
+    ws = make_space(tmp_path / "ada")
+    desktop.claim_host(ws, "harness", NOW)
+    desktop.set_pause(ws, dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=2))
+    monkeypatch.setattr(desktop, "paused_until",
+                        lambda record, now: _NoLocalTime(3001, 1, 1, 9, 30, tzinfo=dt.timezone.utc))
+    assert chain.gate(ws, NOW) == "paused until 3001-01-01 09:30"
+    assert chain.main(["gate", str(ws)]) == 3
+    assert "paused until 3001-01-01 09:30" in capsys.readouterr().out
+
+
 def test_the_gate_stops_while_the_record_is_unclear(tmp_path, capsys, desktop):
     ws = make_space(tmp_path / "ada")
     (ws / desktop.HOST).write_text("machine: [\n", encoding="utf-8")
