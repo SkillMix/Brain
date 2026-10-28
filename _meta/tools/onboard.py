@@ -854,11 +854,11 @@ def task_prefix() -> str:
     it registers, reads back and removes tasks of its own and never touches a person's. Without it, this
     computer's `task_prefix` (`~/.spaces/settings.yaml`, saved by `start.py build --task-prefix` where another
     account holds the names). A value that is not `space-` and lower-case letters, digits and hyphens is
-    refused, never replaced by the default: a typo must not register tasks under the person's own names."""
-    prefix = os.environ.get(TASK_PREFIX_ENV) or _saved_settings().get("task_prefix") or TASK_PREFIX
-    if not re.fullmatch(r"space-[a-z0-9-]*", str(prefix)):
-        raise ValueError(f"{TASK_PREFIX_ENV} must start with space- and use only lower-case letters, digits and "
-                         f"hyphens, not {prefix!r}")
+    refused, never replaced by the default: a typo must not register tasks under the person's own names. The refusal
+    is check_task_prefix's, naming the setting the prefix came from."""
+    said = os.environ.get(TASK_PREFIX_ENV)
+    prefix = said or _saved_settings().get("task_prefix") or TASK_PREFIX
+    check_task_prefix(prefix, TASK_PREFIX_ENV if said else f"task_prefix in {_settings_path()}")
     return prefix
 
 
@@ -874,11 +874,12 @@ def _saved_settings() -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def check_task_prefix(prefix: str) -> None:
-    """A ValueError for a task-name prefix task_prefix would refuse."""
+def check_task_prefix(prefix: str, source: str = "a task-name prefix") -> None:
+    """A ValueError for a task-name prefix that is not ours, naming where it came from (`source`): the one rule,
+    for task_prefix, save_task_prefix and the build's `--task-prefix` (the review of #61)."""
     if not re.fullmatch(r"space-[a-z0-9-]*", str(prefix)):
-        raise ValueError(f"a task-name prefix starts with space- and uses only lower-case letters, digits and "
-                         f"hyphens, not {prefix!r}")
+        raise ValueError(f"{source} must start with space- and use only lower-case letters, digits and hyphens, "
+                         f"not {prefix!r}")
 
 
 def save_task_prefix(prefix: str) -> None:

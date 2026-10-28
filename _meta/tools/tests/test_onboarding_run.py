@@ -694,6 +694,37 @@ def test_a_task_prefix_that_is_not_ours_is_never_saved():
     assert not (Path.home() / ".spaces" / "settings.yaml").exists()
 
 
+def refusal(monkeypatch, said=None) -> str:
+    """What task_prefix() refuses with, the test setting `said` (None: not set)."""
+    if said is None:
+        monkeypatch.delenv(onboard.TASK_PREFIX_ENV, raising=False)
+    else:
+        monkeypatch.setenv(onboard.TASK_PREFIX_ENV, said)
+    try:
+        onboard.task_prefix()
+    except ValueError as exc:
+        return str(exc)
+    raise AssertionError(said)
+
+
+def test_a_task_prefix_that_is_not_ours_is_refused_by_one_rule_that_names_where_it_came_from(monkeypatch):
+    # the review of #61: task_prefix had its own copy of the rule, whose refusal named SPACES_TASK_PREFIX for a saved one
+    settings = Path.home() / ".spaces" / "settings.yaml"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text("task_prefix: Space-Ada-\n", encoding="utf-8")   # a hand edit that save_task_prefix refuses
+    said = refusal(monkeypatch)
+    assert onboard.TASK_PREFIX_ENV not in said and str(settings) in said and "'Space-Ada-'" in said
+    assert refusal(monkeypatch, "space-Test-").startswith(f"{onboard.TASK_PREFIX_ENV} must start with space-")
+    for bad in ("ada-", "space-Ada-", "space-ada "):   # the same words, wherever the prefix came from
+        settings.write_text(f"task_prefix: '{bad}'\n", encoding="utf-8")
+        try:
+            onboard.check_task_prefix(bad)
+        except ValueError as exc:
+            assert str(exc).split(" must ", 1)[1] == refusal(monkeypatch).split(" must ", 1)[1], bad
+        else:
+            raise AssertionError(bad)
+
+
 def test_the_build_saves_the_task_prefix_it_was_given(tmp_path):
     start.use_task_prefix(start.parser().parse_args(["build", "--task-prefix", "space-ada-", "--dry-run", "--json"]))
     assert onboard.task_prefix() == "space-"   # a dry run changes nothing
