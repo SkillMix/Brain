@@ -237,6 +237,147 @@ def test_cli_sweep_and_daily(tmp_path, fakes):
     assert fakes.names() == ["sweep", "distill", "check", "status", "release", "morning_view"]
 
 
+# ----- a cloud run: what it leaves to the computer (spec 4.8) ------------------------
+
+def personal_space_with_all_steps(tmp_path, fakes) -> Path:
+    """A personal space whose every chain step has a fake: transcripts to scan, an outbox, and a
+    template sync that is due."""
+    root = make_space(tmp_path / "ada", transcripts={"path": str(tmp_path / "sessions"), "switch": "on"})
+    (root / "_meta" / "state" / "onboard.yaml").write_text("made: 2026-10-01\n", encoding="utf-8")
+    for module, fn, name in (("transcripts", "scan", "transcripts"), ("reply", "run", "reply"),
+                             ("outbox_reconcile", "run", "outbox_reconcile"),
+                             ("tracker", "observe", "tracker_observe"), ("access", "run", "access"),
+                             ("template_sync", "guarded", "template_sync")):
+        fakes.modules[module] = types.SimpleNamespace(**{fn: fakes._fn(name)})
+    fakes.modules["link"] = types.SimpleNamespace(journal_records=fakes._fn("journal_records"),
+                                                  check=fakes._fn("link_check"))
+    fakes.modules["request"] = types.SimpleNamespace(collect=fakes._fn("requests_collect"),
+                                                     answer=fakes._fn("requests_answer"))
+    return root
+
+
+def test_a_cloud_sweep_leaves_transcripts_to_the_computer_and_reconciles_the_outbox(tmp_path, fakes):
+    root = personal_space_with_all_steps(tmp_path, fakes)
+    chain.sweep_chain(root, now=NOW)
+    assert fakes.names() == ["transcripts", "journal_records", "sweep", "reply", "distill", "check",
+                             "tracker_observe"]   # on the computer, as today
+    fakes.calls.clear()
+    result = chain.sweep_chain(root, now=NOW, cloud=True)
+    assert fakes.names() == ["journal_records", "sweep", "reply", "outbox_reconcile", "distill", "check",
+                             "tracker_observe"]
+    assert "transcripts" not in result["steps"] and not any("transcripts" in s for s in result["skipped"])
+
+
+def test_a_cloud_sweep_without_an_outbox_reconciles_nothing(tmp_path, fakes):
+    root = make_space(tmp_path / "harbor", profile="project", name="harbor")
+    fakes.modules["outbox_reconcile"] = types.SimpleNamespace(run=fakes._fn("outbox_reconcile"))
+    chain.sweep_chain(root, now=NOW, cloud=True)
+    assert fakes.names() == ["sweep", "distill", "check"]
+
+
+def test_a_cloud_daily_leaves_release_requests_template_sync_and_outbox_to_the_computer(tmp_path, fakes):
+    root = personal_space_with_all_steps(tmp_path, fakes)
+    chain.daily(root, "Ada Okafor", now=NOW)
+    assert fakes.names() == ["template_sync", "status", "access", "link_check", "requests_collect",
+                             "requests_answer", "release", "outbox_reconcile", "morning_view"]   # as today
+    fakes.calls.clear()
+    result = chain.daily(root, "Ada Okafor", now=NOW, cloud=True)
+    assert fakes.names() == ["status", "access", "link_check", "morning_view"]
+    left = {"template_sync", "release", "requests_collect", "requests_answer", "outbox_reconcile"}
+    assert not left & set(result["steps"]) and result["skipped"] == [] and result["errors"] == []
+
+
+def test_a_cloud_daily_asks_the_link_check_without_graphql(tmp_path, fakes):
+    root = personal_space_with_all_steps(tmp_path, fakes)
+    chain.daily(root, "Ada Okafor", now=NOW)
+    chain.daily(root, "Ada Okafor", now=NOW, cloud=True)
+    computer, cloud = [c[5] for c in fakes.calls if c[0] == "link_check"]
+    assert computer.get("graphql", True) is True and cloud["graphql"] is False
+    assert computer["now"] == cloud["now"] == NOW
+
+
+def test_cli_cloud_sweep_and_daily(tmp_path, fakes):
+    root = personal_space_with_all_steps(tmp_path, fakes)
+    assert chain.main(["sweep", str(root), "--cloud"]) == 0
+    assert chain.main(["daily", str(root), "--person", "Ada Okafor", "--cloud"]) == 0
+    assert fakes.names() == ["journal_records", "sweep", "reply", "outbox_reconcile", "distill", "check",
+                             "tracker_observe", "status", "access", "link_check", "morning_view"]
+    lines = (root / "_meta" / "state" / "runs.jsonl").read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line)["routine"] for line in lines] == ["sweep_chain", "daily"]
+
+
+# ----- the gate: the first step of every task the app's own scheduler starts ---------
+
+CLOUD_TASKS = {"sweep": "trig_01AAAAAAAA", "daily": "trig_01BBBBBBBB"}
+CLOUD_ROOTS = ["ada/ada-space"]
+CLOUD_GRANT = {"read": ["mcp__mail__get_thread"], "write": [], "send": ["mcp__mail__send_message"]}
+
+
+@pytest.fixture
+def desktop(monkeypatch):
+    """This computer is `m-desktop`, which its person knows as ADA-DESKTOP."""
+    import routine
+    monkeypatch.setattr(routine, "this_machine", lambda: "m-desktop")
+    monkeypatch.setattr(routine, "machine_name", lambda: "ADA-DESKTOP")
+    return routine
+
+
+def test_the_gate_stops_a_computer_task_when_the_routines_run_in_the_cloud(tmp_path, capsys, desktop):
+    ws = make_space(tmp_path / "ada")
+    desktop.claim_cloud(ws, CLOUD_TASKS, "Europe/Amsterdam", CLOUD_ROOTS, CLOUD_GRANT, NOW)
+    assert chain.gate(ws, NOW) == "your routines run in the cloud"
+    assert chain.main(["gate", str(ws)]) == 3
+    out = capsys.readouterr().out
+    assert "your routines run in the cloud" in out and len(out.strip().splitlines()) == 1
+    desktop.set_pause(ws, NOW + dt.timedelta(hours=8))
+    assert chain.gate(ws, NOW) == "your routines run in the cloud"   # paused or not, no computer runs them
+    assert not (ws / "_meta" / "state" / "runs.jsonl").exists()
+
+
+def test_the_gate_lets_the_host_computer_run(tmp_path, capsys, desktop):
+    ws = make_space(tmp_path / "ada")
+    for runner in ("harness", "os"):   # the app's own tasks, or the OS tasks' prompt
+        desktop.claim_host(ws, runner, NOW)
+        assert chain.gate(ws, NOW) is None
+        assert chain.main(["gate", str(ws)]) == 0
+        assert capsys.readouterr().out == ""
+
+
+def test_the_gate_stops_a_computer_that_is_not_the_host(tmp_path, capsys, desktop, monkeypatch):
+    ws = make_space(tmp_path / "ada")
+    desktop.claim_host(ws, "harness", NOW)
+    monkeypatch.setattr(desktop, "this_machine", lambda: "m-laptop")
+    assert chain.gate(ws, NOW) == "they run on ADA-DESKTOP"
+    assert chain.main(["gate", str(ws)]) == 3
+    assert "they run on ADA-DESKTOP" in capsys.readouterr().out
+
+
+def test_the_gate_stops_a_paused_space(tmp_path, capsys, desktop):
+    ws = make_space(tmp_path / "ada")
+    desktop.claim_host(ws, "harness", NOW)
+    desktop.set_pause(ws, NOW + dt.timedelta(hours=2))
+    assert chain.gate(ws, NOW).startswith("paused until ")
+    assert chain.gate(ws, NOW + dt.timedelta(hours=3)) is None   # the pause is over
+    desktop.set_pause(ws, dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=2))
+    assert chain.main(["gate", str(ws)]) == 3
+    assert "paused until" in capsys.readouterr().out
+
+
+def test_the_gate_stops_while_the_record_is_unclear(tmp_path, capsys, desktop):
+    ws = make_space(tmp_path / "ada")
+    (ws / desktop.HOST).write_text("machine: [\n", encoding="utf-8")
+    assert chain.gate(ws, NOW) == desktop.UNCLEAR
+    assert chain.main(["gate", str(ws)]) == 3
+    assert desktop.UNCLEAR in capsys.readouterr().out
+
+
+def test_without_a_record_the_gate_goes_on(tmp_path, capsys):
+    ws = make_space(tmp_path / "ada")
+    assert chain.gate(ws, NOW) is None
+    assert chain.main(["gate", str(ws)]) == 0
+    assert capsys.readouterr().out == ""
+
+
 # ----- the fixture company --------------------------------------------------------
 
 @template_only
