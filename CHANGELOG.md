@@ -174,7 +174,8 @@ back to back, and nothing a record or the person settled is asked again.
   what the first read found on the pages that did not move; the company's domain stays the one given.
 - **Task names another Windows account holds.** Where another account on the computer already has
   the space's task names, Windows said only "Access is denied". The row now says the name is
-  another account's, with the line an administrator runs to remove it, and
+  another account's (Windows' own words for it are read in the computer's display language too),
+  with the line an administrator runs to remove it, and
   `start.py build --task-prefix space-<letters>-` gives this computer names of its own, kept in
   `~/.spaces/settings.yaml`.
 - **The app card.** "Read <app> again" (`start.py apps --unskip <app>`) takes a skip back, with

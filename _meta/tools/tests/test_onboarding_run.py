@@ -590,6 +590,37 @@ def test_a_task_name_another_account_holds_says_so_with_the_way_out(tmp_path, mo
     assert "--task-prefix" in step.result and "Access is denied" not in step.result
 
 
+def taken_in(monkeypatch, tmp_path, said: str, words: list):
+    """The row register_task writes when schtasks refuses with `said`, on a Windows whose own words for
+    "access is denied" are `words`."""
+    monkeypatch.setattr(onboard, "SYSTEM", "Windows")
+    monkeypatch.setattr(onboard, "_denied_words", lambda: words)
+    monkeypatch.setattr(onboard, "run_cmd", lambda argv, dry_run=False, cwd=None: subprocess.CompletedProcess(argv, 1, "", said))
+    report = onboard.Report("person")
+    onboard.register_task(report, "sync task registered", "space-sync-ada", tmp_path / "ada",
+                          [tmp_path / "ada" / "sync.py"], minutes=15)
+    return report.steps[-1]
+
+
+def test_a_task_name_another_account_holds_is_named_in_the_computer_s_own_language(tmp_path, monkeypatch):
+    # the review of #61: schtasks says "access is denied" in the display language, not in English
+    step = taken_in(monkeypatch, tmp_path, "FOUT: Toegang geweigerd.\r\n", ["Access is denied.", "Toegang geweigerd."])
+    assert step.needs_owner and "another account" in step.result
+    # a console code page that is not the one Python decodes with only garbles the accented letters
+    said = "ERREUR : Accès refusé.\r\n".encode("cp850").decode("cp1252")
+    step = taken_in(monkeypatch, tmp_path, said, ["Access is denied.", "Accès refusé."])
+    assert step.needs_owner and "another account" in step.result
+    step = taken_in(monkeypatch, tmp_path, "ERROR: The task XML is malformed.\r\n", ["Access is denied.", "Toegang geweigerd."])
+    assert not step.needs_owner and "malformed" in step.result
+
+
+def test_windows_own_words_for_access_denied_are_asked_of_windows():
+    words = onboard._denied_words()
+    assert "Access is denied." in words
+    if os.name == "nt":
+        import ctypes
+        assert ctypes.FormatError(5).strip() in words
+
 
 def yaml_load(path: Path):
     import yaml
