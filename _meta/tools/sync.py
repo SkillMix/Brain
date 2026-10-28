@@ -142,6 +142,7 @@ RUN_LOGS = {"_meta/state/tests.jsonl", "_meta/state/probe.jsonl"}
 NOTABLE = ("committed", "pins", "conflict", "scan_hits", "errors", "held_tests", "restored_tests",
            "healing", "healed", "pr_red", "adopted")
 HEAL_STATE = "sync-heal.json"   # in the git dir: the repair waiting to be seen merged
+HEAL_RERUNS = 3   # reruns of one sync pull request's failed checks a day, at most
 CHAINS = {"sweep_chain": "sweep-chain", "daily": "daily-chain"}   # run line routine: its routine prompt
 
 
@@ -903,9 +904,10 @@ class Run:
         (`heal`) and a cloud run's (`wait_landed`): answer tests the failed log names are set aside
         for CI (`held: {by: ci}`, which only a person brings back, since a pass here does not prove a
         pass there) and committed, for the caller's push; any other failure of an Actions run is rerun
-        once per head, as a flaky one (`healing`). True when it repaired something; False when nothing
-        failed, or when nothing could be repaired (no answer test to set aside, and no run that was not
-        rerun already), which stays in the run line (`pr_red`) for the maintenance agent, not the owner."""
+        once per head, as a flaky one (`healing`), unless the same checks failed on the head rerun before
+        (a failure with a cause: the next push would only fail it again), and HEAL_RERUNS times a day at
+        most. True when it repaired something; False when nothing failed, or when nothing could be
+        repaired (no answer test to set aside, and no run that may be rerun), which stays in the run line (`pr_red`) for the maintenance agent, not the owner."""
         failed = ghrest.failed_checks(self.gh, self.slug, head) or []
         if not failed:
             return False
@@ -915,6 +917,10 @@ class Run:
         import tests_run
         held = tests_run.hold(self.root, tests_run.failures_in("".join(d.stdout for d in logs if d), self.root),
                               "ci", self.now)
+        names, day = sorted({str(c.get("name")) for c in failed}), self.now.date().isoformat()
+        mine = state.get("pr") == pr
+        again = mine and state.get("failing") == names   # what failed after the last rerun failed once more
+        today = int(state.get("count") or 0) if mine and state.get("day") == day else 0
         if held:
             git(self.root, "add", "--", tests_run.ANSWERS_PATH.as_posix())
             self.commit("chore: sync")
@@ -922,11 +928,12 @@ class Run:
             self.heal_state({"pr": pr, "what": f"set aside {len(held)} answer test(s) the checks could not "
                                                f"pass: {'; '.join(held)}"})
             return True
-        if runs and state.get("rerun") != head:
+        if runs and state.get("rerun") != head and not again and today < HEAL_RERUNS:
             for run in runs:
                 self.gh("run", "rerun", run, "--failed")
             self.notes["healing"] = {"pr": pr, "rerun": runs}
-            self.heal_state({"pr": pr, "rerun": head, "what": "reran a failed check"})
+            self.heal_state({"pr": pr, "rerun": head, "failing": names, "day": day, "count": today + 1,
+                             "what": "reran a failed check"})
             return True
         self.notes["pr_red"] = {"pr": pr, "checks": [c.get("name") for c in failed]}
         return False
@@ -1092,7 +1099,9 @@ class Run:
     def split(self) -> tuple[list, list] | None:
         """The paths this checkout changes against origin/main, as (plain, protected); None
         when nothing is protected (or in the template, whose pull requests land on green).
-        A mount whose address waits in `.gitmodules` waits with it (`readdressed`)."""
+        A mount whose address waits in `.gitmodules` waits with it (`readdressed`). While
+        origin/main still holds the template's own space.yaml (onboarding's first push never landed),
+        every path is protected: the fill goes as one pull request, checked as one tree, merged once."""
         try:
             import gate
         except ImportError:
@@ -1104,7 +1113,10 @@ class Run:
         changed = [p for p in out.split("\x00") if p]
         prefixes, _ = gate.protected_prefixes(self.root)
         managed = self.template_managed()   # a template update lands as one unit, with its tools
-        guarded = [p for p in changed if p in managed or any(gate._under(gate._posix(p), pre) for pre in prefixes)]
+        shown = git(self.root, "show", "origin/main:space.yaml")
+        unconfigured = shown.returncode != 0 or "profile: template" in shown.stdout
+        guarded = [p for p in changed if unconfigured or p in managed
+                   or any(gate._under(gate._posix(p), pre) for pre in prefixes)]
         if ".gitmodules" in guarded:
             guarded += [p for p in self.readdressed() if p in changed and p not in guarded]
         if not guarded:

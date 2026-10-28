@@ -238,6 +238,10 @@ class ProbeError(RuntimeError):
 
 PROBE_PROMPT = "Reply OK."
 PROBE_SECONDS = 180
+# A connector still connecting when the command line starts is `pending` in its init and brings no tools yet: the
+# probe looks again, PENDING_WAIT seconds apart, at most PENDING_LOOKS times and not after PENDING_BUDGET seconds.
+PENDING_LOOKS, PENDING_WAIT, PENDING_BUDGET = 3, 20, 60
+_sleep, _clock = time.sleep, time.monotonic   # the tests stand in for them
 
 
 def probe_path() -> Path:
@@ -245,13 +249,37 @@ def probe_path() -> Path:
     return Path.home() / ".spaces" / "probe.json"
 
 
+def _pending(seen: dict) -> int:
+    return sum(1 for s in seen["mcp_servers"] if s.get("status") == "pending")
+
+
 def probe_tools(claude: str, cwd: Path, extra_dirs=(), run=subprocess.run) -> dict:
     """What `claude -p` itself sees, read from the `init` event of a one-turn run started as a
     routine starts (REFUSE, the environment without a key or token): `tools` (connectors
     included, only the connected ones), `mcp_servers` (name and status of each), `cwd`, `model`
     (the probe's own: the cheap one) and `auth` (`apiKeySource`: "none" for a claude.ai sign-in,
-    else what took over). `extra_dirs` are the folders a routine adds (`--add-dir`). Raises
-    ProbeError when the run reports no init."""
+    else what took over). `extra_dirs` are the folders a routine adds (`--add-dir`). While a
+    connector is still `pending` it looks again (PENDING_LOOKS), and keeps the look with the fewest
+    pending: an app that was still connecting is not taken for one that is not connected. Raises
+    ProbeError when the first run reports no init; a later look that fails keeps the best one so far."""
+    began, best = _clock(), None
+    for look in range(PENDING_LOOKS):
+        try:
+            seen = _probe_once(claude, cwd, extra_dirs, run)
+        except ProbeError:
+            if best is None:
+                raise
+            break
+        if best is None or _pending(seen) < _pending(best):
+            best = seen
+        if not _pending(best) or look == PENDING_LOOKS - 1 or _clock() - began + PENDING_WAIT > PENDING_BUDGET:
+            break
+        _sleep(PENDING_WAIT)
+    return best
+
+
+def _probe_once(claude: str, cwd: Path, extra_dirs, run) -> dict:
+    """One look of `probe_tools`."""
     argv = [claude, "-p", *REFUSE, *JSON_OUT, "--tools", *ROUTINE_BUILTINS]   # what a run has (F-8): its init lists those
     for folder in extra_dirs:
         argv += ["--add-dir", str(folder)]
@@ -744,6 +772,8 @@ def grant(workspace, probe: dict | None = None, shell: str | None = None) -> dic
 
     - An app read as work or mixed gives the read tools its verdict names that the probe lists and that
       only read, and, for a tracker, the tools that create, update or save (apps.group decides both).
+      An app no name knows, that setup's sorting step gave a kind (the verdict's `kinds`), gives its
+      read tools only, whatever kind it was sorted as.
     - The mail app whose account is the person's own (`owner_email`, `Name <address>` read, without
       regard to case) gives the send tools the probe lists for it, whatever its verdict but
       someone-else's (Ruling R19): the briefing goes from the person's own mailbox to the person.
@@ -760,14 +790,16 @@ def grant(workspace, probe: dict | None = None, shell: str | None = None) -> dic
     proven = probe.get("hook_shell") if shell is None else shell
     proven = proven if isinstance(proven, str) and proven and Path(proven).is_file() else ""
     servers = [s for s in probe.get("mcp_servers") or [] if isinstance(s, dict)]
-    groups = {g["app"]: g for g in apps.group(_strings(probe.get("tools")), servers)}
+    verdicts = _verdicts(workspace)
+    sorted_kinds = {v["app"]: v["kinds"] for v in verdicts if isinstance(v.get("kinds"), list)}
+    groups = {g["app"]: g for g in apps.group(_strings(probe.get("tools")), servers, sorted_kinds=sorted_kinds)}
     signed_out = set(apps.not_signed_in(servers))
     try:
         person = guardable(spaceyaml.load(workspace).owner_email)
     except Exception:
         person = None
     read, write, send, reconnect, mailbox_out = [], [], [], [], []
-    for verdict in _verdicts(workspace):
+    for verdict in verdicts:
         app, kind = verdict["app"], verdict.get("verdict")
         group = None if app in signed_out else groups.get(app)
         if kind in apps.READ:
@@ -1494,6 +1526,27 @@ def send_check(got: dict, profiles: list) -> dict:
     return _check(name, True, "the guard refuses a stranger and lets mail to you through")
 
 
+GITHUB_CHECK = "work reaches GitHub"
+
+
+def github_check(run=subprocess.run) -> dict:
+    """That a run the scheduler starts can use the person's GitHub sign-in (`gh auth status`), as the sync
+    task, started the same way, needs to: where the desktop app's sign-in sits where the scheduler cannot
+    see it, the probe says so instead of the sync failing unseen."""
+    gh = shutil.which("gh") or "gh"
+    try:
+        res = run([gh, "auth", "status", "--hostname", "github.com"], capture_output=True, text=True,
+                  encoding="utf-8", errors="replace", timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return _check(GITHUB_CHECK, False, "GitHub's command line did not start as the scheduler runs it, so your "
+                                           "work would not reach GitHub")
+    if res.returncode == 0:
+        return _check(GITHUB_CHECK, True, "the scheduler's runs use your GitHub sign-in")
+    said = next((line.strip() for line in ((res.stderr or "") + (res.stdout or "")).splitlines() if line.strip()), "")
+    return _check(GITHUB_CHECK, False, "the scheduler's runs cannot use your GitHub sign-in, so your work would not "
+                                       f"reach GitHub: {said[:160]}")
+
+
 PROBE_NAME = "probe"   # the probe holds the workspace's lock under this name
 
 
@@ -1525,6 +1578,7 @@ def _probe(workspace: Path, run) -> int:
     old = read_probe()
     doctor.use_tools()
     claude = find_claude()
+    reach = github_check(run)
     try:
         if claude is None:
             raise ProbeError("Claude Code's command line is not installed on this machine")
@@ -1538,7 +1592,7 @@ def _probe(workspace: Path, run) -> int:
     got = grant(workspace, view, shell=candidate[0] if candidate else "")
     write_items(workspace, reconnect=got["reconnect"])
     profiles = _profiles(workspace, got, roots, view["seen"] + [t for t in view["tools"] if t not in view["seen"]])
-    checks = [*read_checks(workspace, got, profiles), *[folder_check(r) for r in roots], send_check(got, profiles)]
+    checks = [*read_checks(workspace, got, profiles), *[folder_check(r) for r in roots], send_check(got, profiles), reach]
     ok = all(c["ok"] for c in checks)
     write_probe({**view, "checks": checks, "notes": got["notes"], "ok": ok, "stamp": time.time(),
                  "workspace": str(workspace), "hook_shell": proven_shell(workspace, got)})

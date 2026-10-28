@@ -7,14 +7,16 @@ from pathlib import Path
 import pytest
 
 import no_company_names
+import spaceyaml
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+IN_TEMPLATE = spaceyaml.is_template_repo(REPO_ROOT)   # read before the tests clear the checks' word
 
 
 def _template_with_its_list():
     """Skip unless this is the template and its names list is here: the list is a CI secret,
     written for the run, never committed (docs/decisions.md, 2026-10-21)."""
-    if not (REPO_ROOT / ".github" / "template-marker").exists():
+    if not IN_TEMPLATE:
         pytest.skip("an instance carries its company's names by design; the check is for the template")
     if not (REPO_ROOT / no_company_names.HASHES_PATH).exists():
         pytest.skip("no forbidden names list here: CI writes it from the FORBIDDEN_NAMES_SHA256 secret")

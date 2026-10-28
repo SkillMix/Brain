@@ -94,6 +94,12 @@ Cloud routines: the sweep and the daily chain run when the computer is closed.
   The decisions log records what the launch supersedes: "Export watermark" for
   the backfill, "Workspace owner on the platform", and "Connector permissions stay per person"
   for routines.
+- **Setup reads the apps it does not know by name.** One short run sees only each such app's
+  name and its tools' names and sorts it: a kind setup reads, work of a kind setup does not read
+  yet (a CRM, say), or nothing to read (an image maker). A sorted app gets its read tools and
+  nothing that acts. The app card, the chat and the progress page name the apps it saw but did
+  not read and the ones that hold nothing to read; an app the run could not look at is looked at
+  the next time. Known apps are read as before.
 
 The sign sitting: a page's questions are ready before the person sits down, they are answered
 back to back, and nothing a record or the person settled is asked again.
@@ -144,6 +150,57 @@ back to back, and nothing a record or the person settled is asked again.
 - **A first-release line reads back.** `sign.py read-back` failed on a `first-<subject>` line,
   and took every other item of the same call with it. It now lists the line's items and prints
   no fingerprint: a bare verb answers it.
+- **Routines and the sync run from the Windows desktop app's setup.** Claude's desktop app is a
+  packaged Windows app: what setup wrote under `%APPDATA%` (uv's Python, gh's sign-in) landed in
+  a private copy the scheduled tasks never see, so they died without a word. The bootstrap installs
+  Python under `~/.spaces/tools/python`, a venv made from a Python under `%APPDATA%` is made again,
+  there is no `--user` install on Windows, and gh's folder is `~/.spaces/gh` (the sign-in setup made
+  is copied there). The probe task writes what it printed to `~/.spaces/logs/`, so a Python that
+  cannot start fails the build at once with its own words instead of after four silent minutes, and
+  the probe checks that a scheduled run can use the GitHub sign-in.
+- **A copy of the template is no longer the template.** The checks ask GitHub's own
+  `is_template` setting, which a repository made from the template never has, instead of the
+  marker file it keeps until onboarding's first commit lands: a workspace's sync pull requests no
+  longer run the template's own tests, and the gate no longer lets a protected change in such a
+  workspace merge without the owner. The sync reruns a failed check at most three times a day, and
+  not at all when the same checks failed again after a rerun.
+- **The briefing goes to the work mailbox the app card named.** The card now says where the
+  morning briefing goes: the work mailbox the routines can send from, when a second app's reader
+  names the same account (a mail anyone can write cannot name it alone). The person sees it for
+  ten minutes and can say "send my briefing to" another address; the build takes it before git's
+  address. The morning-view skill says that having the send tool is the mailbox check, so a
+  routine no longer holds the briefing because Claude is signed in on another domain.
+- **An app still connecting is not taken for one that is not connected.** When Claude's command
+  line starts, connected apps can still be `pending` for a few seconds. The probe that the apps
+  step, the research and the routines' proof use looks again while one is (three looks in about
+  a minute at most) and keeps the look with the fewest still connecting, so the first apps step no
+  longer finds no apps and the routines' proof no longer fails an app that was only slow.
+- **The first push and the brain mount say when they did not happen.** git signs in to GitHub
+  through gh in everything the tools start, as gh's own clone does, so a credential manager that
+  would ask in a window no one sees no longer stops it. A first push to `main` that fails, or that
+  leaves `main` the template's, is a failed step with git's own words, and the build is not done;
+  a brain or project that did not mount is a failed step too. While `main` is still the
+  template's, the sync sends everything as one protected pull request, checked as one tree, so the
+  owner merges once instead of a protected half that fails on a tree without the folders.
+- **A company site that moved is read where it moved to.** The site's reader may fetch only the
+  company's domain and its `www.` twin, so a domain that redirects to another host (a `.nl` that
+  moved to a `.com`) came back with nothing and the build said the site gave nothing to keep. The
+  reader now says where the site sent it, and the research reads once more on that host; the
+  company's domain stays the one given.
+- **Task names another Windows account holds.** Where another account on the computer already has
+  the space's task names, Windows said only "Access is denied". The row now says the name is
+  another account's, with the line an administrator runs to remove it, and
+  `start.py build --task-prefix space-<letters>-` gives this computer names of its own, kept in
+  `~/.spaces/settings.yaml`.
+- **The app card.** "Read <app> again" (`start.py apps --unskip <app>`) takes a skip back, with
+  the reader's own verdict. Two apps on one mailbox (a mailbox and a reader of its attachments)
+  count its mail once in the history's estimate. Claude's own connectors (`Claude …`) are not the
+  person's apps: they are neither read nor sorted. The card's ten minutes start again only when an
+  app is read that the card did not read before.
+- **What the sentence allows, and who else reads the workspace.** The README says what the
+  sentence is the go-ahead for; `docs/data-protection.md` says what a code-review app installed on
+  the Git account reads; troubleshooting covers a task name another account holds, Python under
+  the desktop app, and an app the command line reports as not signed in.
 
 **Migration.** After upgrading, run `python _meta/tools/distill.py <root> prepare` once and
 follow distill's Recheck and Ask steps for each page it lists.

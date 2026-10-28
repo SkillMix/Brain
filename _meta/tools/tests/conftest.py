@@ -36,6 +36,13 @@ def _machine_home(tmp_path, monkeypatch):
     monkeypatch.delenv("CLAUDE_CODE_REMOTE", raising=False)   # a suite run inside a cloud session is not a cloud run
     monkeypatch.setenv("SPACES_START_LOCK", str(fake / "spaces-start.lock"))
     monkeypatch.setenv("SPACES_SETUP_JOURNAL", str(fake / ".spaces" / "setup.yaml"))
+    # What the tools set for what they start (doctor.use_tools), and the checks' word on whether this
+    # repository is the template (read by the test files' own marks, before any test runs): each test
+    # starts without them, and what one sets is gone after it.
+    for name in ("GH_CONFIG_DIR", "SPACES_TEMPLATE_REPO", "GCM_INTERACTIVE", "GIT_CONFIG_COUNT",
+                 *(f"GIT_CONFIG_{part}_{i}" for part in ("KEY", "VALUE") for i in range(4))):
+        monkeypatch.setenv(name, "")
+        monkeypatch.delenv(name)
 
 
 def write_page(root: Path, rel: str, body: str = "Body.\n", **fm) -> Path:

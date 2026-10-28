@@ -103,6 +103,22 @@ on battery" for a task made the old way. Running onboard again re-registers it.
 
 The task runs `conhost.exe --headless`; re-running onboard re-registers an old task.
 
+### "Access is denied" for a scheduled task (Windows)
+
+Another account on this computer already has a task with that name, and Windows lets no other
+account read or replace it. The row names the task. Either an administrator removes it
+(`schtasks /Delete /F /TN <name>`), or you set up again with names of your own:
+`start.py build --task-prefix space-<your initials>-`. The prefix is kept in
+`~/.spaces/settings.yaml`, so later builds use it too.
+
+### The scheduler cannot start Python (Windows, Claude desktop app)
+
+The desktop app runs in a package that keeps its own copy of `%APPDATA%`, which Windows'
+scheduler never sees. Setup therefore installs Python under `~/.spaces/tools/python` and keeps
+GitHub's sign-in under `~/.spaces/gh`. The probe task writes what it printed to
+`~/.spaces/logs/<task>.log`; a probe that ended without a result names that file's last lines.
+A setup from before this fix rebuilds its Python environment by itself on the next run.
+
 ### The laptop was asleep at the scheduled time
 
 Windows runs the missed start on waking (`StartWhenAvailable`), a systemd timer too
@@ -189,6 +205,13 @@ sentence there. The build goes on; the reading waits for the first app.
 
 An app's sign-in ran out. Its records wait; the other apps go on. Sign in to it again in
 Claude's connector settings, and its reading continues from where it stopped.
+
+### An app shows as connected, but the card says it is not signed in
+
+Claude's connector settings, and `claude mcp list`, can show an app as connected while the
+command line run that setup and the routines use reports it as needing a sign-in. Why the two
+differ is not known yet. What to try: open `claude` in a terminal, run `/mcp`, sign in to that
+app there, and say the sentence again.
 
 ### "Ask your IT administrator"
 

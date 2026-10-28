@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 import routine
+import spaceyaml
 import start
 from conftest import make_space
 
@@ -26,7 +27,7 @@ ROUTINE_SKILLS = ("sweep", "route", "classify", "distill", "check", "status", "r
 NOT_FOR_ROUTINES = {"sign.py": "signing is the person's", "reply.py": "applies the person's replies"}
 # Template sync installs these tests in every space, and a project may keep `.claude/skills`
 # untracked; the template ships every skill and template these tests read.
-IN_TEMPLATE = (REPO / ".github" / "template-marker").exists()
+IN_TEMPLATE = spaceyaml.is_template_repo(REPO)
 
 
 def present(*paths) -> list:

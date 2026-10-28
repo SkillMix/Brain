@@ -195,14 +195,68 @@ def system_dirs(windows=None, env=None) -> list:
     return found
 
 
-def use_tools(home=None) -> list:
+def use_tools(home=None, env=None, windows=None) -> list:
     """Put the installed tools first on PATH for this process and what it starts (the sync
-    task, git, gh), and the folders Windows' installers use. Returns the directories added."""
-    current = os.environ.get("PATH", "").split(os.pathsep)
-    added = [str(d) for d in [*bin_dirs(home), *system_dirs()] if str(d) not in current]
+    task, git, gh), and the folders Windows' installers use; on Windows, gh's sign-in where the
+    scheduler sees it (`use_gh_config`). Returns the directories added."""
+    env = os.environ if env is None else env
+    current = env.get("PATH", "").split(os.pathsep)
+    added = [str(d) for d in [*bin_dirs(home), *system_dirs(windows, env)] if str(d) not in current]
     if added:
-        os.environ["PATH"] = os.pathsep.join(added + [p for p in current if p])
+        env["PATH"] = os.pathsep.join(added + [p for p in current if p])
+    use_gh_config(home, env, windows)
+    use_gh_for_git(env)
     return added
+
+
+GITHUB_HELPER = "credential.https://github.com.helper"
+
+
+def use_gh_for_git(env=None) -> bool:
+    """git can sign in to github.com through gh (`gh auth git-credential`) in this process and what it starts,
+    as gh's own clone does: the account the doctor checked. Set in git's environment (`GIT_CONFIG_COUNT`), never
+    in a config file, after the helpers other config gives (Windows cannot hold the empty value that would clear
+    them); git asks each in turn, and a credential manager is told never to open a window no one sees
+    (`GCM_INTERACTIVE`: a scheduled task, the desktop app's shell), so one with nothing stored falls through to
+    gh. False when gh is not found."""
+    env = os.environ if env is None else env
+    gh = shutil.which("gh", path=env.get("PATH"))
+    if not gh:
+        return False
+    env.setdefault("GCM_INTERACTIVE", "never")
+    try:
+        count = int(env.get("GIT_CONFIG_COUNT") or 0)
+    except ValueError:
+        count = 0
+    if any(env.get(f"GIT_CONFIG_KEY_{i}") == GITHUB_HELPER for i in range(count)):
+        return True
+    env[f"GIT_CONFIG_KEY_{count}"] = GITHUB_HELPER
+    env[f"GIT_CONFIG_VALUE_{count}"] = f'!"{Path(gh).as_posix()}" auth git-credential'
+    env["GIT_CONFIG_COUNT"] = str(count + 1)
+    return True
+
+
+def use_gh_config(home=None, env=None, windows=None) -> Path | None:
+    """On Windows, gh's folder (`GH_CONFIG_DIR`) is `~/.spaces/gh` unless one was chosen. Claude's desktop
+    app is a packaged app: what it writes under %APPDATA% (gh's own folder, `GitHub CLI`) lands in a private
+    copy that Windows' scheduler never sees, so the sync task would find no sign-in. The `hosts.yml` gh wrote
+    there, when it is newer than the one here, is copied over (a sign-in made again in the app); the token
+    itself stays in Windows' credential store, which every process sees. Returns the folder, else None."""
+    env = os.environ if env is None else env
+    windows = os.name == "nt" if windows is None else windows
+    folder = Path(home or Path.home()) / ".spaces" / "gh"
+    if not windows or env.get("GH_CONFIG_DIR", str(folder)) != str(folder):   # a folder the person chose stays theirs
+        return None
+    made = Path(env["APPDATA"]) / "GitHub CLI" / "hosts.yml" if env.get("APPDATA") else None
+    kept = folder / "hosts.yml"
+    try:
+        if made and made.is_file() and (not kept.is_file() or made.stat().st_mtime > kept.stat().st_mtime):
+            folder.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(made, kept)
+    except OSError:
+        pass   # gh says it is signed out, and the doctor's sign-in row says what to do
+    env["GH_CONFIG_DIR"] = str(folder)
+    return folder
 
 
 def _safe_extract(archive: Path, dest: Path) -> None:

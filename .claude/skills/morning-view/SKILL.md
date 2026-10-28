@@ -23,6 +23,11 @@ and send it with your mail connector from the person's own mailbox to `to` (thei
 `owner_email` in `space.yaml`), subject and both bodies as rendered. Read the sent message
 back (fetch it by id, or search the sent folder for the subject) and record its id.
 
+Whether that mailbox is the person's is checked before the run starts, in code: a routine gets
+a mail app's send tool only for the mailbox whose account is the briefing address (`owner_email`).
+Having the send tool is that check passed. The address Claude itself is signed in with is not part
+of that check, so a different address or domain there is no reason to hold the briefing.
+
 ## What the tool already did
 
 Wrote `live/needs-you.md` (the full list: deadline first, then how much depends on it,

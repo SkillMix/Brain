@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+import apps
 import doctor
 import onboard
 import pages
@@ -728,6 +729,60 @@ def test_a_probe_without_a_documents_app_does_not_hold_the_research(phase, capsy
     Readers(phase)
     code, out = run(capsys)
     assert code == 0 and out["state"] == "done"
+
+
+# ----- an app no name knows: the documents step waits until it is sorted and judged (Ruling R7) -------------------
+WIKI = ["mcp__claude_ai_Dealbook__search_pages", "mcp__claude_ai_Dealbook__get_page"]   # a wiki no name word knows
+
+
+def test_the_documents_wait_for_an_app_no_name_knows_until_the_apps_are_read(phase, capsys):
+    """The skill starts research right after the first look, which sorts nothing: an app no name knows may hold
+    documents, so the documents step waits (APPS_FIRST), also after the full run's early write sorted it `documents`
+    and before its verdict. A first look after the sort keeps it among the groups, and once the card has been shown
+    for ten minutes its documents are read like any documents app's."""
+    probe = {"tools": [*WIKI, "mcp__claude_ai_Gmail__search_threads", "Read"],
+             "mcp_servers": [{"name": "claude.ai Dealbook", "status": "connected"},
+                             {"name": "claude.ai Gmail", "status": "connected"}]}
+    phase.setattr(routine, "probe_tools", lambda *a, **k: probe)
+    phase.setattr(apps, "sort", lambda found, cwd, **k: {"Dealbook": {"kind": "documents", "why": "A wiki of pages."}})
+    assert start.main(["apps", "--probe", "--json"]) == 0 and json.loads(capsys.readouterr().out)["state"] == "pending"
+    assert setup_journal.load()["apps"]["to_sort"] == ["Dealbook"]
+    readers = Readers(phase)
+    code, out = run(capsys)
+    assert out["state"] == "waiting" and out["why"] == start.APPS_FIRST_WHY and readers.asked("documents") == []
+    during = []
+
+    def analyse(groups, *a, **k):   # the full run's early write is done, no verdict yet
+        during.append(run(capsys)[1])
+        return [{**g, "account": ADA, "verdict": "work", "per_month": {}, "why": "w"} for g in groups]
+    phase.setattr(apps, "analyse", analyse)
+    assert start.main(["apps", "--json"]) == 0 and json.loads(capsys.readouterr().out)["state"] == "done"
+    assert during[0]["state"] == "waiting" and during[0]["why"] == start.APPS_FIRST_WHY
+    assert readers.asked("documents") == []
+    assert start.main(["apps", "--probe", "--json"]) == 0
+    capsys.readouterr()
+    record = setup_journal.load()["apps"]
+    assert [(g["app"], g["kinds"]) for g in record["groups"]] == [("Dealbook", ["documents"]), ("Gmail", ["mail"])]
+    assert record["to_sort"] == [] and record["sorted"]["Dealbook"]["kind"] == "documents"
+    phase.setattr(start, "_now", lambda: dt.datetime.now().astimezone() + dt.timedelta(minutes=11))
+    code, out = run(capsys)
+    assert out["state"] == "done" and [s["tools"] for s in readers.asked("documents")] == [WIKI]
+
+
+def test_the_documents_step_looks_at_the_apps_as_they_are_when_it_starts(phase, capsys):
+    """Research loaded the journal of the first look, which still had an app to sort; the apps phase finished while
+    the site was read. The documents step reads the journal again, so it reads the documents app instead of
+    waiting for a phase that is through (R7)."""
+    mail = {"app": "Gmail", "kinds": ["mail"], "read": ["mcp__claude_ai_Gmail__search_threads"], "write": [], "send": []}
+    setup_journal.set_phase("apps", "pending", groups=[mail], not_signed_in=[], to_sort=["Dealbook"])
+
+    def site(prompt):
+        the_apps()                                                    # the apps phase is through meanwhile
+        setup_journal.set_phase("apps", "done", to_sort=[])
+        return SITE
+    readers = Readers(phase, answers={"site": site})
+    code, out = run(capsys)
+    assert code == 0 and out["state"] == "done" and [s["tools"] for s in readers.asked("documents")] == [DRIVE]
 
 
 

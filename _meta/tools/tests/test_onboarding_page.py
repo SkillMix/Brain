@@ -296,6 +296,32 @@ def test_found_holds_the_app_card_the_profile_with_sources_and_the_months(tmp_pa
     assert "Nothing is copied before" not in rows   # the ten minutes are over
 
 
+def test_found_names_the_apps_it_saw_but_did_not_read(tmp_path):
+    def sorted_apps(ws, journal):
+        journal["apps"]["card"]["not_read"] = ["Dealbook · A CRM: deals and contacts.",
+                                               "Quillmail · not looked at yet: I look at it the next time your apps are read"]
+        journal["apps"]["card"]["nothing_to_read"] = ["Pictoria", "Tasko"]
+    rows = by_label(rows_of(tmp_path, "found", sorted_apps))
+    assert rows["Seen, not read yet"] == ("Dealbook: A CRM: deals and contacts.; "
+                                          "Quillmail: not looked at yet: I look at it the next time your apps are read")
+    assert rows["Connected, nothing to read"] == "Pictoria, Tasko"
+    assert rows["Not signed in"] == "Slack"   # the rows that were there stay
+    nothing = by_label(rows_of(tmp_path / "none", "found", lambda ws, journal: journal["apps"]["card"].update(
+        not_read=[], nothing_to_read=[])))
+    assert "Seen, not read yet" not in nothing and "Connected, nothing to read" not in nothing
+    old = by_label(rows_of(tmp_path / "old", "found"))   # a card written before the sorting has neither key
+    assert "Seen, not read yet" not in old and "Connected, nothing to read" not in old
+
+
+def test_an_app_seen_with_no_why_is_shown_by_its_name_alone(tmp_path):
+    """The card writes the bare name when the sorting run gave no why; a line kept from before, `Callwisp · `, shows as
+    the name too: no "Dealbook: " and no "Callwisp: "."""
+    def no_why(ws, journal):
+        journal["apps"]["card"]["not_read"] = ["Dealbook", "Callwisp · ", "Tasko · A task list."]
+    rows = by_label(rows_of(tmp_path, "found", no_why))
+    assert rows["Seen, not read yet"] == "Dealbook; Callwisp; Tasko: A task list."
+
+
 def test_found_says_when_nothing_is_copied_yet(tmp_path):
     rows = by_label(rows_of(tmp_path, "found", now=NOW - dt.timedelta(minutes=90)))
     assert rows["Nothing is copied before"] == "13:10, so you can still say what to leave out."
