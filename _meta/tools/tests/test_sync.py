@@ -330,32 +330,127 @@ def platform_merges(tmp_path, branch):
     git(hub, "push", "-q", "origin", "main")
 
 
-def test_a_new_mount_merges_while_a_protected_change_waits(repo, tmp_path, monkeypatch):
-    """A protected change waiting splits the push: the new mount lands on origin through a
-    rebuilt commit that shares no history with this checkout. The mounted space moves on, the
-    next run advances the pin, and origin/main must still merge in: git cannot merge two
-    different pins of a mount that the merge base lacks, so the run keeps its own newer one."""
+def mounted(repo, origin, path):
+    """A mount already on origin/main, as one the person's click landed."""
+    git(repo, "submodule", "add", "-q", "-b", "main", str(origin), path)
+    git(repo, "commit", "-q", "-m", "mount")
+    git(repo, "push", "-q", "origin", "main")
+
+
+def pin(clone, ref, path):
+    return git(clone, "ls-tree", ref, path).stdout.split()[2]
+
+
+def branch_paths(repo, branch):
+    """What a sync branch changes against origin/main, sorted; empty when it was never pushed."""
+    git(repo, "fetch", "-q", "origin")
+    if git(repo, "rev-parse", "-q", "--verify", f"origin/{branch}", check=False).returncode:
+        return []
+    return sorted(git(repo, "diff", "--name-only", "--no-renames", f"origin/main...origin/{branch}").stdout.split())
+
+
+def test_a_pin_advance_merges_while_a_protected_change_waits(repo, tmp_path, monkeypatch):
+    """A protected change waiting splits the push: a mount already on origin/main moves, and its
+    pin lands on green through a rebuilt commit that shares no history with this checkout (its
+    address did not change, decision 2026-10-16). The mounted space moves again, the next run
+    advances the pin again, and origin/main must still merge in, the run keeping its own newer pin."""
     monkeypatch.setattr(sync.Run, "gh", lambda self, *args: None)
     origin, work = remote_space(tmp_path, "harbor")
-    first = move(work, "# Harbor\n")
-    git(repo, "submodule", "add", "-q", "-b", "main", str(origin), "mounts/harbor")
+    move(work, "# Harbor\n")
+    mounted(repo, origin, "mounts/harbor")
+    first = move(work, "# Harbor\n\nmoved\n")
     write(repo / "space.yaml", (repo / "space.yaml").read_text(encoding="utf-8") + "x: 1\n", minutes_old=20)
     assert sync.main(["--root", str(repo)]) == 0
     host = sync.hostname()
-    platform_merges(tmp_path, f"sync/{host}")   # the plain part lands; the protected one waits
+    assert branch_paths(repo, f"sync/{host}") == ["mounts/harbor"]
+    assert branch_paths(repo, f"sync/{host}-protected") == ["space.yaml"]
+    platform_merges(tmp_path, f"sync/{host}")   # the pin lands; the protected change waits
     git(repo, "fetch", "-q", "origin")
-    assert git(repo, "ls-tree", "origin/main", "mounts/harbor").stdout.split()[2] == first
+    assert pin(repo, "origin/main", "mounts/harbor") == first
     assert git(repo, "ls-tree", "origin/main", "space.yaml").stdout != git(repo, "ls-tree", "HEAD", "space.yaml").stdout
-    second = move(work, "# Harbor\n\nmoved\n")
+    second = move(work, "# Harbor\n\nmoved twice\n")
     assert sync.main(["--root", str(repo)]) == 0
     notes = run_lines(repo)[-1]["notes"]
     assert not notes.get("conflict"), notes
     assert git(repo, "merge-base", "--is-ancestor", "origin/main", "HEAD", check=False).returncode == 0
-    assert git(repo, "ls-tree", "HEAD", "mounts/harbor").stdout.split()[2] == second
+    assert pin(repo, "HEAD", "mounts/harbor") == second
     assert not git(repo, "diff", "--name-only", "--diff-filter=U").stdout.strip()
+    # the protected change still waits on its own branch
+    assert branch_paths(repo, f"sync/{host}-protected") == ["space.yaml"]
+
+
+def test_a_new_mount_waits_for_the_click_with_its_address(repo, tmp_path, monkeypatch):
+    """A new mount is its pin and its address in .gitmodules: both wait on the protected branch
+    for the person's click, so main never holds a pin `git submodule update --init` cannot fetch
+    ("No url found"). A mount already on main still advances on green beside it. After the click
+    the new mount has moved, and origin/main merges in: git cannot merge two pins of a mount the
+    merge base lacks, so the run keeps its own newer one."""
+    monkeypatch.setattr(sync.Run, "gh", lambda self, *args: None)
+    harbor, harbor_work = remote_space(tmp_path, "harbor")
+    move(harbor_work, "# Harbor\n")
+    mounted(repo, harbor, "mounts/harbor")
+    moved = move(harbor_work, "# Harbor\n\nmoved\n")
+    port, port_work = remote_space(tmp_path, "port")
+    first = move(port_work, "# Port\n")
+    git(repo, "submodule", "add", "-q", "-b", "main", str(port), "mounts/port")
+    write(repo / "work" / "notes.md", "# Notes\n\nline one\nline two\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    host = sync.hostname()
+    assert branch_paths(repo, f"sync/{host}-protected") == [".gitmodules", "mounts/port"]
+    assert branch_paths(repo, f"sync/{host}") == ["mounts/harbor", "work/notes.md"]
+    platform_merges(tmp_path, f"sync/{host}")
     git(repo, "fetch", "-q", "origin")
-    guarded = git(repo, "diff", "--name-only", f"origin/main...origin/sync/{host}-protected").stdout.split()
-    assert guarded == ["space.yaml"]   # the protected change still waits on its own branch
+    assert pin(repo, "origin/main", "mounts/harbor") == moved
+    assert not git(repo, "ls-tree", "origin/main", "mounts/port").stdout.strip()
+    platform_merges(tmp_path, f"sync/{host}-protected")   # the person's click
+    fresh = tmp_path / "fresh"
+    git(tmp_path, "clone", "-q", str(tmp_path / "origin.git"), str(fresh))
+    done = git(fresh, "submodule", "update", "--init", check=False)
+    assert done.returncode == 0, done.stderr
+    assert pin(fresh, "HEAD", "mounts/port") == first
+    second = move(port_work, "# Port\n\nmoved\n")
+    assert sync.main(["--root", str(repo)]) == 0
+    notes = run_lines(repo)[-1]["notes"]
+    assert not notes.get("conflict"), notes
+    assert git(repo, "merge-base", "--is-ancestor", "origin/main", "HEAD", check=False).returncode == 0
+    assert pin(repo, "HEAD", "mounts/port") == second
+    assert not git(repo, "diff", "--name-only", "--diff-filter=U").stdout.strip()
+
+
+def test_a_mount_at_a_new_address_waits_for_the_click_with_it(repo, tmp_path, monkeypatch):
+    """A mount moved to another address and pinned there waits with .gitmodules: main's address
+    would not hold the new pin."""
+    monkeypatch.setattr(sync.Run, "gh", lambda self, *args: None)
+    harbor, harbor_work = remote_space(tmp_path, "harbor")
+    move(harbor_work, "# Harbor\n")
+    mounted(repo, harbor, "mounts/harbor")
+    mirror = tmp_path / "mirror.git"
+    git(tmp_path, "clone", "-q", "--bare", str(harbor), str(mirror))
+    mirror_work = tmp_path / "mirror-work"
+    git(tmp_path, "clone", "-q", str(mirror), str(mirror_work))
+    there = move(mirror_work, "# Harbor\n\nonly at the new address\n")
+    git(repo, "submodule", "set-url", "--", "mounts/harbor", str(mirror))
+    write(repo / "work" / "notes.md", "# Notes\n\nline one\nline two\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    host = sync.hostname()
+    assert pin(repo, "HEAD", "mounts/harbor") == there
+    assert branch_paths(repo, f"sync/{host}-protected") == [".gitmodules", "mounts/harbor"]
+    assert branch_paths(repo, f"sync/{host}") == ["work/notes.md"]
+
+
+def test_a_mount_moved_to_another_path_waits_with_its_old_path(repo, tmp_path, monkeypatch):
+    """A mount moved to another folder is a new pin there and an old one gone: both wait with
+    .gitmodules, so main never holds the one without the other's address."""
+    monkeypatch.setattr(sync.Run, "gh", lambda self, *args: None)
+    harbor, harbor_work = remote_space(tmp_path, "harbor")
+    move(harbor_work, "# Harbor\n")
+    mounted(repo, harbor, "mounts/harbor")
+    git(repo, "mv", "mounts/harbor", "mounts/haven")
+    git(repo, "commit", "-q", "-m", "the person moves the mount")
+    assert sync.main(["--root", str(repo)]) == 0
+    host = sync.hostname()
+    assert branch_paths(repo, f"sync/{host}-protected") == [".gitmodules", "mounts/harbor", "mounts/haven"]
+    assert branch_paths(repo, f"sync/{host}") == []
 
 
 def test_a_path_changed_again_while_a_protected_change_waits_merges(repo, tmp_path, monkeypatch):

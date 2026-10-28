@@ -5,9 +5,12 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
+import agents_md
 import gate
 import pages
+import spaceyaml
 from conftest import make_space, write_page
 
 SIGNED = {"signed_by": "Ada Okafor", "signed_at": "2026-10-12T09:00:00Z"}
@@ -38,8 +41,84 @@ def test_every_default_protected_prefix_counts(tmp_path):
 
 def test_custom_protected_list_is_read_from_space_yaml(tmp_path):
     root = make_space(tmp_path / "ada", protected=["knowledge/decisions/"])
-    assert gate.classify(root, [".claude/skills/x.md"])[0] == "auto-mergeable"
     assert gate.classify(root, ["knowledge/decisions/2026-10-12-x.md"])[0] == "protected"
+    assert gate.classify(root, ["knowledge/topics/a/one.md"])[0] == "auto-mergeable"
+    # a list that leaves the machinery out does not take it out of the gate
+    assert gate.classify(root, [".claude/skills/x.md"])[0] == "protected"
+
+
+# ----- the minimum: what the gate guards whatever space.yaml says -------------------------------
+REPO = Path(__file__).resolve().parents[3]
+# Template sync installs these tests in every space, where space.yaml is the space's own list:
+# a test that reads the template's own space.yaml runs in the template only.
+template_only = pytest.mark.skipif(not (REPO / ".github" / "template-marker").exists(),
+                                   reason="reads the template's own space.yaml")
+NEW_IN_THE_MINIMUM = ("CLAUDE.md", "AGENTS.md", ".gitignore", ".gitattributes", ".gitmodules",
+                      "_meta/templates/space-personal.yaml", "_meta/plugins/spaces-guard/guard.py",
+                      ".claude-plugin/marketplace.json")
+
+
+def test_a_short_protected_list_still_guards_the_minimum(tmp_path):
+    for name, own in (("ada", ["rules.md"]), ("ada-short", [])):
+        prefixes, note = gate.protected_prefixes(make_space(tmp_path / name, protected=own))
+        assert note is None
+        assert set(gate.MINIMUM_PROTECTED) <= set(prefixes), own
+    # a space.yaml that cannot be read still guards it, and says why
+    broken = make_space(tmp_path / "ada-broken")
+    (broken / "space.yaml").write_text("protected: [unclosed\n", encoding="utf-8")
+    prefixes, note = gate.protected_prefixes(broken)
+    assert set(gate.MINIMUM_PROTECTED) <= set(prefixes) and "unreadable" in note
+
+
+def test_the_spaces_own_entries_come_first(tmp_path):
+    own = ["knowledge/decisions/", "rules.md", ".Claude", "knowledge/decisions/"]
+    prefixes, _ = gate.protected_prefixes(make_space(tmp_path / "ada", protected=own))
+    assert prefixes[:3] == ["knowledge/decisions/", "rules.md", ".Claude"]
+    # then the minimum in its order, each entry once: `.Claude` is `.claude/`, `rules.md` is there
+    rest = [p for p in gate.MINIMUM_PROTECTED if p not in ("rules.md", ".claude/")]
+    assert prefixes[3:] == rest
+    assert len(prefixes) == len(set(p.casefold().rstrip("/") for p in prefixes))
+
+
+def test_a_change_to_the_gitignore_is_protected(tmp_path):
+    default = make_space(tmp_path / "ada")
+    short = make_space(tmp_path / "ada-short", protected=["rules.md"])
+    for root in (default, short):
+        for rel in NEW_IN_THE_MINIMUM:
+            cls, reasons = gate.classify(root, [rel])
+            assert cls == "protected", (root.name, rel)
+            assert any(r.startswith(f"{rel}: protected by `") for r in reasons), (root.name, rel)
+
+
+def test_the_base_branchs_short_list_still_guards_the_minimum(tmp_path, monkeypatch):
+    empty = tmp_path / "gitconfig"
+    empty.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    space = make_space(tmp_path / "ada", protected=[])
+    _git(space, "init", "-q", "-b", "main")
+    _git(space, "add", "-A")
+    _git(space, "commit", "-q", "-m", "base")
+    base = _git(space, "rev-parse", "HEAD").strip()
+    assert set(gate.MINIMUM_PROTECTED) <= set(gate.rules_at(space, base)["protected"])
+    (space / ".gitignore").write_text("personal/\n", encoding="utf-8")
+    (space / "AGENTS.md").write_text("# Operating contract\n", encoding="utf-8")
+    _git(space, "add", "-A")
+    _git(space, "commit", "-q", "-m", "machinery")
+    cls, reasons = gate.classify(space, gate.changed_files(space, base), base_ref=base)
+    assert cls == "protected"
+    for rel in (".gitignore", "AGENTS.md"):
+        assert any(r.startswith(f"{rel}: protected by `") for r in reasons), rel
+
+
+def test_a_new_space_is_written_with_the_minimum():
+    assert spaceyaml.DEFAULTS["protected"] == list(gate.MINIMUM_PROTECTED)
+
+
+@template_only
+def test_the_template_space_yaml_lists_the_minimum():
+    own = yaml.safe_load((REPO / "space.yaml").read_text(encoding="utf-8"))["protected"]
+    assert own == list(gate.MINIMUM_PROTECTED)
 
 
 def test_template_repository_is_always_auto_mergeable(tmp_path):
@@ -119,8 +198,6 @@ def test_cli_prints_class_and_exits_on_signature_errors_only(tmp_path, monkeypat
 
 
 # ----- an approved template release lands on green; anything else waits ---------------------
-import yaml  # noqa: E402
-
 PROV = "_meta/state/template-version.yaml"
 RELEASE_FILES = {".claude/skills/sweep/SKILL.md": "# sweep v2\n", "_meta/tools/sweep.py": "print('v2')\n",
                  "docs/shape-1.md": "shape\n"}
@@ -152,8 +229,10 @@ def _edit_provenance(root: Path, **changes) -> None:
     _provenance(root, **data)
 
 
-def _released(tmp_path, monkeypatch, tag="v0.2.0", base_files=None, template_extra=None, base_release=None):
-    """A template tagged `tag`, a space whose base names it, and a pull request syncing it."""
+def _released(tmp_path, monkeypatch, tag="v0.2.0", base_files=None, template_extra=None, base_release=None,
+              prepare=None):
+    """A template tagged `tag`, a space whose base names it, and a pull request syncing it.
+    `prepare(space)` runs before the base commit."""
     empty = tmp_path / "gitconfig"
     empty.write_text("", encoding="utf-8")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
@@ -168,6 +247,8 @@ def _released(tmp_path, monkeypatch, tag="v0.2.0", base_files=None, template_ext
     _provenance(space, repo=str(tpl), commit="0" * 40, files={},
                 **({"release": base_release} if base_release else {}))
     _write(space, base_files or {})
+    if prepare:
+        prepare(space)
     _git(space, "init", "-q", "-b", "main")
     base = _commit(space, "base")
     _write(space, RELEASE_FILES)
@@ -189,6 +270,139 @@ def test_a_release_matched_sync_lands_on_green(tmp_path, monkeypatch):
     assert any("release v0.2.0 approved by Ada Okafor" in r for r in reasons)
 
 
+AGENTS_TPL = "_meta/templates/AGENTS.md.tpl"
+OLDER_AGENTS_MD = {"AGENTS.md": "# Operating contract, as an older template rendered it\n"}
+
+
+def _agents_md(space: Path, text: str | None = None) -> str:
+    """AGENTS.md written into the space: `text`, else what agents_md.py renders from its files."""
+    text = agents_md.render(space) if text is None else text
+    (space / "AGENTS.md").write_text(text, encoding="utf-8", newline="\n")
+    return text
+
+
+def test_agents_md_rendered_from_the_release_lands_with_it(tmp_path, monkeypatch):
+    # the release changes the template AGENTS.md is rendered from; the space regenerates it
+    tpl_text = (agents_md.TEMPLATES / agents_md.TEMPLATE_NAME).read_text(encoding="utf-8") \
+        + "\nA line release v0.2.0 adds.\n"
+    _, space, base, _ = _released(tmp_path, monkeypatch, base_files=OLDER_AGENTS_MD,
+                                  template_extra={AGENTS_TPL: tpl_text})
+    _write(space, {AGENTS_TPL: tpl_text})
+    _agents_md(space)
+    _commit(space, "the release's template, and AGENTS.md from it")
+    assert "A line release v0.2.0 adds." in (space / "AGENTS.md").read_text(encoding="utf-8")
+    cls, reasons = _gate(space, base)
+    assert cls == "auto-mergeable", reasons
+    assert any("release v0.2.0 approved by Ada Okafor" in r and "AGENTS.md as agents_md.py renders it" in r
+               for r in reasons)
+
+
+def test_any_other_agents_md_still_needs_the_click(tmp_path, monkeypatch):
+    _, space, base, _ = _released(tmp_path, monkeypatch, base_files=OLDER_AGENTS_MD)
+    rendered = _agents_md(space)
+    _commit(space, "AGENTS.md as rendered")
+    assert _gate(space, base)[0] == "auto-mergeable"
+    # an edit by hand
+    _agents_md(space, rendered + "\nAn instruction nobody rendered.\n")
+    _commit(space, "edited")
+    cls, reasons = _gate(space, base)
+    assert cls == "protected"
+    assert any(r.startswith("AGENTS.md: not what agents_md.py renders") for r in reasons), reasons
+    # rendered from a space.yaml the pull request does not carry
+    original = (space / "space.yaml").read_text(encoding="utf-8")
+    data = yaml.safe_load(original)
+    (space / "space.yaml").write_text(yaml.safe_dump(dict(data, models=["claude"]), sort_keys=False),
+                                      encoding="utf-8")
+    _agents_md(space)
+    (space / "space.yaml").write_text(original, encoding="utf-8")
+    _commit(space, "rendered elsewhere")
+    cls, reasons = _gate(space, base)
+    assert cls == "protected"
+    assert any(r.startswith("AGENTS.md: not what agents_md.py renders") for r in reasons), reasons
+    # rendered from a space.yaml the pull request changes: space.yaml is no release file
+    (space / "space.yaml").write_text(yaml.safe_dump(dict(data, models=["claude"]), sort_keys=False),
+                                      encoding="utf-8")
+    _commit(space, "space.yaml too")
+    cls, reasons = _gate(space, base)
+    assert cls == "protected" and any(r.startswith("space.yaml: not machinery") for r in reasons), reasons
+    # gone
+    (space / "space.yaml").write_text(original, encoding="utf-8")
+    (space / "AGENTS.md").unlink()
+    _commit(space, "dropped")
+    cls, reasons = _gate(space, base)
+    assert cls == "protected"
+    assert any(r.startswith("AGENTS.md: not what agents_md.py renders") for r in reasons), reasons
+
+
+def test_agents_md_alone_lands_on_a_space_already_at_the_release(tmp_path, monkeypatch):
+    # the release is on main; a later status run regenerates AGENTS.md, which lands on its own
+    _, space, _, _ = _released(tmp_path, monkeypatch, base_files=OLDER_AGENTS_MD)
+    base = _git(space, "rev-parse", "HEAD").strip()
+    rendered = _agents_md(space)
+    _commit(space, "AGENTS.md as the status run writes it")
+    assert gate.changed_files(space, base) == ["AGENTS.md"]
+    cls, reasons = _gate(space, base)
+    assert cls == "auto-mergeable", reasons
+    assert "release v0.2.0 approved by Ada Okafor: AGENTS.md as agents_md.py renders it" in reasons
+    _agents_md(space, rendered + "\nAn instruction nobody rendered.\n")
+    _commit(space, "edited")
+    assert _gate(space, base)[0] == "protected"
+
+
+def _brain_declaring(*extra):
+    """A `prepare` for `_released`: a brain mount whose kinds add `extra` to the defaults, out of
+    the space's own commits as a mount's files are, and AGENTS.md as the space's status run writes
+    it with that mount in place."""
+    def prepare(space: Path) -> None:
+        make_space(space / "brain", profile="brain", kinds=[*spaceyaml.DEFAULTS["kinds"], *extra])
+        data = yaml.safe_load((space / "space.yaml").read_text(encoding="utf-8"))
+        data["mounts"] = [{"name": "brain", "path": "brain"}]
+        (space / "space.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+        _write(space, {".gitignore": "brain/\n"})
+        _agents_md(space)
+    return prepare
+
+
+def test_agents_md_with_the_brains_kinds_lands_with_a_release(tmp_path, monkeypatch):
+    # the gate's checkout has no mount, so a space that inherits its kinds is rendered with the
+    # kinds its AGENTS.md on the base branch lists
+    tpl_text = (agents_md.TEMPLATES / agents_md.TEMPLATE_NAME).read_text(encoding="utf-8") \
+        + "\nA line release v0.2.0 adds.\n"
+    _, space, base, _ = _released(tmp_path, monkeypatch, template_extra={AGENTS_TPL: tpl_text},
+                                  prepare=_brain_declaring("deals"))
+    assert "- `deals`\n" in _git(space, "show", f"{base}:AGENTS.md")
+    _write(space, {AGENTS_TPL: tpl_text})
+    _agents_md(space)
+    _commit(space, "the release's template, and AGENTS.md from it")
+    assert "brain/space.yaml" not in _git(space, "ls-files")
+    cls, reasons = _gate(space, base)
+    assert cls == "auto-mergeable", reasons
+    # a kind the brain adds later is on no base branch yet: that AGENTS.md waits for the click
+    brain = yaml.safe_load((space / "brain/space.yaml").read_text(encoding="utf-8"))
+    (space / "brain/space.yaml").write_text(
+        yaml.safe_dump(dict(brain, kinds=[*brain["kinds"], "grants"]), sort_keys=False), encoding="utf-8")
+    _agents_md(space)
+    _commit(space, "a kind the brain added")
+    cls, reasons = _gate(space, base)
+    assert cls == "protected"
+    assert any(r.startswith("AGENTS.md: not what agents_md.py renders") for r in reasons), reasons
+
+
+def test_a_space_yaml_without_a_name_never_matches(tmp_path, monkeypatch):
+    # its AGENTS.md is named after its folder, which the gate's checkout does not share
+    _, space, _, _ = _released(tmp_path, monkeypatch)
+    _agents_md(space)
+    _commit(space, "rendered")
+    assert gate.rendered_at(space, "HEAD")
+    data = yaml.safe_load((space / "space.yaml").read_text(encoding="utf-8"))
+    data.pop("name")
+    (space / "space.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    _agents_md(space)
+    _commit(space, "nameless")
+    assert (space / "AGENTS.md").read_text(encoding="utf-8").startswith("# Operating contract: ada\n")
+    assert not gate.rendered_at(space, "HEAD")
+
+
 def test_a_tampered_protected_file_still_needs_the_click(tmp_path, monkeypatch):
     _, space, base, _ = _released(tmp_path, monkeypatch)
     (space / ".claude/skills/sweep/SKILL.md").write_text("# sweep v2!\n", encoding="utf-8")
@@ -201,7 +415,7 @@ def test_a_tampered_protected_file_still_needs_the_click(tmp_path, monkeypatch):
 def test_no_approval_or_someone_elses_or_another_commits_needs_the_click(tmp_path, monkeypatch):
     _, space, base, _ = _released(tmp_path, monkeypatch)
     approved = yaml.safe_load((space / PROV).read_text(encoding="utf-8"))["approved"]
-    for change in ({"approved": None}, {"approved": dict(approved, by="Bea Lund")},
+    for change in ({"approved": None}, {"approved": dict(approved, by="Ben Liu")},
                    {"approved": dict(approved, commit="1" * 40)},
                    {"approved": dict(approved, release="v0.3.0")}):
         _edit_provenance(space, **change)

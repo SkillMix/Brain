@@ -2,14 +2,18 @@
 section 8), plus the signature check on changed pages (hard rule 3).
 
 classify(root, changed_files, base_ref=None) -> ("protected" | "auto-mergeable", reasons)
-    A change under any `protected:` prefix of space.yaml waits for the owner's one
-    click; everything else lands when the checks pass. In the template repository
-    itself (`.github/template-marker` present) every pull request is auto-mergeable:
-    the template is a code repository, not a space (docs/decisions.md). Given the
-    base branch, the rules are read as they stand there, never as the pull request
-    has them, and a change to the template's name is protected by itself. A protected
-    change still lands when it is a template release its owner approved and every
-    protected file it changes is that release's file, byte for byte.
+    A change under any `protected:` prefix of space.yaml, or under the minimum the gate
+    always adds (the machinery, the instructions every session loads and git's own
+    files), waits for the owner's one click; everything else lands when the checks
+    pass. In the template repository itself (`.github/template-marker` present) every
+    pull request is auto-mergeable: the template is a code repository, not a space
+    (docs/decisions.md). Given the base branch, the rules are read as they stand
+    there, never as the pull request has them, and a change to the template's name is
+    protected by itself. A protected change still lands when it is a template release
+    its owner approved and every protected file it changes is that release's file,
+    byte for byte; AGENTS.md, generated in each space, counts when it is what
+    agents_md.py renders from the pull request's own space.yaml and _meta/templates (and,
+    for a space whose kinds come from the brain, the kinds the base branch's AGENTS.md lists).
 check_signatures(root, changed_files) -> list[str]
     Every changed page under knowledge/, live/, identity/ or _inbound/ with
     `status: stable` carries signed_by, signed_at and a fingerprint equal to its
@@ -27,11 +31,13 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import agents_md  # noqa: E402
 import pages  # noqa: E402
 import spaceyaml  # noqa: E402
 
@@ -42,6 +48,16 @@ RELEASE_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 PAGE_ZONES = ("knowledge/", "live/", "identity/", "_inbound/")
 NEVER_SIGNED = {"knowledge/sources/": "witness pages are never signed",
                 "live/": "status pages are operational state, never signed"}
+# What the gate guards whatever space.yaml says: a list that names fewer never shrinks it.
+MINIMUM_PROTECTED = ("identity/", "rules.md", "space.yaml", ".claude/", "_meta/tools/", ".github/",
+                     "CLAUDE.md", "AGENTS.md", ".gitignore", ".gitattributes", ".gitmodules",
+                     "_meta/templates/", "_meta/plugins/", ".claude-plugin/")
+# Generated in each space by agents_md.py, so never a release's own file: it rides a release
+# when it is what the gate's agents_md.py renders from the pull request's files. The gate's
+# agents_md.py is the base branch's, so when a release changes what agents_md.py writes, the
+# AGENTS.md regenerated from it lands on its own once that release is on main (the next status run).
+GENERATED = "AGENTS.md"
+KIND_LINE = re.compile(r"^- `([a-z][a-z0-9-]*)`$")
 
 
 def _posix(rel: str) -> str:
@@ -63,12 +79,24 @@ def is_template(root) -> bool:
     return (Path(root) / spaceyaml.TEMPLATE_MARKER).exists()
 
 
+def with_minimum(prefixes) -> list[str]:
+    """The space's own prefixes, then each entry of the minimum they lack, every prefix once (a
+    prefix is the same one with or without its slash, in any case, as `_under` matches it)."""
+    out, seen = [], set()
+    for prefix in [*(str(p) for p in prefixes), *MINIMUM_PROTECTED]:
+        key = _posix(prefix).casefold().rstrip("/")
+        if key not in seen:
+            seen.add(key)
+            out.append(prefix)
+    return out
+
+
 def protected_prefixes(root) -> tuple[list[str], str | None]:
-    """The space's protected prefixes, and a note when the defaults had to stand in."""
+    """The space's protected prefixes with the minimum, and a note when the defaults had to stand in."""
     try:
-        return list(spaceyaml.load(root).protected), None
+        return with_minimum(spaceyaml.load(root).protected), None
     except Exception as exc:  # no or unreadable space.yaml: the defaults still guard
-        return list(spaceyaml.DEFAULTS["protected"]), f"space.yaml unreadable ({exc}); defaults used"
+        return with_minimum(spaceyaml.DEFAULTS["protected"]), f"space.yaml unreadable ({exc}); defaults used"
 
 
 def _git(root, *args, env: dict | None = None) -> subprocess.CompletedProcess:
@@ -99,6 +127,66 @@ def _file(root, ref: str, rel: str) -> str | None:
     return parts[2]
 
 
+def _blob_text(root, blob: str) -> str | None:
+    """A blob's text, or None when git cannot read it or it is not UTF-8."""
+    done = subprocess.run(["git", "cat-file", "blob", blob], cwd=str(root), capture_output=True)
+    try:
+        return done.stdout.decode("utf-8") if done.returncode == 0 else None
+    except UnicodeDecodeError:
+        return None
+
+
+def listed_kinds(text: str | None) -> list[str]:
+    """The kinds an AGENTS.md lists after its kinds intro, up to the fixed ones; empty when it lists
+    none."""
+    lines = (text or "").replace("\r\n", "\n").split("\n")
+    intros = set(agents_md.KINDS_INTRO.values())
+    start = next((n + 1 for n, line in enumerate(lines) if line in intros), len(lines))
+    kinds = []
+    for line in lines[start:]:
+        match = KIND_LINE.match(line)
+        if match:
+            kinds.append(match.group(1))
+        elif line.strip():
+            break
+    return kinds
+
+
+def rendered_at(root, ref: str, kinds: list | None = None) -> bool:
+    """AGENTS.md at `ref` is a plain file and what this gate's own agents_md.py renders, line endings
+    aside, from that commit's space.yaml and _meta/templates, copied into a folder of their own. No
+    file of the pull request runs, and no mount is read (the gate's checkout has none): a space
+    whose kinds come from the brain and that declares none is rendered with `kinds`, what its
+    AGENTS.md on the base branch lists, or else the defaults, never the brain's own list. A
+    space.yaml without `name:` never matches: its AGENTS.md is named after a folder the gate does
+    not share."""
+    blob = _file(root, ref, GENERATED)
+    text = _blob_text(root, blob) if blob else None
+    blob = _file(root, ref, "space.yaml")
+    try:
+        data = yaml.safe_load(_blob_text(root, blob) or "") if blob else None
+    except yaml.YAMLError:
+        data = None
+    if text is None or not isinstance(data, dict) or not data.get("name"):
+        return False
+    if kinds and not data.get("kinds") and data.get("profile") not in ("brain", spaceyaml.TEMPLATE_PROFILE):
+        data["kinds"] = list(kinds)
+    with tempfile.TemporaryDirectory() as tmp:
+        here = Path(tmp)
+        (here / "space.yaml").write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
+                                         encoding="utf-8", newline="\n")
+        rel = f"_meta/templates/{agents_md.TEMPLATE_NAME}"
+        blob = _file(root, ref, rel)
+        template = _blob_text(root, blob) if blob else None
+        if template is not None:
+            (here / rel).parent.mkdir(parents=True)
+            (here / rel).write_text(template, encoding="utf-8", newline="")
+        try:
+            return text.replace("\r\n", "\n") == agents_md.render(here)
+        except Exception:   # a space.yaml the render cannot read
+            return False
+
+
 def _machinery(rel: str) -> bool:
     """A path template sync installs (its machinery, minus what it never copies)."""
     import template_sync   # imports this module; by now it is loaded
@@ -113,17 +201,19 @@ def _person(name) -> str:
 
 
 def rules_at(root, ref: str) -> dict:
-    """The rules as they stand at `ref` (the base branch): the protected prefixes, whether this is
-    the template, the owner and the template's name. A pull request cannot loosen its own gate."""
+    """The rules as they stand at `ref` (the base branch): the protected prefixes with the minimum,
+    whether this is the template, the owner, the template's name and the kinds AGENTS.md lists. A
+    pull request cannot loosen its own gate."""
     data = _yaml_at(root, ref, "space.yaml")
     protected = data.get("protected")
     if not isinstance(protected, list):
         protected = spaceyaml.DEFAULTS["protected"]
     prov = _yaml_at(root, ref, PROVENANCE)
-    return {"protected": [str(p) for p in protected],
+    return {"protected": with_minimum(protected),
             "template": _show(root, ref, spaceyaml.TEMPLATE_MARKER.as_posix()) is not None,
             "owner": str(data.get("owner") or ""),
-            "repo": prov.get("repo"), "release": str(prov.get("release") or "")}
+            "repo": prov.get("repo"), "release": str(prov.get("release") or ""),
+            "kinds": listed_kinds(_show(root, ref, GENERATED))}
 
 
 def template_url(repo) -> str:
@@ -175,7 +265,10 @@ def fetch_release(root, repo, tag: str) -> str | None:
 
 def release_match(root, rules: dict, head: str, paths: list) -> tuple[bool, list[str]]:
     """True when the pull request installs a template release its owner approved and every one of
-    `paths` (its protected changes) is that release's file, byte for byte."""
+    `paths` (its protected changes) is that release's file, byte for byte, or AGENTS.md as
+    agents_md.py renders it from the pull request's own files (`rendered_at`)."""
+    generated = GENERATED in paths
+    paths = [rel for rel in paths if rel != GENERATED]
     prov = _yaml_at(root, head, PROVENANCE)
     tag, commit = str(prov.get("release") or ""), str(prov.get("commit") or "")
     approved = prov.get("approved") if isinstance(prov.get("approved"), dict) else {}
@@ -204,10 +297,13 @@ def release_match(root, rules: dict, head: str, paths: list) -> tuple[bool, list
         mine = _file(root, head, rel)
         if mine is None or mine != _file(root, commit, rel):
             differ.append(f"{rel}: not byte-identical to release {tag}")
+    if generated and not rendered_at(root, head, rules.get("kinds")):
+        differ.append(f"{GENERATED}: not what agents_md.py renders from this space.yaml and _meta/templates")
     if differ:
         return False, differ
-    return True, [f"release {tag} approved by {approved.get('by')}: "
-                  f"{len(paths)} protected file(s) identical to it"]
+    named = [f"{len(paths)} protected file(s) identical to it"] if paths else []
+    named += [f"{GENERATED} as agents_md.py renders it"] if generated else []
+    return True, [f"release {tag} approved by {approved.get('by')}: " + ", and ".join(named)]
 
 
 def classify(root, changed_files, base_ref: str | None = None, head: str = "HEAD") -> tuple[str, list[str]]:

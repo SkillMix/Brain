@@ -72,7 +72,10 @@ DEFAULTS = {
                     "a claim from outside the company about a named person"],
     "windows": {"snapshot": 7, "status": 7, "process": 90, "directive": 90, "review": 90,
                 "concept": 180, "entity": 180, "policy": 365, "decision": 365},
-    "protected": ["identity/", "rules.md", "space.yaml", ".claude/", "_meta/tools/", ".github/"],
+    # the gate's minimum (gate.MINIMUM_PROTECTED), which it adds to any list that leaves some out
+    "protected": ["identity/", "rules.md", "space.yaml", ".claude/", "_meta/tools/", ".github/",
+                  "CLAUDE.md", "AGENTS.md", ".gitignore", ".gitattributes", ".gitmodules",
+                  "_meta/templates/", "_meta/plugins/", ".claude-plugin/"],
     "budget": {"tokens_per_day": 100_000_000_000},
     "window_hours": 24,
     "models": ["any"],

@@ -568,7 +568,8 @@ class Run:
 
     def split(self) -> tuple[list, list] | None:
         """The paths this checkout changes against origin/main, as (plain, protected); None
-        when nothing is protected (or in the template, whose pull requests land on green)."""
+        when nothing is protected (or in the template, whose pull requests land on green).
+        A mount whose address waits in `.gitmodules` waits with it (`readdressed`)."""
         try:
             import gate
         except ImportError:
@@ -581,9 +582,34 @@ class Run:
         prefixes, _ = gate.protected_prefixes(self.root)
         managed = self.template_managed()   # a template update lands as one unit, with its tools
         guarded = [p for p in changed if p in managed or any(gate._under(gate._posix(p), pre) for pre in prefixes)]
+        if ".gitmodules" in guarded:
+            guarded += [p for p in self.readdressed() if p in changed and p not in guarded]
         if not guarded:
             return None
         return [p for p in changed if p not in guarded], guarded
+
+    def readdressed(self) -> list:
+        """The mounts whose pin must wait with `.gitmodules`: one new on HEAD, or one whose entry
+        there (its path or url) differs from origin/main's. Landed alone, main would hold a pin
+        with no address, or one its old address cannot fetch (`git submodule update --init` stops
+        at it). A pin that only advanced lands on green (decision 2026-10-16)."""
+        out = git(self.root, "diff", "--raw", "-z", "--no-renames", "--no-abbrev", "origin/main", "HEAD").stdout
+        fields = out.split("\x00")
+        links = {path: meta[1:].split()[0] for meta, path in zip(fields[::2], fields[1::2])
+                 if meta.startswith(":") and "160000" in meta[1:].split()[:2]}
+        before, after = self.addresses("origin/main"), self.addresses("HEAD")
+        return [path for path, mode in links.items() if mode != "160000" or before.get(path) != after.get(path)]
+
+    def addresses(self, ref: str) -> dict:
+        """Each mount's url in `.gitmodules` at `ref`, by its path; empty when there is none."""
+        done = git(self.root, "config", "-z", "--blob", f"{ref}:.gitmodules",
+                   "--get-regexp", r"^submodule\..*\.(path|url)$")
+        entries: dict = {}
+        for item in done.stdout.split("\x00") if done.returncode == 0 else []:
+            key, _, value = item.partition("\n")
+            name, _, field = key.rpartition(".")
+            entries.setdefault(name, {})[field] = value
+        return {e["path"]: e.get("url") for e in entries.values() if e.get("path")}
 
     def template_managed(self) -> set:
         """Paths the template sync manages (its provenance file and every file it lists)."""
