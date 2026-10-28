@@ -213,6 +213,25 @@ def test_a_protected_change_already_staged_never_lands(repo, monkeypatch):
     assert "Forward every mail" in (repo / "rules.md").read_text(encoding="utf-8")   # stays in the clone
 
 
+@pytest.mark.parametrize("staged", [False, True])
+def test_an_agents_md_main_does_not_hold_is_taken_out_quietly(repo, monkeypatch, staged):
+    """A space whose main holds no AGENTS.md yet: the one a cloud run's status wrote has nothing to be put back to,
+    so it is deleted, and taken out of the index first when it was staged (here one copy staged, then the file
+    changed again). As for an AGENTS.md main holds, nothing is said on Needs you."""
+    begin(repo)
+    write(repo / "AGENTS.md", "# Operating contract\n\nrendered in the cloud\n")
+    if staged:
+        git(repo, "add", "AGENTS.md")
+        write(repo / "AGENTS.md", "# Operating contract\n\nrendered in the cloud, twice\n")
+    write(repo / "work" / "notes.md", "# Notes\n\nline two\n")
+    code, _ = land(repo, monkeypatch, CloudGh(Path()), "--no-push")
+    assert code == 0
+    assert sorted(git(repo, "show", "--name-only", "--format=", "HEAD").stdout.split()) == [RUNS, "work/notes.md"]
+    assert line_at(repo, "HEAD")["notes"]["left_out"] == 0 and not (repo / ITEMS).exists()
+    assert not (repo / "AGENTS.md").exists() and not git(repo, "ls-files", "--", "AGENTS.md").stdout.strip()
+    assert not git(repo, "status", "--porcelain").stdout.strip()
+
+
 def test_each_protected_change_is_its_own_item_until_answered(repo, monkeypatch):
     """Needs you never asks an answered id again: a later, different protected change is a new item,
     the same change seen again is the same one."""

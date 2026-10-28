@@ -57,22 +57,22 @@ structural change. Pins and the release leg wait for the next ordinary run.
 
 `--cloud <chain>` is a cloud run's landing, run once at its end (spec 4.3); `cloud.py begin` carried
 the earlier run's branch first (`carry`). Nothing about pins, the release leg or the chains' clocks
-runs. Its own run line is written before its commit, so it lands with it; new files need no
-minimum age. A protected path (`protected_paths`) never lands from the cloud, even one staged
-before the run: AGENTS.md, which the tools regenerate, is put back quietly, and any other stays in
-the clone and is one security item on Needs you. The one change there that lands is the sync's own:
-answer tests set aside or brought back (`protected_changes`). Nor does a path in a private zone, a
-mount or a nested checkout, or any pin, even one staged by force. Every git it starts runs with a
-mount's own file monitor off (`monitor_off`), a command a mount's git config could name. A line the
-secret scan hits is replaced by `[a line held back: <kind>]` (a private key from its BEGIN line to
-its END line) and the page lands, since the clone is thrown away; a file over 1 MB, not text, or
-that would not read with its lines held back is named in the run line. After the merge of main and
-the answer tests (steps 5 and 5a), the push goes to `cloud/<chain>`, leased to the head the carry
-saw; refused, it carries again and pushes once more. Run lines, marks and stale.yaml alone open no
-pull request until the branch's oldest commit main lacks is QUIET_HOURS old, unless they hold a
-proof run's line; anything else opens one through REST and waits for its merge, merging main in
-again while it conflicts and repairing red checks once. What happened after the push is printed for
-the run log, and the next run's line says whether it carried this one.
+runs. Its own run line is written before its commit, so it lands with it; new files need no minimum
+age. A protected path (`protected_paths`) never lands from the cloud, even one staged before the
+run: AGENTS.md, which the tools regenerate, is put back quietly (deleted, when main holds none), and
+any other stays in the clone and is one security item on Needs you. The one change there that lands
+is the sync's own: answer tests set aside or brought back (`protected_changes`). Nor does a path in
+a private zone, a mount or a nested checkout, or any pin, even one staged by force. Every git it
+starts runs with a mount's own file monitor off (`monitor_off`), a command a mount's git config
+could name. A line the secret scan hits is replaced by `[a line held back: <kind>]` (a private key
+from its BEGIN line to its END line) and the page lands, since the clone is thrown away; a file over
+1 MB, not text, or that would not read with its lines held back is named in the run line. After the
+merge of main and the answer tests (steps 5 and 5a), the push goes to `cloud/<chain>`, leased to the
+head the carry saw; refused, it carries again and pushes once more. Run lines, marks and stale.yaml
+alone open no pull request until the branch's oldest commit main lacks is QUIET_HOURS old, unless
+they hold a proof run's line; anything else opens one through REST and waits for its merge, merging
+main in again while it conflicts and repairing red checks once. What happened after the push is
+printed for the run log, and the next run's line says whether it carried this one.
 
 The computer's leg (spec 4.5, `computer_leg`) runs while the workspace's routine record says the
 routines run in the cloud (`runner: cloud`; for a space that is no workspace, its owner's workspace
@@ -80,15 +80,18 @@ on this computer). It comes right after step 5, so it reads the cloud's run line
 what only the computer has: `not_started` moves there from step 1a, and waits for a run that merged
 main (offline, or stopped by a conflict, it would not see the cloud's lines); the transcripts scan
 runs at most every `chain.TRANSCRIPTS_HOURS`, where the session files are on this computer, its
-clock kept outside the repository (`~/.spaces/sync-leg-<space>.json`); template sync runs weekly,
-as the daily chain runs it on a computer, since its machinery changes need the person's click; a
+clock kept outside the repository (`~/.spaces/sync-leg-<space>.json`); template sync runs weekly, as
+the daily chain runs it on a computer, since its machinery changes need the person's click;
+AGENTS.md is written again when it is not what `agents_md.py` renders, as status writes it on a
+computer, but only while this checkout's `agents_md.py` is main's, which the gate renders with, and
+rides this computer's protected pull request (a cloud run puts back its own); a
 `cloud/<chain>` pull request open for ADOPT_MINUTES, in conflict with main or red, whose head is as
 old, is merged here with the merge rules and rides this computer's own pull request, and one that
 still conflicts is one item on Needs you; and the workspace names on Needs you a space of the
 person's that the move did not attach. All but `not_started` run only on the computer the record
 names (`keeps_leg`); a record that names none lets each computer run them, and the merge rules keep
-what two computers both write from stopping a merge. The scan and template sync wait while the
-routines are paused. What the leg wrote is committed before step 5a.
+what two computers both write from stopping a merge. The scan, template sync and AGENTS.md wait
+while the routines are paused. What the leg wrote is committed before step 5a.
 
 `--release-leg` runs `release.ship(root)` first when that module is present.
 `--merge-latest` is the watermark driver git runs during a merge (`merge_latest`); nobody types it.
@@ -166,7 +169,7 @@ CLOUD_REMERGE = 3   # merges of main while the pull request conflicts with it, b
 POLL_SECONDS, WAIT_MINUTES = 20, 9   # how often a cloud run reads its pull request, and for how long at most
 # The computer's leg, while the routines run in the cloud (`computer_leg`)
 ADOPT_MINUTES = 30   # a cloud pull request open this long, in conflict or red, is merged here: its run waits less
-TEMPLATE_RETRY_HOURS = 24   # a template sync that failed is tried again after this, as the daily chain would
+TEMPLATE_RETRY_HOURS = 24   # a template sync or AGENTS.md that failed is tried again after this, as the daily would
 LEG_STATE = "sync-leg-{}.json"   # under ~/.spaces/, beside the progress page: the leg's clocks for one space
 SYNC_ITEMS = Path("_inbound") / "needs-you" / "sync.yaml"   # the leg's items on Needs you
 HELD_LINE = "[a line held back: {}]"
@@ -617,7 +620,7 @@ class Run:
     def keep_out(self, rels: list[str]) -> list[str]:
         """The paths among `rels` this run may land. On a computer, all of them. In a cloud run, never a
         protected change (`protected_changes`): a cloud run's tools write none, so a change there came
-        from somewhere else. AGENTS.md, which the tools regenerate, is put back as HEAD has it, quietly;
+        from somewhere else. AGENTS.md, which the tools regenerate, is put back quietly (`put_back`);
         any other stays in the clone, named in `left_out`. Nor a file over CLOUD_MAX_BYTES or not text,
         or one that would not read once its lines were held back (`hold_lines`), named in `held`: a
         computer leaves such a file for a later run, and the clone is thrown away. They are named here;
@@ -629,7 +632,7 @@ class Run:
         for rel in rels:
             path = self.root / rel
             if rel in guarded:
-                if rel == "AGENTS.md" and (self.dry or git(self.root, "checkout", "HEAD", "--", rel).returncode == 0):
+                if rel == "AGENTS.md" and (self.dry or self.put_back(rel)):
                     continue
                 if rel not in self.left_out:
                     print(f"left out: {rel} is protected")
@@ -643,6 +646,20 @@ class Run:
             else:
                 keep.append(rel)
         return keep
+
+    def put_back(self, rel: str) -> bool:
+        """`rel` as HEAD has it, in the index and in the clone (`git checkout HEAD`). When HEAD has none, a staged
+        copy is taken out of the index and the file is deleted, so that the clone has none either: a space whose
+        main holds no AGENTS.md yet is no reason for a security item. True when that was done."""
+        if git(self.root, "cat-file", "-e", f"HEAD:{rel}").returncode == 0:
+            return git(self.root, "checkout", "HEAD", "--", rel).returncode == 0
+        if git(self.root, "rm", "-q", "-f", "--cached", "--ignore-unmatch", "--", rel).returncode != 0:
+            return False
+        try:
+            (self.root / rel).unlink(missing_ok=True)
+        except OSError:   # a folder, or a file this run cannot delete
+            return False
+        return True
 
     @staticmethod
     def landable_text(path: Path) -> bool:
@@ -1329,19 +1346,19 @@ class Run:
         return not named or named == routine.this_machine()
 
     def computer_leg(self, now: dt.datetime) -> dict:
-        """What only the computer has, while the routines run in the cloud (spec 4.5), right after main is
-        merged in, so that the cloud's run lines are read first. In order: `not_started`, which waited for the
-        merge; the transcripts scan (`scan_transcripts`); template sync (`sync_template`); the cloud pull
-        requests nothing could merge (`adopt_cloud`); and, in the workspace, the spaces the cloud does not
-        read (`name_unattached`). `not_started` runs on every computer, and not at all when main could not be
-        merged in (the fetch failed, or the merge stopped): without the cloud's run lines it would name chains
-        that ran, and stale.yaml stays as it was until a run merges main. The rest write files, so they run on
-        the computer the record names (`keeps_leg`); a record that names none lets every computer run them, and
-        the merge rules keep what two computers both write from stopping a merge. While the routines are
-        paused, the scan and template sync wait, as the chains that ran them would. Each step's outcome goes
-        into the run line's notes; a step that fails is said and the next one runs, since the landing must
-        still happen. What the leg wrote is committed with this run. A merge that moved the routines back to
-        a computer leaves only `not_started`. The outcomes, as those notes."""
+        """What only the computer has, while the routines run in the cloud (spec 4.5), right after main is merged
+        in, so that the cloud's run lines are read first. In order: `not_started`, which waited for the merge; the
+        transcripts scan (`scan_transcripts`); template sync (`sync_template`); AGENTS.md, when it is not what
+        `agents_md.py` renders (`write_agents_md`); the cloud pull requests nothing could merge (`adopt_cloud`);
+        and, in the workspace, the spaces the cloud does not read (`name_unattached`). `not_started` runs on every
+        computer, and not at all when main could not be merged in (the fetch failed, or the merge stopped): without
+        the cloud's run lines it would name chains that ran, and stale.yaml stays as it was until a run merges main.
+        The rest write files, so they run on the computer the record names (`keeps_leg`); a record that names none
+        lets every computer run them, and the merge rules keep what two computers both write from stopping a merge.
+        While the routines are paused, the scan, template sync and AGENTS.md wait, as the chains that ran them
+        would. Each step's outcome goes into the run line's notes; a step that fails is said and the next one runs,
+        since the landing must still happen. What the leg wrote is committed with this run. A merge that moved the
+        routines back to a computer leaves only `not_started`. The outcomes, as those notes."""
         import routine
         done: dict = {}
         if not self.behind and self.watch_chains():
@@ -1351,7 +1368,8 @@ class Run:
             workspace, record = host
             steps = [] if routine.paused_until(record, now) else [
                 ("transcripts", "transcripts scan", self.scan_transcripts),
-                ("template_sync", "template sync", self.sync_template)]
+                ("template_sync", "template sync", self.sync_template),
+                ("agents_md", "writing AGENTS.md", self.write_agents_md)]
             steps.append(("adopted", "adopting cloud pull requests", self.adopt_cloud))
             if Path(workspace).resolve() == self.root.resolve():
                 steps.append(("unattached", "naming the spaces the cloud does not read",
@@ -1371,9 +1389,10 @@ class Run:
     def leg_state(self, **changes) -> dict:
         """The leg's clocks for this space, kept on this computer, never in the repository
         (`~/.spaces/sync-leg-<space>.json`, beside the progress page): when it last scanned the transcripts
-        (`transcripts`) and when a template sync last failed (`template_sync_failed`). `changes` set those
-        keys (None takes one out); the file is written only when that changes it, and one that cannot be
-        written leaves the step to run again next time."""
+        (`transcripts`), and when a template sync or the writing of AGENTS.md last failed
+        (`template_sync_failed`, `agents_md_failed`). `changes` set those keys (None takes one out); the
+        file is written only when that changes it, and one that cannot be written leaves the step to run
+        again next time."""
         path = Path.home() / ".spaces" / LEG_STATE.format(self.space.name)
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -1436,6 +1455,39 @@ class Run:
             raise
         self.leg_state(template_sync_failed=None)
         return {"added": len(report.added), "updated": len(report.updated), "reverted": bool(report.reverted)}
+
+    def write_agents_md(self, now: dt.datetime) -> bool:
+        """AGENTS.md written again when it is not what `agents_md.py` renders (`agents_md.check`), as the status
+        routine writes it on a computer (`status._refresh_agents_md`). While the routines run in the cloud no status
+        runs here, and a cloud run puts back the one its own status wrote (`keep_out`), so without this step a release
+        that changes what `agents_md.py` writes, or a change of kinds, would never reach the file. The file is
+        protected: it rides this computer's protected pull request (`split`), which the gate lands when it is what
+        main's `agents_md.py` renders from the pull request's files (`gate.rendered_at`), and which otherwise waits
+        for the person's click. So nothing is written while this checkout's `agents_md.py` is not main's: a release
+        that changes it has not landed, and a file written from it would hold that whole release for the click. Once
+        the release is on main, the next run writes the file, and it lands on its own (`gate.GENERATED`). A release
+        that changes only the page template still rides its own pull request, since both renders read the template
+        from the files. A render that fails (a template whose placeholders it cannot fill) is said once and tried
+        again TEMPLATE_RETRY_HOURS later, as status would try it once a day. Never in the template, which keeps none.
+        True when it was written."""
+        import agents_md
+        if (self.root / spaceyaml.TEMPLATE_MARKER).exists() or not (self.root / "space.yaml").is_file():
+            return False
+        failed = self.since("agents_md_failed", now)
+        if failed is not None and failed < self.space.scale(TEMPLATE_RETRY_HOURS):
+            return False
+        if self.has_origin_main() and git(self.root, "diff", "--quiet", "origin/main", "--",
+                                          "_meta/tools/agents_md.py").returncode != 0:
+            return False
+        try:
+            current = agents_md.check(self.root)
+            if not current:
+                agents_md.write(self.root)
+        except Exception:
+            self.leg_state(agents_md_failed=pages.iso(now))
+            raise
+        self.leg_state(agents_md_failed=None)
+        return not current
 
     def adopt_cloud(self, now: dt.datetime) -> list:
         """The `cloud/<chain>` pull requests of this repository that nothing will merge, merged into this

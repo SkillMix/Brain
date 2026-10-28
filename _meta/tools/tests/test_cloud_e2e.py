@@ -151,9 +151,10 @@ class Platform:
 def world(tmp_path, monkeypatch):
     """Ada's workspace and her brain on GitHub (two bare origins), the workspace mounting the brain at its pin, the
     routines moved to the cloud an hour ago; GitHub as the fake, and the person's computer, one more clone."""
-    config = tmp_path / "gitconfig"
+    config = tmp_path / "gitconfig"   # longpaths: Windows needs it under a long basetemp; other systems ignore it
     config.write_text('[protocol "file"]\n\tallow = always\n[user]\n\tname = cloud\n\temail = cloud@example.test\n'
-                      "[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n", encoding="utf-8")
+                      "[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n[core]\n\tlongpaths = true\n",
+                      encoding="utf-8")
     for key, value in (("GIT_CONFIG_GLOBAL", str(config)), ("GIT_CONFIG_NOSYSTEM", "1"), ("GIT_TERMINAL_PROMPT", "0")):
         monkeypatch.setenv(key, value)
     monkeypatch.delenv("SPACE_NOW", raising=False)
@@ -300,7 +301,8 @@ def test_cloud_sweeps_and_a_daily_land_end_to_end(world, capsys, monkeypatch):
     # 2. It pushed cloud/sweep and opened one pull request through REST, which the platform merged.
     assert landed["ada-space"]["landing"] == "merged" and landed["ada-space"]["pr"] == "opened"
     assert len(platform.posts(SPACE)) == 1 and platform.open(SPACE) == [] and platform.head(SPACE, "cloud/sweep")
-    assert {"mail-0001", "mail-0002"} <= {Path(p).stem for p in tree(world, SPACE) if p.startswith("knowledge/sources/")}
+    assert {"mail-0001", "mail-0002"} <= {Path(p).stem for p in tree(world, SPACE)
+                                          if p.startswith("knowledge/sources/")}
 
     # 3. The daily begins, and a second sweep begins on its own machine meanwhile.
     daily = machine(world, "daily-1")
