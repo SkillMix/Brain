@@ -887,7 +887,8 @@ def _read_apps(args, groups: list, unsigned: list, tools: list, claude: str, cwd
     answer too (R47, N3-2). The card also says what the sorting run made of the apps no name knew (`facts`: `sorted`,
     `unsorted`), whichever of its two writes it is (`_app_card`). An app the sorting run could not look at yet that
     the person did not skip keeps the phase waiting too, like a slow app, also when there is no app to read at all:
-    the answer names them (`unsorted`), and its why offers to skip one (R5)."""
+    the answer names them (`unsorted`), and its why offers to skip one (R5). Once the build has kept the verdicts in
+    a workspace, they are written there again (`_keep_verdicts`), so an app read after the build reaches the routines."""
     journal = setup_journal.load()
     who = identity(args.name, args.email, offline=True)
     emails = [e for e in dict.fromkeys([args.email, (journal.get("signins") or {}).get("claude_email"), who["email"]]) if e]
@@ -930,6 +931,9 @@ def _read_apps(args, groups: list, unsigned: list, tools: list, claude: str, cwd
         card = _held(record, verdicts, _app_card(verdicts, now, unsigned, sorted_apps, groups, unsorted, skips))
         feeds = apps.feeds(verdicts)
         setup_journal.set_phase("apps", state, verdicts=verdicts, card=card, feeds=feeds, unfinished=unfinished)
+    workspace = None if getattr(args, "dry_run", False) else _history_workspace(args, setup_journal.load())
+    if workspace and (Path(workspace) / routine.APPS_FILE).exists():   # the build kept the verdicts: they follow, so an
+        _keep_verdicts(workspace, setup_journal.load())                # app read after it reaches the routines too
     _app_needs(verdicts)
     result = {"state": state, "apps": [g["app"] for g in groups], "card": card, "feeds": feeds, "unfinished": unfinished,
               "unsorted": looking}
@@ -1100,8 +1104,9 @@ def unskip_apps(args) -> dict:
     """"Read <app> again": the person takes a skip back. The app leaves `person_skips`; the verdict a reader gave it
     before the skip is its verdict again, and the card and the feeds follow (the card's start time stays: the person
     asked for it); an app skipped before any reader looked at it is `unfinished`, read the next time the phase runs.
-    Once the build has kept the verdicts in a workspace (`routine.APPS_FILE`), that file follows too. An app that was
-    not skipped changes nothing, and why names the skipped ones."""
+    Once the build has kept the verdicts in a workspace (`routine.APPS_FILE`), that file follows too, and why says which
+    apps the routines read again; an app no reader looked at stays skipped there until the phase reads it, and why says
+    when that is. An app that was not skipped changes nothing, and why names the skipped ones."""
     journal = setup_journal.load()
     record = journal.get("apps") if isinstance(journal.get("apps"), dict) else {}
     before = _skips_in(record)
@@ -1140,7 +1145,14 @@ def unskip_apps(args) -> dict:
             rows = [r for r in (yaml.safe_load(kept.read_text(encoding="utf-8")) or {}).get("apps") or [] if isinstance(r, dict)]
             rows = [(_unskipped(r) or r) if r.get("app") in found and r.get("verdict") == "skip" else r for r in rows]
             onboard.write_yaml(kept, {"apps": rows})
-            why += " Your routines read it again from their next run."
+            back = [a for a in found if any(r.get("app") == a and r.get("verdict") != "skip" for r in rows)]
+            unread = [a for a in found if a not in back]   # skipped before any reader looked: read when the phase runs
+            if back:
+                why += f" Your routines read {', '.join(back)} again from their next run."
+            if unread:
+                it = "them" if len(unread) > 1 else "it"
+                why += (f" {', '.join(unread)} had not been read before you skipped {it}: {it} is read the next time you "
+                        f"say the sentence, and your routines read {it} from then on.")
         except (OSError, yaml.YAMLError, AttributeError):
             why += " Your routines could not be told yet: say it again."
     result["why"] = why
@@ -1715,10 +1727,8 @@ def keep_findings(report, journal: dict, briefing=("", "asked")) -> None:
         data["settings"] = settings
         setup_journal.save(data)
     workspace = getattr(report, "workspace", None)
-    verdicts = [{k: v for k, v in verdict.items() if k != "per_month"} for verdict in apps_verdicts(journal)]
-    if workspace and verdicts:
-        onboard.write_yaml(Path(workspace) / "_meta" / "state" / "private" / "apps.yaml", {"apps": verdicts})
     if workspace:
+        _keep_verdicts(workspace, journal)
         address, source = briefing
         actual = spaceyaml.load(workspace).owner_email
         earlier = journal.get("build") if isinstance(journal.get("build"), dict) else {}
@@ -1734,6 +1744,14 @@ def keep_findings(report, journal: dict, briefing=("", "asked")) -> None:
         else:
             real = "kept" if actual else "asked"
         setup_journal.set_phase("build", "running", owner_email=actual, owner_email_source=real)
+
+
+def _keep_verdicts(workspace, journal: dict) -> None:
+    """The apps' verdicts as the person's word leaves them (`apps_verdicts`), without their counts, in the workspace's
+    private zone (`routine.APPS_FILE`), where the routines read the tools they may use; nothing when there are none."""
+    verdicts = [{k: v for k, v in verdict.items() if k != "per_month"} for verdict in apps_verdicts(journal)]
+    if verdicts:
+        onboard.write_yaml(Path(workspace) / routine.APPS_FILE, {"apps": verdicts})
 
 
 # ----- the routines prove they run on their own --------------------------------------------

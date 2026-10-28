@@ -127,6 +127,7 @@ def test_the_probe_task_on_windows_writes_what_it_said_to_a_log(tmp_path, monkey
     assert record["log"] == str(log) and log.parent.is_dir()
 
 
+
 def test_a_probe_that_ends_without_a_result_fails_at_once_with_what_it_said(tmp_path, monkeypatch):
     log = tmp_path / "space-probe-ada.log"
     log.write_text("from an earlier build\n", encoding="utf-8")
@@ -693,7 +694,7 @@ def yaml_load(path: Path):
 
 
 # ----- #9: one mailbox counted once, and a skip that can be taken back ---------------------------------------
-from test_start import CALENDAR, GMAIL, finished_setup, no_outside  # noqa: E402
+from test_start import CALENDAR, GMAIL, finished_setup, no_outside, probed_apps  # noqa: E402
 import setup_journal  # noqa: E402
 
 ATTACHMENTS = {"app": "Mail Attachments", "kinds": ["mail"], "read": ["mcp__claude_ai_Mail_Attachments__read"],
@@ -721,6 +722,31 @@ def test_a_skipped_app_is_read_again_when_the_person_takes_the_skip_back(monkeyp
     assert start.history_counts(setup_journal.load()) == {"2026-10": 252, "2026-09": 187}
 
 
+def kept_verdicts(workspace) -> dict:
+    return {v["app"]: v["verdict"] for v in yaml_load(workspace / routine.APPS_FILE)["apps"]}
+
+
+def test_an_app_skipped_before_it_was_read_is_promised_to_the_routines_only_once_it_is_read(tmp_path, monkeypatch, capsys):
+    # the review of #61: "your routines read it again from their next run", while the workspace's file kept it skipped
+    no_outside(monkeypatch)
+    finished_setup([GMAIL])
+    setup_journal.set_phase("apps", "done", verdicts=[dict(GMAIL), start._skipped(dict(CALENDAR))],
+                            person_skips=["Google Calendar"])
+    ws = make_space(tmp_path / "ada", owner="Ada Okafor", owner_email="ada@lanternworks.example")
+    start.keep_findings(types.SimpleNamespace(settings=None, workspace=ws), setup_journal.load())
+    assert start.main(["apps", "--skip", "Gmail", "--workspace", str(ws), "--json"]) == 0
+    capsys.readouterr()
+    assert start.main(["apps", "--unskip", "Gmail,Google Calendar", "--workspace", str(ws), "--json"]) == 0
+    why = json.loads(capsys.readouterr().out)["why"]
+    assert "Your routines read Gmail again from their next run." in why
+    assert "Google Calendar had not been read before you skipped it" in why and "the next time you say the sentence" in why
+    assert kept_verdicts(ws) == {"Gmail": "work", "Google Calendar": "skip"}
+    probed_apps(monkeypatch)   # the sentence said again: the apps phase reads the calendar, and the routines follow
+    monkeypatch.setattr(apps, "analyse", lambda groups, *a, **k: [dict(CALENDAR) for g in groups if g["app"] == "Google Calendar"])
+    assert start.main(["apps", "--workspace", str(ws), "--json"]) == 0
+    assert kept_verdicts(ws) == {"Gmail": "work", "Google Calendar": "work"}
+
+
 def test_taking_back_a_skip_of_an_app_that_was_never_skipped_changes_nothing(monkeypatch, capsys):
     no_outside(monkeypatch)
     finished_setup()
@@ -741,7 +767,6 @@ def test_a_claude_connector_is_not_an_app_and_is_not_sorted():
 
 
 # ----- #15: the card's ten minutes start again only for an app it did not read before ----------------------
-from test_start import probed_apps  # noqa: E402
 
 SHOWN = "2026-10-27T09:00:00+00:00"
 

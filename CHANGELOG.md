@@ -181,7 +181,10 @@ back to back, and nothing a record or the person settled is asked again.
   `start.py build --task-prefix space-<letters>-` gives this computer names of its own, kept in
   `~/.spaces/settings.yaml`.
 - **The app card.** "Read <app> again" (`start.py apps --unskip <app>`) takes a skip back, with
-  the reader's own verdict. Two apps on one mailbox (a mailbox and a reader of its attachments)
+  the reader's own verdict; an app skipped before it was read is read the next time the sentence
+  is said, and its answer says so instead of promising it to the routines at once. Once the build
+  has kept the apps' verdicts in the workspace, every later run of the apps phase keeps them there
+  too, so an app read after the build reaches the routines. Two apps on one mailbox (a mailbox and a reader of its attachments)
   count its mail once in the history's estimate. Claude's own connectors (`Claude …`) are not the
   person's apps: they are neither read nor sorted. The card's ten minutes start again only when an
   app is read that the card did not read before.
