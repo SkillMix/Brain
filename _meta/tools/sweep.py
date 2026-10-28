@@ -29,6 +29,10 @@ Deterministic from files: an adapter exports records to `_meta/state/feed/<sourc
     python sweep.py [root] [--dry-run]     --dry-run prints the plan and writes nothing
     python sweep.py [root] --attachments   the attachments to read as document records: those
                                            on records of exactly one subject, not read yet
+    python sweep.py [root] --cursor <source>
+                                           where the export of that source starts: its feed
+                                           file's newest record, else its mark, else 90 days
+                                           back; writes nothing
 """
 from __future__ import annotations
 
@@ -53,6 +57,7 @@ FEED = Path("_meta") / "state" / "feed"
 WATERMARK = Path("_meta") / "state" / "sweep-watermark.yaml"
 WITNESS_ROOT = Path("knowledge") / "sources"
 RESOURCES = Path("_meta") / "access" / "resources.yaml"
+CURSOR_DAYS = 90   # how far back the first export of a source reads
 
 
 @dataclass
@@ -107,6 +112,23 @@ def read_feed_marks(root: Path) -> dict:
     return out
 
 
+def cursor(root, source: str, now: dt.datetime | None = None) -> str:
+    """Where the next export of `source` starts: the newest record time in its feed file, else
+    the newest record time the sweep took from that feed (its mark), else CURSOR_DAYS back. A
+    cloud run's fresh clone has no feed files, so it starts from the marks. An upcoming event
+    says nothing about how far the export read, so a time after now does not count. Writes
+    nothing."""
+    root = Path(root)
+    now = now or spaceyaml.load(root).now()
+    path = root / FEED / f"{source}.jsonl"
+    times = [pages.parse_iso(r["at"]) for r in _feed_records(path)] if path.is_file() else []
+    times = [at for at in times if at <= now]
+    if times:
+        return pages.iso(max(times))
+    mark = read_feed_marks(root).get(str(source))
+    return pages.iso(mark if mark is not None else now - dt.timedelta(days=CURSOR_DAYS))
+
+
 def home_reads(dest_space, record: dict) -> bool:
     """The subject's home sweeps this record's channel, tracker project or repository itself:
     it gets the record on its own, so nothing is released to it."""
@@ -127,26 +149,33 @@ def home_reads(dest_space, record: dict) -> bool:
     return False
 
 
+def _feed_records(path: Path):
+    """The readable records of one feed file: a JSON object with an id and a time that parses.
+    Any other line is skipped."""
+    for line in path.read_text(encoding="utf-8").split("\n"):   # a record's text may hold U+2028
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if not (isinstance(record, dict) and record.get("id") and record.get("at")):
+            continue
+        try:
+            pages.parse_iso(record["at"])
+        except (TypeError, ValueError):
+            continue  # an unreadable timestamp never stalls the sweep
+        yield record
+
+
 def read_feed(root: Path) -> list:
     records = []
     feed = root / FEED
     if not feed.is_dir():
         return records
     for path in sorted(feed.glob("*.jsonl")):
-        for line in path.read_text(encoding="utf-8").split("\n"):   # a record's text may hold U+2028
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                record = json.loads(line)
-            except ValueError:
-                continue
-            if not (isinstance(record, dict) and record.get("id") and record.get("at")):
-                continue
-            try:
-                pages.parse_iso(record["at"])
-            except (TypeError, ValueError):
-                continue  # an unreadable timestamp never stalls the sweep
+        for record in _feed_records(path):
             record.setdefault("source", path.stem)
             record["_feed"] = path.stem   # the declared source this file is (space.yaml sources)
             if isinstance(record.get("text"), str):   # a link's token never reaches a page
@@ -854,7 +883,18 @@ def _snapshot_id(root: Path, rel: str) -> str:
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     dry_run = "--dry-run" in argv
+    source = None
+    if "--cursor" in argv:
+        at = argv.index("--cursor")
+        source = argv[at + 1] if at + 1 < len(argv) else ""
+        if not source or source.startswith("--"):
+            print(__doc__)
+            return 2
+        del argv[at:at + 2]
     roots = [a for a in argv if not a.startswith("--")]
+    if source:
+        print(cursor(Path(roots[0]) if roots else Path("."), source))
+        return 0
     if "--attachments" in argv:
         for rid, sid, name in attachments(Path(roots[0]) if roots else Path(".")):
             print(f"{rid}	{sid}	{name}")

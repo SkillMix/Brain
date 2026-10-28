@@ -17,6 +17,8 @@ share captured over four scaled weeks. With `switch: on`, each finished session 
 missed becomes a witness page under `knowledge/sources/` in this personal space only: what
 the person asked and how the session ended, no attachment, no subject. With `routing:` the
 router reads it like any record and decides what, if anything, informs a subject's home.
+When `path` is not a folder on this computer (a cloud run, a second laptop), the scan reports
+`path: missing` and writes nothing, so the last scan's sessions and capture rate stay.
 
     python transcripts.py [root] scan
 """
@@ -162,13 +164,16 @@ def scan(root, now: dt.datetime | None = None) -> dict:
     if space.profile != "personal" or not cfg.get("path"):
         return report
     base = Path(cfg["path"])
+    if not base.is_dir():   # not this computer's sessions (a cloud run, another laptop): count nothing
+        report["path"] = "missing"
+        return report
     notes = _journal_texts(root)
     rows = []
     since = now - space.scale(WINDOW_DAYS * 24)
     exclude = [str(x).lower() for x in cfg.get("exclude") or []]
     words = [str(x).lower().strip() for x in cfg.get("exclude_words") or [] if str(x).strip()]
     # top-level session files only (a harness keeps sub-agents' transcripts deeper), recent ones
-    files = sorted(p for p in base.glob("*/*.jsonl")) if base.is_dir() else []
+    files = sorted(p for p in base.glob("*/*.jsonl"))
     for path in files:
         if dt.datetime.fromtimestamp(path.stat().st_mtime, dt.timezone.utc) < since:
             continue

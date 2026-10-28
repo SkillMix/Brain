@@ -778,6 +778,53 @@ def test_a_backfill_re_export_deepens_old_pages_behind_the_mark(tmp_path):
     assert "The whole message." in pages.read(page)[1]
 
 
+# ----- where each export starts ---------------------------------------------------------------------
+CLOUD_NOW = dt.datetime(2026, 10, 27, 12, 0, tzinfo=dt.timezone.utc)
+
+
+def write_marks(root, feeds):
+    path = root / sweep.WATERMARK
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump({"at": max(feeds.values()), "feeds": feeds}, sort_keys=False),
+                    encoding="utf-8", newline="\n")
+
+
+def test_the_cursor_is_the_feeds_newest_record_else_the_mark_else_ninety_days(tmp_path):
+    """A fresh clone holds no feed files: each export starts at its feed's mark, and a source
+    never swept reads its last ninety days."""
+    ada = make_space(tmp_path / "ada", name="ada")
+    assert sweep.cursor(ada, "mail", now=CLOUD_NOW) == "2026-07-29T12:00:00Z"   # nothing at all
+    write_marks(ada, {"mail": "2026-10-20T08:00:00Z", "calls": "2026-10-21T08:00:00Z"})
+    assert sweep.cursor(ada, "mail", now=CLOUD_NOW) == "2026-10-20T08:00:00Z"
+    write_feed(ada, [record("a", at="2026-10-26T09:00:00Z"), record("b", at="2026-10-25T09:00:00Z")])
+    assert sweep.cursor(ada, "mail", now=CLOUD_NOW) == "2026-10-26T09:00:00Z"
+    assert sweep.cursor(ada, "calls", now=CLOUD_NOW) == "2026-10-21T08:00:00Z", "each feed has its own"
+
+
+def test_the_cursor_skips_an_unreadable_record_and_an_upcoming_event(tmp_path):
+    """A record whose time cannot be read is skipped, as the sweep skips it. An upcoming event
+    says nothing about how far the export read, so it never starts the next export in the future."""
+    ada = make_space(tmp_path / "ada", name="ada")
+    write_feed(ada, [record("e-1", at="2026-10-26T09:00:00Z"), record("e-2", at="next week"),
+                     record("e-3", at="2026-11-03T09:00:00Z")], source="calendar")
+    path = ada / sweep.FEED / "calendar.jsonl"
+    path.write_text(path.read_text(encoding="utf-8") + "not a record\n", encoding="utf-8", newline="\n")
+    assert sweep.cursor(ada, "calendar", now=CLOUD_NOW) == "2026-10-26T09:00:00Z"
+    write_feed(ada, [record("e-3", at="2026-11-03T09:00:00Z")], source="calendar")
+    write_marks(ada, {"calendar": "2026-10-24T08:00:00Z"})
+    assert sweep.cursor(ada, "calendar", now=CLOUD_NOW) == "2026-10-24T08:00:00Z"
+
+
+def test_the_cursor_is_printed_for_the_export_and_writes_nothing(tmp_path, capsys):
+    ada = make_space(tmp_path / "ada", name="ada")
+    write_marks(ada, {"mail": "2026-10-20T08:00:00Z"})
+    before = {p.relative_to(ada).as_posix(): p.stat().st_mtime_ns for p in ada.rglob("*")}
+    assert sweep.main([str(ada), "--cursor", "mail"]) == 0
+    assert capsys.readouterr().out.strip() == "2026-10-20T08:00:00Z"
+    assert {p.relative_to(ada).as_posix(): p.stat().st_mtime_ns for p in ada.rglob("*")} == before
+    assert sweep.main([str(ada), "--cursor"]) == 2, "a cursor needs its source"
+
+
 # ----- notes from a codebase session (D8) ---------------------------------------------------------
 def test_without_the_router_a_journal_note_waits_the_window_even_to_its_crew(tmp_path):
     # harbor-voice-agent classified walled, home harbor, crew ["ada"]; routing off; only mail declared:
