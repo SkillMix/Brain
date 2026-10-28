@@ -21,8 +21,8 @@ Section numbers are stable; tools cite them.
    The one exception is mail to the person themselves, from their own account, with the
    payload exactly as the tools rendered it: the morning email and owner notices (a security
    warning, an answer that arrived, an action only they can take; `owner_email.py`).
-7. Agents edit files; the sync script commits; the platform merges. No session runs a git
-   write.
+7. Agents edit files. The sync script commits: on the computer every 15 minutes, and once
+   at the end of a cloud routine run. The platform merges. No session runs a git write itself.
 8. `personal/`, `academic/` and `_scratch/` are outside every tool, sweep and commit. The
    question log never leaves its space; releases carry pointers to evidence, never the
    evidence itself.

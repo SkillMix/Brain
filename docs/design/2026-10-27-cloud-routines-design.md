@@ -1,7 +1,8 @@
 # Cloud routines: the sweep and daily chains run in the cloud
 
-Status: proposed, 2026-10-27, revised the same day after a builder check and an adversarial
-review. Builder: the plan at `docs/design/2026-10-27-cloud-routines-plan.md`.
+Status: implemented on `feat/cloud-routines`, not yet proven live. Proposed 2026-10-27, revised
+the same day after a builder check and an adversarial review. Builder: the plan at
+`docs/design/2026-10-27-cloud-routines-plan.md`.
 Supersedes, once accepted: decisions "Chains run beside the sync script" (2026-10-12) and the
 part of "Routines never run git" (2026-10-13) that says a routine never starts the sync script
 for its own files. Keeps: "The sync task ships" (2026-10-12), so releases still leave from the
@@ -120,11 +121,12 @@ deny rules, plugin, prompt). Python cannot call `RemoteTrigger`; the agent passe
 
 ### 4.2 A cloud run, step by step
 
-1. **Begin** (`cloud.py begin --chain <c>` in the workspace clone). It finds the space clones in
-   `/home/user` the person owns and initialises their mounts (attached repositories only, one at
-   a time, each at its pin). It reads the routine host record: runner not `cloud`, or paused, and
-   the run stops at once, writing and landing nothing (a run that steps aside leaves no line, as
-   on the computer). Otherwise it:
+1. **Begin** (`cloud.py begin --chain <c>` in the workspace clone). It runs once per run: it
+   refuses, writing nothing, when the state it writes for the guard is already there. It finds
+   the space clones in `/home/user` the person owns and initialises their mounts (attached
+   repositories only, one at a time, each at its pin). It reads the routine host record: runner
+   not `cloud`, or paused, and the run stops at once, writing and landing nothing (a run that
+   steps aside leaves no line, as on the computer). Otherwise it:
    - **carries** the previous run of this chain into every clone (`sync.carry`). When
      `cloud/<chain>` still exists on `origin` and its head is not a pull request the person
      closed unmerged, it is merged in now, before anything is exported, deepening the shallow
@@ -195,15 +197,23 @@ never a push to `main`.
 ### 4.4 REST instead of GraphQL
 
 `gh pr list/view/checks/create` call GraphQL, which a cloud run refuses. `sync.py`,
-`needs_you.py` and `link.py` move to `gh api` REST calls. They behave the same on a computer, and
-nothing is lost silently: `needs_you` currently returns an empty list when `gh pr list` fails,
-and it will now say so. The repository feed in the sweep skill reads pull requests through the
-REST search (`gh api search/issues?q=...`) and `pulls/<n>/files`, not `gh pr`.
+`needs_you.py`, `link.py` and `landing.py` move to `gh api` REST calls (`ghrest.py`). They behave
+the same on a computer, and nothing is lost silently: `needs_you` currently returns an empty list
+when `gh pr list` fails, and it will now say so. `link.py` keeps one GraphQL question, a repository
+by id, which a cloud run leaves out (4.8). The repository feed in the sweep skill reads pull
+requests through the REST search (`gh api search/issues?q=...`) and `pulls/<n>/files`, not `gh pr`.
+
+The limit on `gh` in a cloud run is the agent's shell's: it may call `gh api` with one endpoint
+word only, its query quoted from its `?` (`gh api search/issues'?q=...'`): no flag, so no write
+leaves the shell. The tools call `gh` as subprocesses, which the shell guard never sees: the
+sync script opens its pull request through `ghrest` (`gh api -X POST ...`).
 
 ### 4.5 The computer's leg
 
 `sync.py` on the computer keeps everything it does today, and adds, for a workspace whose
-runner is `cloud`:
+runner is `cloud`, the steps below. `not_started` runs on every computer; the rest write files,
+so they run on one: the record's `computer` key names the computer whose sync keeps the leg (the
+move records the computer it ran on), and a record without the key lets every computer run it.
 - **Transcripts.** The transcripts scan reads the person's local session files, so it moves from
   the sweep chain to the sync. It runs at most every six hours, when `transcripts.path` exists
   on this computer, and rewrites `sessions.yaml` only when a session row changed. A cloud sweep
@@ -213,14 +223,28 @@ runner is `cloud`:
   person's click, and a cloud run never makes one.
 - **Not started**, after the merge rather than before, so a computer that slept reads the
   cloud's run lines before it says a chain did not start.
-- **Adopting.** A `cloud/<chain>` pull request still open after 30 minutes, conflicted or red,
-  gets merged into the computer's checkout with the merge rules. It then rides the computer's own
-  sync pull request, which the computer repairs as it repairs its own. When that lands, GitHub
-  marks the cloud request merged (unless the computer's push was split for protected paths; then
-  the next cloud run replaces it). A conflict the rules cannot resolve is aborted and becomes one
-  Needs-you item.
+- **Adopting.** A `cloud/<chain>` pull request still open after 30 minutes (since it was opened
+  and since its head was made) and in conflict with main or red gets merged into the computer's
+  checkout with the merge rules; one that is green and only slow is left to auto-merge. It then
+  rides the computer's own sync pull request, which the computer repairs as it repairs its own.
+  When that lands, GitHub marks the cloud request merged (unless the computer's push was split
+  for protected paths; then the next cloud run replaces it). A conflict the rules cannot resolve
+  is aborted and becomes one Needs-you item.
 - **Spaces not attached.** A space the person owns on this computer that the move did not attach
-  is one Needs-you item ("say 'run my routines in the cloud' again to add it").
+  is one Needs-you item ("say 'run my routines in the cloud' again to add it"). Its id,
+  `cloud-roots-<8 hex>`, is a hash of the spaces it names, so a space made later is asked anew.
+- **`AGENTS.md`.** A cloud run puts a regenerated `AGENTS.md` back, so the leg, which runs no
+  status, writes it again (`agents_md.write`) when `agents_md.check` fails: after a release that
+  changes what `agents_md.py` writes, or a change of kinds. It writes only while this checkout's
+  `agents_md.py` is main's, which the gate renders with: after a release that changes it, the file
+  is written once the release is on main. It rides this computer's own protected pull request,
+  where the gate counts a rendered `AGENTS.md` as part of the release (4.7), so it lands on green;
+  else (after a change of kinds) it waits for the person's click. A render that fails is tried
+  again a day later. Like the scan and template sync, it waits while the routines are paused.
+
+The record names one computer, so a computer that replaces it (a new laptop) takes the leg over by
+moving again from there: "run my routines in the cloud" proves the two tasks in place and records
+that computer (4.10).
 
 ### 4.5a Merges that never wedge
 
@@ -231,6 +255,9 @@ sync, in the cloud or on the computer, with rules the sync writes into the space
   merge driver in `sync.py`), so neither side's progress is undone.
 - **Generated pages and state** (`live/**`, `_meta/state/ids.yaml`, `_meta/state/stale.yaml`):
   this checkout's side; the next status run writes them again from the files.
+- **What the computer's leg rewrites whole** (`_meta/state/sessions.yaml`,
+  `_inbound/needs-you/sync.yaml`, `_meta/state/template-version.yaml`): this checkout's side; the
+  leg writes each whole, and its next run writes it again.
 - **Items a person answered or a release shipped** (`_inbound/**`, `_outbound/**`): when one side
   deleted the file and the other changed it, the deletion wins. The person's answer or the
   shipping is the later fact.
@@ -247,13 +274,14 @@ Two writers are also kept apart at the source:
 ### 4.6 Host, gate, pause and proof
 
 `routine-host.yaml` takes a third runner, `cloud`, with the machine `m-cloud` (the record's
-machine pattern, which no computer's id can take), the two task ids, the person's zone, the
-repositories the tasks attach and the connector grant (4.7). On the computer, `routine.py`
-already steps aside for any runner but `os`, so OS-task runs stop by themselves. The app's own
-scheduled tasks never read the record, so the computer's prompts gain a first step,
-`chain.py gate <workspace>`, that stops a run whose computer is not the host or that is paused;
-and moving to the cloud turns the app's tasks off (the agent does it with the scheduled-tasks
-tools; when those are not available, it is the one hand step).
+machine pattern, which no computer's id can take) and its keys: `tasks`, the two task ids;
+`timezone`, the person's zone; `roots`, the repositories the tasks attach; `grant`, the connector
+grant (4.7); and `computer`, the computer the move ran on, which keeps the computer's leg (4.5).
+On the computer, `routine.py` already steps aside for any runner but `os`, so OS-task runs stop by
+themselves. The app's own scheduled tasks never read the record, so the computer's prompts gain a
+first step, `chain.py gate <workspace>`, that stops a run whose computer is not the host or that
+is paused; and moving to the cloud turns the app's tasks off (the agent does it with the
+scheduled-tasks tools; when those are not available, it is the one hand step).
 
 A pause works as it does today. `onboard.py --pause` writes `paused_until`, the sync lands it,
 and the next cloud run's `begin` reads it on `main` and stops. Away from the computer, the
@@ -267,10 +295,13 @@ refuses on a computer that is not the host; its sentence says "run my routines h
 
 **A proof run** happens before the claim, so `begin --proof` skips only the runner check. It
 exports nothing, runs no chain tool, creates no tracker issue and sends nothing, so it never
-overlaps the computer's own runs. It tries what the profile must refuse (4.7, section 6), writes
-what happened into its run line, and lands that line through `sync.py --cloud`. The move is
-refused unless both tasks' proof lines on `main` show every refusal. The task is created with a
-proof prompt and changed to the real one when it is enabled.
+overlaps the computer's own runs. Nothing records a grant before the move, so the proof's begin
+carries the task's: `begin --proof --grant <word>`, the word the deflated base64url of the task's
+grant, which the guard plugin lets through only after `--proof`. A proof's send to a stranger is
+therefore refused by the send guard, as a real run's is. It tries what the profile must refuse
+(4.7, section 6), writes what happened into its run line, and lands that line through
+`sync.py --cloud`. The move is refused unless both tasks' proof lines on `main` show every
+refusal. The task is created with a proof prompt and changed to the real one when it is enabled.
 
 ### 4.7 The safety profile in the task
 
@@ -290,13 +321,15 @@ person. So the task carries the computer's routine profile, in four layers:
    everything through, so a session on the computer that enabled the plugin is unchanged.
 2. **`disallowed_tools`**, enforced by the platform:
    - `Edit` on every protected path (`routine.PROTECTED_EDITS` with a `//**/` prefix, and
-     `identity/**` in each clone), which covers Write and NotebookEdit;
+     `identity/**` in each clone), which covers Write and NotebookEdit, and on anything under the
+     system's own top-level folders (a `.pth` there would run inside every `python3`);
    - every built-in tool the computer's profile denies (`reader.DENIED` that a routine does not
      use, among them `WebFetch`, `WebSearch`, `RemoteTrigger`, `CronCreate`, `SendMessage`,
      `PushNotification`), and `mcp__github`;
    - every tool of each attached connection that is not granted, by exact name;
    - the shell patterns the computer denies (`python -m`, `git --output`, the tool scripts a
-     routine never runs) and, as text-only backstops, `git`, `gh` writes and GraphQL.
+     routine never runs) and, as text-only backstops, `git`, any `gh api` call but one endpoint
+     word, the rest of `gh`, and GraphQL.
 3. **`auto_mode_soft_deny`**: the same limits in plain words (never push to `main`, never merge a
    pull request, never send mail to anyone but the person, never edit machinery, never change
    `.gitignore`), for the platform's own check.
@@ -357,7 +390,9 @@ reads it from the computer) and kept in the host record.
    on when the person says yes; it is the person's repository setting).
 2. `cloud.py trigger --chain sweep|daily --proof` renders each body. The agent creates both
    disabled, runs each once, and reads its run log, its proof line and the pull request it
-   opened.
+   opened. When the routines already run in the cloud (moving again, from a new computer), it
+   proves the two existing tasks in place instead, and step 3's move records this computer as
+   the record's `computer` (4.5, 4.6).
 3. On two green proofs it updates each task to the body `cloud.py trigger` renders without
    `--proof`, enables both, turns off the computer's chain tasks, and runs `onboard.py
    --routines-cloud --sweep <id> --daily <id> --timezone <zone>`, which reads the proof lines and

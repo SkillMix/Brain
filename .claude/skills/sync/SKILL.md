@@ -1,12 +1,12 @@
 ---
 name: sync
-description: What the sync script does every 15 minutes from the OS scheduler, as the only process that runs git, and how to read its run lines. Use when the person asks why something has not landed or asks to land now, or when a routine needs to understand the landing path. Never run git yourself.
+description: What the sync script does every 15 minutes from the OS scheduler and once at the end of a cloud routine run, as the only process that runs git, and how to read its run lines. Use when the person asks why something has not landed or asks to land now, or when a routine needs to understand the landing path. Never run git yourself.
 ---
 
 # sync: agents edit files, the script commits, the platform merges
 
 Hard rule 7. Sessions do not commit, so a crash loses nothing; the next run lands what is
-on disk.
+on disk. A cloud routine run starts it once at its end, for each of its spaces.
 
 ## When
 
@@ -15,12 +15,16 @@ on disk.
   timer on a Linux that has a user session, else a cron line), one task per checkout on the machine.
   All but cron run a start missed while the machine slept as soon as it wakes.
 - By hand, only when the person asks to land now or asks why something did not land.
+- In a cloud routine run: once at its end for each of its spaces, the workspace last, whether
+  or not the run wrote in it, as the chain's cloud prompt says
+  (`_meta/templates/cloud/<chain>-chain.md`); a proof run lands its workspace alone.
 
 ## Run
 
 `python _meta/tools/sync.py --root <root>` (`--dry-run` shows what it would do and writes
 nothing; `--no-push` for a checkout without a remote; `--release-leg` ships due queue items
 first). Running the script is the sanctioned way to land now; running git is not.
+`--cloud sweep|daily` is a cloud run's landing; never start it on a computer.
 
 ## What the tool already did
 
@@ -37,6 +41,33 @@ line. The platform merges the first on green; the protected one waits for the sp
 one click, and nothing else waits behind it. Every push costs a paid check, so journal lines
 and run logs alone wait up to an hour, run lines and mount pins alone up to six hours (the run
 line says `waiting`), and a waiting pull request is not pushed again when only main moved.
+The merge rules, written into the space's own git, settle what GitHub's merge cannot: a
+watermark keeps the later mark, generated pages and state keep this checkout's side, and an
+item under `_inbound/` or `_outbound/` that one side deleted stays deleted.
+
+In a cloud run (`--cloud <chain>`) it commits once, with its own run line, and new files need no
+minimum age. It never lands a protected change: `AGENTS.md` is put back quietly, any other
+protected path stays in the clone and is one security item. A line the scan hits is replaced by
+`[a line held back: <kind>]` and the page lands. It pushes `cloud/<chain>`, leased to the head
+the run's `begin` saw, opens the pull request through REST and waits up to nine minutes for its
+merge, merging main in again while it conflicts and repairing red checks once; what stays open
+the next cloud run carries in. Run lines and marks alone open no pull request. No pins, release
+leg or chain clocks run there.
+
+While the routines run in the cloud (`_meta/state/routine-host.yaml` has `runner: "cloud"`), the
+computer's sync adds its leg right after the merge. Every computer runs `not_started`, which reads
+the cloud's run lines first. The computer the record names (`computer`; every computer when it
+names none) also runs:
+- the transcripts scan, at most every six hours, and template sync, weekly;
+- `AGENTS.md` written again when it is not what the tools render (`agents_md.check`), since a
+  cloud run puts back the one a tool regenerated, but only while this checkout renders it as main
+  does (after a release that changes the renderer, once the release is on main); it rides this
+  computer's protected pull request, and a render that fails is tried again a day later;
+- adopting a cloud pull request only when both hold: it is still open after 30 minutes, and it
+  conflicts with main or its checks are red (`Run.stuck`, `Run.adopt`). Merged here, it rides this
+  computer's own pull request. A green one that is only slow is not adopted, because auto-merge
+  lands it;
+- one Needs-you item naming the spaces the cloud does not read.
 
 ## Judgment left to you
 
@@ -49,6 +80,17 @@ changed file holds something that looks like a secret, so name the files that ch
 let the person look (never quote the match); a conflict is resolved by the person or the
 parent's owner, not by you.
 
+A cloud run's line has `"cloud": "<chain>"`; its `notes` say how many paths it `staged`,
+whether it `carried` an earlier run that had not merged, the files `held` (too large, not text,
+or unreadable with their lines held back) and how many protected paths it `left_out`. What
+became of its pull request is in the task's run log on claude.ai, not in the line; the next
+run's `carried` says it had not merged. On the computer, the leg's outcomes join the sync line's
+`notes`: `not_started`, `transcripts`, `template_sync`, `agents_md` (written again), `adopted`
+(the cloud pull requests it merged here) and `unattached` (the spaces named). Translate for the
+person: nothing of a cloud run that did not land is lost, since the next run carries it and the
+computer adopts one nothing else will merge; a `left_out` above zero is a security item on Needs
+you, so read the run's log with them before the task runs again.
+
 ## Never
 
 - Never run `git add`, `commit`, `push`, `merge`, `rebase` or `reset` yourself (the
@@ -56,6 +98,8 @@ parent's owner, not by you.
 - Never resolve a conflict, remove the lock or edit anything under `.git/`.
 - Never edit a flagged file so the scan passes: that weakens a control; the person decides.
 - Never stage `personal/`, `academic/` or `_scratch/` by any path; never push to `main`.
+- Never merge, close or push to a `cloud/<chain>` pull request: the next cloud run or the
+  computer's sync lands it.
 
 ## Scheduled invocation
 

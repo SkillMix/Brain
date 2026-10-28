@@ -249,3 +249,74 @@ and there is nothing to do; the history may be current later than first said.
 
 Plain coding works; brainstorm and write specs in a local session for now, because a cloud
 session has no workspace instruction and its notes would be lost.
+
+## Routines in the cloud
+
+After "run my routines in the cloud", the sweep and the daily chain run as two scheduled tasks on
+claude.ai. Each run lands its own files: at its end `sync.py --cloud <chain>` pushes
+`cloud/<chain>` and opens a pull request that the space's checks merge. A run's proof is its run
+line on `main`, never the platform's "succeeded"; a run that steps aside (the routines are paused,
+or run on a computer again) writes nothing at all.
+
+### A cloud run did not land
+
+Seen: nothing new on `main` after a cloud run's time, or a `cloud/sweep` or `cloud/daily` pull
+request left open.
+Why: its pull request did not merge in the nine minutes the run waits: it still conflicted with
+`main` after three merges, its checks were still red after one repair, or they were slow. Or the
+run stopped before its landing step.
+The agent: reads the run's line on `main` (the last line of `_meta/state/runs.jsonl` with
+`"cloud": "<chain>"`) and the task's latest run on claude.ai. Nothing is lost: the next run of that
+chain carries the open branch in before it exports. The computer's sync adopts a cloud pull request
+only when both hold: it is still open after 30 minutes, and it conflicts with `main` or its checks
+are red (`Run.stuck`, `Run.adopt` in `sync.py`). It merges it into its own pull request (`adopted`
+in its run line). A green pull request that is only slow is not adopted, because auto-merge lands
+it. One the computer cannot merge either is a Needs-you item: the person keeps the side they want,
+or closes it, and the next cloud run starts again from `main`. Run lines and marks alone open no
+pull request: the branch waits for a run with a real change, or six hours.
+
+### "The cloud sweep has not run since …"
+
+Seen: a Needs-you item a run of the other chain wrote (the daily names the sweep, the sweep the
+daily).
+Why: that chain's last line on `main` is older than twice the longest gap between its hours, and
+the routines are not paused. Its task is off, failing, or stopping before it lands.
+The agent: opens the task on claude.ai with the person, reads its latest run, and turns it on again
+when it is off. `onboard.py --check` says where the routines run and when each chain last ran. The
+item goes once the chain runs again.
+
+### "The cloud runs read <mount> as it was more than 3 days ago"
+
+The cloud reads each mount at its pin, and only the computer's sync moves pins. The computer has
+been closed for days, or its sync task stopped: open it, or say "is this set up?".
+
+### "A cloud run changed protected files; they were not landed"
+
+Seen: a security item on Needs you.
+Why: a cloud run never changes the machinery, the rules, `space.yaml`, the instructions or git's
+own files, so a change there came from something the run read (a mail anyone can write) or a tool
+that went wrong. Nothing protected lands from the cloud: the change stayed in the clone, which is
+thrown away. An `AGENTS.md` a tool regenerated is put back without an item (the computer's sync
+writes it again), and answer tests set aside are the one change there that lands.
+The agent: reads that run's log on claude.ai with the person, and what the run read before the
+change, before the task runs again; "pause my routines" holds both tasks meanwhile. The same change
+seen again is not asked twice; a different one is.
+
+### "Your routines in the cloud do not read <space>"
+
+The space was made after the routines moved, so neither task attaches it and nothing sweeps or
+briefs it. Say "run my routines in the cloud" again to add it.
+
+### The computer the routines moved from was replaced
+
+Seen: the routines run in the cloud, the computer the move ran on is gone (a new laptop took its
+place), and since then cloud pull requests that conflict stay open, template sync does not run and
+new sessions do not show up.
+Why: while the routines run in the cloud, only the computer the routine record names (`computer`
+in `_meta/state/routine-host.yaml`, the one the move ran on) does the computer's leg: the
+transcripts scan, template sync, rewriting a stale `AGENTS.md`, adopting cloud pull requests and
+naming the spaces the cloud does not read. Every other computer's sync leaves them to it.
+The agent: on the new computer, once the workspace is set up there, moves the routines again ("run
+my routines in the cloud", the onboard skill). Its check names the two tasks the routines run as;
+the agent proves those two in place, and the move it records names this computer. Its next sync
+does the leg.

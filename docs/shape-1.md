@@ -260,8 +260,9 @@ The hard rules of rules.md section 1, restated for a tool:
    union; each outside system is written by one routine, never by sessions.
 6. Agents never send, post, spend or delete. Drafts go to `outbox/`; the person fires them.
    The one send is the morning mail, the person's own mail to themselves, sent unchanged.
-7. Agents edit files; the sync script commits; the platform merges. No session runs a git
-   write, and nothing writes directly into another space.
+7. Agents edit files. The sync script commits: on the computer every 15 minutes, and once at
+   the end of a cloud routine run. The platform merges. No session runs a git write itself,
+   and nothing writes directly into another space.
 
 ## 3. What makes a tool conformant
 

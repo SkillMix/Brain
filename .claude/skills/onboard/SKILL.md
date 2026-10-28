@@ -351,7 +351,10 @@ instead.
    - A repository the person can push to but does not administer, whose main has no protection: only whoever
      administers it can protect it. Say so; the move waits until it is protected.
    Run the check again until it says nothing keeps the routines from moving. When the routines already run in the
-   cloud (moving again, for a space made since), its last line names the two tasks they run as.
+   cloud (moving again: for a space made since, or from a computer that replaced the one they moved from), its last
+   line names the two tasks they run as. When a proof stopped them, its last line says instead "Your routines are
+   stopped: ...": that is step 2's refusal missing, so both tasks stay off; say so in plain words and offer "run my
+   routines here" instead of moving.
 2. **Prove each task.** For `sweep`, then `daily`: `python <workspace>/_meta/tools/cloud.py trigger <workspace>
    --chain <chain> --proof --timezone <zone>` prints the task's body. Load `RemoteTrigger` with tool search, create the
    task with that body (it is made turned off), and start one run of it. When the check named the two tasks the routines
