@@ -159,18 +159,27 @@ space at the end. `--cloud <chain>` changes these things:
   change under the protected paths (the gate's list and the routine profile's `PROTECTED_EDITS`)
   is left out of the commit and becomes one security item on Needs you ("a cloud run changed
   <k> protected files; they were not landed"). There is no `cloud/<chain>-protected` branch.
+  Each such item's id carries a short hash of the paths and their content, so a new incident is
+  asked again once an earlier one was answered; it sorts with the security items. A change
+  already staged is taken out of the index too, so it cannot ride the commit. One change is not
+  counted as protected: `_meta/tests/answers.yaml` gaining or losing `held:` records only, which
+  is how failing answer tests are set aside; a branch could set a question aside that way, never
+  change one.
 - Its own run line is written before the commit, so it lands with the run. It says what it
   staged and whether it carried an earlier run; what happened after the push is printed for the
   run log, and the next run's line shows it again (`carried`).
 - Untracked files need no minimum age. Nothing about pins, the release leg or `watch_chains`
   runs. Failing answer tests are still set aside before the push, as on the computer.
 - A file the secret scan holds back is not lost with the clone: in the cloud, each line the scan
-  hits is replaced by `[a line held back: <kind>]` and the page lands. A file over 1 MB or not
-  text is named in the run line.
+  hits is replaced by `[a line held back: <kind>]` and the page lands. A private key is held from
+  its first line to its last. A held line keeps its indent, and in YAML its key, so the file still
+  reads; a file that would not read afterwards is left out whole. A file over 1 MB or not text is
+  named in the run line.
 - **Quiet runs.** A change that is only run lines, watermarks and `stale.yaml` pushes the branch
   without opening a pull request; a later run carries it, and a pull request opens once a run has
   a real change or the branch's first unmerged commit is older than six hours. So a quiet day
-  costs one pull request per space, not four.
+  costs one pull request per space, not four. A proof run's line is never quiet: its pull request
+  is what the move reads.
 - The pull request opens through REST.
 - After the push it waits for the merge, at most nine minutes per call. A conflict with `main`
   is merged again with the merge rules (4.5a) and pushed, at most three times. Checks that failed
