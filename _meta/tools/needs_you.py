@@ -566,9 +566,9 @@ def _protected_prs(root: Path) -> list:
     for merging: its checks ran the fork's own workflow and its title is a stranger's text, so
     all of them become one line with their numbers and no titles. They are read through REST
     (ghrest), which a cloud run allows. Silent when this is not a repository with an origin, or
-    when this computer has no `gh` at all: the one `gh` call goes through a wrapper that notes
-    whether gh ran, so a call that ran and failed (signed out, offline, refused) is told apart
-    and becomes one item saying the list is incomplete, never an empty list."""
+    when there is no `gh` at all where this runs: the one `gh` call goes through a wrapper that
+    notes whether gh ran, so a call that ran and failed (signed out, offline, refused) is told
+    apart and becomes one item saying the list is incomplete, never an empty list."""
     if not (root / ".git").exists():
         return []
     slug = ghrest.repo_slug(root)
@@ -587,7 +587,7 @@ def _protected_prs(root: Path) -> list:
         return [Item(id="pr-list-unreadable", kind="request",
                      text="your open pull requests could not be read: any waiting for your merge are missing "
                           "from this list",
-                     recommendation="check that gh is signed in on this computer (gh auth status)",
+                     recommendation="check that gh can reach GitHub where this runs (gh auth status)",
                      default="they wait unseen")]
     out, forks = [], []
     for pr in prs:

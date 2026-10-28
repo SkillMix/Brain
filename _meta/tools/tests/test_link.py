@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -720,6 +721,12 @@ def test_a_repository_the_cloud_run_cannot_reach_is_never_gone():
     with pytest.raises(OSError):
         link._answer(1, "GitHub access to this repository is not enabled for this session", "gh: (HTTP 404)")
     assert link._answer(1, "", "gh: Not Found (HTTP 404)\n") is None   # truly not there: still gone
+
+
+def test_the_unattached_answer_is_read_with_ghrests_one_pattern(monkeypatch):
+    monkeypatch.setattr(link.ghrest, "NOT_ENABLED", re.compile(r"refused for this run"))
+    with pytest.raises(OSError):
+        link._answer(1, "", "gh: refused for this run (HTTP 404)\n")
 
 
 def test_without_graphql_a_renamed_repository_by_id_keeps_its_link(monkeypatch):

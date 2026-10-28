@@ -71,6 +71,18 @@ def test_no_origin_has_no_slug(tmp_path):
     assert ghrest.repo_slug(init_repo(tmp_path / "accented", origin=accented)) is None
 
 
+def test_an_absolute_local_origin_still_gives_its_last_two_segments(tmp_path):
+    origin = tmp_path / "ada" / "ada-space.git"
+    assert ghrest.repo_slug(init_repo(tmp_path / "absolute", origin=str(origin))) == "ada/ada-space"
+
+
+# ----- a repository the run is not attached to ---------------------------------------------------
+def test_one_pattern_knows_a_cloud_runs_answer_for_an_unattached_repository():
+    said = "GitHub access to this repository is not enabled for this session (HTTP 404)"
+    assert ghrest.NOT_ENABLED.search(said) and ghrest.NOT_ENABLED.search(said.upper())
+    assert not ghrest.NOT_ENABLED.search("gh: Not Found (HTTP 404)")
+
+
 # ----- open pull requests ------------------------------------------------------------------------
 def test_open_pulls_reads_rest_and_marks_forks():
     fake = FakeGh({f"{PULLS}&head=ada:cloud/sweep": [pull(7, "cloud/sweep", auto=True),

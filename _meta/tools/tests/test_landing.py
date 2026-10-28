@@ -1,10 +1,13 @@
 """Landing at the home (vision section 9): silent, pending, disagreement, duplicate; the sample."""
 import datetime as dt
 import json
+import re
 import subprocess
+import typing
 
 import yaml
 
+import ghrest
 import landing
 import pages
 import validate
@@ -201,6 +204,13 @@ def test_a_signer_history_the_run_cannot_reach_leaves_the_release_waiting(tmp_pa
     assert report.silent == [] and report.pending == []
     assert path.read_bytes() == before   # neither landed nor marked: a later run that can ask decides
     assert not (root / "knowledge/projects/harbor/p-0000a301.md").exists()
+
+
+def test_the_signer_log_names_its_three_answers_and_reads_ghrests_one_pattern(monkeypatch):
+    assert typing.get_type_hints(landing.signer_log)["return"] == str | type(landing.UNREACHABLE) | None
+    monkeypatch.setattr(ghrest, "NOT_ENABLED", re.compile(r"refused for this run"))
+    signer_gh(monkeypatch, 1, stderr="gh: refused for this run (HTTP 404)\n")
+    assert landing.signer_log("ada/ada-space", {}) is landing.UNREACHABLE
 
 
 def test_a_signer_history_that_cannot_be_read_still_waits_pending(tmp_path, monkeypatch):

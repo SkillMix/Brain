@@ -361,7 +361,8 @@ def test_pull_requests_that_cannot_be_read_say_so(tmp_path, monkeypatch):
     assert item.id == "pr-list-unreadable" and item.kind == "request"
     assert item.text == ("your open pull requests could not be read: any waiting for your merge are "
                          "missing from this list")
-    assert item.recommendation == "check that gh is signed in on this computer (gh auth status)"
+    assert item.recommendation == "check that gh can reach GitHub where this runs (gh auth status)"
+    assert "computer" not in item.recommendation   # a cloud morning view raises it too
     assert item.default == "they wait unseen"
     assert [i.id for i in needs_you.collect(root, now=NOW)] == ["pr-list-unreadable"]
 

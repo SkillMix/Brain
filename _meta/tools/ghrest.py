@@ -2,17 +2,19 @@
 
 A cloud run refuses GraphQL, and every `gh pr ...` command is GraphQL, so each pull request call
 a cloud run can reach goes through here, and a computer makes the same calls
-(docs/design/2026-10-27-cloud-routines-design.md, section 4.4). Every function takes the `gh` to
-call: `runner(cwd)` is the real one, and a test passes its own. A `gh` returns the finished
-process, or None when gh is not installed. A reader returns None, never an empty list, when
-GitHub could not be asked or its answer could not be read, so a caller can tell "nothing is open"
-from "nobody could look".
+(docs/design/2026-10-27-cloud-routines-design.md, section 4.4). The calls go to gh's default host
+and read check runs, not the older commit statuses, which fits a space on github.com whose checks
+run on GitHub Actions, as the template's do. Every function takes the `gh` to call: `runner(cwd)`
+is the real one, and a test passes its own. A `gh` returns the finished process, or None when gh
+is not installed. A reader returns None, never an empty list, when GitHub could not be asked or
+its answer could not be read, so a caller can tell "nothing is open" from "nobody could look".
 
 repo_slug(root) -> "owner/name" | None
     The last two path segments of origin's URL, `.git` dropped: one answer for the ssh form, the
     https form and a cloud run's proxy (`http://local_proxy@127.0.0.1:34567/git/<owner>/<name>`).
-    None without an origin, or when a segment is not a plain ASCII name or is only dots (a local
-    origin such as `../origin.git`).
+    None without an origin, or when either segment is missing, is not a plain ASCII name or is
+    only dots (`../origin.git`). Any other local path still gives its last two segments
+    (`/srv/ada/ada-space.git` gives `ada/ada-space`).
 runner(cwd) -> gh
     The real `gh`, run in `cwd`. None when gh itself is not installed; a call that runs out of
     time, or cannot start for another reason (its working folder gone, say), is a failed call (a
@@ -42,6 +44,8 @@ from typing import Callable
 from urllib.parse import quote
 
 FAILED = ("failure", "timed_out", "cancelled", "action_required", "startup_failure")
+# A cloud run's answer for a repository its task did not attach: a host it could not ask, never "gone".
+NOT_ENABLED = re.compile(r"is not enabled", re.I)
 TIMEOUT_SECONDS = 60
 SEGMENT = re.compile(r"(?!\.+$)[A-Za-z0-9_.-]+")
 

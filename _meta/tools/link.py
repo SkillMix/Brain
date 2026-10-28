@@ -50,6 +50,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import access  # noqa: E402
+import ghrest  # noqa: E402
 import pages  # noqa: E402
 import registry  # noqa: E402
 import spaceyaml  # noqa: E402
@@ -487,7 +488,7 @@ def _answer(code: int, out: str, err: str):
     asking a repository not attached to it is told access "is not enabled", with a 404: that is a
     host it could not ask, never a repository that is gone."""
     if code != 0:
-        if re.search(r"is not enabled", f"{err}\n{out}", re.I):
+        if ghrest.NOT_ENABLED.search(f"{err}\n{out}"):
             raise OSError("access to this repository is not enabled in this session")
         if re.search(r"HTTP 404|Could not resolve to a node", err, re.I):
             return None

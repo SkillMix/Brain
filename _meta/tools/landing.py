@@ -37,7 +37,6 @@ from __future__ import annotations
 import datetime as dt
 import json
 import random
-import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,6 +44,7 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ghrest  # noqa: E402
 import pages  # noqa: E402
 import registry as registry_mod  # noqa: E402
 import spaceyaml  # noqa: E402
@@ -61,9 +61,14 @@ SAMPLE_SIZE = 5
 TRUST_SHARE = 0.2
 TRUST_MIN = 5
 TRUST_DAYS = 28
-# A cloud run asking a repository not attached to it: the signer's history cannot be asked here.
-NOT_ENABLED = re.compile(r"is not enabled", re.I)
-UNREACHABLE = object()   # signer_log's answer then: neither the history nor its absence
+
+
+class _Unreachable:
+    """The type of UNREACHABLE: signer_log's answer for a repository this session may not ask (a
+    cloud run it is not attached to), neither the signer's history nor its absence."""
+
+
+UNREACHABLE = _Unreachable()
 
 
 @dataclass
@@ -238,7 +243,7 @@ def stakes(fm: dict) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else "flagged"
 
 
-def signer_log(repo: str, cache: dict):
+def signer_log(repo: str, cache: dict) -> str | _Unreachable | None:
     """The signer's own `log.md`, read with this person's grants (the host's command line); None
     when it cannot be read; UNREACHABLE when this session may not ask that repository at all (a
     cloud run it is not attached to)."""
@@ -251,7 +256,7 @@ def signer_log(repo: str, cache: dict):
         if res.returncode == 0:
             cache[repo] = res.stdout
         else:
-            cache[repo] = UNREACHABLE if NOT_ENABLED.search(f"{res.stderr}\n{res.stdout}") else None
+            cache[repo] = UNREACHABLE if ghrest.NOT_ENABLED.search(f"{res.stderr}\n{res.stdout}") else None
     except Exception:
         cache[repo] = None
     return cache[repo]
