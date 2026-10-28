@@ -33,6 +33,7 @@ def _machine_home(tmp_path, monkeypatch):
     fake.mkdir(exist_ok=True)
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake))
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", gitconfig)
+    monkeypatch.delenv("CLAUDE_CODE_REMOTE", raising=False)   # a suite run inside a cloud session is not a cloud run
     monkeypatch.setenv("SPACES_START_LOCK", str(fake / "spaces-start.lock"))
     monkeypatch.setenv("SPACES_SETUP_JOURNAL", str(fake / ".spaces" / "setup.yaml"))
 

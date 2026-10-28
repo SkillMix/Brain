@@ -71,14 +71,16 @@ merge of main and the answer tests (steps 5 and 5a), the push goes to `cloud/<ch
 head the carry saw; refused, it carries again and pushes once more. Run lines, marks and stale.yaml
 alone open no pull request until the branch's oldest commit main lacks is QUIET_HOURS old, unless
 they hold a proof run's line; anything else opens one through REST and waits for its merge, merging
-main in again while it conflicts and repairing red checks once. What happened after the push is
-printed for the run log, and the next run's line says whether it carried this one.
+main in again while it conflicts and repairing red checks once. A run whose carry brought in a head
+whose pull request the person closed without merging while it worked pushes nothing. What happened
+after the push is printed for the run log, and the next run's line says whether it carried this one.
 
 The computer's leg (spec 4.5, `computer_leg`) runs while the workspace's routine record says the
 routines run in the cloud (`runner: cloud`; for a space that is no workspace, its owner's workspace
 on this computer). It comes right after step 5, so it reads the cloud's run lines first, and does
-what only the computer has: `not_started` moves there from step 1a, and waits for a run that merged
-main (offline, or stopped by a conflict, it would not see the cloud's lines); the transcripts scan
+what only the computer has: `not_started` moves there from step 1a, waits for a run that merged
+main (offline, or stopped by a conflict, it would not see the cloud's lines), and reads the run lines
+the fetched `cloud/<chain>` branches hold too, where a quiet run's lines wait; the transcripts scan
 runs at most every `chain.TRANSCRIPTS_HOURS`, where the session files are on this computer, its
 clock kept outside the repository (`~/.spaces/sync-leg-<space>.json`); template sync runs weekly, as
 the daily chain runs it on a computer, since its machinery changes need the person's click;
@@ -86,8 +88,9 @@ AGENTS.md is written again when it is not what `agents_md.py` renders, as status
 computer, but only while this checkout's `agents_md.py` is main's, which the gate renders with, and
 rides this computer's protected pull request (a cloud run puts back its own); a
 `cloud/<chain>` pull request open for ADOPT_MINUTES, in conflict with main or red, whose head is as
-old, is merged here with the merge rules and rides this computer's own pull request, and one that
-still conflicts is one item on Needs you; and the workspace names on Needs you a space of the
+old, is merged here with the merge rules and rides this computer's own pull request (a push split
+for a protected path keeps its head as a parent of the plain part), and one that still conflicts is
+one item on Needs you; and the workspace names on Needs you a space of the
 person's that the move did not attach. All but `not_started` run only on the computer the record
 names (`keeps_leg`); a record that names none lets each computer run them, and the merge rules keep
 what two computers both write from stopping a merge. The scan, template sync and AGENTS.md wait
@@ -95,6 +98,8 @@ while the routines are paused. What the leg wrote is committed before step 5a.
 
 `--release-leg` runs `release.ship(root)` first when that module is present.
 `--merge-latest` is the watermark driver git runs during a merge (`merge_latest`); nobody types it.
+In a cloud run (`CLAUDE_CODE_REMOTE` is `true`) only `--cloud <chain>` and that driver run: anything
+else is refused, as it would run the computer's landing in the clone.
 Exit 0 on success, 2 when the run was skipped, 1 on an error.
 
 `carry(root, chain)` is not a run of its own: a cloud run's `cloud.py begin` calls it first, to
@@ -169,6 +174,7 @@ CLOUD_REMERGE = 3   # merges of main while the pull request conflicts with it, b
 POLL_SECONDS, WAIT_MINUTES = 20, 9   # how often a cloud run reads its pull request, and for how long at most
 # The computer's leg, while the routines run in the cloud (`computer_leg`)
 ADOPT_MINUTES = 30   # a cloud pull request open this long, in conflict or red, is merged here: its run waits less
+ADOPTED = "sync-adopted"   # in the git dir: the cloud heads merged here (`adopt`) that main does not hold yet
 TEMPLATE_RETRY_HOURS = 24   # a template sync or AGENTS.md that failed is tried again after this, as the daily would
 LEG_STATE = "sync-leg-{}.json"   # under ~/.spaces/, beside the progress page: the leg's clocks for one space
 SYNC_ITEMS = Path("_inbound") / "needs-you" / "sync.yaml"   # the leg's items on Needs you
@@ -180,11 +186,16 @@ YAML_ITEM = re.compile(r"[ \t]*- +(?=\S)")
 NO_REPOSITORY = "no GitHub repository behind origin"
 LANDING = {   # what became of a cloud run's pull request, for the run log
     "merged": "pull request #{pr} merged",
-    "closed": "pull request #{pr} was closed without merging; the next cloud run starts again from main",
+    "closed": "pull request #{pr} was closed without merging; the next cloud run starts again from main, and may make "
+              "this run's tracker issues and owner notices again",
     "conflict": "pull request #{pr} still conflicts with main; it stays open, and the computer's sync adopts it",
     "red": "pull request #{pr} is still red after one repair; it stays open, and the computer's sync adopts it",
-    "left_open": "pull request #{pr} has not merged yet; it stays open, the next cloud run carries it, and the "
-                 "computer's sync adopts it after half an hour"}
+    "left_open": "pull request #{pr} has not merged yet; it stays open and merges once its checks are green, the next "
+                 "cloud run carries it, and the computer's sync adopts it only if it is still in conflict or red after "
+                 "half an hour",
+    "turned_down": "the pull request from {branch} was closed without merging while this run worked, so nothing is "
+                   "pushed or opened: the next cloud run starts again from main, and may make this run's tracker "
+                   "issues and owner notices again"}
 
 
 def _sleep(seconds: float) -> None:
@@ -241,14 +252,15 @@ def in_progress(gdir: Path) -> str | None:
     return next((name for name in IN_PROGRESS if (gdir / name).exists()), None)
 
 
-def not_started(root: Path, now: dt.datetime | None = None) -> bool:
+def not_started(root: Path, now: dt.datetime | None = None, cloud: bool = False) -> bool:
     """A chain its agent scheduler never starts writes nothing, so only this script, which the OS
     runs whatever that scheduler does, can notice. A chain whose last run line (for one that never
     ran, the onboarding) is older than twice the longest gap in its routine's schedule is named
     in stale.yaml as `<routine> not started` since then, for the health line; the entry goes when
     the chain runs. Written only when it changes. True when it wrote. While the routines run in the
     cloud the sync asks it after merging main in (`Run.computer_leg`), so the cloud's run lines are
-    read first."""
+    read first, and `cloud` reads those its `cloud/<chain>` branches hold as well, as the fetch
+    left them: a quiet run's lines wait there, with no pull request, for up to QUIET_HOURS."""
     import chain
     import onboard
     import onboarding_page
@@ -257,7 +269,11 @@ def not_started(root: Path, now: dt.datetime | None = None) -> bool:
     now = now or space.now()
     last: dict = {}
     path = root / RUNS_PATH
-    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines() if path.exists() else []:
+    texts = [path.read_text(encoding="utf-8", errors="replace")] if path.exists() else []
+    for name in CLOUD_CHAINS if cloud else ():
+        held = git(root, "show", f"refs/remotes/origin/cloud/{name}:{RUNS_PATH.as_posix()}")
+        texts += [held.stdout] if held.returncode == 0 else []
+    for raw in (line for text in texts for line in text.splitlines()):
         try:
             row = json.loads(raw)
             if row.get("routine") in CHAINS:
@@ -441,7 +457,7 @@ def _adopt_item(number: int) -> dict:
     return {"id": f"cloud-adopt-{number}", "kind": "request",
             "text": f"A cloud run's pull request #{number} conflicts with your files in a way the sync cannot settle.",
             "recommendation": "open it and keep the side you want, or close it: the next cloud run starts again "
-                              "from main",
+                              "from main, and may make that run's tracker issues and owner notices again",
             "default": "it stays open and the cloud runs keep adding to it", "depends": 1}
 
 
@@ -487,10 +503,11 @@ class Run:
         print(f"sync: {text}")
 
     # ----- chains --------------------------------------------------------------
-    def watch_chains(self) -> bool:
-        """`not_started`, never in the way of landing: True when it wrote stale.yaml."""
+    def watch_chains(self, cloud: bool = False) -> bool:
+        """`not_started`, never in the way of landing: True when it wrote stale.yaml. `cloud` (the computer's
+        leg) reads the run lines the cloud branches hold too."""
         try:
-            return bool(not_started(self.root, self.now))
+            return bool(not_started(self.root, self.now, cloud=cloud))
         except Exception as exc:  # never in the way of landing
             self.error(f"not started check: {type(exc).__name__}: {str(exc)[:200]}")
             return False
@@ -1127,9 +1144,11 @@ class Run:
             return set()
         return {"_meta/state/template-version.yaml", *(str(k) for k in files)}
 
-    def subset_commit(self, paths: list, remote_ref: str) -> str | None:
+    def subset_commit(self, paths: list, remote_ref: str, parents: list | None = None) -> str | None:
         """A commit on top of origin/main that carries only `paths` as they are in HEAD, built in
-        a private index so the working tree and the real index are never touched."""
+        a private index so the working tree and the real index are never touched. Each of `parents`
+        is one more parent of it (the cloud heads it carries, `riders`), so their history lands with it."""
+        parents = list(parents or [])
         index = self.gdir / "sync-split.index"
         env = {"GIT_INDEX_FILE": str(index)}
         try:
@@ -1153,9 +1172,11 @@ class Run:
             if remote:   # unchanged since the last run: keep the same commit, so CI does not rerun
                 same_tree = git(self.root, "rev-parse", f"{remote}^{{tree}}").stdout.strip() == tree
                 same_base = git(self.root, "rev-parse", f"{remote}^").stdout.strip() == base
-                if (same_tree and same_base) or self.still_carries(remote, paths, base):
+                riding = all(git(self.root, "merge-base", "--is-ancestor", p, remote).returncode == 0 for p in parents)
+                if riding and ((same_tree and same_base) or self.still_carries(remote, paths, base)):
                     return remote
-            done = git(self.root, "commit-tree", tree, "-p", base, "-m", "chore: sync")
+            done = git(self.root, "commit-tree", tree, "-p", base, *(a for p in parents for a in ("-p", p)),
+                       "-m", "chore: sync")
             return done.stdout.strip() if done.returncode == 0 else None
         finally:
             index.unlink(missing_ok=True)
@@ -1173,6 +1194,20 @@ class Run:
         if carried is None or stale is None or moved is None:
             return False
         return carried == want and not (stale & want) and not (moved & want)
+
+    def riders(self, guarded: list) -> list:
+        """The cloud heads adopted here (`adopted_heads`) that the plain commit of a split push keeps as
+        parents: built on main, it would otherwise leave their history behind, GitHub would never mark
+        their pull requests merged, and the next cloud run would carry them again, with every line they
+        added to an append-only file. A head that changes a path the split holds back for the click
+        (`guarded`) is left out: the plain commit does not hold its whole change."""
+        held = set(guarded)
+        kept = []
+        for head in self.adopted_heads():
+            done = git(self.root, "diff", "--name-only", "--no-renames", "-z", f"refs/remotes/origin/main...{head}")
+            if done.returncode == 0 and not {p for p in done.stdout.split("\x00") if p} & held:
+                kept.append(head)
+        return kept
 
     def push_branch(self, commit: str, branch: str) -> bool | None:
         """True when pushed, False when the branch already holds the commit, None on failure."""
@@ -1201,7 +1236,8 @@ class Run:
             for paths, name, note in ((plain, branch, "pushed"), (guarded, f"{branch}-protected", "pushed_protected")):
                 if not paths or self.waits(paths):
                     continue
-                commit = self.subset_commit(paths, f"origin/{name}")
+                riders = self.riders(guarded) if note == "pushed" else []
+                commit = self.subset_commit(paths, f"origin/{name}", riders)
                 pushed = None if commit is None else self.push_branch(commit, name)
                 if pushed is None:
                     self.error(f"push failed ({name})")
@@ -1361,7 +1397,7 @@ class Run:
         routines back to a computer leaves only `not_started`. The outcomes, as those notes."""
         import routine
         done: dict = {}
-        if not self.behind and self.watch_chains():
+        if not self.behind and self.watch_chains(cloud=True):
             done["not_started"] = True
         host = self.cloud_host()
         if host is not None and self.keeps_leg(host[1]):
@@ -1492,11 +1528,13 @@ class Run:
     def adopt_cloud(self, now: dt.datetime) -> list:
         """The `cloud/<chain>` pull requests of this repository that nothing will merge, merged into this
         checkout with the merge rules (`adopt`), so that they ride this computer's own sync pull request, which
-        it repairs as it repairs its own (`heal`); once that lands, GitHub marks them merged. One is adopted when
-        it was opened ADOPT_MINUTES ago or more and conflicts with main or has a failed check (`stuck`), and its
-        head is as old (`adopt`): a cloud run waits for its own for less. One whose merge here still conflicts is
-        aborted and becomes one item on Needs you (`cloud-adopt-<n>`), which goes once it is adopted or no
-        longer open. A fork's pull request is never one. The numbers adopted."""
+        it repairs as it repairs its own (`heal`); once that lands, GitHub marks them merged. That holds when the
+        push is split for a protected change too: its plain part, a commit built on main, keeps each adopted head
+        as a parent until main holds it (`adopted_heads`, `riders`), so the next cloud run never carries it again.
+        One is adopted when it was opened ADOPT_MINUTES ago or more and conflicts with main or has a failed check
+        (`stuck`), and its head is as old (`adopt`): a cloud run waits for its own for less. One whose merge here
+        still conflicts is aborted and becomes one item on Needs you (`cloud-adopt-<n>`), which goes once it is
+        adopted or no longer open. A fork's pull request is never one. The numbers adopted."""
         if self.slug is None or not self.has_origin_main():
             return []
         listed, complete = [], True
@@ -1596,8 +1634,35 @@ class Run:
             else:
                 print(f"adopt: {why(guarded)}")
             return "left"
+        self.adopted_heads(head)
         print(f"adopt: pull request #{number} from {branch} merged here; it rides this computer's sync pull request")
         return "adopted"
+
+    def adopted_heads(self, add: str | None = None) -> list:
+        """The cloud heads this checkout adopted (`adopt`; `add` is one more) that HEAD holds and origin/main does
+        not yet, kept in the git dir (ADOPTED) until main holds them, so a split push keeps them as parents of
+        its plain commit in every run until it lands (`riders`). One HEAD no longer holds is dropped."""
+        path = self.gdir / ADOPTED
+        try:
+            heads = path.read_text(encoding="utf-8").split()
+        except OSError:
+            heads = []
+        before = list(heads)
+        if add and add not in heads:
+            heads.append(add)
+
+        def holds(ref: str, head: str) -> bool:
+            return git(self.root, "merge-base", "--is-ancestor", head, ref).returncode == 0
+        kept = [h for h in heads if holds("HEAD", h) and not holds("refs/remotes/origin/main", h)]
+        if kept != before:
+            try:
+                if kept:
+                    path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+                else:
+                    path.unlink(missing_ok=True)
+            except OSError:
+                pass   # unrecorded, a split push leaves the head's history behind, as it did before the record
+        return kept
 
     def name_unattached(self, record: dict) -> list:
         """The person's spaces on this computer (`chain.spaces_on_machine`) whose repository the move to the cloud
@@ -1780,12 +1845,19 @@ class Run:
         A branch the carry would not take because it changes a protected path was pushed by someone else
         after `begin`: the push replaces it, and the security item `begin` writes for such a branch is
         committed first (`pushed_item`), so it lands with this run. Then, unless the push is quiet
-        (`quiet_cloud`), the pull request opens through REST and is waited for (`wait_landed`)."""
+        (`quiet_cloud`), the pull request opens through REST and is waited for (`wait_landed`).
+        A run whose carry brought in a head whose pull request the person closed without merging since
+        (`turned_down`) pushes and opens nothing: its push would bring the work they turned down back, in
+        a new pull request or with the next run's carry. The next run starts again from main."""
         if not self.has_origin_main() or git(self.root, "diff", "--quiet", "origin/main", "HEAD").returncode == 0:
             return   # nothing main lacks
         branch = f"cloud/{self.cloud}"
         if self.dry or self.args.no_push:
             print(f"would push to {branch}")
+            return
+        if self.turned_down():
+            self.notes["landing"] = "turned_down"
+            print(LANDING["turned_down"].format(branch=branch))
             return
         if not self.push_cloud():
             print(f"push: refused, as another run may have pushed to {branch}; carrying it again")
@@ -1813,6 +1885,13 @@ class Run:
         self.notes["landing"] = outcome
         print(LANDING[outcome].format(pr=pr))
 
+    def turned_down(self) -> bool:
+        """Whether the head the carry brought in (`carried`) is that of a pull request the person closed without
+        merging while this run worked. False when GitHub could not be asked."""
+        head = self.lease()
+        return bool(self.slug) and self.carried() and ghrest.closed_unmerged(self.rest, self.slug,
+                                                                             f"cloud/{self.cloud}", head)
+
     def pushed_item(self, carried: dict) -> None:
         """The security item `cloud.py begin` writes for a `cloud/<chain>` branch someone else pushed with a
         protected change, here for one pushed after `begin` (`carried` is what the carry said of it). Where
@@ -1835,9 +1914,10 @@ class Run:
         CLOUD_REMERGE times. Red checks get the computer's repair once (`hold_failed`, then a push when
         it set tests aside). A failure counts once: GitHub may name the head the repair replaced for a
         while, or list a rerun's failed attempt until the new one starts, and neither is a new failure.
-        `merged`; `closed` when the person closed it; `conflict` past the merges; `red` when a failure
-        comes after the repair; `left_open` when the time is up. What stays open, the next cloud run
-        carries and the computer's sync adopts."""
+        `merged`; `closed` when the person closed it; `conflict` past the merges, or when a merge of main
+        stops or its push fails; `red` when a failure comes after the repair; `left_open` when the time is
+        up. What stays open merges once it is green; the next cloud run carries it, and the computer's sync
+        adopts it only while it is in conflict or red (`stuck`)."""
         limit, waited, remerged, repaired, seen = float(minutes) * 60, 0.0, 0, False, set()
         while True:
             state = ghrest.pull_state(self.rest, self.slug, pr)
@@ -2172,6 +2252,9 @@ def main(argv=None) -> int:
     args = parse(sys.argv[1:] if argv is None else argv)
     if args.merge_latest:   # git runs the watermark driver mid-merge: no lock, no run line
         return merge_latest(*(Path(p) for p in args.merge_latest))
+    if os.environ.get("CLAUDE_CODE_REMOTE") == "true" and not args.cloud:
+        print("sync: a cloud run lands only with --cloud <chain>; the computer's landing runs on the computer")
+        return ERROR
     if args.cloud:   # every git a cloud run's landing starts, a mount's included, with the file monitor off
         with monitor_off():
             return sync_once(args)

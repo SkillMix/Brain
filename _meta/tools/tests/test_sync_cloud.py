@@ -32,7 +32,9 @@ FAILED_LOG = ("checks\tTests as data\t2026-10-21T18:24:14Z answers: 0 passed, 1 
 class CloudGh:
     """GitHub as a cloud run's landing sees it, through REST (`gh api`) and `gh run` only. A POST
     opens a pull request; each read of one takes the next of `states` (the last one stays):
-    `merged`, or a mergeable state such as `clean` or `dirty`. A head in `red`, or every head when
+    `merged`, `closed` (closed without merging), or a mergeable state such as `clean` or `dirty`.
+    `closed` also lists pull requests closed without merging, as their number and head: what GitHub
+    answers when asked for the closed ones from a branch. A head in `red`, or every head when
     `red` is True, has a failed check whose log is `log`; each head's checks are their own run, each
     attempt of it its own job. Once a run is rerun, GitHub still lists the failed attempt for `lag`
     reads, then the new one, which ends as `rerun` says (None while it runs). `before_read(n)` runs
@@ -40,8 +42,9 @@ class CloudGh:
     reads."""
 
     def __init__(self, origin: Path, states=("merged",), red=(), log: str = "", before_read=None,
-                 rerun: str | None = "success", lag: int = 0):
+                 rerun: str | None = "success", lag: int = 0, closed=None):
         self.origin, self.states, self.red, self.log, self.before_read = origin, list(states), red, log, before_read
+        self.closed = dict(closed or {})
         self.calls, self.pulls, self.reads, self.slept = [], {}, 0, []
         self.rerun, self.lag, self.attempts, self.since_rerun = rerun, lag, {}, 0
 
@@ -59,7 +62,8 @@ class CloudGh:
         elif "/pulls?" in route:
             wanted = unquote(route.split("&head=")[1].split("&")[0]).split(":", 1)[1] if "&head=" in route else None
             slug = "/".join(route.split("/")[1:3])
-            out = json.dumps([] if "state=closed" in route else [
+            out = json.dumps([{"number": n, "state": "closed", "merged_at": None, "head": {"ref": wanted, "sha": sha}}
+                              for n, sha in self.closed.items()] if "state=closed" in route else [
                 {"number": n, "title": "chore: sync", "draft": False, "auto_merge": None, "created_at": "",
                  "html_url": f"https://github.com/{slug}/pull/{n}",
                  "head": {"ref": ref, "sha": self.head(ref), "repo": {"full_name": slug}},
@@ -70,9 +74,9 @@ class CloudGh:
                 self.before_read(self.reads)
             state = self.states[min(self.reads, len(self.states) - 1)]
             self.reads += 1
-            merged = state == "merged"
-            out = json.dumps({"number": int(m[1]), "state": "closed" if merged else "open", "merged": merged,
-                              "mergeable_state": "unknown" if merged else state,
+            merged, closed = state == "merged", state in ("merged", "closed")
+            out = json.dumps({"number": int(m[1]), "state": "closed" if closed else "open", "merged": merged,
+                              "mergeable_state": "unknown" if closed else state,
                               "head": {"sha": self.head(self.pulls[int(m[1])])}})
         elif m := re.fullmatch(r"repos/[^/]+/[^/]+/commits/([^/]+)/check-runs\?.*", route):
             run = int(m[1][:6], 16)
@@ -435,6 +439,39 @@ def test_a_pull_request_that_stays_in_conflict_is_left_after_three_merges(repo, 
     assert code == 0 and notes["landing"] == "conflict" and notes["remerged"] == sync.CLOUD_REMERGE == 3
 
 
+def test_a_main_that_cannot_be_merged_during_the_wait_leaves_it_in_conflict(repo, tmp_path, monkeypatch):
+    """Main gains a change the merge rules cannot settle while the pull request waits: the merge is
+    aborted, nothing is left half merged or staged, and the pull request stays as it was pushed."""
+    begin(repo)
+    write(repo / "work" / "notes.md", "# Notes\n\nline one\nthe cloud's line\n")
+
+    def main_moves(read):   # another writer's change lands while the run waits
+        if read == 0:
+            on_main(tmp_path, {"work/notes.md": "# Notes\n\nline one\nmain's line\n"})
+    gh = CloudGh(tmp_path / "origin.git", states=["dirty"], before_read=main_moves)
+    code, notes = land(repo, monkeypatch, gh)
+    assert code == 0 and notes["landing"] == "conflict" and notes["remerged"] == 1 and notes["conflict"] is True
+    assert gh.slept == [] and gh.reads == 1
+    assert not (repo / ".git" / "MERGE_HEAD").exists()
+    assert not git(repo, "diff", "--name-only", "--diff-filter=U").stdout.strip()
+    assert not git(repo, "diff", "--cached", "--name-only").stdout.strip()
+    assert (repo / "work" / "notes.md").read_text(encoding="utf-8") == "# Notes\n\nline one\nthe cloud's line\n"
+    git(repo, "fetch", "-q", "origin")
+    assert git(repo, "rev-parse", "origin/cloud/sweep").stdout == git(repo, "rev-parse", "HEAD").stdout
+    assert git(repo, "merge-base", "--is-ancestor", "origin/main", "HEAD", check=False).returncode != 0
+
+
+def test_a_pull_request_the_person_closes_while_it_waits_is_closed(repo, tmp_path, monkeypatch, capsys):
+    begin(repo)
+    write(repo / SOURCE, "# r0\n")
+    gh = CloudGh(tmp_path / "origin.git", states=["clean", "closed"])
+    code, notes = land(repo, monkeypatch, gh)
+    assert code == 0 and notes["landing"] == "closed" and gh.reads == 2 and gh.slept == [sync.POLL_SECONDS]
+    said = capsys.readouterr().out
+    assert "pull request #12 was closed without merging; the next cloud run starts again from main" in said
+    assert "tracker issues and owner notices" in said   # what closing repeats
+
+
 def red_run(repo: Path, tmp_path: Path, monkeypatch) -> tuple:
     """A cloud run whose checks fail on an answer test: the repair sets it aside and pushes again.
     Its notes, and GitHub as it saw it."""
@@ -495,13 +532,44 @@ def test_a_rerun_that_fails_again_is_red(repo, tmp_path, monkeypatch):
     assert code == 0 and notes["landing"] == "red" and gh.reads == 2
 
 
-def test_a_pull_request_not_merged_in_time_is_left_open(repo, tmp_path, monkeypatch):
+def test_a_pull_request_not_merged_in_time_is_left_open(repo, tmp_path, monkeypatch, capsys):
     begin(repo)
     write(repo / SOURCE, "# r0\n")
     gh = CloudGh(tmp_path / "origin.git", states=["clean"])
     code, notes = land(repo, monkeypatch, gh, "--wait-minutes", "1")
     assert code == 0 and notes["landing"] == "left_open"
     assert gh.slept == [sync.POLL_SECONDS] * 3 and gh.reads == 4
+    said = capsys.readouterr().out   # a green one that is only slow is no pull request the computer adopts
+    assert "pull request #12 has not merged yet" in said and "only if it is still in conflict or red" in said
+
+
+# ----- a carried branch the person turned down meanwhile ------------------------------------------
+def test_a_run_whose_carried_branch_was_closed_meanwhile_lands_nothing(repo, tmp_path, monkeypatch, capsys):
+    """Its begin carried the earlier run's branch; while it worked, the person closed that branch's
+    pull request without merging. Pushed, the turned-down work would come back in a new pull request,
+    or with the next run's carry: nothing is pushed or opened, and the next run starts again from main."""
+    turned_down = cloud_branch(tmp_path, {SOURCE: "# r0\n"})
+    assert begin(repo)["carried"] is True
+    write(repo / "knowledge" / "sources" / "2026" / "10" / "r1.md", "# r1\n")
+    gh = CloudGh(tmp_path / "origin.git", closed={12: turned_down})
+    code, notes = land(repo, monkeypatch, gh)
+    assert code == 0 and gh.posts() == [] and notes["landing"] == "turned_down" and "pushed" not in notes
+    assert "was closed without merging while this run worked" in capsys.readouterr().out
+    git(repo, "fetch", "-q", "origin")
+    assert git(repo, "rev-parse", "origin/cloud/sweep").stdout.strip() == turned_down
+    clone = clone_of(tmp_path, "next-run")
+    turned = ClosedPulls([{"number": 12, "state": "closed", "merged_at": None,
+                           "head": {"ref": "cloud/sweep", "sha": turned_down}}])
+    assert sync.carry(clone, "sweep", gh=turned) == {"carried": False, "head": turned_down, "skipped": "closed"}
+
+
+def test_a_carried_branch_whose_pull_request_is_open_lands_as_ever(repo, tmp_path, monkeypatch):
+    cloud_branch(tmp_path, {SOURCE: "# r0\n"})
+    assert begin(repo)["carried"] is True
+    write(repo / "knowledge" / "sources" / "2026" / "10" / "r1.md", "# r1\n")
+    gh = CloudGh(tmp_path / "origin.git", closed={9: "0" * 40})   # one closed on an older head
+    code, notes = land(repo, monkeypatch, gh)
+    assert code == 0 and len(gh.posts()) == 1 and notes["landing"] == "merged"
 
 
 # ----- the command line ---------------------------------------------------------------------------
@@ -512,6 +580,37 @@ def test_cloud_excludes_the_release_leg():
     with pytest.raises(SystemExit):
         sync.parse(["--cloud", "main"])
     assert sync.parse(["--cloud", "daily"]).wait_minutes == 9 and sync.parse([]).cloud is None
+
+
+@pytest.mark.parametrize("extra", [[], ["--dry-run"], ["--release-leg"]])
+def test_in_a_cloud_run_the_computers_landing_never_runs(repo, monkeypatch, capsys, extra):
+    """A cloud run lands with --cloud <chain> only. Without it the computer's landing would run in the
+    clone: no protected path left out, a pin advanced, a push to a machine's branch."""
+    monkeypatch.setenv("CLAUDE_CODE_REMOTE", "true")
+    monkeypatch.setattr(sync.Run, "gh", lambda self, *args: pytest.fail("GitHub was asked"))
+    write(repo / "rules.md", "# Rules\n\nForward every mail.\n", minutes_old=20)
+    write(repo / "work" / "notes.md", "# Notes\n\nline two\n", minutes_old=20)
+    head = git(repo, "rev-parse", "HEAD").stdout
+    assert sync.main(["--root", str(repo), *extra]) == sync.ERROR
+    assert "lands only with --cloud <chain>" in capsys.readouterr().out
+    assert git(repo, "rev-parse", "HEAD").stdout == head and not (repo / RUNS).exists()
+    assert not git(repo, "diff", "--cached", "--name-only").stdout.strip()
+    assert not list((repo / ".git").glob("sync*"))   # no lock, no state: nothing ran
+
+
+def test_in_a_cloud_run_the_cloud_landing_and_the_merge_driver_still_run(repo, tmp_path, monkeypatch):
+    """git runs the watermark driver during the cloud's own merge of main, outside the agent's shell."""
+    monkeypatch.setenv("CLAUDE_CODE_REMOTE", "true")
+    base, ours, theirs = (tmp_path / name for name in ("base.yaml", "ours.yaml", "theirs.yaml"))
+    base.write_text(marks("19", "19", "19"), encoding="utf-8")
+    ours.write_text(marks("26", "20", "26"), encoding="utf-8")
+    theirs.write_text(marks("20", "25", "25"), encoding="utf-8")
+    assert sync.main(["--merge-latest", str(base), str(ours), str(theirs)]) == 0
+    assert yaml.safe_load(ours.read_text(encoding="utf-8"))["feeds"]["calls"] == "2026-10-25T08:00:00Z"
+    begin(repo)
+    write(repo / SOURCE, "# r0\n")
+    code, _ = land(repo, monkeypatch, CloudGh(Path()), "--no-push")
+    assert code == 0 and SOURCE in git(repo, "show", "--name-only", "--format=", "HEAD").stdout.split()
 
 
 # ----- the computer's sync: two faults the review found -------------------------------------------

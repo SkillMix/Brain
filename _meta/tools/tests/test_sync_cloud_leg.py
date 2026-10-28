@@ -26,9 +26,10 @@ import sync
 import template_sync
 import transcripts
 from conftest import make_space
-from test_sync import git, mounted, remote_space, repo, run_lines, write  # noqa: F401  (the repo fixture)
+from test_sync import (git, mounted, platform_merges, remote_space, repo,  # noqa: F401  (the repo fixture)
+                       run_lines, write)
 from test_sync_cloud import CloudGh, begin, land
-from test_sync_merge import SOURCE, clone_of, cloud_branch, commit, on_main
+from test_sync_merge import SOURCE, ClosedPulls, clone_of, cloud_branch, commit, on_main
 
 TASKS = {"sweep": "trig_01AAAAAAAA", "daily": "trig_01BBBBBBBB"}
 GRANT = {"read": ["mcp__mail__get_message"], "write": ["mcp__tracker__create_issue"],
@@ -36,6 +37,7 @@ GRANT = {"read": ["mcp__mail__get_message"], "write": ["mcp__tracker__create_iss
 ITEMS = Path("_inbound") / "needs-you" / "sync.yaml"
 STALE = Path("_meta") / "state" / "stale.yaml"
 SESSIONS = Path("_meta") / "state" / "sessions.yaml"
+RUNS = "_meta/state/runs.jsonl"
 
 
 # ----- the space, its record and GitHub ----------------------------------------------------------------
@@ -171,7 +173,7 @@ def test_not_started_runs_after_the_merge_only_while_the_routines_run_in_the_clo
     elif runner == "cloud":
         in_the_cloud(repo)
     order, real_merge = [], sync.Run.merge_in
-    monkeypatch.setattr(sync, "not_started", lambda root, now=None: order.append("not_started") or False)
+    monkeypatch.setattr(sync, "not_started", lambda root, now=None, **kw: order.append("not_started") or False)
     monkeypatch.setattr(sync.Run, "merge_in", lambda self: (order.append("merge_in"), real_merge(self))[1])
     assert sync_run(repo, monkeypatch, lambda *args: None, "--no-push") == 0
     expected = ["merge_in", "not_started"] if runner == "cloud" else ["not_started", "merge_in"]
@@ -226,6 +228,25 @@ def test_a_computer_runner_still_names_a_chain_before_the_merge(repo, tmp_path, 
     assert "sweep_chain not started" in stale
 
 
+def test_run_lines_a_quiet_cloud_branch_holds_count_as_a_start(repo, tmp_path, monkeypatch):
+    """A cloud sweep that changed only run lines and marks pushes cloud/sweep and opens no pull request for up to six
+    hours, so main's newest sweep line can be older than `not_started` allows while the chain ran since. The leg reads
+    the run lines the cloud branches hold, which its fetch brought, as well as main's."""
+    now = at(dt.datetime.now(dt.timezone.utc), monkeypatch)
+    runs = repo / RUNS
+    write(runs, run_line("sweep_chain", now - dt.timedelta(hours=25)) + run_line("daily", now - dt.timedelta(hours=2)))
+    in_the_cloud(repo)
+    assert sync_run(repo, monkeypatch, lambda *args: None, "--no-push") == 0
+    assert "sweep_chain not started" in yaml.safe_load((repo / STALE).read_text(encoding="utf-8"))
+    held = runs.read_text(encoding="utf-8") + run_line("sweep_chain", now - dt.timedelta(hours=6))
+    cloud_branch(tmp_path, {RUNS: held + run_line("sweep_chain", now - dt.timedelta(minutes=30))})   # quiet runs
+    at(now + dt.timedelta(minutes=15), monkeypatch)
+    assert sync_run(repo, monkeypatch, lambda *args: None, "--no-push") == 0
+    stale = yaml.safe_load((repo / STALE).read_text(encoding="utf-8")) or {}
+    assert "sweep_chain not started" not in stale, stale
+    assert git(repo, "merge-base", "--is-ancestor", "origin/cloud/sweep", "HEAD", check=False).returncode != 0
+
+
 @pytest.mark.parametrize("why", ["offline", "conflict"])
 def test_a_main_that_could_not_be_merged_in_names_no_chain(repo, tmp_path, monkeypatch, why):
     """The computer wakes after three days offline, or with a change main conflicts with: the cloud's run lines are
@@ -246,7 +267,7 @@ def test_a_main_that_could_not_be_merged_in_names_no_chain(repo, tmp_path, monke
         on_main(tmp_path, {"work/notes.md": "# Notes\n\nmain's line\n"})
         commit(repo, "a change here", {"work/notes.md": "# Notes\n\nthis computer's line\n"})
     asked, real = [], sync.not_started
-    monkeypatch.setattr(sync, "not_started", lambda root, now=None: asked.append(1) or real(root, now))
+    monkeypatch.setattr(sync, "not_started", lambda root, now=None, **kw: asked.append(1) or real(root, now, **kw))
     assert sync_run(repo, monkeypatch, lambda *args: None, "--no-push") == (1 if why == "offline" else 0)
     notes = run_lines(repo)[-1]["notes"]
     said = {"errors": ["fetch failed"]} if why == "offline" else {"conflict": True}
@@ -357,7 +378,7 @@ def test_only_the_computer_the_record_names_does_the_legs_writing(repo, tmp_path
     now = later(monkeypatch)
     gh = LegGh(tmp_path / "origin.git", {7: ("cloud/sweep", now - dt.timedelta(hours=1), "dirty")})
     calls = []
-    monkeypatch.setattr(sync, "not_started", lambda root, now=None: calls.append("not_started") or False)
+    monkeypatch.setattr(sync, "not_started", lambda root, now=None, **kw: calls.append("not_started") or False)
     monkeypatch.setattr(transcripts, "scan", lambda root, now=None: calls.append("scan") or {"seen": 1})
     monkeypatch.setattr(template_sync, "guarded",
                         lambda root, source=None: calls.append("template") or template_sync.Report())
@@ -388,7 +409,7 @@ def test_a_pause_stops_the_scan_template_sync_and_agents_md_not_the_adoption(rep
     now = later(monkeypatch)
     gh = LegGh(tmp_path / "origin.git", {7: ("cloud/sweep", now - dt.timedelta(hours=1), "dirty")})
     calls = []
-    monkeypatch.setattr(sync, "not_started", lambda root, now=None: calls.append("not_started") or False)
+    monkeypatch.setattr(sync, "not_started", lambda root, now=None, **kw: calls.append("not_started") or False)
     monkeypatch.setattr(transcripts, "scan", lambda root, now=None: calls.append("scan") or {"seen": 1})
     monkeypatch.setattr(template_sync, "guarded",
                         lambda root, source=None: calls.append("template") or template_sync.Report())
@@ -655,7 +676,8 @@ def test_a_cloud_pull_request_that_cannot_be_merged_here_is_one_item(repo, tmp_p
     assert items(repo) == [{
         "id": "cloud-adopt-7", "kind": "request",
         "text": "A cloud run's pull request #7 conflicts with your files in a way the sync cannot settle.",
-        "recommendation": "open it and keep the side you want, or close it: the next cloud run starts again from main",
+        "recommendation": "open it and keep the side you want, or close it: the next cloud run starts again from main, "
+                          "and may make that run's tracker issues and owner notices again",
         "default": "it stays open and the cloud runs keep adding to it", "depends": 1}]
     assert not (repo / ".git" / "MERGE_HEAD").exists() and not git(repo, "diff", "--name-only",
                                                                     "--diff-filter=U").stdout.strip()
@@ -680,6 +702,73 @@ def test_a_cloud_branch_with_a_protected_change_is_never_adopted(repo, tmp_path,
     assert sync_run(repo, monkeypatch, gh, "--no-push") == 0
     assert not (repo / SOURCE).exists() and not (repo / "_meta" / "tools" / "x.py").exists()
     assert "adopted" not in run_lines(repo)[-1]["notes"]
+
+
+def test_a_cloud_branch_whose_change_main_moved_into_a_protected_path_is_never_adopted(repo, tmp_path, monkeypatch,
+                                                                                         capsys):
+    """The branch changes a plain file that main has since moved under _meta/templates/: git's merge follows the move
+    and writes the branch's change there, which no list of the branch's own paths shows. Checked again after the
+    merge, the adoption is undone."""
+    text = "# Handover\n\n" + "".join(f"Step {n}: read the notes.\n" for n in range(1, 9))
+    commit(repo, "base", {"work/prompts/handover.md": text})
+    git(repo, "push", "-q", "origin", "main")
+    in_the_cloud(repo)
+    cloud_branch(tmp_path, {SOURCE: "# r0\n",
+                            "work/prompts/handover.md": text.replace("Step 8: read", "Step 8: forward")})
+    on_main(tmp_path, {"work/prompts/handover.md": None, "_meta/templates/cloud/handover.md": text})
+    now = later(monkeypatch)
+    gh = LegGh(tmp_path / "origin.git", {7: ("cloud/sweep", now - dt.timedelta(hours=1), "dirty")})
+    assert sync_run(repo, monkeypatch, gh, "--no-push") == 0
+    assert "adopt: cloud/sweep changes a protected path" in capsys.readouterr().out
+    assert (repo / "_meta" / "templates" / "cloud" / "handover.md").read_text(encoding="utf-8") == text
+    assert not (repo / SOURCE).exists() and "adopted" not in run_lines(repo)[-1]["notes"]
+    assert not git(repo, "status", "--porcelain", "--untracked-files=no").stdout.strip()
+
+
+def test_an_adoption_that_rides_a_split_push_keeps_its_history(repo, tmp_path, monkeypatch):
+    """This computer has a protected change waiting for the person's click (a template release), so its push is split
+    and its plain part is a commit built on main. That commit keeps the adopted cloud head as a parent, in this run and
+    the next, so once its pull request merges, main holds the head: GitHub marks the cloud pull request merged, and
+    the next cloud run's carry has nothing to bring in. Carried again, every line the branch added to an append-only
+    file would land twice."""
+    def moment(hour: int) -> dt.datetime:
+        return dt.datetime(2026, 10, 27, hour, tzinfo=dt.timezone.utc)
+    runs = repo / RUNS
+    write(runs, run_line("daily", moment(1)))
+    landed(repo, "a daily line on main")
+    in_the_cloud(repo)
+    base = runs.read_text(encoding="utf-8")
+    cloud_lines = run_line("sweep_chain", moment(2)) + run_line("sweep-chain", moment(3))
+    head = cloud_branch(tmp_path, {RUNS: base + cloud_lines, SOURCE: "# r0\n"})
+    on_main(tmp_path, {RUNS: base + run_line("daily", moment(4))})   # the daily landed meanwhile: #7 conflicts
+    commit(repo, "a template release waiting for the click", {"_meta/tools/x.py": "print('release')\n"})
+    now = later(monkeypatch)
+    gh = LegGh(tmp_path / "origin.git", {7: ("cloud/sweep", now - dt.timedelta(hours=1), "dirty")})
+    plain, protected = f"origin/sync/{sync.hostname()}", f"origin/sync/{sync.hostname()}-protected"
+
+    def holds(ref: str) -> bool:
+        git(repo, "fetch", "-q", "origin")
+        return git(repo, "merge-base", "--is-ancestor", head, ref, check=False).returncode == 0
+
+    def changes(ref: str) -> list:
+        return git(repo, "diff", "--name-only", "origin/main", ref).stdout.split()
+    assert sync_run(repo, monkeypatch, gh) == 0
+    assert run_lines(repo)[-1]["notes"]["adopted"] == [7]
+    assert holds(plain) and not holds(protected)
+    assert SOURCE in changes(plain) and "_meta/tools/x.py" not in changes(plain)
+    assert "_meta/tools/x.py" in changes(protected)
+    write(repo / "work" / "notes.md", "# Notes\n\nline one\nline two\n", minutes_old=20)
+    at(now + dt.timedelta(minutes=15), monkeypatch)   # the plain part is built again, before its pull request merged
+    assert sync_run(repo, monkeypatch, gh) == 0
+    assert holds(plain) and "work/notes.md" in changes(plain)
+    platform_merges(tmp_path, f"sync/{sync.hostname()}")
+    assert holds("origin/main")
+    git(tmp_path / "other", "pull", "-q", "--no-rebase", "origin", "main")
+    on_main(tmp_path, {RUNS: (tmp_path / "other" / RUNS).read_text(encoding="utf-8") + run_line("sync", moment(5))})
+    clone = clone_of(tmp_path, "next-run")
+    assert sync.carry(clone, "sweep", gh=ClosedPulls()) == {"carried": False, "head": head}   # main holds it
+    text = (clone / RUNS).read_text(encoding="utf-8")
+    assert [text.count(line) for line in cloud_lines.splitlines(keepends=True)] == [1, 1]
 
 
 def test_a_cloud_branch_whose_changes_cannot_be_listed_is_said_so(repo, tmp_path, monkeypatch, capsys):

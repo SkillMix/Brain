@@ -149,7 +149,7 @@ class Platform:
 # ----- Ada's spaces ----------------------------------------------------------------------------------------------
 @pytest.fixture
 def world(tmp_path, monkeypatch):
-    """Ada's workspace and her brain on GitHub (two bare origins), the workspace mounting the brain at its pin, the
+    """Ada's workspace and their brain on GitHub (two bare origins), the workspace mounting the brain at its pin, the
     routines moved to the cloud an hour ago; GitHub as the fake, and the person's computer, one more clone."""
     config = tmp_path / "gitconfig"   # longpaths: Windows needs it under a long basetemp; other systems ignore it
     config.write_text('[protocol "file"]\n\tallow = always\n[user]\n\tname = cloud\n\temail = cloud@example.test\n'
@@ -190,7 +190,7 @@ def world(tmp_path, monkeypatch):
         git(seed, "commit", "-q", "-m", "init")
         git(seed, "push", "-q", "-u", "origin", "main")
         seeds[slug] = seed
-    computer = tmp_path / "computer" / "ada-space"   # Ada's own checkout, her sync every 15 minutes
+    computer = tmp_path / "computer" / "ada-space"   # Ada's own checkout, their sync every 15 minutes
     git(tmp_path, "clone", "-q", str(platform.origin(SPACE)), str(computer))
     mailbox = [{"id": rid, "source": "mail", "kind": "mail", "at": pages.iso(now - dt.timedelta(hours=hours)),
                 "from": "team@example.test", "to": ["ada@example.test"], "subject": f"Week notes {n}",
