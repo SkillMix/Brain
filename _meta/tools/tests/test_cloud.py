@@ -309,7 +309,15 @@ def test_begin_writes_the_guard_profile_from_the_records_grant(ada):
     cloud.begin(ada, "sweep", now=NOW)
     prof = profile_of("sweep")
     allow, deny = prof["permissions"]["allow"], prof["permissions"]["deny"]
-    assert "Bash(gh api search/issues?*)" in allow and "Bash(gh api repos/*)" in allow
+    assert {*routine.REST_READS, *cloud.EXTRA_ALLOW} <= set(allow) and "Bash(gh api search/issues?*)" not in allow
+    path = Path.home() / ".spaces" / "routines" / "cloud-sweep.settings.json"
+    check = lambda command: bash_guard.check(path, {"tool_input": {"command": command}})   # noqa: E731
+    for read in ("gh api search/issues'?q=repo:ada/ada-site+is:pr+updated:>=2026-10-01&per_page=100'",
+                 "gh api repos/ada/ada-site/pulls/5/files'?per_page=100'"):   # spelled as the prompts spell them
+        assert check(read) is None, read
+    for refused in ("gh api search/issues'?q=x' -XPOST", "gh api graphql", "gh api repos/ada/ada-site/graphql",
+                    "gh pr list", "gh pr list --state open"):
+        assert check(refused) is not None, refused
     assert {MAIL_READ, MAIL_SEARCH, TRACKER_READ, TRACKER_WRITE, MAIL_SEND} <= set(allow)
     assert MAIL_TRASH not in json.dumps(allow)
     assert {"Bash(gh api * *)", "Bash(gh api *\t*)", "Bash(gh api *graphql*)"} <= set(deny)
@@ -319,6 +327,14 @@ def test_begin_writes_the_guard_profile_from_the_records_grant(ada):
     assert state == {"workspace": ada.as_posix(), "profile": (Path.home() / ".spaces" / "routines"
                                                                 / "cloud-sweep.settings.json").as_posix(),
                      "person": "owner@example.test", "chain": "sweep"}
+
+
+def test_the_clouds_own_reads_are_none_a_routine_has_already():
+    """The cloud adds to a routine's profile only the reads it lacks: `routine.REST_READS` covers the search for pull
+    requests, which a computer's routine makes too."""
+    reads = bash_guard._patterns(routine.REST_READS, True)
+    for rule in cloud.EXTRA_ALLOW:
+        assert not any(read.fullmatch(rule[len("Bash("):-1]) for read in reads), rule
 
 
 def test_the_daily_profile_holds_only_the_send_and_its_read_back(ada):
@@ -525,6 +541,23 @@ def test_a_grant_without_a_proof_refuses_the_run_and_writes_nothing(ada, capsys)
     with pytest.raises(ValueError):
         cloud.begin(ada, "sweep", now=NOW, grant=GRANT)
     (ada / routine.HOST).unlink()
+    assert untouched(ada)
+
+
+def test_a_proofs_grant_is_refused_while_the_record_is_unclear(ada, capsys):
+    """An unclear record may be the move's, garbled by a merge: nothing could narrow a proof's grant to what the
+    person moved with, so the grant is not trusted, and the run writes nothing."""
+    in_the_cloud(ada)
+    path = ada / routine.HOST
+    path.write_text(path.read_text(encoding="utf-8") + 'machine: "m-cloud"\n', encoding="utf-8")   # a key twice
+    assert routine.host(ada) == {"unclear": True}
+    word = token(cloud.task_grant(GRANT, "daily"))
+    assert cloud.main(["begin", str(ada), "--chain", "daily", "--proof", "--grant", word]) == 2
+    said = capsys.readouterr().out.strip()
+    assert said == f"cloud: {cloud.UNCLEAR_GRANT}" and said.count(".") == 1 and said.endswith(".")
+    with pytest.raises(ValueError, match="unclear"):
+        cloud.begin(ada, "daily", proof=True, now=NOW, grant=cloud.task_grant(GRANT, "daily"))
+    path.unlink()
     assert untouched(ada)
 
 
@@ -741,6 +774,8 @@ def test_the_trigger_denies_the_machinery_the_shell_shapes_and_git(computer):
     assert {"Bash(python -m *)", "Bash(python3 -m *)", "Bash(git *)", "Bash(gh pr *)", "Bash(gh api *graphql*)",
             "Bash(gh api * *)", "Bash(gh api *\t*)",
             "Bash(*_meta/tools/routine.py*)", "Bash(*_meta/tools/sign.py*)"} <= set(denied)
+    # cloud.py is a routine tool (its begin runs first, its proof-line last): no deny rule of the task names it.
+    assert "cloud.py" in routine.ROUTINE_TOOLS
     assert not any(tool in rule for rule in denied for tool in ("sweep.py", "sync.py", "cloud.py"))
     assert not {"Bash", "Read", "Edit", "Write", "Task"} & set(denied)
 

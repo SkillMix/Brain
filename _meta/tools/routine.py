@@ -1526,11 +1526,13 @@ def _probe(workspace: Path, run) -> int:
 # pauses made before a sync, the later stands. Every space merges the file by union (.gitattributes, sync.MERGE_RULES).
 # The third runner is the cloud (`claim_cloud`): two scheduled tasks on claude.ai under CLOUD_MACHINE, which no
 # computer's id can take, with their ids, the person's zone, the repositories they attach and the connector grant a
-# line each after the claim's four; every computer steps aside for it (`gate`), and a cloud run asks `cloud_gate`.
+# line each after the claim's four, and then the computer the move ran on, which keeps the computer's leg
+# (`sync.Run.keeps_leg`); every computer steps aside for it (`gate`), and a cloud run asks `cloud_gate`.
 HOST = Path("_meta/state/routine-host.yaml")
 RUNNERS = ("os", "harness", "cloud")
 CLAIM_KEYS = ("machine", "name", "runner", "since")
 CLOUD_KEYS = ("tasks", "timezone", "roots", "grant")   # the cloud's claim after the four: a cloud record has all
+LEG_KEYS = ("computer",)   # after them: a record the move wrote before it named a computer lacks it
 GRANT_KEYS = ("read", "write", "send")
 MACHINE = re.compile(r"m-[0-9A-Za-z-]{1,64}")
 CLOUD_MACHINE = "m-cloud"   # a computer's id is m- and eight hex digits (`sync.hostname`), never this
@@ -1550,12 +1552,13 @@ def this_machine() -> str:
     """This computer as the record names it: an id made once and kept in `~/.spaces/machine-id` (Minor 6), so a
     computer whose name follows the network still matches its own record. Made from today's value, its part of the
     sync branch names (`sync.hostname`), so every record written before still matches; a file that holds no id is
-    made again, and one that cannot be written leaves the id as it is made."""
+    made again, the cloud's machine among them (no computer is the cloud), and one that cannot be written leaves the
+    id as it is made."""
     import sync
     kept = Path.home() / ".spaces" / "machine-id"
     try:
         said = kept.read_text(encoding="utf-8").strip()
-        if MACHINE.fullmatch(said):
+        if MACHINE.fullmatch(said) and said != CLOUD_MACHINE:
             return said
     except (OSError, UnicodeDecodeError):
         pass
@@ -1621,8 +1624,11 @@ _OneRecord.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _keys
 def _cloud_value(key: str, value):
     """One of the cloud's keys as the record keeps it; None for a value not of its shape. `tasks`: the two task ids
     by chain (`sweep`, `daily`); `timezone`: the person's IANA zone; `roots`: the repositories the tasks attach, at
-    least one; `grant`: the connector tools by their full names, as `read`, `write` and `send`."""
+    least one; `grant`: the connector tools by their full names, as `read`, `write` and `send`; `computer`: the id
+    of the computer the move ran on (`this_machine`), never the cloud's."""
     import reader
+    if key == "computer":
+        return value if isinstance(value, str) and MACHINE.fullmatch(value) and value != CLOUD_MACHINE else None
     if key == "tasks":
         ok = isinstance(value, dict) and set(value) == {"sweep", "daily"} and all(
             isinstance(task, str) and TASK_ID.fullmatch(task) for task in value.values())
@@ -1642,11 +1648,12 @@ def _cloud_value(key: str, value):
 
 def host(workspace) -> dict | None:
     """Where the routines run: {"machine", "name", "runner", "since", "paused_until"} (the pause an ISO moment, or
-    None), with the cloud's keys (`CLOUD_KEYS`: "tasks", "timezone", "roots", "grant") only when they are written; None
-    when nothing is recorded. A file that is not one record (a key twice, but for the pause, of which the later
-    stands; a merge left half done, a machine or runner that is none, a pause that is no moment, a cloud key of the
-    wrong shape, the cloud without all four, or the cloud's machine and runner apart) is {"unclear": True}: nothing
-    runs under it."""
+    None), with the cloud's keys (`CLOUD_KEYS`: "tasks", "timezone", "roots", "grant") and "computer", the computer
+    that keeps the leg (`LEG_KEYS`), only when they are written; None when nothing is recorded. A file that is not
+    one record (a key twice, but for the pause, of which the later stands; a merge left half done, a machine or
+    runner that is none, a pause that is no moment, a cloud key of the wrong shape, a computer that is no computer's
+    id, the cloud without all four of its keys, or the cloud's machine and runner apart) is {"unclear": True}:
+    nothing runs under it."""
     try:
         text = (Path(workspace) / HOST).read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -1663,9 +1670,9 @@ def host(workspace) -> dict | None:
     until = None if paused is None else _moment(paused)
     if not (isinstance(machine, str) and MACHINE.fullmatch(machine) and runner in RUNNERS) or (paused is not None and until is None):
         return {"unclear": True}
-    cloud = {key: _cloud_value(key, data[key]) for key in CLOUD_KEYS if key in data}
+    cloud = {key: _cloud_value(key, data[key]) for key in (*CLOUD_KEYS, *LEG_KEYS) if key in data}
     if (None in cloud.values() or (runner == "cloud") != (machine == CLOUD_MACHINE)
-            or (runner == "cloud" and len(cloud) < len(CLOUD_KEYS))):
+            or (runner == "cloud" and not set(CLOUD_KEYS) <= set(cloud))):
         return {"unclear": True}
     return {"machine": machine, "name": _one_line(name, 60) if isinstance(name, str) else "", "runner": runner,
             "since": _one_line(data.get("since"), 40), **cloud,
@@ -1674,10 +1681,11 @@ def host(workspace) -> dict | None:
 
 def _write_host(workspace, record: dict) -> dict:
     """The record written whole, each value on its own line as JSON (which YAML reads as it is): the claim's four, the
-    cloud's keys when the record has them, then the pause."""
+    cloud's keys and the computer that keeps the leg when the record has them, then the pause."""
     lines = ["# Where this workspace's routines run: one computer, one runner. Written by onboard.py, never by a routine."]
     lines += [f"{key}: {json.dumps(record.get(key), ensure_ascii=False)}" for key in CLAIM_KEYS]
-    lines += [f"{key}: {json.dumps(record[key], ensure_ascii=False)}" for key in CLOUD_KEYS if key in record]
+    lines += [f"{key}: {json.dumps(record[key], ensure_ascii=False)}" for key in (*CLOUD_KEYS, *LEG_KEYS)
+              if key in record]
     lines += ["# The pause, a line apart from the claim: a pause on one computer and a move on another merge into one.",
               f"paused_until: {json.dumps(record.get('paused_until'))}"]
     path = Path(workspace) / HOST
@@ -1713,8 +1721,10 @@ def claim_host(workspace, runner: str, now) -> dict:
 def claim_cloud(workspace, tasks: dict, timezone: str, roots: list, grant: dict, now) -> dict:
     """The routines run in the cloud from `now` on, as the two scheduled tasks `tasks` names ({"sweep", "daily"}: their
     ids), in the person's `timezone`, attaching the repositories `roots` (owner/name), under the connector `grant`
-    ({"read", "write", "send"}: full tool names). Every computer's runs stop by themselves (`gate`). A pause still to
-    come is kept: a move is no resume. ValueError, writing nothing, for a value not of its shape (`_cloud_value`)."""
+    ({"read", "write", "send"}: full tool names). Every computer's runs stop by themselves (`gate`). The record names
+    this computer, the one the move ran on, by its id (`computer`): it keeps the computer's leg (`sync.Run.keeps_leg`),
+    as it ran the chains before. A pause still to come is kept: a move is no resume. ValueError, writing nothing, for
+    a value not of its shape (`_cloud_value`)."""
     given = {"tasks": tasks, "timezone": timezone, "roots": roots, "grant": grant}
     cloud = {key: _cloud_value(key, value) for key, value in given.items()}
     wrong = [key for key, value in cloud.items() if value is None]
@@ -1725,7 +1735,7 @@ def claim_cloud(workspace, tasks: dict, timezone: str, roots: list, grant: dict,
     keep = old.get("paused_until") if paused_until(old, now) else None
     return _write_host(workspace, {"machine": CLOUD_MACHINE, "name": CLOUD_NAME, "runner": "cloud",
                                    "since": (now if now.tzinfo else now.astimezone()).isoformat(timespec="seconds"),
-                                   **cloud, "paused_until": keep})
+                                   **cloud, "computer": this_machine(), "paused_until": keep})
 
 
 def set_pause(workspace, until) -> dict | None:
@@ -1741,7 +1751,8 @@ def set_pause(workspace, until) -> dict | None:
 def _held(workspace, now) -> tuple | None:
     """("away", why) when a run must not start on this computer: the routines run in the cloud, another computer is
     the host, the app's own scheduled tasks run them, or the record is not one; ("paused", why) while paused; None to
-    go on."""
+    go on. A pause past what this computer's clock can put in its own time (Windows: past the year 3000) still holds,
+    said as the record keeps it."""
     record = host(workspace)
     if record is None:
         return None
@@ -1755,7 +1766,11 @@ def _held(workspace, now) -> tuple | None:
         return "away", HARNESS
     until = paused_until(record, now)
     if until is not None:
-        return "paused", f"paused until {until.astimezone():%Y-%m-%d %H:%M}"
+        try:
+            until = until.astimezone()
+        except (OSError, OverflowError, ValueError):   # too far ahead for this clock: as the record keeps it
+            pass
+        return "paused", f"paused until {until:%Y-%m-%d %H:%M}"
     return None
 
 

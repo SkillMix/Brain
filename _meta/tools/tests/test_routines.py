@@ -2772,6 +2772,33 @@ def test_a_pause_that_has_passed_is_no_pause(tmp_path):
     assert not any(r["text"].startswith("Routines paused") for r in onboarding_page.sections(ws, {}, NOW)["waiting"])
 
 
+class _OnWindows(dt.datetime):
+    """A moment as Windows turns it into its own local time: past the year 3000 it cannot (OSError)."""
+
+    def astimezone(self, tz=None):
+        if tz is None and self.year > 3000:
+            raise OSError(22, "Invalid argument")
+        return super().astimezone(tz)
+
+
+def test_a_pause_past_what_this_computers_clock_can_say_still_holds_the_run(tmp_path, monkeypatch):
+    """A pause far ahead holds the run, the safe side, said as the record keeps it, and never crashes the hold."""
+    ws = workspace(tmp_path)
+    routine.claim_host(ws, "os", NOW)
+    routine.set_pause(ws, dt.datetime(3001, 1, 2, 6, 30, tzinfo=dt.timezone.utc))
+    real = routine._moment
+    monkeypatch.setattr(routine, "_moment", lambda value: (lambda m: m and _OnWindows.fromisoformat(m.isoformat()))(
+        real(value)))
+    with pytest.raises(OSError):
+        routine.paused_until(routine.host(ws), NOW).astimezone()   # what the hold met on Windows
+    assert routine._held(ws, NOW) == ("paused", "paused until 3001-01-02 06:30")
+    monkeypatch.setattr(routine, "find_claude", lambda: "claude")
+    called = []
+    assert routine.main([str(ws / "_meta/state/routines/sweep-chain.md")], run=lambda *a, **k: called.append(a)) == 0
+    line, = runs_of(ws)
+    assert called == [] and line["outcome"] == "paused" and line["why"] == "paused until 3001-01-02 06:30"
+
+
 def test_the_record_is_one_line_per_key_with_the_claim_apart_from_the_pause(tmp_path, monkeypatch):
     ws = workspace(tmp_path)
     monkeypatch.setattr(routine, "machine_name", lambda: "Ada's \"desk\" PC: 100% \\ yes")
@@ -3073,7 +3100,8 @@ def test_a_machine_id_file_that_holds_no_id_is_made_again(tmp_path):
     import sync
     kept = Path.home() / ".spaces" / "machine-id"
     kept.parent.mkdir(parents=True, exist_ok=True)
-    for text in ("", "not an id\n", "m-\n", "m-" + "x" * 80 + "\n", "m-ok\nm-two\n"):
+    for text in ("", "not an id\n", "m-\n", "m-" + "x" * 80 + "\n", "m-ok\nm-two\n",
+                 f"{routine.CLOUD_MACHINE}\n"):   # the cloud's machine is no computer's id: a move would record it
         kept.write_text(text, encoding="utf-8")
         assert routine.this_machine() == sync.hostname() and kept.read_text(encoding="utf-8").strip() == sync.hostname()
     kept.write_text("m-1a2b3c4d\n", encoding="utf-8")   # one made on this computer before: kept as it is
@@ -3133,10 +3161,39 @@ def test_a_cloud_claim_reads_back_with_its_tasks_zone_roots_and_grant(tmp_path, 
     assert routine.RUNNERS == ("os", "harness", "cloud") and routine.MACHINE.fullmatch(routine.CLOUD_MACHINE)
     lines = [line for line in (ws / routine.HOST).read_text(encoding="utf-8").splitlines() if not line.startswith("#")]
     assert [line.split(":", 1)[0] for line in lines] == ["machine", "name", "runner", "since", "tasks", "timezone",
-                                                         "roots", "grant", "paused_until"]
+                                                         "roots", "grant", "computer", "paused_until"]
     on(monkeypatch, "m-desktop")
     back = routine.claim_host(ws, "os", NOW)   # the routines taken back: a computer's record carries none of it
-    assert back["runner"] == "os" and not set(routine.CLOUD_KEYS) & set(back)
+    assert back["runner"] == "os" and not {*routine.CLOUD_KEYS, "computer"} & set(back)
+
+
+def test_a_cloud_claim_names_the_computer_the_move_ran_on(tmp_path, monkeypatch):
+    """The move names the computer it ran on (`computer`, its id), the one that keeps the computer's leg
+    (`sync.Run.keeps_leg`), never the cloud's machine; a pause made on another computer keeps it."""
+    ws = workspace(tmp_path)
+    on(monkeypatch, "m-desktop")
+    rec = cloud_hosted(ws)
+    assert (rec["machine"], rec["computer"]) == (routine.CLOUD_MACHINE, "m-desktop") and routine.host(ws) == rec
+    on(monkeypatch, "m-laptop")
+    paused = routine.set_pause(ws, NOW + dt.timedelta(hours=2))
+    assert paused["computer"] == "m-desktop" and routine.paused_until(paused, NOW) is not None
+    assert routine.set_pause(ws, None)["computer"] == "m-desktop"
+    again = cloud_hosted(ws, now=NOW + dt.timedelta(hours=1))   # moved again, from this computer: it keeps the leg now
+    assert again["computer"] == "m-laptop" and routine.host(ws) == again
+
+
+def test_a_cloud_record_that_names_no_computer_is_still_clear(tmp_path, monkeypatch):
+    """A record the move wrote before it named a computer: every computer keeps the leg (`sync.Run.keeps_leg`), and a
+    pause writes no computer into it."""
+    ws = workspace(tmp_path)
+    cloud_hosted(ws)
+    path = ws / routine.HOST
+    path.write_text("".join(f"{line}\n" for line in path.read_text(encoding="utf-8").splitlines()
+                            if not line.startswith("computer:")), encoding="utf-8")
+    rec = routine.host(ws)
+    assert rec["runner"] == "cloud" and "computer" not in rec and routine.cloud_gate(ws, NOW) is None
+    assert "computer" not in routine.set_pause(ws, NOW + dt.timedelta(hours=2))
+    assert "computer:" not in path.read_text(encoding="utf-8")
 
 
 def test_a_computer_claim_never_names_the_cloud(tmp_path):
@@ -3165,7 +3222,9 @@ def test_every_computer_steps_aside_for_the_cloud(tmp_path, monkeypatch):
     ("tasks", 'tasks: {"sweep": "trig_", "daily": "trig_01BBBBBBBB"}'), ("grant", "grant: null"),
     ("grant", 'grant: {"read": [], "write": []}'), ("grant", 'grant: {"read": ["Bash"], "write": [], "send": []}'),
     ("roots", 'roots: ["not a repository"]'), ("roots", "roots: []"), ("timezone", "timezone: 7"),
-    ("timezone", 'timezone: "Mars; rm -rf /"'), ("roots", None), ("machine", 'machine: "m-desktop"')])
+    ("timezone", 'timezone: "Mars; rm -rf /"'), ("roots", None), ("machine", 'machine: "m-desktop"'),
+    ("computer", 'computer: "m-cloud"'), ("computer", 'computer: "desktop"'), ("computer", "computer: null"),
+    ("computer", 'computer: ["m-desktop"]'), ("computer", "computer: 7")])
 def test_a_cloud_task_id_or_grant_that_is_none_makes_the_record_unclear(tmp_path, key, line):
     ws = workspace(tmp_path)
     cloud_hosted(ws)
@@ -3259,11 +3318,12 @@ def test_two_merged_claims_one_cloud_one_os_leave_nobody_running(tmp_path, monke
 
 
 def test_the_extra_allow_rules_join_only_a_guarded_profile(tmp_path):
+    import cloud
     ws = workspace(tmp_path)
-    extra = ("Bash(gh api search/issues?*)", "Bash(gh api repos/*)")
+    extra = (*cloud.EXTRA_ALLOW, "Bash(gh api orgs/*)")   # the cloud's own, and one more: each joins in its order
     allow = routine.routine_settings(ws, "", [ws], extra_allow=extra)["permissions"]["allow"]
-    last_tool = max(i for i, rule in enumerate(allow) if "_meta/tools/" in rule)
-    assert [allow.index(rule) for rule in extra] == [last_tool + 1, last_tool + 2]   # right after the tool rules
+    last_tool = max(i for i, rule in enumerate(allow) if "_meta/tools/" in rule)   # they come right after it
+    assert [allow.index(rule) for rule in extra] == list(range(last_tool + 1, last_tool + 1 + len(extra)))
     others = ("mcp__mail__trash_message", "Edit(//**)", "Bash")   # only Bash shapes join
     assert not set(others) & set(routine.routine_settings(ws, "", [ws], extra_allow=others)["permissions"]["allow"])
     unguarded = routine.routine_settings(ws, "", [ws], profile=tmp_path / "a$b" / "p.json", extra_allow=extra)

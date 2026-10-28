@@ -25,7 +25,8 @@ state the guard reads is there already. Then it:
    needs) and the state the guard plugin reads (`STATE`: workspace, profile, person, chain); a proof
    run, before the move, has no record's grant and takes the task's from its begin command (`--grant`,
    which `trigger` renders into the proof prompt), so its send to anyone but the person is refused by
-   the send guard, as a real run's is; after the move, a proof's grant only narrows the record's;
+   the send guard, as a real run's is; after the move, a proof's grant only narrows the record's, and
+   while the record is unclear a proof's grant is refused, since nothing could narrow it;
 5. for the sweep, prints where each source's export starts (`sweep.cursor`; a proof run exports
    nothing, so every cursor is now);
 6. names on Needs you the other chain when it has gone silent, and, for the daily, a mount whose pin
@@ -39,7 +40,7 @@ the move. `proof-line` writes a proof run's line: which of the refusals the prof
 
     python3 cloud.py begin <workspace> --chain sweep|daily [--proof [--grant <the task's grant>]]
                                 # JSON; exit 3 when the run stops, 2 when it may not begin (begun, a --grant
-                                # that is none, or one without --proof)
+                                # that is none, one without --proof, or one while the record is unclear)
     python cloud.py trigger <workspace> --chain sweep|daily [--proof] [--timezone <IANA zone>]
     python3 cloud.py proof-line [<workspace>] --chain sweep|daily --guard yes|no --edit yes|no --tool yes|no
                                 [--send yes|no]                         # --send for the daily, and only for it
@@ -80,9 +81,10 @@ OFF_MINUTE = 7   # a schedule's top of the hour moves here: the platform starts 
 PROOF = onboard.CLOUD_PROOF   # the routine of a proof run's line, which onboard reads
 RUN_LINES = onboard.CLOUD_RUN_LINES   # the run lines each chain writes on main, its tool's and its agent's
 READ_BACK = ("get_message",)   # the mail tool the daily reads a sent message back with (morning-view skill)
-# What a cloud run's shell may do beside the routine tools: read GitHub through REST (the sweep's repository feed),
-# never write to it and never ask GraphQL. The sync script writes through `gh` itself, not through the shell.
-EXTRA_ALLOW = ("Bash(gh api search/issues?*)", "Bash(gh api repos/*)")
+# What a cloud run's shell may do beside the routine tools and the REST reads every routine has (`routine.REST_READS`,
+# the search for pull requests among them): read a repository's endpoints through REST (the sweep's repository feed),
+# never write to GitHub and never ask GraphQL. The sync script writes through `gh` itself, not through the shell.
+EXTRA_ALLOW = ("Bash(gh api repos/*)",)
 # So a `gh api` call goes through only as one word, its endpoint: anything after a space or a tab is refused, however
 # it is spelled (`-X PUT`, `-iXPUT`, `'-XPUT'`, `{-XPUT,}`). A word that starts with `repos/` or `search/` cannot
 # turn into a flag through a quote, a glob or a brace, so no write is left. A read needs no flag: its endpoint word
@@ -116,6 +118,8 @@ BEGUN = "This run has begun already, and a run begins once, so nothing was done.
 GRANT_ALONE = ("--grant is for a proof run alone, with --proof: a real run takes its grant from the routine host "
                "record. Nothing was done.")
 NOT_A_GRANT = "--grant is not a grant cloud.py trigger renders, so nothing was done."
+UNCLEAR_GRANT = ("The routine host record is unclear, so a proof run's --grant cannot be checked against it, and "
+                 "nothing was done.")
 TOO_MANY = (f"The task's grant names too many tools to fit its proof run's begin command (at most {GRANT_MAX} "
             "characters), so no task was rendered.")
 
@@ -404,7 +408,8 @@ def _granted(workspace: Path, record, given: dict | None = None) -> dict:
     carries (`--grant`, rendered into the proof prompt by `trigger`), so its connector check holds the tools a real
     run's holds, and its send to anyone but the person reaches the send guard and is refused there, as a real run's
     is. After the move, a proof's grant only narrows the record's: a run talked into beginning as a proof grants
-    itself no tool the person did not move with. A proof begun without one is given what this checkout's verdicts
+    itself no tool the person did not move with; while the record is unclear, `begin` refuses a proof's grant
+    before it comes here (UNCLEAR_GRANT). A proof begun without one is given what this checkout's verdicts
     and probe give, as `trigger` reads them; a clone holds neither, so that run is granted no app tool at all."""
     kept = record["grant"] if record and not record.get("unclear") and isinstance(record.get("grant"), dict) else None
     if given is not None and kept is not None and record.get("runner") == "cloud":
@@ -547,8 +552,9 @@ def begin(workspace: Path, chain: str, proof: bool = False, now=None, gh=None, g
 
     `grant` is a proof run's: the task's grant its begin command carries (`_granted`), which after the move only
     narrows the record's. ValueError, writing nothing, for a grant without `proof` or one that is none
-    (`checked_grant`), and when this run has begun already: the state the guard reads is there, and a run begins
-    once."""
+    (`checked_grant`), for a grant while the record is unclear (it may be the move's, which a merge garbled, and
+    nothing could narrow the grant then), and when this run has begun already: the state the guard reads is there,
+    and a run begins once."""
     _check(chain)
     if grant is not None:
         if not proof:
@@ -560,6 +566,8 @@ def begin(workspace: Path, chain: str, proof: bool = False, now=None, gh=None, g
     space = spaceyaml.load(workspace)
     now = now or space.now()
     record = routine.host(workspace)
+    if grant is not None and record and record.get("unclear"):
+        raise ValueError(UNCLEAR_GRANT)
     if not proof:
         why = routine.cloud_gate(workspace, now)
         if why:
@@ -730,7 +738,7 @@ def disallowed(workspace: Path, repos: list, granted: list, known: list) -> list
     deny += ["mcp__github"]
     deny += sorted({t for t in known if _server(t) and t not in granted})
     tools = {p.name for root in chains.spaces_on_machine(workspace) for p in (root / "_meta" / "tools").glob("*.py")}
-    deny += [f"Bash(*_meta/tools/{tool}*)" for tool in sorted(tools - set(routine.ROUTINE_TOOLS) - {"cloud.py"})]
+    deny += [f"Bash(*_meta/tools/{tool}*)" for tool in sorted(tools - set(routine.ROUTINE_TOOLS))]
     deny += ["Bash(python -m *)", "Bash(python3 -m *)", "Bash(git *--output*)", *GH_DENY, *GH_OTHERS]
     return list(dict.fromkeys(deny))
 
