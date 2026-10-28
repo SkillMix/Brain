@@ -484,6 +484,19 @@ def load(root) -> Space:
     return Space(root=root, data=data)
 
 
+def still_template(text: str | None) -> bool:
+    """Whether a space.yaml's text (None: there is none) is still the template's own: none at all, or one whose
+    profile, read as YAML as `load` reads it, is the template's. Onboarding asks it of origin/main before the first
+    push, the sync before it splits a run (the review of #61)."""
+    if text is None:
+        return True
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError:   # not the template's, which reads
+        return False
+    return isinstance(data, dict) and str(data.get("profile") or "").strip() == TEMPLATE_PROFILE
+
+
 def is_template_repo(root) -> bool:
     """Whether `root` is the template repository itself. In the checks, GitHub's own setting answers
     (`SPACES_TEMPLATE_REPO`, from `github.event.repository.is_template`): a repository made from the

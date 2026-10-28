@@ -524,6 +524,35 @@ def test_while_main_is_still_the_template_s_the_sync_sends_the_whole_fill_as_one
     assert sorted(guarded) == ["space.yaml", "work/notes.md"]
 
 
+PROFILES = {None: True, "profile: template\n": True, "profile: 'template'   # until onboard sets one\n": True,
+            "profile: personal\n": False, "profile: personal   # was profile: template\n": False,
+            "profile: [template\n": False}   # origin/main's space.yaml (None: there is none) -> still the template's
+
+
+def test_onboarding_reads_main_s_profile_as_the_other_tools_do(tmp_path, monkeypatch):
+    # the review of #61: onboarding and the sync each had a copy of the check, which looked for a string in the file
+    for text, still in PROFILES.items():
+        shown = (128, "", "fatal: path 'space.yaml' does not exist in 'origin/main'") if text is None else (0, text, "")
+        monkeypatch.setattr(onboard, "run_cmd", outside({"git show origin/main:space.yaml": shown})[0])
+        assert onboard.unconfigured_remote(tmp_path, False) is still, text
+    assert {text: spaceyaml.still_template(text) for text in PROFILES} == PROFILES
+
+
+def test_the_sync_reads_main_s_profile_as_onboarding_does(repo, monkeypatch):
+    from test_sync import git as sync_git
+    monkeypatch.setattr(sync.Run, "gh", lambda self, *args: None)
+    filled = (repo / "space.yaml").read_text(encoding="utf-8")
+    write(repo / "space.yaml", filled.replace("profile: personal", "profile: personal   # was profile: template"))
+    sync_git(repo, "commit", "-q", "-am", "the fill, landed")
+    sync_git(repo, "push", "-q", "origin", "main")
+    write(repo / "work" / "notes.md", "# Notes\n\nline one\nline two\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    host = sync.hostname()
+    sync_git(repo, "fetch", "-q", "origin")
+    assert sync_git(repo, "rev-parse", "-q", "--verify", f"origin/sync/{host}-protected", check=False).returncode != 0
+    assert sync_git(repo, "diff", "--name-only", "origin/main", f"origin/sync/{host}").stdout.split() == ["work/notes.md"]
+
+
 # ----- the company's site: a site that moved to another host is read there -----------------------------------
 from test_research import Readers, journal as research_journal, phase, records_on_disk, the_apps, the_home  # noqa: E402,F401
 from test_research import run as research_run  # noqa: E402

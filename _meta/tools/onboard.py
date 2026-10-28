@@ -434,12 +434,12 @@ def create_space(report, root, dirname, repo_name, offline, org, home, tpl, dry_
 
 
 def unconfigured_remote(dst, dry_run) -> bool:
-    """True while origin/main still carries the template's own space.yaml (or none at all)."""
+    """True while origin/main still carries the template's own space.yaml (or none at all; `spaceyaml.still_template`)."""
     if dry_run:
         return True
     run_cmd(["git", "fetch", "-q", "origin", "main", "--no-recurse-submodules"], dry_run, cwd=dst)
     shown = run_cmd(["git", "show", "origin/main:space.yaml"], dry_run, cwd=dst)
-    return shown.returncode != 0 or "profile: template" in (shown.stdout or "")
+    return spaceyaml.still_template((shown.stdout or "") if shown.returncode == 0 else None)
 
 
 def commit_fill(report, dst, push, dry_run) -> None:

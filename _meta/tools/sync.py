@@ -606,7 +606,7 @@ class Run:
         prefixes, _ = gate.protected_prefixes(self.root)
         managed = self.template_managed()   # a template update lands as one unit, with its tools
         shown = git(self.root, "show", "origin/main:space.yaml")
-        unconfigured = shown.returncode != 0 or "profile: template" in shown.stdout
+        unconfigured = spaceyaml.still_template(shown.stdout if shown.returncode == 0 else None)
         guarded = [p for p in changed if unconfigured or p in managed
                    or any(gate._under(gate._posix(p), pre) for pre in prefixes)]
         if not guarded:
