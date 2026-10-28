@@ -825,6 +825,93 @@ def test_the_cursor_is_printed_for_the_export_and_writes_nothing(tmp_path, capsy
     assert sweep.main([str(ada), "--cursor"]) == 2, "a cursor needs its source"
 
 
+def test_a_flag_written_another_way_prints_the_usage_and_sweeps_nothing(tmp_path, capsys):
+    """`--cursor=mail` is a slip, not a request for a full sweep: the usage, exit 2, nothing written."""
+    _, _, ada = build(tmp_path)
+    write_feed(ada, [record()])
+    for argv in (["--cursor=mail"], ["--cursors", "mail"], ["--attachment-unread", "m-0001"],
+                 ["--attachment-unread=m-0001", "brief.pdf"], ["--attachment-read", "m-0001", "--dry-run"],
+                 ["--attachment"], ["--attachements"], ["--dryrun"]):
+        assert sweep.main([str(ada), *argv]) == 2, argv
+        assert "--cursor <source>" in capsys.readouterr().out
+    assert not (ada / "knowledge" / "sources" / "2026").exists()
+    assert not (ada / sweep.WATERMARK).exists() and not (ada / sweep.UNREAD).exists()
+
+
+# ----- attachments a run could not read ------------------------------------------------------------
+def unread_lines(root):
+    path = root / sweep.UNREAD
+    return [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
+
+
+def test_an_unread_attachment_is_listed_until_read(tmp_path, capsys):
+    """A cloud run's feed goes with its clone: an attachment it could not read leaves its record
+    id and name, and every later run lists it again until a page for it exists."""
+    _, _, ada = build(tmp_path, routing={})
+    write_feed(ada, [record(attachments=["brief.pdf"])])
+    assert sweep.main([str(ada), "--attachment-unread", "m-0001", "brief.pdf"]) == 0
+    assert sweep.main([str(ada), "--attachment-unread", "m-0001", "brief.pdf"]) == 0
+    assert sweep.UNREAD.as_posix() == "_meta/state/attachments-unread.jsonl"
+    [line] = unread_lines(ada)
+    assert set(line) == {"id", "name", "at"} and (line["id"], line["name"]) == ("m-0001", "brief.pdf")
+    capsys.readouterr()
+    (ada / sweep.FEED / "mail.jsonl").unlink()   # the next run's fresh clone
+    assert sweep.attachments(ada) == [("m-0001", "", "brief.pdf")]
+    assert sweep.main([str(ada), "--attachments"]) == 0
+    assert capsys.readouterr().out == "m-0001\t\tbrief.pdf\n"
+    write_feed(ada, [record("m-0001/brief.pdf", kind="document", subject="brief.pdf", text="The brief.")])
+    assert sweep.attachments(ada) == [], "the document record at hand settles it"
+    sweep.run(ada, now=NOW)
+    (ada / sweep.FEED / "mail.jsonl").unlink()
+    assert sweep.attachments(ada) == [], "its witness page settles it in every later run"
+
+
+def test_an_attachment_read_a_run_after_its_mail_gets_its_page_though_the_mark_has_passed(tmp_path):
+    """The export gives a document record its mail's time. A later run reads it after the sweep
+    took that mail and moved the feed's mark past it: the record is still swept, a file with text
+    gets its page, and only a file with no text is marked read."""
+    _, _, ada = build(tmp_path, routing={})
+    write_feed(ada, [record(attachments=["brief.pdf", "logo.png"])])
+    sweep.run(ada, now=NOW)   # a cloud run: the mail is swept, its attachments could not be read
+    for name in ("brief.pdf", "logo.png"):
+        assert sweep.note_unread(ada, "m-0001", name, now=NOW)
+    (ada / sweep.FEED / "mail.jsonl").unlink()   # its feed goes with its clone
+    later = NOW + dt.timedelta(days=1)
+    assert sweep.attachments(ada) == [("m-0001", "", "brief.pdf"), ("m-0001", "", "logo.png")]
+    mail_at = record()["at"]
+    write_feed(ada, [record("m-0001/brief.pdf", kind="document", subject="brief.pdf", text="The brief.", at=mail_at),
+                     record("m-0001/logo.png", kind="document", subject="logo.png", text="", at=mail_at)])
+    sweep.run(ada, now=later)
+    names = sorted(p.name for p in (ada / sweep.WITNESS_ROOT).rglob("*.md"))
+    assert names == ["m-0001-brief.pdf.md", "m-0001.md"], "the attachment's text became its page"
+    assert [(l["name"], l.get("read", False)) for l in unread_lines(ada)] == [
+        ("brief.pdf", False), ("logo.png", False), ("logo.png", True)], "its page says brief.pdf was read"
+    (ada / sweep.FEED / "mail.jsonl").unlink()   # the next fresh clone
+    assert sweep.attachments(ada) == []
+
+
+def test_an_attachment_listed_by_both_the_feed_and_the_file_is_listed_once(tmp_path):
+    _, _, ada = build(tmp_path, routing={})
+    write_feed(ada, [record(identifiers={"labels": []}, attachments=["brief.pdf"])])
+    sweep.note_unread(ada, "m-0001", "brief.pdf", now=NOW)
+    assert sweep.attachments(ada) == [("m-0001", "", "brief.pdf")]
+
+
+def test_a_file_with_no_text_is_marked_read_so_a_fresh_clone_never_lists_it_again(tmp_path):
+    _, _, ada = build(tmp_path, routing={})
+    sweep.note_unread(ada, "m-0001", "logo.png", now=NOW)
+    sweep.note_unread(ada, "m-0002", "scan.png", now=NOW)
+    assert sweep.main([str(ada), "--attachment-read", "m-0002", "scan.png"]) == 0
+    write_feed(ada, [record("m-0001/logo.png", kind="document", subject="logo.png", text="")])
+    sweep.run(ada, now=NOW)   # no page for an empty file, so the run says it was read
+    (ada / sweep.FEED / "mail.jsonl").unlink()
+    assert sweep.attachments(ada) == []
+    assert sweep.mark_read(ada, "m-0002", "scan.png") is False, "read once"
+    assert [(l["id"], l.get("read", False)) for l in unread_lines(ada)] == [
+        ("m-0001", False), ("m-0002", False), ("m-0002", True), ("m-0001", True)]
+    assert sweep.note_unread(ada, "m-0001", "logo.png") is False, "a pair read is never listed again"
+
+
 # ----- notes from a codebase session (D8) ---------------------------------------------------------
 def test_without_the_router_a_journal_note_waits_the_window_even_to_its_crew(tmp_path):
     # harbor-voice-agent classified walled, home harbor, crew ["ada"]; routing off; only mail declared:

@@ -228,6 +228,12 @@ def test_a_recipient_the_check_cannot_read_counts_as_someone_else(tmp_path):
     assert line["notes"]["failed"] == "recipient" and line["notes"]["others"] == 1
     combined = morning_view.record_send(space, "m4", to=["Ada <ada@example.test>, b@else.test"], now=NOW)
     assert combined["notes"]["others"] == 1
+    for entry in ("ada@example.test, undisclosed-recipients:;", "ada@example.test, <>"):
+        # the person's address parsed beside a piece with none: the empty one is still someone else
+        hidden = morning_view.record_send(space, "m4b", to=[entry], now=NOW)
+        assert hidden["notes"]["failed"] == "recipient" and hidden["notes"]["others"] == 1, entry
+    assert morning_view.record_send(make_space(tmp_path / "bare", owner_email=""), "m4c", to=["<>"],
+                                    now=NOW)["notes"]["others"] == 1, "an empty address never equals no address"
 
 
 def test_a_space_with_no_owner_address_passes_no_recipient(tmp_path):
@@ -357,6 +363,52 @@ def test_unsure_records_are_asked_by_code_and_survive_a_failing_health_line(tmp_
     day = json.loads((root / "_meta" / "state" / "morning" / "2026-10-12.json").read_text(encoding="utf-8"))
     assert all(i["kind"] != "unsure" for i in day["items"]), "unsure records are never numbered"
     assert unsure.waiting(root)[0]["first_listed"]
+
+
+def test_the_briefing_counts_unsure_records_and_unread_attachments(tmp_path):
+    """A cloud run keeps no unsure record and no feed: the mail counts the ids it left since the
+    last briefing went out, and the attachments still to read, never what they are."""
+    import sweep
+    import unsure
+    root = make_space(tmp_path / "ada", owner_email="ada@example.test")
+    yesterday = NOW - dt.timedelta(days=1)
+    morning_view.record_send(root, "m-old", to=["ada@example.test"], now=yesterday)
+    morning_view.record_send(root, "m-bad", to=["x@else.test"], now=NOW - dt.timedelta(hours=4))
+    unsure.keep(root, {"id": "gmail-0001", "source": "mail", "subject": "Asked yesterday"}, now=yesterday)
+    for n in (2, 3):
+        unsure.keep(root, {"id": f"gmail-000{n}", "source": "mail", "subject": "Gym plan"},
+                    now=NOW - dt.timedelta(hours=n))
+    (root / unsure.STORE).unlink()   # a cloud run kept them: its private zone went with its clone
+    unsure.keep(root, {"id": "gmail-0004", "source": "mail", "subject": "Asked here"},
+                now=NOW - dt.timedelta(hours=1))
+    sweep.note_unread(root, "gmail-0002", "invoice.pdf", now=NOW - dt.timedelta(hours=2))
+    report = morning_view.run(root, "Ada Okafor", now=NOW)
+    assert report.counts["unsure"] == 2, ("since the last briefing that went out, not the failed one, "
+                                          "and not one the mail already asks about by its code")
+    assert report.counts["unread_attachments"] == 1
+    notice = json.loads(Path(report.notice_path).read_text(encoding="utf-8"))
+    stats = [(s["count"], s["label"]) for s in notice["stats"]]
+    assert (2, morning_view.LABELS["unsure"]) in stats and (1, morning_view.LABELS["unread_attachments"]) in stats
+    payload = Path(report.payload_path).read_text(encoding="utf-8")
+    assert "invoice" not in payload and "gmail-000" not in payload
+
+
+def test_counts_that_only_inform_never_push_one_that_waits_on_the_person_off_the_mail(tmp_path):
+    """Hundreds of attachments still to read rank after a change waiting for one click."""
+    import spaceyaml
+    space = spaceyaml.load(make_space(tmp_path / "ada"))
+    counts = {"unread_attachments": 300, "unsure": 40, "meetings": 9, "landed_silently": 7,
+              "protected_pr": 1, "leaving": 1, "candidate": 2, "question": 1, "security": 1}
+    notice, _ = morning_view._notice(space, [], counts, [], False)
+    labels = [s["label"] for s in notice["stats"]]
+    assert labels == [morning_view.LABELS[k] for k in
+                      ("security", "candidate", "leaving", "protected_pr", "question", "unread_attachments")]
+
+
+def test_a_briefing_with_nothing_unsure_or_unread_counts_neither(tmp_path):
+    root = setup(tmp_path)
+    report = morning_view.run(root, "Ada Okafor", now=NOW)
+    assert "unsure" not in report.counts and "unread_attachments" not in report.counts
 
 
 def test_the_old_tracked_briefing_files_are_removed(tmp_path):

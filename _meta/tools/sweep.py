@@ -26,9 +26,20 @@ Deterministic from files: an adapter exports records to `_meta/state/feed/<sourc
    subjects with a home elsewhere is held in doubt and shown as a count;
 4. advances the watermark and appends one run line (cost = characters of records // 4).
 
+A cloud run's feed and private zone go with its clone, so two tracked files keep what a later
+run needs and nothing a record says: `_meta/state/attachments-unread.jsonl` the record id and
+name of each attachment a run could not read, and `_meta/state/unsure-ids.jsonl` the id of each
+record parked as unsure (unsure.py), which every sweep notes.
+
     python sweep.py [root] [--dry-run]     --dry-run prints the plan and writes nothing
     python sweep.py [root] --attachments   the attachments to read as document records: those
-                                           on records of exactly one subject, not read yet
+                                           on records of exactly one subject, not read yet,
+                                           then those an earlier run could not read
+    python sweep.py [root] --attachment-unread <record id> <name>
+                                           one this run could not read: every later run lists
+                                           it again until a page for it exists
+    python sweep.py [root] --attachment-read <record id> <name>
+                                           one listed is read (a file with no text gets no page)
     python sweep.py [root] --cursor <source>
                                            where the export of that source starts: its feed
                                            file's newest record, else its mark, else 90 days
@@ -52,11 +63,13 @@ import pages  # noqa: E402
 import registry  # noqa: E402
 import release  # noqa: E402
 import spaceyaml  # noqa: E402
+import unsure  # noqa: E402
 
 FEED = Path("_meta") / "state" / "feed"
 WATERMARK = Path("_meta") / "state" / "sweep-watermark.yaml"
 WITNESS_ROOT = Path("knowledge") / "sources"
 RESOURCES = Path("_meta") / "access" / "resources.yaml"
+UNREAD = Path("_meta") / "state" / "attachments-unread.jsonl"   # tracked: record ids and names only
 CURSOR_DAYS = 90   # how far back the first export of a source reads
 
 
@@ -203,7 +216,9 @@ def declared_feed(root: Path, space: spaceyaml.Space) -> list:
 def attachments(root) -> list:
     """(record id, subject id, attachment) for every attachment on a feed record of exactly one
     subject that has no document record `<record id>/<attachment>` yet: what the export reads
-    next, each as a document record of its own. Writes nothing."""
+    next, each as a document record of its own. Then every attachment an earlier run could not
+    read and nothing has read since (`unread`), with no subject: its record may have left the
+    feed with that run's clone. Writes nothing."""
     root = Path(root)
     space = spaceyaml.load(root)
     reg = registry.Registry(root, space)
@@ -222,7 +237,89 @@ def attachments(root) -> list:
         sid = hits[0].id if len(hits) == 1 else ""
         out += [(str(record["id"]), sid, name) for name in names
                 if f"{record['id']}/{name}" not in have]
-    return out
+    listed = {(rid, name) for rid, _, name in out}
+    return out + [(rid, "", name) for rid, name in unread(root, have) if (rid, name) not in listed]
+
+
+# ----- attachments a run could not read --------------------------------------------------------
+def _unread_rows(root: Path) -> tuple:
+    """The (record id, name) pairs UNREAD lists, oldest first, and the set of those marked read."""
+    path = Path(root) / UNREAD
+    listed, read = [], set()
+    for line in path.read_text(encoding="utf-8").splitlines() if path.exists() else []:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not (isinstance(row, dict) and row.get("id") and row.get("name")):
+            continue
+        pair = (str(row["id"]), str(row["name"]))
+        if row.get("read"):
+            read.add(pair)
+        elif pair not in listed:
+            listed.append(pair)
+    return listed, read
+
+
+def _append_unread(root: Path, rows: list) -> None:
+    """Lines are only ever appended: the file merges by union, so a line taken out would come back."""
+    path = Path(root) / UNREAD
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def unread(root, have=()) -> list:
+    """(record id, attachment name) for every attachment a run could not read and nothing has
+    read since: no read line, no document record `<record id>/<name>` among `have` (the ids of
+    the feed at hand) and no witness page of one. Writes nothing."""
+    root = Path(root)
+    listed, read = _unread_rows(root)
+    have = set(have)
+    pending = [(rid, name) for rid, name in listed if (rid, name) not in read and f"{rid}/{name}" not in have]
+    if not pending:
+        return []
+    by_name: dict = {}
+    folder = root / WITNESS_ROOT
+    for path in folder.rglob("*.md") if folder.is_dir() else []:
+        by_name.setdefault(path.stem, []).append(path)
+
+    def witnessed(record_id: str) -> bool:
+        for path in by_name.get(file_name(record_id), []):
+            try:
+                if str(pages.read(path)[0].get("record") or "") == record_id:
+                    return True
+            except Exception:
+                continue
+        return False
+    return [(rid, name) for rid, name in pending if not witnessed(f"{rid}/{name}")]
+
+
+def note_unread(root, record_id: str, name: str, now: dt.datetime | None = None) -> bool:
+    """`--attachment-unread`: an attachment this run could not read. Its record id and name go
+    to UNREAD, never its content, once per pair, so every later run lists it again until it is
+    read, a cloud run's fresh clone included. True when it was not there yet."""
+    root = Path(root)
+    listed, read = _unread_rows(root)
+    if (str(record_id), str(name)) in set(listed) | read:
+        return False
+    _append_unread(root, [{"id": str(record_id), "name": str(name),
+                           "at": pages.iso(now or spaceyaml.load(root).now())}])
+    return True
+
+
+def mark_read(root, record_id: str, name: str, now: dt.datetime | None = None) -> bool:
+    """`--attachment-read`: one listed attachment is read (a file with no text gets no witness
+    page to say so). True when it was listed and not read yet."""
+    root = Path(root)
+    listed, read = _unread_rows(root)
+    pair = (str(record_id), str(name))
+    if pair not in listed or pair in read:
+        return False
+    _append_unread(root, [{"id": pair[0], "name": pair[1], "at": pages.iso(now or spaceyaml.load(root).now()),
+                           "read": True}])
+    return True
 
 
 def audience_of(space: spaceyaml.Space, record: dict) -> str | list:
@@ -446,8 +543,12 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
 
     feed = declared_feed(root, space)
     marks = read_feed_marks(root)
+    # An attachment an earlier run could not read carries its mail's time, which the mark has
+    # passed: its document record is swept all the same.
+    owed = unread(root)
+    owed_ids = {f"{rid}/{name}" for rid, name in owed}
     records = [r for r in feed if str(r.get("_feed")) not in marks or r.get("admitted") or r.get("backfill")
-               or pages.parse_iso(r["at"]) > marks[str(r.get("_feed"))]]
+               or str(r["id"]) in owed_ids or pages.parse_iso(r["at"]) > marks[str(r.get("_feed"))]]
     newest_by_feed = dict(marks)
     for r in records:   # an upcoming event never moves a mark past this run
         at, name = min(pages.parse_iso(r["at"]), now), str(r.get("_feed"))
@@ -493,6 +594,7 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
         records.append(rebuilt)
         reattached += 1
     records.sort(key=lambda r: (pages.parse_iso(r["at"]), str(r["id"])))
+    no_page = set()   # records this run read and gave no page
     for record in records:
         at = pages.parse_iso(record["at"])
         report.records_seen += 1
@@ -500,9 +602,11 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
             newest = min(at, now) if newest is None or at > newest else newest
         if is_own_notice(space, record):
             report.plan.append(f"skip {record['id']}: the workspace's own notice")
+            no_page.add(str(record["id"]))
             continue
         if record.get("kind") == "document" and not str(record.get("text") or "").strip():
             report.plan.append(f"skip {record['id']}: a file with no text")   # its feed record settles it
+            no_page.add(str(record["id"]))
             continue
         target = witness_path(root, record)
         if target.exists():
@@ -596,6 +700,11 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
         data = {"at": pages.iso(newest)} if newest is not None else {}
         data["feeds"] = {name: pages.iso(at) for name, at in sorted(newest_by_feed.items())}
         path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8", newline="\n")
+    unsure.note_ids(root, now)   # records the export parked as unsure by hand
+    blank = [(rid, name) for rid, name in owed if f"{rid}/{name}" in no_page]
+    if blank:   # read, yet no page says so (a file with no text): only its line here will
+        _append_unread(root, [{"id": rid, "name": name, "at": pages.iso(now), "read": True}
+                              for rid, name in blank])
     try:
         write_today(root, space, now)
     except Exception:  # a snapshot never stops the sweep
@@ -880,26 +989,51 @@ def _snapshot_id(root: Path, rel: str) -> str:
     return pages.new_id()
 
 
+VALUED = {"--cursor": 1, "--attachment-unread": 2, "--attachment-read": 2}   # flag -> how many values
+PLAIN = ("--dry-run", "--attachments")   # the flags with no value
+
+
+def _flag(argv: list, flag: str, count: int):
+    """Take `flag` and its `count` values out of `argv`: None when it is not there, [] when it is
+    written another way (`--cursor=mail`, `--cursors`) or a value is missing, so a slip prints
+    the usage and never turns a read into a full sweep."""
+    if any(a != flag and a.startswith(flag) for a in argv):
+        return []
+    if flag not in argv:
+        return None
+    at = argv.index(flag)
+    values = argv[at + 1:at + 1 + count]
+    if len(values) < count or any(not v or v.startswith("--") for v in values):
+        return []
+    del argv[at:at + 1 + count]
+    return values
+
+
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     dry_run = "--dry-run" in argv
-    source = None
-    if "--cursor" in argv:
-        at = argv.index("--cursor")
-        source = argv[at + 1] if at + 1 < len(argv) else ""
-        if not source or source.startswith("--"):
-            print(__doc__)
-            return 2
-        del argv[at:at + 2]
+    flags = {flag: _flag(argv, flag, count) for flag, count in VALUED.items()}
+    if [] in flags.values() or any(a.startswith("--") and a not in PLAIN for a in argv):
+        print(__doc__)   # a flag it does not know (`--attachment`) is a slip too, never a full sweep
+        return 2
     roots = [a for a in argv if not a.startswith("--")]
-    if source:
-        print(cursor(Path(roots[0]) if roots else Path("."), source))
+    root = Path(roots[0]) if roots else Path(".")
+    if flags["--cursor"]:
+        print(cursor(root, flags["--cursor"][0]))
+        return 0
+    if flags["--attachment-unread"]:
+        rid, name = flags["--attachment-unread"]
+        print(f"{rid} {name}: " + ("listed until it is read" if note_unread(root, rid, name) else "already listed"))
+        return 0
+    if flags["--attachment-read"]:
+        rid, name = flags["--attachment-read"]
+        print(f"{rid} {name}: " + ("read" if mark_read(root, rid, name) else "not listed as unread"))
         return 0
     if "--attachments" in argv:
-        for rid, sid, name in attachments(Path(roots[0]) if roots else Path(".")):
+        for rid, sid, name in attachments(root):
             print(f"{rid}	{sid}	{name}")
         return 0
-    report = run(Path(roots[0]) if roots else Path("."), dry_run=dry_run)
+    report = run(root, dry_run=dry_run)
     if dry_run:
         print("plan:" if report.plan else "nothing to sweep")
         for line in report.plan:
