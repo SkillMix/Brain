@@ -964,6 +964,42 @@ def test_a_record_of_where_the_routines_run_that_is_not_one_is_said_plainly(tmp_
     assert page.HOST_UNCLEAR in texts and not any("not started" in t for t in texts)
 
 
+def in_the_cloud(ws, monkeypatch, here="m-laptop") -> None:
+    """The record says Ada's routines run in the cloud, as two scheduled tasks; this computer is `here`."""
+    routine.claim_cloud(ws, {"sweep": "trig_01AAAAAAAA", "daily": "trig_01BBBBBBBB"}, "Europe/Amsterdam", ["ada/ada"],
+                        {"read": [], "write": [], "send": []}, NOW - dt.timedelta(days=3))
+    monkeypatch.setattr(routine, "this_machine", lambda: here)
+
+
+def test_routines_in_the_cloud_are_no_other_computer_on_the_page(tmp_path, monkeypatch):
+    """The cloud is no computer: the page says the routines run there as two scheduled tasks, and that 'run my
+    routines here' brings them to this computer, never "on the cloud"."""
+    assert page.HOST_CLOUD == ("Your routines run in the cloud, as two scheduled tasks. Say 'run my routines here' to "
+                               "bring them to this computer.")
+    quiet = [r["text"] for r in rows_of(tmp_path, "waiting", lambda ws, j: in_the_cloud(ws, monkeypatch))]
+    assert quiet == [page.HOST_CLOUD]
+
+    def missed(ws, journal):
+        in_the_cloud(ws, monkeypatch)
+        stale(ws, "daily not started", since="2026-10-22T06:30:00+02:00")
+        stale(ws, "sweep_chain not started", since="2026-10-23T07:00:00+02:00")
+    texts = [r["text"] for r in rows_of(tmp_path / "missed", "waiting", missed)]
+    assert texts == ["Your routines haven't run in the cloud since 22 October; say 'run my routines here' to bring them "
+                     "to this computer."]
+
+    def paused(ws, journal):
+        in_the_cloud(ws, monkeypatch)
+        routine.set_pause(ws, "2026-10-25T06:00:00+02:00")
+        stale(ws, "daily not started")
+    texts = [r["text"] for r in rows_of(tmp_path / "paused", "waiting", paused)]
+    assert texts == ["Routines paused until tomorrow at 06:00. Say 'resume my routines' to start them sooner.",
+                     page.HOST_CLOUD]
+    on_this_one = [r["text"] for r in rows_of(tmp_path / "here", "waiting",
+                                              lambda ws, j: in_the_cloud(ws, monkeypatch, here=routine.CLOUD_MACHINE))]
+    assert on_this_one == [page.HOST_CLOUD]   # whatever the computer's id, the cloud is said as the cloud
+    assert not any("on the cloud" in t for t in quiet + texts + on_this_one)
+
+
 def test_the_computers_name_is_escaped_on_the_page(tmp_path, monkeypatch):
     ws, journal = lantern_works_after_part_1(tmp_path)
     hosted(ws, name='<img src=x onerror="alert(1)">', monkeypatch=monkeypatch, here="m-laptop")

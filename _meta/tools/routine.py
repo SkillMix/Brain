@@ -397,8 +397,9 @@ def routine_settings(workspace, body: str, roots=None, person: str = "", read_to
     refused too. Without a command for them, Task is denied and no connector tool is granted. Every hook carries
     its own `timeout` (`GUARD_TIMEOUT`), well above the time each guard gives itself.
 
-    `extra_allow` adds Bash shapes of the caller's own (`Bash(<pattern>)`; anything else is dropped) right after
-    the tool rules, only while the Bash guard is written: a cloud run's read-only `gh api` calls (`cloud.py`)."""
+    `extra_allow` adds Bash shapes of the caller's own (`Bash(<pattern>)` on one line; anything else, a rule that
+    runs over a line among them, is dropped) right after the tool rules, only while the Bash guard is written: a
+    cloud run's read-only `gh api` calls (`cloud.py`)."""
     import reader
     workspace = Path(workspace).resolve()
     tools_dir = workspace / "_meta" / "tools"
@@ -422,7 +423,7 @@ def routine_settings(workspace, body: str, roots=None, person: str = "", read_to
     allow += [f"Bash({py} {place}/_meta/tools/{tool} *)"
               for place in places for py in pys for tool in ROUTINE_TOOLS] if bash else []
     allow += [rule for rule in dict.fromkeys(_strings(list(extra_allow or [])))
-              if re.fullmatch(r"Bash\(.+\)", rule, re.DOTALL)] if bash else []
+              if re.fullmatch(r"Bash\(.+\)", rule) and not re.search(r"[\r\n]", rule)] if bash else []
     others = sorted({p.name for root in [workspace, *roots] for p in (root / "_meta" / "tools").glob("*.py")}
                     - set(ROUTINE_TOOLS))
     deny = [f"Edit(//**/{pattern})" for pattern in PROTECTED_EDITS]
@@ -1518,7 +1519,8 @@ CLOUD_MACHINE = "m-cloud"   # a computer's id is m- and eight hex digits (`sync.
 CLOUD_NAME = "the cloud"
 TASK_ID = re.compile(r"trig_[A-Za-z0-9]{8,64}")   # a scheduled task on claude.ai
 ZONE = re.compile(r"[A-Za-z][A-Za-z0-9_+-]{0,31}(?:/[A-Za-z0-9_+-]{1,32}){0,2}")   # an IANA zone: Europe/Amsterdam, UTC
-SLUG = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")   # a repository on GitHub: owner/name
+# A repository on GitHub, owner/name: neither part dots alone, the rule `ghrest.SEGMENT` reads an origin by.
+SLUG = re.compile(r"(?!\.+/)[A-Za-z0-9_.-]+/(?!\.+$)[A-Za-z0-9_.-]+")
 CONFLICT = re.compile(r"^(?:<{7}|={7}|>{7})", re.M)   # what a merge git left half done puts in a file
 UNCLEAR = "which computer runs the routines is unclear"
 HARNESS = "they run as the app's scheduled tasks"
@@ -1698,9 +1700,9 @@ def claim_cloud(workspace, tasks: dict, timezone: str, roots: list, grant: dict,
     given = {"tasks": tasks, "timezone": timezone, "roots": roots, "grant": grant}
     cloud = {key: _cloud_value(key, value) for key, value in given.items()}
     wrong = [key for key, value in cloud.items() if value is None]
-    if wrong:
-        raise ValueError(f"the cloud's {' and '.join(wrong)} {'is' if len(wrong) == 1 else 'are'} not of the shape the "
-                         "record keeps")
+    if wrong:   # one sentence, for one key or several: onboarding may show it to the person
+        listed = wrong[0] if len(wrong) == 1 else f"{', '.join(wrong[:-1])} and {wrong[-1]}"
+        raise ValueError(f"The cloud's record needs its {listed} in the shape the record keeps.")
     old = host(workspace) or {}
     keep = old.get("paused_until") if paused_until(old, now) else None
     return _write_host(workspace, {"machine": CLOUD_MACHINE, "name": CLOUD_NAME, "runner": "cloud",

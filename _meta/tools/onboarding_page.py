@@ -930,20 +930,24 @@ HOST_UNCLEAR = ("Which computer runs your routines is unclear, so none of them r
 
 
 HOST_ELSEWHERE = "Your routines run on {name}. Say 'run my routines here' to run them on this computer."
+HOST_CLOUD = ("Your routines run in the cloud, as two scheduled tasks. Say 'run my routines here' to bring them to this "
+              "computer.")
 
 
 def _host_rows(ws, now) -> list:
     """The lines on where the routines run, from the record every computer reads (`routine.host`); only read.
     Paused: until when. Unclear: that none runs. Another computer: that they run there, or, once the sync script saw
-    them not start, since when they have not. A routine paused, or one nobody may run, is not one the scheduler
+    them not start, since when they have not. The cloud is no computer, so it is never named as one: they run there as
+    two scheduled tasks, or have not since when. A routine paused, or one nobody may run, is not one the scheduler
     failed to start, so then no `not started` line; with nothing recorded, those lines are as the sync script wrote."""
     import routine
-    until, away = None, ""
+    until, away, cloud = None, "", False
     try:
         record = routine.host(ws) if ws else None
         if record is not None and not record.get("unclear"):
-            until = routine.paused_until(record, now)
-            away = "" if record["machine"] == routine.this_machine() else (_text(record["name"]) or "another computer")
+            until, cloud = routine.paused_until(record, now), record["runner"] == "cloud"
+            mine = record["machine"] == routine.this_machine()
+            away = "" if cloud or mine else (_text(record["name"]) or "another computer")   # the cloud is no computer
     except Exception:   # never a file it could not read (`routine.host` reads that as unclear): said, not hidden
         return [_could_not_read("Where your routines run")]
     if record is None:
@@ -952,9 +956,10 @@ def _host_rows(ws, now) -> list:
         return [_fact("Routines", HOST_UNCLEAR)]
     rows = [_fact("Routines", f"Routines paused until {words(until, now)}. Say 'resume my routines' to start them "
                               "sooner.")] if until else []
-    if not away:
+    if not (away or cloud):
         return rows or _missed_rows(ws, now)
-    return rows + (([] if until else _missed_rows(ws, now, away)) or [_fact("Routines", HOST_ELSEWHERE.format(name=away))])
+    there = HOST_CLOUD if cloud else HOST_ELSEWHERE.format(name=away)
+    return rows + (([] if until else _missed_rows(ws, now, away, cloud)) or [_fact("Routines", there)])
 
 
 def _held(plan: dict, run) -> bool:
@@ -1062,21 +1067,23 @@ def _stopped_rows(ws, now, skip=()) -> list:
     return rows
 
 
-def _missed_rows(ws, now, away: str = "") -> list:
+def _missed_rows(ws, now, away: str = "", cloud: bool = False) -> list:
     """What the sync script saw not start (`<routine> not started`, since when), as it writes it. When another
-    computer runs the routines (`away`, its name), one line from the earliest says so and offers to run them here."""
+    computer runs the routines (`away`, its name) or the cloud does (`cloud`), one line from the earliest says so and
+    offers to run them here."""
     try:
         data = _yaml(ws / STALE) if ws else {}
     except Unreadable:
         return [_could_not_read("The list of routines that did not start")]
-    if away:
+    if away or cloud:
         entries = [since for entry, since in data.items() if str(entry).endswith(" not started")]
         if not entries:
             return []
         since = sorted(s for s in map(stamp, entries) if s)
         day = f" since {_day(_shown(since[0]))}" if since else ""
-        return [_fact("Not started", f"Your routines haven't run on {away}{day}; say 'run my routines here' to run them "
-                                     "on this computer.")]
+        where, offer = (("in the cloud", "bring them to this computer") if cloud else
+                        (f"on {away}", "run them on this computer"))
+        return [_fact("Not started", f"Your routines haven't run {where}{day}; say 'run my routines here' to {offer}.")]
     rows = []
     for entry, since in data.items():
         if str(entry).endswith(" not started"):

@@ -1879,8 +1879,9 @@ def phase_history(args) -> dict:
     windows (`usage_account`); the journal's `usage_account` then says `same` (readings pace as the routines') or
     `different` (they are no longer kept: backfill paces from the routines' own meter, `backfill.meter_rows`).
     Once part 1 has been started the journal's history says `in_background`: the setup counts as finished.
-    On a computer that does not run the routines (`backfill.runs_elsewhere`) it writes nothing: the history's notes
-    are kept where the routines run, and the phase is done here (R45, I-1)."""
+    On a computer that does not run the routines (`backfill.elsewhere_why`) it writes nothing: the history's notes
+    are kept where the routines run, and the phase is done here (R45, I-1). While they run in the cloud it writes
+    nothing either: the history is read only on a computer, so the routines come back to one first."""
     import backfill
     journal, now = setup_journal.load(), _now()
     counts = history_counts(journal)
@@ -1889,9 +1890,9 @@ def phase_history(args) -> dict:
         return {"phase": "history", "state": "failed", "why": NO_WORKSPACE}
     if args.dry_run:
         return {"phase": "history", "state": "pending", "counts": counts, "why": "dry run: nothing is planned"}
-    elsewhere = backfill.runs_elsewhere(workspace)
-    if elsewhere:   # two computers writing the history's notes would stop this one's sync
-        return {"phase": "history", "state": "done", "counts": counts, "why": backfill.ELSEWHERE_WHY.format(name=elsewhere)}
+    elsewhere = backfill.elsewhere_why(workspace)
+    if elsewhere:   # two computers writing the history's notes would stop this one's sync; the cloud reads none of it
+        return {"phase": "history", "state": "done", "counts": counts, "why": elsewhere}
     text = (getattr(args, "reading", None) or "").strip()
     signins = journal.get("signins") if isinstance(journal.get("signins"), dict) else {}
     paid, reading = signins.get("claude") == "api-key" or text == "not_applicable", None

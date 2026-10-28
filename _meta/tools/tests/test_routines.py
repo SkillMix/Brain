@@ -3269,3 +3269,46 @@ def test_no_cloud_run_edits_the_guard_plugin_or_its_marketplace(tmp_path):
     deny = routine.routine_settings(ws, "", [ws])["permissions"]["deny"]
     for pattern in ("_meta/plugins/**", ".claude-plugin/**"):
         assert pattern in routine.PROTECTED_EDITS and f"Edit(//**/{pattern})" in deny
+
+
+def test_a_root_whose_owner_or_name_is_only_dots_is_no_repository(tmp_path):
+    """A repository is owner/name with neither part dots alone, the rule `ghrest` reads an origin by."""
+    import ghrest
+    refused = ("./ada-space", "../ada-space", ".../ada-space", "ada/.", "ada/..", "ada/...", "../..")
+    taken = ("ada/ada-space", "ada/.github", "ada.dev/ada..space", "_a-da/x_", ".ada/..x")
+    for slug in (*refused, *taken):
+        same = all(ghrest.SEGMENT.fullmatch(part) for part in slug.split("/"))
+        assert bool(routine.SLUG.fullmatch(slug)) == same == (slug in taken), slug
+    ws = workspace(tmp_path)
+    with pytest.raises(ValueError):
+        routine.claim_cloud(ws, CLOUD_TASKS, "UTC", ["ada/.."], CLOUD_GRANT, NOW)
+    assert routine.host(ws) is None
+    cloud_hosted(ws)
+    path = ws / routine.HOST
+    path.write_text(path.read_text(encoding="utf-8").replace('"ada/ada-brain"', '"../ada-brain"'), encoding="utf-8")
+    assert routine.host(ws) == {"unclear": True}
+
+
+def test_an_extra_allow_rule_that_runs_over_a_line_is_dropped(tmp_path):
+    ws = workspace(tmp_path)
+    split = ("Bash(gh api repos/*\n)", "Bash(gh api repos/*)\n", "Bash(gh api\rrepos/*)", "Bash(gh api repos/*\r)",
+             "Bash(\r\nrm -rf /)")
+    allow = routine.routine_settings(ws, "", [ws], extra_allow=(*split, "Bash(gh api repos/*)"))["permissions"]["allow"]
+    assert "Bash(gh api repos/*)" in allow and not set(split) & set(allow)
+    assert not any("\n" in rule or "\r" in rule for rule in allow)
+
+
+@pytest.mark.parametrize("wrong, said", [
+    (("tasks",), "The cloud's record needs its tasks in the shape the record keeps."),
+    (("timezone", "roots"), "The cloud's record needs its timezone and roots in the shape the record keeps."),
+    (("tasks", "timezone", "roots"), "The cloud's record needs its tasks, timezone and roots in the shape the record "
+                                     "keeps."),
+    (("tasks", "timezone", "roots", "grant"), "The cloud's record needs its tasks, timezone, roots and grant in the "
+                                              "shape the record keeps.")])
+def test_a_cloud_claim_of_the_wrong_shape_says_so_in_one_sentence(tmp_path, wrong, said):
+    bad = {"tasks": {"sweep": None}, "timezone": "", "roots": ["ada"], "grant": None}
+    given = {"tasks": CLOUD_TASKS, "timezone": "UTC", "roots": CLOUD_ROOTS, "grant": CLOUD_GRANT}
+    given.update({key: bad[key] for key in wrong})
+    with pytest.raises(ValueError) as refused:
+        routine.claim_cloud(workspace(tmp_path), given["tasks"], given["timezone"], given["roots"], given["grant"], NOW)
+    assert str(refused.value) == said
