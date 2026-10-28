@@ -149,6 +149,7 @@ PROTECTED_EDITS += ("_meta/state/routine-limits.jsonl",)   # each run's windows 
 PROTECTED_EDITS += ("CLAUDE.local.md",)   # loaded beside CLAUDE.md at any depth, in a folder outside git too (dry run A)
 PROTECTED_EDITS += (".gitattributes",)   # the merge rules the sync script lands every record by
 PROTECTED_EDITS += (".gitignore",)   # what the sync script lands at all
+PROTECTED_EDITS += ("_meta/plugins/**", ".claude-plugin/**")   # the guard a cloud run carries, and what offers it
 # Setup's history reading runs inside the sweep chain (step 0); its own line, away from the list above.
 ROUTINE_TOOLS += ("backfill.py",)
 READ_ONLY =("Bash(gh pr view *)", "Bash(gh pr list *)", "Bash(git status *)", "Bash(git log *)",
@@ -371,7 +372,7 @@ def roots_of(workspace: Path) -> list:
 
 
 def routine_settings(workspace, body: str, roots=None, person: str = "", read_tools=(), write_tools=(),
-                     send_tools=(), known_tools=None, profile=None, shell: str | None = None) -> dict:
+                     send_tools=(), known_tools=None, profile=None, shell: str | None = None, extra_allow=()) -> dict:
     """The profile one routine run adds to the space's own (`claude --settings`, written to `profile`). Deny
     rules win over every allow rule in every scope, so the space's own profile cannot widen these, and
     `"disableAllHooks": false` keeps its hooks on whatever the person's own settings say.
@@ -394,7 +395,10 @@ def routine_settings(workspace, body: str, roots=None, person: str = "", read_to
     general-purpose agent starts (`--task`), and on every connector tool (`CONNECTOR_MATCHER`) only the tools this
     profile allows by name go through (`--connectors <profile>`), so a tool that appeared after the last probe is
     refused too. Without a command for them, Task is denied and no connector tool is granted. Every hook carries
-    its own `timeout` (`GUARD_TIMEOUT`), well above the time each guard gives itself."""
+    its own `timeout` (`GUARD_TIMEOUT`), well above the time each guard gives itself.
+
+    `extra_allow` adds Bash shapes of the caller's own (`Bash(<pattern>)`; anything else is dropped) right after
+    the tool rules, only while the Bash guard is written: a cloud run's read-only `gh api` calls (`cloud.py`)."""
     import reader
     workspace = Path(workspace).resolve()
     tools_dir = workspace / "_meta" / "tools"
@@ -417,6 +421,8 @@ def routine_settings(workspace, body: str, roots=None, person: str = "", read_to
     allow = [f"Bash({py} _meta/tools/{tool} *)" for py in pys for tool in ROUTINE_TOOLS] if bash else []
     allow += [f"Bash({py} {place}/_meta/tools/{tool} *)"
               for place in places for py in pys for tool in ROUTINE_TOOLS] if bash else []
+    allow += [rule for rule in dict.fromkeys(_strings(list(extra_allow or [])))
+              if re.fullmatch(r"Bash\(.+\)", rule, re.DOTALL)] if bash else []
     others = sorted({p.name for root in [workspace, *roots] for p in (root / "_meta" / "tools").glob("*.py")}
                     - set(ROUTINE_TOOLS))
     deny = [f"Edit(//**/{pattern})" for pattern in PROTECTED_EDITS]
@@ -1499,13 +1505,25 @@ def _probe(workspace: Path, run) -> int:
 # a routine (PROTECTED_EDITS). One line per key, the claim's four together and the pause a line apart: a merge that
 # keeps both sides of two claims leaves a key twice, which reads as no record anyone may run under (`host`); of two
 # pauses made before a sync, the later stands. Every space merges the file by union (.gitattributes, sync.MERGE_RULES).
+# The third runner is the cloud (`claim_cloud`): two scheduled tasks on claude.ai under CLOUD_MACHINE, which no
+# computer's id can take, with their ids, the person's zone, the repositories they attach and the connector grant a
+# line each after the claim's four; every computer steps aside for it (`gate`), and a cloud run asks `cloud_gate`.
 HOST = Path("_meta/state/routine-host.yaml")
-RUNNERS = ("os", "harness")
+RUNNERS = ("os", "harness", "cloud")
 CLAIM_KEYS = ("machine", "name", "runner", "since")
+CLOUD_KEYS = ("tasks", "timezone", "roots", "grant")   # the cloud's claim after the four: a cloud record has all
+GRANT_KEYS = ("read", "write", "send")
 MACHINE = re.compile(r"m-[0-9A-Za-z-]{1,64}")
+CLOUD_MACHINE = "m-cloud"   # a computer's id is m- and eight hex digits (`sync.hostname`), never this
+CLOUD_NAME = "the cloud"
+TASK_ID = re.compile(r"trig_[A-Za-z0-9]{8,64}")   # a scheduled task on claude.ai
+ZONE = re.compile(r"[A-Za-z][A-Za-z0-9_+-]{0,31}(?:/[A-Za-z0-9_+-]{1,32}){0,2}")   # an IANA zone: Europe/Amsterdam, UTC
+SLUG = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")   # a repository on GitHub: owner/name
 CONFLICT = re.compile(r"^(?:<{7}|={7}|>{7})", re.M)   # what a merge git left half done puts in a file
 UNCLEAR = "which computer runs the routines is unclear"
 HARNESS = "they run as the app's scheduled tasks"
+CLOUD = "they run in the cloud"
+NO_CLOUD = "nothing says your routines run in the cloud"
 
 
 def this_machine() -> str:
@@ -1580,11 +1598,35 @@ def _keys_once(loader, node, deep=False):
 _OneRecord.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _keys_once)
 
 
+def _cloud_value(key: str, value):
+    """One of the cloud's keys as the record keeps it; None for a value not of its shape. `tasks`: the two task ids
+    by chain (`sweep`, `daily`); `timezone`: the person's IANA zone; `roots`: the repositories the tasks attach, at
+    least one; `grant`: the connector tools by their full names, as `read`, `write` and `send`."""
+    import reader
+    if key == "tasks":
+        ok = isinstance(value, dict) and set(value) == {"sweep", "daily"} and all(
+            isinstance(task, str) and TASK_ID.fullmatch(task) for task in value.values())
+        return {"sweep": value["sweep"], "daily": value["daily"]} if ok else None
+    if key == "timezone":
+        return value if isinstance(value, str) and ZONE.fullmatch(value) else None
+    if key == "roots":
+        ok = isinstance(value, list) and bool(value) and all(isinstance(r, str) and SLUG.fullmatch(r) for r in value)
+        return list(dict.fromkeys(value)) if ok else None
+    if key == "grant":
+        tool = lambda name: isinstance(name, str) and reader.CONNECTOR_TOOL.fullmatch(name)   # noqa: E731
+        ok = isinstance(value, dict) and all(isinstance(value.get(part), list) and all(map(tool, value[part]))
+                                             for part in GRANT_KEYS)
+        return {part: list(dict.fromkeys(value[part])) for part in GRANT_KEYS} if ok else None
+    return None
+
+
 def host(workspace) -> dict | None:
     """Where the routines run: {"machine", "name", "runner", "since", "paused_until"} (the pause an ISO moment, or
-    None), or None when nothing is recorded. A file that is not one record (a key twice, but for the pause, of which
-    the later stands; a merge left half done, a machine or runner that is none, a pause that is no moment) is
-    {"unclear": True}: no computer runs under it."""
+    None), with the cloud's keys (`CLOUD_KEYS`: "tasks", "timezone", "roots", "grant") only when they are written; None
+    when nothing is recorded. A file that is not one record (a key twice, but for the pause, of which the later
+    stands; a merge left half done, a machine or runner that is none, a pause that is no moment, a cloud key of the
+    wrong shape, the cloud without all four, or the cloud's machine and runner apart) is {"unclear": True}: nothing
+    runs under it."""
     try:
         text = (Path(workspace) / HOST).read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -1601,14 +1643,21 @@ def host(workspace) -> dict | None:
     until = None if paused is None else _moment(paused)
     if not (isinstance(machine, str) and MACHINE.fullmatch(machine) and runner in RUNNERS) or (paused is not None and until is None):
         return {"unclear": True}
+    cloud = {key: _cloud_value(key, data[key]) for key in CLOUD_KEYS if key in data}
+    if (None in cloud.values() or (runner == "cloud") != (machine == CLOUD_MACHINE)
+            or (runner == "cloud" and len(cloud) < len(CLOUD_KEYS))):
+        return {"unclear": True}
     return {"machine": machine, "name": _one_line(name, 60) if isinstance(name, str) else "", "runner": runner,
-            "since": _one_line(data.get("since"), 40), "paused_until": until.isoformat(timespec="seconds") if until else None}
+            "since": _one_line(data.get("since"), 40), **cloud,
+            "paused_until": until.isoformat(timespec="seconds") if until else None}
 
 
 def _write_host(workspace, record: dict) -> dict:
-    """The record written whole, each value on its own line as JSON (which YAML reads as it is)."""
+    """The record written whole, each value on its own line as JSON (which YAML reads as it is): the claim's four, the
+    cloud's keys when the record has them, then the pause."""
     lines = ["# Where this workspace's routines run: one computer, one runner. Written by onboard.py, never by a routine."]
     lines += [f"{key}: {json.dumps(record.get(key), ensure_ascii=False)}" for key in CLAIM_KEYS]
+    lines += [f"{key}: {json.dumps(record[key], ensure_ascii=False)}" for key in CLOUD_KEYS if key in record]
     lines += ["# The pause, a line apart from the claim: a pause on one computer and a move on another merge into one.",
               f"paused_until: {json.dumps(record.get('paused_until'))}"]
     path = Path(workspace) / HOST
@@ -1626,9 +1675,13 @@ def paused_until(record, now) -> dt.datetime | None:
 
 def claim_host(workspace, runner: str, now) -> dict:
     """The routines run on this computer through `runner` ("os" or "harness") from `now` on: every other computer's
-    runs stop by themselves (`gate`). A pause still to come is kept: a move is no resume."""
+    runs stop by themselves (`gate`), and the cloud's tasks with them (`cloud_gate`). A pause still to come is kept:
+    a move is no resume."""
+    if runner == "cloud":
+        raise ValueError("the cloud is no computer: claim it with claim_cloud, which records its tasks, zone, "
+                         "repositories and grant")
     if runner not in RUNNERS:
-        raise ValueError(f"a runner is one of {', '.join(RUNNERS)}, not {runner!r}")
+        raise ValueError(f"a computer's runner is os or harness, not {runner!r}")
     old = host(workspace) or {}
     keep = old.get("paused_until") if paused_until(old, now) else None
     name = _one_line(machine_name(), 60) or "this computer"
@@ -1637,8 +1690,27 @@ def claim_host(workspace, runner: str, now) -> dict:
                                    "paused_until": keep})
 
 
+def claim_cloud(workspace, tasks: dict, timezone: str, roots: list, grant: dict, now) -> dict:
+    """The routines run in the cloud from `now` on, as the two scheduled tasks `tasks` names ({"sweep", "daily"}: their
+    ids), in the person's `timezone`, attaching the repositories `roots` (owner/name), under the connector `grant`
+    ({"read", "write", "send"}: full tool names). Every computer's runs stop by themselves (`gate`). A pause still to
+    come is kept: a move is no resume. ValueError, writing nothing, for a value not of its shape (`_cloud_value`)."""
+    given = {"tasks": tasks, "timezone": timezone, "roots": roots, "grant": grant}
+    cloud = {key: _cloud_value(key, value) for key, value in given.items()}
+    wrong = [key for key, value in cloud.items() if value is None]
+    if wrong:
+        raise ValueError(f"the cloud's {' and '.join(wrong)} {'is' if len(wrong) == 1 else 'are'} not of the shape the "
+                         "record keeps")
+    old = host(workspace) or {}
+    keep = old.get("paused_until") if paused_until(old, now) else None
+    return _write_host(workspace, {"machine": CLOUD_MACHINE, "name": CLOUD_NAME, "runner": "cloud",
+                                   "since": (now if now.tzinfo else now.astimezone()).isoformat(timespec="seconds"),
+                                   **cloud, "paused_until": keep})
+
+
 def set_pause(workspace, until) -> dict | None:
-    """The record with its pause set to `until` (a moment; None resumes); None when there is no record to set it in."""
+    """The record, every key of it kept, with its pause set to `until` (a moment; None resumes); None when there is no
+    record to set it in."""
     record = host(workspace)
     if record is None or record.get("unclear"):
         return None
@@ -1647,13 +1719,16 @@ def set_pause(workspace, until) -> dict | None:
 
 
 def _held(workspace, now) -> tuple | None:
-    """("away", why) when a run must not start on this computer: another one is the host, the app's own scheduled
-    tasks run the routines, or the record is not one; ("paused", why) while paused; None to go on."""
+    """("away", why) when a run must not start on this computer: the routines run in the cloud, another computer is
+    the host, the app's own scheduled tasks run them, or the record is not one; ("paused", why) while paused; None to
+    go on."""
     record = host(workspace)
     if record is None:
         return None
     if record.get("unclear"):
         return "away", UNCLEAR
+    if record["runner"] == "cloud":   # on any computer, paused or not
+        return "away", CLOUD
     if record["machine"] != this_machine():
         return "away", f"runs on {record['name'] or 'another computer'}"
     if record["runner"] != "os":
@@ -1666,9 +1741,38 @@ def _held(workspace, now) -> tuple | None:
 
 def gate(workspace, now) -> str | None:
     """Why a routine run must not start here: "runs on <name>" (another computer is the host), "paused until <time>",
-    the app's own scheduled tasks run them, or which computer does is unclear. None to go on. `main` asks it first."""
+    they run in the cloud or as the app's own scheduled tasks, or which computer does is unclear. None to go on.
+    `main` asks it first."""
     held = _held(workspace, now)
     return held[1] if held else None
+
+
+def _in_zone(moment: dt.datetime, zone) -> dt.datetime:
+    """`moment` in the IANA zone `zone`; as it was kept, at its own offset, where this computer has no data for the
+    zone (Windows without the tzdata package)."""
+    try:
+        from zoneinfo import ZoneInfo
+        return moment.astimezone(ZoneInfo(zone))
+    except (ImportError, KeyError, ValueError, TypeError, OSError):   # ZoneInfoNotFoundError is a KeyError
+        return moment
+
+
+def cloud_gate(workspace, now) -> str | None:
+    """Why a cloud run must not go on (`cloud.py begin` asks it first): nothing says the routines run in the cloud
+    (NO_CLOUD), which computer runs them is unclear (UNCLEAR), "they run on <name>" (a computer's runner), or "paused
+    until <time>", said in the person's own zone (the record's `timezone`), since the cloud's clock is UTC. None to go
+    on."""
+    record = host(workspace)
+    if record is None:
+        return NO_CLOUD
+    if record.get("unclear"):
+        return UNCLEAR
+    if record["runner"] != "cloud":
+        return f"they run on {record['name'] or 'another computer'}"
+    until = paused_until(record, now)
+    if until is not None:
+        return f"paused until {_in_zone(until, record.get('timezone')):%Y-%m-%d %H:%M}"
+    return None
 
 
 # ----- one routine run --------------------------------------------------------------------------

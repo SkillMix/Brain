@@ -39,7 +39,8 @@ Pacing (Decision D keeps full judgment for every day inside the window; only the
   or a `--now` later than this computer's clock (R47).
 - The history's notes are written on the computer that runs the routines only: on any other (`routine.host` names
   another), `plan`, `reading`, `calibrate` and `start` refuse (`ELSEWHERE_WHY`), since two computers writing them
-  would stop the second one's sync (R45, I-1).
+  would stop the second one's sync (R45, I-1). While the routines run in the cloud they refuse on every computer
+  (`CLOUD_WHY`): the history is read on a computer only, so the routines come back to one first.
 - A reading dated more than FUTURE_SLACK after now, or after this computer's clock, is refused, and one kept anyway
   is not read, like a meter row dated ahead; a first reading kept so still bounds the setup day (R47, N3-1).
 
@@ -130,6 +131,8 @@ NOW_AHEAD_WHY = ("That time is later than this computer's clock, so it is not ta
                  "now, or without one.")
 ELSEWHERE_WHY = ("Your routines run on {name}, so your history is planned, measured and read there, and this computer "
                  "keeps none of it; say it on {name} instead.")
+CLOUD_WHY = ("Your routines run in the cloud, and the history is read only on a computer: say 'run my routines here' "
+             "first.")
 AHEAD_WHY = "A usage reading dated later than now is not kept: a reading is taken now, or earlier."
 OVERAGE_WHY = ("The last run would have used extra usage and Claude didn't say when there is room again, so the read "
                "waits for your next reading of your usage.")
@@ -326,6 +329,21 @@ def runs_elsewhere(workspace) -> str | None:
         return None if record["machine"] == routine.this_machine() else str(record.get("name") or "another computer")
     except Exception:   # noqa: BLE001 - no record to read: nothing says it is another computer's
         return None
+
+
+def elsewhere_why(workspace) -> str | None:
+    """Why the history's notes may not be written on this computer: CLOUD_WHY while the routines run in the cloud
+    (the history is read on a computer only), ELSEWHERE_WHY with the other computer's name (`runs_elsewhere`); None
+    when this computer runs them, or nothing (or nothing clear) is recorded."""
+    try:
+        import routine
+        record = routine.host(Path(workspace))
+        if isinstance(record, dict) and record.get("runner") == "cloud":
+            return CLOUD_WHY
+    except Exception:   # noqa: BLE001 - no record to read: nothing says they run in the cloud
+        pass
+    name = runs_elsewhere(workspace)
+    return ELSEWHERE_WHY.format(name=name) if name else None
 
 
 def _same_folder(a, b) -> bool:
@@ -1318,9 +1336,9 @@ def main(argv=None) -> int:
             raise ValueError(NOW_WHY)
         if args.now and now > _real_now() + FUTURE_SLACK:
             raise ValueError(NOW_AHEAD_WHY)
-        elsewhere = runs_elsewhere(ws) if args.command in PERSON_VERBS else None
-        if elsewhere:   # the history's notes are written where the routines run (R45, I-1)
-            raise ValueError(ELSEWHERE_WHY.format(name=elsewhere))
+        elsewhere = elsewhere_why(ws) if args.command in PERSON_VERBS else None
+        if elsewhere:   # the history's notes are written where the routines run (R45, I-1), never in the cloud
+            raise ValueError(elsewhere)
         if args.command == "plan":
             given = parse_reading(args.reading, now)
             if given is not None:

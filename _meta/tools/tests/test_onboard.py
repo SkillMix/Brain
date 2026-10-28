@@ -961,6 +961,44 @@ def test_a_pause_with_nothing_recorded_is_made_on_the_computer_that_runs_them(tm
     assert routine.host(ada) is None and routine.gate(ada, NOW) is None   # the computer that runs them goes on
 
 
+CLOUD_TASKS = {"sweep": "trig_01AAAAAAAA", "daily": "trig_01BBBBBBBB"}
+
+
+def cloud_hosted(ada) -> dict:
+    return routine.claim_cloud(ada, CLOUD_TASKS, "Europe/Amsterdam", ["ada/ada"],
+                               {"read": [], "write": [], "send": ["mcp__mail__send_message"]}, NOW)
+
+
+def test_the_check_says_the_routines_run_in_the_cloud(tmp_path, monkeypatch):
+    ada = make_space(tmp_path / "ada", name="ada")
+    onboard.write_yaml(ada / "_meta" / "state" / "onboard.yaml", {"case": "person", "routine_tasks": [
+        {"name": "space-daily-chain-ada", "kind": "schtasks", "check": ["schtasks", "/Query", "/TN", "space-daily-chain-ada", "/XML"]}]})
+    cloud_hosted(ada)
+    said = ("Your routines run in the cloud, as two scheduled tasks; this computer's sync lands what they leave "
+            "open")
+    elsewhere = onboard.routines_elsewhere(ada)
+    assert (elsewhere.name, elsewhere.done, elsewhere.result) == (onboard.ELSEWHERE_STEP, True, said)
+    schtasks(monkeypatch, set())   # no routine task of this computer's to read back
+    rows = [s for s in onboard.check(ada) if s.name.startswith("routine")]
+    assert [(s.name, s.done, s.result) for s in rows] == [(onboard.ELSEWHERE_STEP, True, said)]
+    monkeypatch.setattr(onboard, "register_task", lambda *a, **k: (_ for _ in ()).throw(AssertionError(a)))
+    report = onboard.Report(case="test")
+    assert onboard.register_routines(report, ada) == [] and report.steps[-1].result == said   # none beside the cloud's
+
+
+def test_a_pause_with_cloud_routines_says_when_the_cloud_hears_of_it(tmp_path, capsys):
+    ada = make_space(tmp_path / "ada", name="ada")
+    cloud_hosted(ada)
+    assert onboard.main([str(ada), "--pause", "--until", "2099-01-02"]) == 0
+    said = capsys.readouterr().out
+    assert said.startswith("Your routines are paused until") and said.rstrip().endswith(
+        "The cloud's next run reads the pause once this computer's sync lands it; away from this computer, turn the "
+        "two tasks off on claude.ai instead.")
+    assert "does not stop" not in said and "hears of it at its next sync" not in said
+    assert routine.cloud_gate(ada, NOW).startswith("paused until 2099-01-02") and routine.host(ada)["tasks"] == CLOUD_TASKS
+    assert onboard.main([str(ada), "--resume"]) == 0 and routine.cloud_gate(ada, NOW) is None
+
+
 @pytest.mark.parametrize("flags", [["--until", "2099-01-02"], ["--pause", "--resume"], ["--resume", "--until", "2099-01-02"],
                                    ["--routines-here", "--pause"], ["--routines-here", "--resume"]])
 def test_flags_that_do_not_go_together_are_refused_plainly(tmp_path, capsys, flags):

@@ -21,6 +21,8 @@ which does not catch up and says so.
 A workspace's routines run on one computer through one scheduler (`routine.HOST`): the build registers
 them only where nothing else runs them, `--routines-here` moves them to this computer once the probe
 passed there, and `--pause` (until 06:00 the next morning, or `--until`) and `--resume` hold them.
+While they run in the cloud, no computer registers them, and a pause reaches the cloud once the sync
+lands it.
 """
 from __future__ import annotations
 
@@ -1425,6 +1427,8 @@ IN_THE_APP = ("Your routines run as scheduled tasks in the Claude app, so this c
               "say 'run my routines here' to move them to it")
 UNCLEAR_HOST = ("Which computer runs your routines is unclear, so none of them runs; say 'run my routines here' on the "
                 "computer that should run them")
+IN_THE_CLOUD = ("Your routines run in the cloud, as two scheduled tasks; this computer's sync lands what they leave "
+                "open")
 
 
 def _onboard_state(workspace) -> dict:
@@ -1442,9 +1446,10 @@ def _harness_checks(workspace) -> list:
 
 
 def routines_elsewhere(workspace) -> Step | None:
-    """Why this computer's scheduler runs none of the routines, as a step under Routines that fails nothing: another
-    computer runs them, the app's own scheduled tasks do (so recorded, or read back as `routine_checks` while nothing
-    is recorded), or which computer does is unclear (`routine.host`). None when they run here, or nothing says where."""
+    """Why this computer's scheduler runs none of the routines, as a step under Routines that fails nothing: they run
+    in the cloud, another computer runs them, the app's own scheduled tasks do (so recorded, or read back as
+    `routine_checks` while nothing is recorded), or which computer does is unclear (`routine.host`). None when they
+    run here, or nothing says where."""
     import routine
     record = routine.host(workspace)
     check = f"cat {(Path(workspace) / routine.HOST).as_posix()}"
@@ -1452,6 +1457,8 @@ def routines_elsewhere(workspace) -> Step | None:
         return Step(ELSEWHERE_STEP, True, check, IN_THE_APP) if _harness_checks(workspace) else None
     if record.get("unclear"):
         return Step(ELSEWHERE_STEP, True, check, UNCLEAR_HOST)
+    if record["runner"] == "cloud":
+        return Step(ELSEWHERE_STEP, True, check, IN_THE_CLOUD)
     if record["machine"] != routine.this_machine():
         return Step(ELSEWHERE_STEP, True, check, ELSEWHERE.format(name=record["name"] or "another computer"))
     return Step(ELSEWHERE_STEP, True, check, IN_THE_APP) if record["runner"] != "os" else None
@@ -1574,6 +1581,8 @@ def _take_back(report, workspace: Path, records: list, before: dict) -> None:
 
 
 PAUSE_HOUR = 6   # a pause without an end lasts until this hour the next morning
+PAUSE_CLOUD = ("The cloud's next run reads the pause once this computer's sync lands it; away from this computer, turn "
+               "the two tasks off on claude.ai instead.")
 PAUSE_ELSEWHERE = ("None of your routines' tasks is on this computer, so nothing was paused. Say 'pause my routines' "
                    "on the computer that runs them.")
 
@@ -1620,7 +1629,7 @@ def pause_routines(workspace, until: str | None = None, now=None, resume: bool =
     every computer's runs read before they start; resuming clears it. With nothing recorded yet, this computer is
     recorded as the one that runs them first, as the build would record it, but only when their tasks read back here
     (`_runs_here`); else nothing is paused and the line says to pause them where they run. A record that is not one
-    is not touched."""
+    is not touched. While they run in the cloud, the line says when the cloud hears of the pause (PAUSE_CLOUD)."""
     import onboarding_page
     import routine
     workspace = Path(workspace).resolve()
@@ -1644,6 +1653,8 @@ def pause_routines(workspace, until: str | None = None, now=None, resume: bool =
         record = routine.claim_host(workspace, runner, now)
     routine.set_pause(workspace, end)
     said = f"Your routines are paused until {onboarding_page.words(end, now)}, the history's reading with them."
+    if record["runner"] == "cloud":
+        return True, f"{said} {PAUSE_CLOUD}"
     if record["machine"] != routine.this_machine():
         said += f" {record['name'] or 'The other computer'} hears of it at its next sync."
     if record["runner"] != "os":
