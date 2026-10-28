@@ -1171,14 +1171,16 @@ def register_task(report, label, task, root, args, minutes=None, times=None, cro
     `systemctl --user` works, else a cron line, which does not catch up (one plain line says so). A task runs
     through one scheduler: moving to another takes it out of the rest (`retire_others`). On Windows, a task
     given `stderr_log` runs through cmd, which adds what it printed to its error output and then TASK_ENDED
-    to that file: a hidden task's Python that cannot start says so nowhere else (the other schedulers log)."""
+    to that file: a hidden task's Python that cannot start says so nowhere else (the other schedulers log). The
+    line ends on `exit /b`, so cmd ends with Python's own exit code, not the echo's 0, and the scheduler's last result
+    shows a run that failed (the review of #61)."""
     root, py, path = Path(root), sys.executable, os.environ.get("PATH", "")
     if SYSTEM == "Windows":
         arguments = f"--headless {_argline(py, args)}"
         if stderr_log:
             log = Path(stderr_log)
             arguments = (f'--headless cmd.exe /d /s /c "{_argline(py, args)} 2>>"{log}" & '
-                         f'echo {TASK_ENDED}>>"{log}""')
+                         f'echo {TASK_ENDED}>>"{log}" & exit /b"')
         record = {"name": task, "kind": "schtasks", "line": f"{CONHOST} {arguments}",
                   "create": ["schtasks", "/Create", "/F", "/TN", task, "/XML", f"{task}.xml"],
                   "check": ["schtasks", "/Query", "/TN", task, "/XML"], "root": str(root)}

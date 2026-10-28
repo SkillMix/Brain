@@ -139,8 +139,9 @@ back to back, and nothing a record or the person settled is asked again.
   Python under `~/.spaces/tools/python`, a venv made from a Python under `%APPDATA%` is made again,
   there is no `--user` install on Windows, and gh's folder is `~/.spaces/gh` (the sign-in setup made
   is copied there). The probe task writes what it printed to `~/.spaces/logs/`, so a Python that
-  cannot start fails the build at once with its own words instead of after four silent minutes, and
-  the probe checks that a scheduled run can use the GitHub sign-in.
+  cannot start fails the build at once with its own words instead of after four silent minutes;
+  the task ends with Python's own exit code, so Task Scheduler's last result shows a run that
+  failed; and the probe checks that a scheduled run can use the GitHub sign-in.
 - **A copy of the template is no longer the template.** The checks ask GitHub's own
   `is_template` setting, which a repository made from the template never has, instead of the
   marker file it keeps until onboarding's first commit lands: a workspace's sync pull requests no

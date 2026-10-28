@@ -123,9 +123,25 @@ def test_the_probe_task_on_windows_writes_what_it_said_to_a_log(tmp_path, monkey
     xml = files[argv[argv.index("/XML") + 1]].decode("utf-16")
     line = f'"{sys.executable}" "{tmp_path / "ada" / "routine.py"}" --probe "{tmp_path / "ada"}"'
     assert (f'<Arguments>--headless cmd.exe /d /s /c "{line} 2&gt;&gt;"{log}" &amp; '
-            f'echo {onboard.TASK_ENDED}&gt;&gt;"{log}""</Arguments>') in xml
+            f'echo {onboard.TASK_ENDED}&gt;&gt;"{log}" &amp; exit /b"</Arguments>') in xml
     assert record["log"] == str(log) and log.parent.is_dir()
 
+
+def test_the_probe_task_ends_with_python_s_own_exit_code(tmp_path, monkeypatch):
+    # the review of #61: cmd ended on the end line's echo, so Task Scheduler showed 0x0 for a probe that failed
+    if os.name != "nt":
+        return   # the line is cmd's
+    monkeypatch.setattr(onboard, "SYSTEM", "Windows")
+    monkeypatch.setattr(onboard, "run_cmd", world({}, []))
+    ends = tmp_path / "ends.py"
+    ends.write_text("import sys\nsys.exit(int(sys.argv[1]))\n", encoding="utf-8")
+    log = tmp_path / "logs" / "space-probe-ada.log"
+    for code in (3, 0):
+        record = onboard.register_task(onboard.Report("person"), "routine probe task", "space-probe-ada", tmp_path,
+                                       [ends, str(code)], times=[(3, 33)], stderr_log=log)
+        started = record["line"].split("--headless ", 1)[1]   # what conhost starts: cmd with its line
+        assert subprocess.run(started, cwd=tmp_path).returncode == code
+    assert log.read_text(encoding="utf-8").split() == [onboard.TASK_ENDED, onboard.TASK_ENDED]
 
 
 def test_a_probe_that_ends_without_a_result_fails_at_once_with_what_it_said(tmp_path, monkeypatch):
