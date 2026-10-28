@@ -868,7 +868,9 @@ def test_a_nested_checkout_or_a_gitlink_staged_by_force_never_lands_from_the_clo
 
 def test_every_git_a_cloud_run_starts_has_the_file_monitor_off(repo, monkeypatch):
     """The carry and the landing alike, through git's own environment, which reaches a mount's git; any config the
-    environment gave git keeps its effect, and the environment is put back after."""
+    environment gave git keeps its effect, and the environment is put back after. The tools' own sign-in through
+    gh (`doctor.use_gh_for_git`, set for the whole process) may stand beside them."""
+    import doctor
     monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
     monkeypatch.setenv("GIT_CONFIG_KEY_0", "user.name")
     monkeypatch.setenv("GIT_CONFIG_VALUE_0", "Ada Okafor")
@@ -877,7 +879,7 @@ def test_every_git_a_cloud_run_starts_has_the_file_monitor_off(repo, monkeypatch
     def watched(root, *args, **kwargs):
         count = int(os.environ["GIT_CONFIG_COUNT"])
         seen.append({(os.environ.get(f"GIT_CONFIG_KEY_{i}"), os.environ.get(f"GIT_CONFIG_VALUE_{i}"))
-                     for i in range(count)})
+                     for i in range(count) if os.environ.get(f"GIT_CONFIG_KEY_{i}") != doctor.GITHUB_HELPER})
         return real(root, *args, **kwargs)
     monkeypatch.setattr(sync, "git", watched)
     cloud_branch(repo.parent, {SOURCE: "# r0\n"})
@@ -887,7 +889,8 @@ def test_every_git_a_cloud_run_starts_has_the_file_monitor_off(repo, monkeypatch
     assert code == 0 and seen
     assert all(pairs == {("user.name", "Ada Okafor"), ("core.fsmonitor", "false")} for pairs in seen), seen
     assert git(repo, "log", "-1", "--format=%an").stdout.strip() == "Ada Okafor"
-    assert os.environ["GIT_CONFIG_COUNT"] == "1" and "GIT_CONFIG_KEY_1" not in os.environ
+    left = [os.environ.get(f"GIT_CONFIG_KEY_{i}") for i in range(int(os.environ["GIT_CONFIG_COUNT"]))]
+    assert left[0] == "user.name" and "core.fsmonitor" not in left and set(left[1:]) <= {doctor.GITHUB_HELPER}
 
 
 def test_a_mounts_file_monitor_never_runs_in_a_cloud_run_even_when_a_merge_stops(repo, tmp_path, monkeypatch):

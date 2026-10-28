@@ -6,6 +6,7 @@ without a word (#12, #14); and the smaller ones (#5, #6, #9, #15, the company si
 import datetime as dt
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -211,16 +212,16 @@ class MovingGh(FakeGh):
         self.failing, self.head = list(failing), 0
 
     def __call__(self, *args):
-        if args[:2] == ("pr", "list"):
+        route = next((a for a in args if a.startswith("repos/")), "")
+        if re.fullmatch(r"repos/[^/]+/[^/]+/pulls\?state=open.*", route):   # the sync's pull request, a new head
             self.head += 1
-            self.calls.append(args)
-            return subprocess.CompletedProcess(["gh", *args], 0, json.dumps([{"number": 7, "headRefOid": f"h{self.head}"}]), "")
-        if args[:2] == ("pr", "checks"):
+            self.pulls = {7: (f"sync/{sync.hostname()}", f"h{self.head}")}
+        elif re.fullmatch(r"repos/[^/]+/[^/]+/commits/[^/]+/check-runs\?.*", route):
             self.calls.append(args)
             names = self.failing[min(self.head, len(self.failing)) - 1]
-            return subprocess.CompletedProcess(["gh", *args], 1, json.dumps(
-                [{"name": n, "bucket": "fail", "link": f"https://github.com/o/r/actions/runs/{100 + self.head}/job/1"}
-                 for n in names]), "")
+            return subprocess.CompletedProcess(["gh", *args], 0, json.dumps({"check_runs": [
+                {"name": n, "conclusion": "failure", "details_url": f"https://github.com/o/r/actions/runs/{100 + self.head}/job/1"}
+                for n in names]}), "")
         return super().__call__(*args)
 
 
@@ -410,7 +411,8 @@ def test_a_push_that_leaves_main_unconfigured_is_not_done(tmp_path, monkeypatch)
     monkeypatch.setattr(onboard, "run_cmd", after)
     report = onboard.Report("person")
     onboard.commit_fill(report, tmp_path / "ada-workspace", True, False)
-    assert report.steps[-1].done and report.steps[-1].result == "bootstrap push to main"
+    commit = next(step for step in report.steps if step.name.startswith("commit"))   # the admins row follows it
+    assert commit.done and commit.result == "bootstrap push to main"
 
 
 def test_a_brain_that_did_not_mount_is_a_failed_step(tmp_path, monkeypatch):

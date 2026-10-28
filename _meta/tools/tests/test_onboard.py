@@ -1656,6 +1656,8 @@ def test_new_spaces_get_enforce_admins(tmp_path, monkeypatch):
             bodies.append(json.loads(Path(argv[argv.index("--input") + 1]).read_text(encoding="utf-8")))
         if argv[:2] == ["git", "show"]:
             return subprocess.CompletedProcess(argv, 0, main_says["space.yaml"], "")
+        if argv[:2] == ["git", "push"]:   # the first fill lands: main is the space's own from now on
+            main_says["space.yaml"] = "profile: personal\n"
         if argv[-1].endswith("/protection/enforce_admins"):
             return subprocess.CompletedProcess(argv, main_says["hold"], "", "gh: Branch not protected (HTTP 404)"
                                                if main_says["hold"] else "")
@@ -1675,18 +1677,21 @@ def test_new_spaces_get_enforce_admins(tmp_path, monkeypatch):
     assert pushed < held and not report.failed(), [s.row() for s in report.failed()]
     assert report.steps[-1].name == "admins held to the checks ada/ada"
     main_says["hold"] = 1   # a project minted before its platform settings: nothing to hold yet, and nothing fails
+    main_says["space.yaml"] = "profile: template\n"
     steps = len(report.steps)
     onboard.commit_fill(report, ada, True, False)
     assert len(report.steps) == steps + 1 and not report.failed()
 
 
 def test_admins_are_held_on_the_repository_given_and_a_missed_hold_is_a_failing_row(tmp_path, monkeypatch):
-    calls = []
+    calls, main = [], {"says": "profile: template\n"}
 
     def fake(argv, dry_run=False, cwd=None):
         argv = [str(a) for a in argv]
         calls.append(argv)
-        return subprocess.CompletedProcess(argv, 0, "profile: template\n" if argv[:2] == ["git", "show"] else "", "")
+        if argv[:2] == ["git", "push"]:   # the first fill lands
+            main["says"] = "profile: personal\n"
+        return subprocess.CompletedProcess(argv, 0, main["says"] if argv[:2] == ["git", "show"] else "", "")
     monkeypatch.setattr(onboard, "run_cmd", fake)
     ada = make_space(tmp_path / "ada", name="ada")   # its origin cannot be read here (no .git folder)
     report = onboard.Report(case="test")
@@ -1695,6 +1700,7 @@ def test_admins_are_held_on_the_repository_given_and_a_missed_hold_is_a_failing_
     assert step.name == "admins held to the checks" and step in report.failed() and "enforce_admins" in step.check
     assert not any("enforce_admins" in " ".join(c) for c in calls)
     del calls[:]
+    main["says"] = "profile: template\n"
     onboard.commit_fill(report, ada, True, False, repo="ada/ada")
     assert ["gh", "api", "-X", "POST", "repos/ada/ada/branches/main/protection/enforce_admins"] in calls
     assert (report.steps[-1].name, report.steps[-1].done) == ("admins held to the checks ada/ada", True)
