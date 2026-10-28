@@ -206,12 +206,15 @@ def test_a_protected_change_in_a_copy_that_still_has_the_marker_waits_for_the_ow
 class MovingGh(FakeGh):
     """A sync pull request that gets a new head every run, red on the checks named in `failing`."""
 
-    def __init__(self, failing):
+    def __init__(self, failing, rerun_ends="failure"):
         super().__init__("checks\tUnit tests\t2026-10-27T10:44:00Z FAILED test_onboard.py::test_x\n")
-        self.failing, self.head = list(failing), 0
+        self.failing, self.head, self.rerun_ends = list(failing), 0, rerun_ends
 
     def __call__(self, *args):
-        if args[:2] == ("pr", "list"):
+        if args[:2] == ("run", "view") and "--json" in args:   # how a rerun run ended
+            self.calls.append(args)
+            return subprocess.CompletedProcess(["gh", *args], 0, json.dumps({"conclusion": self.rerun_ends}), "")
+        if args[:2] == ("pr", "list") and "number,headRefOid" in args:   # heal's look: one a run
             self.head += 1
             self.calls.append(args)
             return subprocess.CompletedProcess(["gh", *args], 0, json.dumps([{"number": 7, "headRefOid": f"h{self.head}"}]), "")
@@ -248,6 +251,27 @@ def test_a_sync_pull_request_is_rerun_three_times_a_day_at_most(repo, monkeypatc
     for n in range(4):
         sync_again(repo, n)
     assert reruns(gh) == sync.HEAL_RERUNS == 3 and "pr_red" in run_lines(repo)[-1]["notes"]
+
+
+def test_a_check_whose_rerun_passed_is_rerun_when_it_fails_by_chance_again(repo, monkeypatch):
+    # the review of #61: a rerun that passed still counted as "failed again", so a flaky check stayed red
+    gh = MovingGh([["checks"], ["checks"]], rerun_ends="success")
+    monkeypatch.setattr(sync.Run, "gh", gh)
+    sync_again(repo, 1)
+    sync_again(repo, 2)
+    assert reruns(gh) == 2 and "pr_red" not in run_lines(repo)[-1]["notes"]
+
+
+def test_setting_answer_tests_aside_keeps_the_day_s_reruns(repo, monkeypatch):
+    import tests_run
+    gh = MovingGh([["a"], ["b"], ["c"], ["d"], ["e"]])
+    monkeypatch.setattr(sync.Run, "gh", gh)
+    real = tests_run.hold
+    for n in range(5):
+        held = n == 1   # the second run sets an answer test aside instead of rerunning
+        monkeypatch.setattr(tests_run, "hold", (lambda *a, **k: ["What are the notes?"]) if held else real)
+        sync_again(repo, n)
+    assert reruns(gh) == sync.HEAL_RERUNS and "pr_red" in run_lines(repo)[-1]["notes"]
 
 
 # ----- #13: the briefing goes to the work mailbox the app card named -------------------------------------
@@ -564,6 +588,7 @@ def test_a_task_name_another_account_holds_says_so_with_the_way_out(tmp_path, mo
     assert not step.done and step.needs_owner
     assert "another account" in step.result and "schtasks /Delete /F /TN space-sync-ada" in step.result
     assert "--task-prefix" in step.result and "Access is denied" not in step.result
+
 
 
 def yaml_load(path: Path):

@@ -146,7 +146,8 @@ back to back, and nothing a record or the person settled is asked again.
   marker file it keeps until onboarding's first commit lands: a workspace's sync pull requests no
   longer run the template's own tests, and the gate no longer lets a protected change in such a
   workspace merge without the owner. The sync reruns a failed check at most three times a day, and
-  not at all when the same checks failed again after a rerun.
+  not at all when the same checks failed again after a rerun; a check whose rerun passed is rerun
+  again the next time it fails.
 - **The briefing goes to the work mailbox the app card named.** The card now says where the
   morning briefing goes: the work mailbox the routines can send from, when a second app's reader
   names the same account (a mail anyone can write cannot name it alone). The person sees it for
