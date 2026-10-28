@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import zlib
+import zoneinfo
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,11 @@ import routine
 import send_guard
 import sync
 from conftest import make_space
+
+# Windows has no zone data without the tzdata package: there a zone is checked by its shape only, and times are UTC.
+# A cloud run is Linux, which has the data; these tests are about what it does with it.
+needs_zones = pytest.mark.skipif(not zoneinfo.available_timezones(),
+                                 reason="no zone data on this computer (Windows without the tzdata package)")
 
 TEMPLATE = Path(__file__).resolve().parents[3]
 NOW = dt.datetime(2026, 10, 27, 9, 0, tzinfo=dt.timezone.utc)
@@ -150,6 +156,7 @@ def test_a_run_that_steps_aside_writes_nothing(ada):
     assert untouched(ada)
 
 
+@needs_zones
 def test_a_paused_cloud_run_steps_aside_in_the_persons_own_time(ada):
     in_the_cloud(ada)
     routine.set_pause(ada, NOW + dt.timedelta(hours=5))
@@ -726,6 +733,7 @@ def run_line_on_main(ws: Path, routine_name: str, at: dt.datetime) -> None:
     git(ws, "push", "-q", "origin", "HEAD:main")
 
 
+@needs_zones
 def test_a_silent_other_chain_is_one_item(ada):
     in_the_cloud(ada, since=NOW - dt.timedelta(days=10))
     run_line_on_main(ada, "daily", NOW - dt.timedelta(hours=60))   # the daily runs once a day: silent past 48 hours
@@ -748,6 +756,7 @@ def test_a_chain_within_twice_its_longest_gap_is_not_silent(ada):
     assert cloud.begin(ada, "daily", now=NOW)["items"] == []
 
 
+@needs_zones
 def test_a_chain_that_never_ran_is_silent_counted_from_the_move(ada):
     routine.claim_cloud(ada, TASKS, "Europe/Amsterdam", ["ada/ada-space"], GRANT, NOW - dt.timedelta(hours=20))
     assert cloud.begin(ada, "daily", now=NOW)["items"] == []   # moved 20 hours ago: not yet
@@ -982,6 +991,7 @@ def test_the_trigger_schedule_keeps_the_persons_hours_off_the_hour(computer):
            "CRON_TZ=Europe/Amsterdam 30 6 * * *"
 
 
+@needs_zones
 def test_the_trigger_takes_the_zone_from_the_record_and_refuses_none(computer, monkeypatch):
     routine.claim_cloud(computer, TASKS, "America/New_York", ["ada/ada-space"], GRANT, NOW)
     assert cloud.trigger(computer, "daily")["cron_expression"].startswith("CRON_TZ=America/New_York ")
@@ -1016,6 +1026,7 @@ def test_a_repository_named_twice_in_two_cases_is_attached_once_as_first_named(c
     assert "Edit(//home/user/Ada-App/identity/**)" in context(body)["disallowed_tools"]   # the clone's own folder
 
 
+@needs_zones
 def test_the_zone_of_a_computer_whose_tz_is_no_iana_name_is_where_its_localtime_points(monkeypatch):
     monkeypatch.setattr(os, "readlink", lambda path: "/usr/share/zoneinfo/Europe/Lisbon")
     monkeypatch.setenv("TZ", "CET-1CEST")   # a POSIX rule, of an IANA name's shape
@@ -1085,6 +1096,7 @@ def test_a_workspace_without_a_github_repository_renders_no_task(computer):
         cloud.trigger(computer, "sweep", timezone="Europe/Amsterdam")
 
 
+@needs_zones
 def test_the_trigger_cli_prints_the_render(computer, capsys):
     assert cloud.main(["trigger", str(computer), "--chain", "sweep", "--timezone", "Europe/Amsterdam"]) == 0
     printed = json.loads(capsys.readouterr().out)
