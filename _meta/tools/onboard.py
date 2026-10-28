@@ -5,7 +5,7 @@
                                   [--user-instructions PATH] [--check] [--fixture DIR] [--dry-run]
     python _meta/tools/onboard.py <workspace> --routines-here | --pause [--until ISO] | --resume
     python _meta/tools/onboard.py <workspace> --routines-cloud --check
-                                  | --routines-cloud --sweep <task> --daily <task> --timezone <zone>
+                                  | --routines-cloud --sweep <task> --timezone <zone>
 
 Cases: no brain in reach, a company (this repository becomes the brain and the top
 owner's workspace is created); a brain in reach, a person (this repository becomes their
@@ -24,12 +24,12 @@ which does not catch up and says so.
 A workspace's routines run on one computer through one scheduler (`routine.HOST`): the build registers
 them only where nothing else runs them, `--routines-here` moves them to this computer once the probe
 passed there, and `--pause` (until 06:00 the next morning, or `--until`) and `--resume` hold them.
-While they run in the cloud, no computer registers them, and a pause reaches the cloud once the sync
-lands it. `--routines-cloud --check` names what keeps them from moving there, and the two tasks they
-already run as when they run there, or that a proof stopped them; `--routines-cloud` with the two
-tasks and the person's zone moves them, once the newest proof run of each task showed every refusal.
-While they run there, `--check` names the two tasks and when each chain last wrote a run line, or that
-a proof stopped them.
+The sweep alone can run in the cloud, read-only: the computer the move ran on keeps the daily chain,
+which sends the mail, and a pause reaches the cloud once the sync lands it. `--routines-cloud --check`
+names what keeps the sweep from moving there, and the task it already runs as, or that a proof stopped
+it; `--routines-cloud` with the task and the person's zone moves it, once the task's newest proof run
+showed every refusal. While it runs there, `--check` names the task and when the sweep last wrote a
+run line, or that a proof stopped it.
 """
 from __future__ import annotations
 
@@ -1536,9 +1536,11 @@ def register_sync(report, root, name, minutes, offline, dry_run) -> dict:
         else:
             line = cron_line(minutes, sys.executable, script, root, task, os.environ.get("PATH", ""))
             create, check = ["crontab", "-"], ["crontab", "-l"]
-        write_text(root / "_meta" / "state" / "sync-task.txt",
-                   " ".join(create) + "\n" + line + "\n" + "check: " + " ".join(check) + "\n")
-        report.add(f"sync task {name}", True, "cat _meta/state/sync-task.txt", "offline: command recorded")
+        if not dry_run:
+            write_text(root / "_meta" / "state" / "sync-task.txt",
+                       " ".join(create) + "\n" + line + "\n" + "check: " + " ".join(check) + "\n")
+        report.add(f"sync task {name}", True, "cat _meta/state/sync-task.txt",
+                   "dry run: nothing recorded" if dry_run else "offline: command recorded")
         return {"name": task, "kind": kind, "line": None if kind == "launchd" else line,
                 "create": create, "check": check, "root": str(root)}
     record = register_task(report, f"sync task {name}", task, root, args, minutes=minutes, dry_run=dry_run)
@@ -1554,8 +1556,8 @@ IN_THE_APP = ("Your routines run as scheduled tasks in the Claude app, so this c
               "say 'run my routines here' to move them to it")
 UNCLEAR_HOST = ("Which computer runs your routines is unclear, so none of them runs; say 'run my routines here' on the "
                 "computer that should run them")
-IN_THE_CLOUD = ("Your routines run in the cloud, as two scheduled tasks; this computer's sync lands what they leave "
-                "open")
+IN_THE_CLOUD = ("Your sweep runs in the cloud as a scheduled task, and your daily on the computer it moved from; this "
+                "computer's sync lands what the sweep leaves open")
 
 
 def _onboard_state(workspace) -> dict:
@@ -1585,7 +1587,10 @@ def routines_elsewhere(workspace) -> Step | None:
     if record.get("unclear"):
         return Step(ELSEWHERE_STEP, True, check, UNCLEAR_HOST)
     if record["runner"] == "cloud":
-        return Step(ELSEWHERE_STEP, True, check, IN_THE_CLOUD)
+        if record.get("computer") not in (None, routine.this_machine()):
+            return Step(ELSEWHERE_STEP, True, check, IN_THE_CLOUD)
+        # the computer the move ran on keeps its tasks (its sweep steps aside), where its scheduler held them
+        return Step(ELSEWHERE_STEP, True, check, IN_THE_APP) if _harness_checks(workspace) else None
     if record["machine"] != routine.this_machine():
         return Step(ELSEWHERE_STEP, True, check, ELSEWHERE.format(name=record["name"] or "another computer"))
     return Step(ELSEWHERE_STEP, True, check, IN_THE_APP) if record["runner"] != "os" else None
@@ -1694,7 +1699,9 @@ def _take_back(report, workspace: Path, records: list, before: dict) -> None:
     import offboard
     import routine
     record = routine.host(workspace) or {}
-    if not (record.get("machine") == routine.this_machine() and record.get("runner") == "os"):
+    here = (record.get("machine") == routine.this_machine() and record.get("runner") == "os") or (
+        record.get("runner") == "cloud" and record.get("computer") == routine.this_machine())
+    if not here:
         for task in records:
             if isinstance(task, dict) and task.get("name"):
                 offboard.remove_sync_task(report, workspace, {"routine_tasks": [task]}, task["name"], False,
@@ -1708,8 +1715,8 @@ def _take_back(report, workspace: Path, records: list, before: dict) -> None:
 
 
 PAUSE_HOUR = 6   # a pause without an end lasts until this hour the next morning
-PAUSE_CLOUD = ("The cloud's next run reads the pause once this computer's sync lands it; away from this computer, turn "
-               "the two tasks off on claude.ai instead.")
+PAUSE_CLOUD = ("The cloud's next sweep reads the pause once this computer's sync lands it; away from this computer, "
+               "turn its task off on claude.ai instead.")
 PAUSE_ELSEWHERE = ("None of your routines' tasks is on this computer, so nothing was paused. Say 'pause my routines' "
                    "on the computer that runs them.")
 
@@ -1796,21 +1803,24 @@ def pause_routines(workspace, until: str | None = None, now=None, resume: bool =
 
 
 # ----- run my routines in the cloud --------------------------------------------------------------
-# Two scheduled tasks on claude.ai, the sweep and the daily chain, run the routines while every computer is closed
-# (docs/design/2026-10-27-cloud-routines-design.md, 4.6 and 4.10). This computer never starts them: the agent
-# renders, creates and proves them; here the move is checked first and recorded last, only once a proof run of each
-# task, landed on main, showed every refusal the computer's profile makes.
-CLOUD_CHAINS = ("sweep", "daily")
+# A scheduled task on claude.ai runs the sweep, read-only, while every computer is closed; the daily chain stays on
+# the computer (docs/design/2026-10-28-cloud-sweep-design.md). This computer never starts it: the agent renders,
+# creates and proves it; here the move is checked first and recorded last, only once a proof run of the task,
+# landed on main, showed every refusal.
+CLOUD_CHAINS = ("sweep",)
 CLOUD_PROOF = "cloud-proof"   # the run line a proof run lands (`cloud.py proof-line`)
 PROOF_HOURS = 48   # a proof older than this proves a task as it was, not as it is
-CLOUD_REFUSALS = {"sweep": ("guard", "edit", "tool"), "daily": ("guard", "edit", "tool", "send")}
+# What a proof run owes: an edit of a protected file, an app tool it was not given and a request past the network limit
+# refused (its proof line), and a protected file it changed with a command kept off main (`landing`: refused at once,
+# its line's `shell`, or left out by its landing, that landing's own sync line).
+CLOUD_REFUSALS = {"sweep": ("edit", "tool", "network", "landing")}
 CLOUD_CLEAR = "Nothing keeps your routines from moving to the cloud."
-CLOUD_HISTORY = ("Your history is still being read, and only a computer reads it: your routines can move to the cloud "
+CLOUD_HISTORY = ("Your history is still being read, and only a computer reads it: your sweep can move to the cloud "
                  "once it is done.")
-CLOUD_NO_GRANT = ("None of your apps is granted to your routines yet, so the cloud's tasks would have nothing to read: "
+CLOUD_NO_GRANT = ("None of your apps is granted to your routines yet, so the cloud's sweep would have nothing to read: "
                   "connect your apps and run the build again first.")
 CLOUD_NO_GH = "GitHub's command line is not on this computer, so your repositories could not be checked."
-CLOUD_NO_REPO = "{what} has no repository on GitHub, so the cloud's tasks cannot attach it."
+CLOUD_NO_REPO = "{what} has no repository on GitHub, so the cloud's task cannot attach it."
 CLOUD_UNREAD = ("The repository {slug} ({what}) could not be read on GitHub: check that gh is signed in on this "
                 "computer (gh auth status).")
 CLOUD_UNPROTECTED = ("The repository {slug} ({what}) does not protect main, so a run acting as you could push to it "
@@ -1822,41 +1832,42 @@ CLOUD_ADMINS = ("The repository {slug} ({what}) lets your own account push to ma
                 "allow bypassing the above settings' for main.")
 CLOUD_PROTECTION_UNREAD = "Whether the repository {slug} ({what}) holds your own account to the checks could not be read."
 CLOUD_NO_PROOF = ("The {chains} {have} no proof run from the last {hours} hours that shows every refusal, so your "
-                  "routines stay where they run.")
-# What each refusal a proof run tries is, in the person's words (`cloud.py proof-line`: guard, edit, tool, send).
-REFUSED = {"guard": "a command outside its allowed list", "edit": "a change to a protected file",
-           "tool": "an app tool it was not given", "send": "mail to anyone but you"}
-CLOUD_UNREFUSED = "The {proof} that the cloud does not refuse {what}, so your routines stay where they run."
-CLOUD_STOPPED = ("Your routines are stopped: the {proof} that the cloud no longer refuses {what}, so its two tasks stay "
-                 "off; say 'run my routines here' to run them on this computer.")
+                  "sweep stays where it runs.")
+# What each refusal a proof run tries is, in the person's words (CLOUD_REFUSALS).
+REFUSED = {"edit": "a change to a protected file", "tool": "an app tool it was not given",
+           "network": "a request to a host outside its network limit",
+           "landing": "a protected file changed with a command, on its way to main"}
+CLOUD_UNREFUSED = "The {proof} that the cloud does not refuse {what}, so your sweep stays where it runs."
+CLOUD_STOPPED = ("Your sweep is stopped: the {proof} that the cloud no longer refuses {what}, so its task stays off; say "
+                 "'run my routines here' to run it on this computer again.")
 CLOUD_NOT_RENDERED = ("The cloud's {chain} task was not rendered on this computer, so the repositories and the apps it "
-                      "was given are unknown: render both tasks again, then move them.")
-CLOUD_MOVED = ("Your routines run in the cloud from now on, as the scheduled tasks {sweep} (the sweep) and {daily} (the "
-               "daily); every computer's own runs step aside as soon as they read the move, which this computer's sync "
-               "lands.")
-CLOUD_OFF_FIRST = ("Your routines run in the cloud: turn off its two scheduled tasks first, {sweep} (the sweep) and "
-                   "{daily} (the daily), so they never run beside this computer's.")
-CLOUD_ALREADY = ("Your routines already run in the cloud, as the scheduled tasks {sweep} (the sweep) and {daily} (the "
-                 "daily): prove and update those two rather than making new ones.")
-CLOUD_EARLIER = ("The cloud's earlier {tasks} {ids} still {run} beside the new ones: turn {them} off now, so no chain "
-                 "runs twice.")
-CLOUD_STAY = "Your routines stay where they run: {why}."   # a move refused for what it was given
+                      "was given are unknown: render it again, then move it.")
+CLOUD_MOVED = ("Your sweep runs in the cloud from now on, as the scheduled task {sweep}, and your daily stays on this "
+               "computer; every other computer's runs step aside as soon as they read the move, which this computer's "
+               "sync lands.")
+CLOUD_OFF_FIRST = ("Your sweep runs in the cloud: turn off its scheduled task {sweep} first, so it never runs beside this "
+                   "computer's.")
+CLOUD_ALREADY = ("Your sweep already runs in the cloud, as the scheduled task {sweep}: prove and update that one rather "
+                 "than making a new one.")
+CLOUD_EARLIER = ("The cloud's earlier {tasks} {ids} still {run} beside the new one: turn {them} off now, so the sweep "
+                 "never runs twice.")
+CLOUD_STAY = "Your sweep stays where it runs: {why}."   # a move refused for what it was given
 CLOUD_STEP = "routines in the cloud"   # begins "routine": the progress page files it under Routines
-# The run lines each chain writes: the chain tool's own (`chain.py`, the names the sync's `not_started` reads) and
-# the agent's (the sweep's routine prompt, the briefing's).
-CLOUD_RUN_LINES = {"sweep": ("sweep_chain", "sweep-chain"), "daily": ("daily", "daily-chain")}
-CLOUD_RUNS = ("Your routines run in the cloud, as the scheduled tasks {sweep} (the sweep) and {daily} (the daily). "
-              "{lines}.")
-CLOUD_STOPPED_TASKS = "The cloud's two tasks are {sweep} (the sweep) and {daily} (the daily). {lines}."
+# The run lines the sweep writes: the chain tool's own (`chain.py`, the name the sync's `not_started` reads) and the
+# agent's (the routine prompt's).
+CLOUD_RUN_LINES = {"sweep": ("sweep_chain", "sweep-chain")}
+CLOUD_RUNS = "Your sweep runs in the cloud, as the scheduled task {sweep}, and your daily on your computer. {lines}."
+CLOUD_STOPPED_TASKS = "The cloud's task is {sweep}. {lines}."
 CLOUD_RAN = "the {chain}'s newest run line was written {ago}"
 CLOUD_NOT_RAN = "the {chain} has written no run line yet"
-CLOUD_NEVER_RAN = "Neither has written a run line yet"
+CLOUD_NEVER_RAN = "It has written no run line yet"
 CLOUD_TASK_ID = "{ids} is not the id of a scheduled task on claude.ai, which starts with trig_"
 CLOUD_TASK_IDS = "{ids} are not the ids of scheduled tasks on claude.ai, which start with trig_"
-CLOUD_ONE_TASK = "the sweep and the daily are two scheduled tasks, so they need two ids, not {id} twice"
 CLOUD_ZONE = "{zone} is not a time zone: give its IANA name, as Europe/Amsterdam"
-CLOUD_RENDER = ("the tasks rendered on this computer name their repositories or their apps in a way the move cannot "
-                "keep: render both tasks again")
+CLOUD_NOT_HERE = ("your routines do not run on this computer, and the daily stays on the computer the sweep moves from: "
+                  "move it from the computer that runs them, or say 'run my routines here' first")
+CLOUD_RENDER = ("the task rendered on this computer names its repositories or its apps in a way the move cannot keep: "
+                "render it again")
 # A repository url names one on GitHub only with a scheme (https://, ssh://, a cloud run's http:// proxy) or in git's
 # user@host: form; anything else (/home/ada/brain, C:\Users\ada\brain, ../brain, file://...) is a folder on a computer.
 REMOTE_URL = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*)://|[^\s/\\@:]+@[^\s/\\@:]+:")
@@ -1878,8 +1889,8 @@ def zone_unknown(zone) -> bool:
 
 
 def _cloud_tasks(workspace) -> dict | None:
-    """The two scheduled tasks the routines run as while they run in the cloud ({"sweep", "daily"}: their ids); None
-    for any other record, or none."""
+    """The scheduled task the sweep runs as while it runs in the cloud ({"sweep": its id}); None for any other record,
+    or none."""
     import routine
     record = routine.host(workspace)
     if not record or record.get("unclear") or record.get("runner") != "cloud":
@@ -1975,11 +1986,28 @@ def _admins_held(gh, slug: str, what: str) -> str | None:
         slug=slug, what=what)
 
 
+def runs_here(workspace) -> bool:
+    """Whether this computer runs the routines, so it can keep the daily once the sweep moves: the record names it as
+    the host, or, while the sweep runs in the cloud, as the computer the move ran on (or none); with no record, the
+    routines' tasks read back here (`_runs_here`)."""
+    import routine
+    record = routine.host(workspace)
+    if record is None:
+        return _runs_here(workspace) is not None
+    if record.get("unclear"):
+        return False
+    if record["runner"] == "cloud":
+        return record.get("computer") in (None, routine.this_machine())
+    return record["machine"] == routine.this_machine()
+
+
 def cloud_grant(workspace) -> dict:
-    """The apps a move to the cloud grants the routines, {"read", "write", "send"}: what this computer's verdicts and
+    """The apps a move to the cloud grants the routines, {"read", "write", "send"} (the sweep's task takes the read
+    tools alone, `cloud.task_grant`): what this computer's verdicts and
     probe give (`routine.grant`). A computer with no probe of its own, while the routines run in the cloud, takes the
-    grant the record kept at the move instead: there the build proves nothing, so a computer that replaced the one
-    they moved from has never probed, and it moves them again on what they were moved with."""
+    grant the record kept at the move instead (a record that names no computer, or the move's own computer when
+    its probe is gone): there the build proves nothing. A computer that replaced the one they moved from is refused
+    by `runs_here` until the routines run there."""
     import routine
     record = routine.host(workspace) or {}
     if not routine.read_probe() and record.get("runner") == "cloud" and isinstance(record.get("grant"), dict):
@@ -1990,7 +2018,8 @@ def cloud_grant(workspace) -> dict:
 
 def cloud_blockers(workspace, gh=None) -> list:
     """`--routines-cloud --check`: what keeps the routines from moving to the cloud, one sentence each, in this order:
-    the history still being read (only a computer reads it, `backfill.active`); no app granted to the routines
+    the history still being read (only a computer reads it, `backfill.active`); the routines not running on this
+    computer (`runs_here`, CLOUD_NOT_HERE: the daily stays on the move's computer); no app granted to the routines
     (`cloud_grant`); a space the routines run over, or a space one of them mounts, with no repository on GitHub
     (the cloud attaches GitHub repositories only); a repository whose `main` lets the person's own account past the
     checks (`enforce_admins` off, or no protection at all), or that could not be read. `gh` is the GitHub command line
@@ -2002,7 +2031,9 @@ def cloud_blockers(workspace, gh=None) -> list:
     said = []
     if backfill.active(workspace):
         said.append(CLOUD_HISTORY)
-    if not any(cloud_grant(workspace).values()):
+    if not runs_here(workspace):
+        said.append(CLOUD_STAY.format(why=CLOUD_NOT_HERE))
+    if not cloud_grant(workspace)["read"]:
         said.append(CLOUD_NO_GRANT)
     repos, missing = _cloud_repositories(workspace)
     said += missing
@@ -2019,19 +2050,34 @@ def cloud_blockers(workspace, gh=None) -> list:
 def _proof_lines(workspace) -> dict:
     """{chain: its `cloud-proof` lines, oldest first, each as (its moment, the line)} in this checkout's runs.jsonl
     (where the sync brings them from main); two lines from the same second keep the file's order. A line that cannot
-    be read or dated is passed over."""
+    be read or dated is passed over. Each line gets `landing`: true when its shell change was refused (`shell`), else
+    from the first proof landing's sync line after it (`notes.proof`), which landed it: true when that landing left a
+    protected path out (the proof's change made with a command), false when it left none out; a proof whose landing
+    line is not there yet has none, and proves nothing either way."""
     try:
         text = (Path(workspace) / "_meta" / "state" / "runs.jsonl").read_text(encoding="utf-8", errors="replace")
     except OSError:
         return {}
-    found = {}
+    found, waiting = {}, {}
     for raw in text.splitlines():
         try:
             line = json.loads(raw)
         except ValueError:
             continue
-        if not isinstance(line, dict) or line.get("routine") != CLOUD_PROOF or line.get("chain") not in CLOUD_CHAINS:
+        if not isinstance(line, dict):
             continue
+        notes = line.get("notes") if isinstance(line.get("notes"), dict) else {}
+        if line.get("routine") == "sync" and line.get("cloud") in waiting and notes.get("proof") is True:
+            left_out = notes.get("left_out")   # the proof's own landing, which took its line
+            waiting.pop(line["cloud"])["landing"] = type(left_out) is int and left_out >= 1
+            continue
+        if line.get("routine") != CLOUD_PROOF or line.get("chain") not in CLOUD_CHAINS:
+            continue
+        line = {key: value for key, value in line.items() if key != "landing"}   # the landing's to say, not the run's
+        if line.get("shell") is True:   # the shell change was refused: nothing could reach a landing
+            line["landing"] = True
+        else:
+            waiting[line["chain"]] = line
         try:
             at = pages.parse_iso(line.get("at"))
         except (TypeError, ValueError, OverflowError):   # OverflowError: a moment before the first UTC has
@@ -2073,8 +2119,8 @@ def cloud_unrefused(workspace) -> dict:
 def cloud_stopped(workspace) -> dict:
     """{chain: the refusals the cloud did not make} while the routines are stopped, else {}. Stopped is three things at
     once: the record says they run in the cloud, so every computer's own tasks step aside and are off; and a proof
-    showed a refusal missing that no later proof showed again (`cloud_unrefused`), so the cloud's two tasks, proved
-    in place, stay off. Nothing runs them until the person moves them here. A refusal missing under any other record
+    showed a refusal missing that no later proof showed again (`cloud_unrefused`), so the cloud's task, proved in
+    place, stays off. Nothing runs the sweep until the person moves it here. A refusal missing under any other record
     came from tasks made new for a proof: the routines run where they ran."""
     return cloud_unrefused(workspace) if _cloud_tasks(workspace) else {}
 
@@ -2087,8 +2133,8 @@ def unrefused_words(missing: dict) -> str:
 
 def unrefused_sentence(workspace, missing: dict) -> str:
     """The one sentence a move refused for a refusal missing says: which task's proof showed it, and what the cloud
-    does not refuse (`unrefused_words`). While the routines run in the cloud its two tasks were proved in place, so
-    they are off and stay off: the routines are stopped until the person moves them here (CLOUD_STOPPED); else they
+    does not refuse (`unrefused_words`). While the sweep runs in the cloud its task was proved in place, so it is
+    off and stays off: the sweep is stopped until the person moves it here (CLOUD_STOPPED); else they
     stay where they run (CLOUD_UNREFUSED)."""
     chains = [chain for chain in CLOUD_CHAINS if chain in missing]
     proof = (f"{chains[0]} task's proof run shows" if len(chains) == 1
@@ -2113,17 +2159,17 @@ def _rendered(chain: str) -> dict | None:
 
 
 def routines_cloud(workspace, tasks: dict, timezone: str, now=None) -> tuple:
-    """`--routines-cloud --sweep <task> --daily <task> --timezone <zone>`: (done, what to say, the app's own scheduled
+    """`--routines-cloud --sweep <task> --timezone <zone>`: (done, what to say, the app's own scheduled
     tasks to turn off). A proof that showed a refusal missing is said before anything else (`cloud_unrefused`,
-    `unrefused_sentence`), since the skill keeps the two tasks off for it alone; then a task id or a zone that is
-    none, or one id given for both tasks, in plain words. The routines move only when the history is read (it is
-    read on a computer only), when each task's newest proof run from the last PROOF_HOURS showed every refusal
-    (`cloud_proofs`), and when both were rendered here: the record keeps the space repositories the tasks attach
-    (their roots, never the codebases the sweep task also attaches) and the apps either was given, as `cloud.py
-    trigger` kept them (`_rendered`); the two must grant one app tool at least, or the move is refused
-    (CLOUD_NO_GRANT). Then the cloud is the host (`routine.claim_cloud`, a pause still to come kept): every
-    computer's runs stop by themselves, and the app's scheduled tasks the routines ran as are no longer read back
-    (`routine_checks` goes; their files are returned, as `--routines-here` returns them). A move from the cloud to
+    `unrefused_sentence`), since the skill keeps the task off for it alone; then a task id or a zone that is none,
+    in plain words. The sweep moves only when the history is read (it is read on a computer only), when the task's
+    newest proof run from the last PROOF_HOURS showed every refusal (`cloud_proofs`), and when it was rendered here:
+    the record keeps the space repositories the task attaches (its roots, never the codebases it also attaches) and
+    the apps it was given, as `cloud.py trigger` kept them (`_rendered`); it must read one app at least, or the move
+    is refused (CLOUD_NO_GRANT). Then the cloud is the host (`routine.claim_cloud`, a pause still to come kept):
+    every computer's sweep stops by itself, and so does every routine of any other computer, while this one keeps
+    its daily chain; the app's scheduled task the sweep ran as is no longer read back (its `routine_checks` row
+    goes, and its file is returned, as `--routines-here` returns them). A move from the cloud to
     new tasks (moving again, for a space made since) says which of the earlier tasks still run: the cloud's gate
     cannot tell one task from another, so they run beside the new ones until they are turned off. Nothing is
     written when the move is refused."""
@@ -2139,12 +2185,12 @@ def routines_cloud(workspace, tasks: dict, timezone: str, now=None) -> tuple:
     if wrong:
         ids = (CLOUD_TASK_ID if len(wrong) == 1 else CLOUD_TASK_IDS).format(ids=" and ".join(wrong))
         return False, CLOUD_STAY.format(why=ids), []
-    if tasks["sweep"] == tasks["daily"]:   # one task carries one body: the other chain would run nowhere
-        return False, CLOUD_STAY.format(why=CLOUD_ONE_TASK.format(id=tasks["sweep"])), []
     if zone_unknown(timezone):
         return False, CLOUD_STAY.format(why=CLOUD_ZONE.format(zone=str(timezone)[:40])), []
     if backfill.active(workspace):
         return False, CLOUD_HISTORY, []
+    if not runs_here(workspace):
+        return False, CLOUD_STAY.format(why=CLOUD_NOT_HERE), []
     proved = cloud_proofs(workspace, now)
     unproved = [chain for chain in CLOUD_CHAINS if chain not in proved]
     if unproved:
@@ -2159,18 +2205,28 @@ def routines_cloud(workspace, tasks: dict, timezone: str, now=None) -> tuple:
     roots = list(dict.fromkeys(root for chain in CLOUD_CHAINS for root in renders[chain]["roots"]))
     grant = {part: list(dict.fromkeys(tool for chain in CLOUD_CHAINS for tool in renders[chain]["grant"].get(part, [])))
              for part in routine.GRANT_KEYS}
-    if not any(grant.values()):   # tasks that may call no app would read nothing and send nothing
+    if not grant["read"]:   # a sweep that may read no app would read nothing
         return False, CLOUD_NO_GRANT, []
     earlier = _cloud_tasks(workspace) or {}
     try:
         record = routine.claim_cloud(workspace, tasks, timezone, roots, grant, now)
     except ValueError:   # the ids and the zone were checked above: what is left is the render's repositories or apps
         return False, CLOUD_STAY.format(why=CLOUD_RENDER), []
+    # the prompts rendered again from this version: one rendered before has no tracker step in the daily, which is
+    # the tracker's one writer while the sweep is in the cloud, and its sweep no `--chain sweep` to step aside by
+    import start
+    start.render_routines(workspace, spaceyaml.load(workspace).owner or "the person")
     harness = _harness_checks(workspace)
-    state = _onboard_state(workspace)
-    if state.pop("routine_checks", None) is not None:
+    # the daily's app task keeps running: the sweep's is the one whose task file or folder names it
+    sweep = [r for r in harness if r.get("check") and any(
+        "sweep" in part.lower() for part in Path(_task_file(str(r["check"]))).parts[-2:])]
+    if sweep:
+        state = _onboard_state(workspace)
+        state["routine_checks"] = [r for r in harness if r not in sweep]
+        if not state["routine_checks"]:
+            state.pop("routine_checks")
         write_yaml(workspace / "_meta" / "state" / "onboard.yaml", state)
-    to_turn_off = list(dict.fromkeys(_task_file(str(r.get("check") or "")) for r in harness if r.get("check")))
+    to_turn_off = list(dict.fromkeys(_task_file(str(r.get("check") or "")) for r in sweep if r.get("check")))
     said = CLOUD_MOVED.format(**record["tasks"])
     still = [task for task in dict.fromkeys(earlier.values()) if task not in record["tasks"].values()]
     if still:
@@ -2182,7 +2238,7 @@ def routines_cloud(workspace, tasks: dict, timezone: str, now=None) -> tuple:
 
 def cloud_off_first(workspace) -> str | None:
     """`--routines-here` while the routines run in the cloud: the one sentence, said before this computer proves
-    anything, that names the cloud's two tasks to turn off first (the agent does it; Python cannot reach them), so
+    anything, that names the cloud's task to turn off first (the agent does it; Python cannot reach them), so
     the cloud and this computer never both run a chain. None for any other record."""
     tasks = _cloud_tasks(workspace)
     return CLOUD_OFF_FIRST.format(**tasks) if tasks else None
@@ -2202,11 +2258,10 @@ def ago(then: dt.datetime, now: dt.datetime) -> str:
 
 def routines_in_the_cloud(workspace, now=None) -> Step | None:
     """The plain check's row while the routines run in the cloud (spec section 6), under Routines and failing nothing:
-    the two scheduled tasks the record names, and how long ago each chain's newest run line (CLOUD_RUN_LINES) was
+    the scheduled task the record names, and how long ago the sweep's newest run line (CLOUD_RUN_LINES) was
     written, read from this checkout's runs.jsonl, which the sync keeps at main; a chain with none says so. Whether
-    a chain went silent is the cloud's own begin to put on Needs you, not this row's. Once a proof showed a refusal
-    missing that no later proof showed again (`cloud_unrefused`), the two tasks, proved in place, stay off and the
-    routines run nowhere: the row fails and says so first, with what to say (`unrefused_sentence`). None for any
+    the sweep stopped running is for this row to show by that age. Once a proof showed a refusal missing that no
+    later proof showed again (`cloud_unrefused`), the task, proved in place, stays off and the sweep runs nowhere: the row fails and says so first, with what to say (`unrefused_sentence`). None for any
     other record. A `now` without a zone is this computer's own."""
     import routine
     tasks = _cloud_tasks(workspace)
@@ -2565,6 +2620,9 @@ def run(root, answers, offline=False, org=None, dry_run=False, home=None, user_i
             dst, prepo = create_space(report, root, pid, pid, offline, org, home, tpl, dry_run)
             if dst:
                 created.append(("project", project, dst, prepo))
+        if dry_run:   # what would be created is said above; nothing is filled, registered or written
+            report.add("dry run", True, "onboard.py without --dry-run", "nothing written")
+            return report
         setup_space(report, root, "brain", space_values(answers, name, top["name"], top["email"],
                                                         "everyone", None), [])
         domains = parse_pairs(answers.get("domains"), "id", "owner", top["name"])
@@ -2617,6 +2675,9 @@ def run(root, answers, offline=False, org=None, dry_run=False, home=None, user_i
                 add_mount(report, dst, brain_repo, "brain", dry_run)
             report.spaces[spaceyaml.load(dst).name] = dst
     else:
+        if dry_run:   # a person's case writes into this space alone, from here on
+            report.add("dry run", True, "onboard.py without --dry-run", "nothing written")
+            return report
         name = slugify(answers.get("slug") or answers.get("name") or answers.get("owner") or root.name)
         brain_repo, path = resolve_brain(root, brain or answers.get("brain") or None, offline)
         # a person joining later mounts every project they are crew on, as the company case does
@@ -2893,8 +2954,9 @@ def check(root) -> list:
     task a build left behind is removed (`offboard.remove_probe_task`), with its step; not while a setup
     holds this computer's start lock, since its probe task is then the one it is running. Routines that
     another computer runs are one row that says so: its tasks are not this computer's to read back. Routines
-    that run in the cloud are one row too, with the two tasks and when each chain last wrote a run line
-    (`routines_in_the_cloud`); it fails only once a proof stopped them."""
+    the sweep that runs in the cloud is one row too, with its task and when it last wrote a run line
+    (`routines_in_the_cloud`), which fails only once a proof stopped it; the computer the move ran on reads its
+    own routines back as well, its daily among them."""
     import onboarding_page
     import routine
     root = Path(root).resolve()
@@ -2926,9 +2988,11 @@ def check(root) -> list:
     elif task.get("check"):
         steps.append(task_step("sync task", task))
     record = routine.host(root)
-    if record and not record.get("unclear") and record["machine"] != routine.this_machine():
-        steps.append(routines_in_the_cloud(root) if record["runner"] == "cloud" else routines_elsewhere(root))
-    else:
+    away = bool(record) and not record.get("unclear") and record["machine"] != routine.this_machine()
+    cloud = away and record["runner"] == "cloud"
+    if away:
+        steps.append(routines_in_the_cloud(root) if cloud else routines_elsewhere(root))
+    if not away or (cloud and record.get("computer") == routine.this_machine()):
         scheduled = routine_schedule(root)
         if not scheduled and not state.get("offline") and any((root / ROUTINE_PROMPTS).glob("*.md")):
             scheduled = [unscheduled_step(root)]   # rendered is not scheduled: done only once it reads back
@@ -3434,10 +3498,9 @@ def main(argv=None) -> int:
                     "own when it names no zone")
     ap.add_argument("--resume", action="store_true", help="end a pause of the routines")
     ap.add_argument("--routines-cloud", action="store_true", dest="routines_cloud",
-                    help="run this workspace's routines in the cloud: with --check, what keeps them from moving; with "
-                         "--sweep, --daily and --timezone, the move, once a proof run of each task showed every refusal")
+                    help="run this workspace's sweep in the cloud: with --check, what keeps it from moving; with "
+                         "--sweep and --timezone, the move, once a proof run of the task showed every refusal")
     ap.add_argument("--sweep", metavar="TASK", help="with --routines-cloud: the sweep's scheduled task (trig_...)")
-    ap.add_argument("--daily", metavar="TASK", help="with --routines-cloud: the daily chain's scheduled task (trig_...)")
     ap.add_argument("--timezone", metavar="ZONE", help="with --routines-cloud: the person's IANA zone (Europe/Amsterdam)")
     args = ap.parse_args(argv)
     if (args.until and not args.pause) or sum(map(bool, (args.pause, args.resume, args.routines_here,
@@ -3445,10 +3508,14 @@ def main(argv=None) -> int:
         print("onboard: --until goes with --pause only, and --pause, --resume, --routines-here and --routines-cloud are "
               "given one at a time")
         return 2
-    moving = (args.sweep, args.daily, args.timezone)
+    moving = (args.sweep, args.timezone)
     if (args.routines_cloud or any(moving)) and (not args.routines_cloud or args.check == any(moving)
                                                  or any(moving) != all(moving)):
-        print("onboard: --routines-cloud takes --check, or --sweep, --daily and --timezone together")
+        print("onboard: --routines-cloud takes --check, or --sweep and --timezone together")
+        return 2
+    if args.dry_run and (args.routines_cloud or args.routines_here or args.pause or args.resume or args.connect
+                         or args.invite):
+        print("onboard: --dry-run goes with setting up a space or --register-sync only")
         return 2
     if args.routines_cloud:   # it registers no task
         root = Path(args.root).resolve()
@@ -3456,12 +3523,12 @@ def main(argv=None) -> int:
             blockers = cloud_blockers(root)
             print("\n".join(blockers) or CLOUD_CLEAR)
             running, stopped = _cloud_tasks(root), cloud_stopped(root)
-            if stopped:   # the two tasks are off and stay off: nothing runs the routines until they move here
+            if stopped:   # the task is off and stays off: nothing runs the sweep until it moves here
                 print(unrefused_sentence(root, stopped))
-            elif running:   # moving again (a space made since): the two tasks they run as are proved, never made twice
+            elif running:   # moving again (a space made since): the task it runs as is proved, never made twice
                 print(CLOUD_ALREADY.format(**running))
             return 1 if blockers else 0
-        done, said, to_turn_off = routines_cloud(root, {"sweep": args.sweep, "daily": args.daily}, args.timezone)
+        done, said, to_turn_off = routines_cloud(root, {"sweep": args.sweep}, args.timezone)
         print(said)
         for task in to_turn_off:   # the app's own scheduled tasks that ran them: the agent turns each off
             print(f"turn off: {task}")

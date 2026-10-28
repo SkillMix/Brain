@@ -1,6 +1,6 @@
 ---
 name: tracker
-description: The one writer of the tracker (Linear, GitHub issues or any tracker connector). Sessions queue a request ("make an issue for X", "track this", "add a ticket") with tracker.py queue; the scheduled tracker step creates the queued issues with the connector and records their keys. Use when someone asks for a tracker issue, or as the tracker step of the sweep chain.
+description: The one writer of the tracker (Linear, GitHub issues or any tracker connector). Sessions queue a request ("make an issue for X", "track this", "add a ticket") with tracker.py queue; the scheduled tracker step creates the queued issues with the connector and records their keys. Use when someone asks for a tracker issue, or as the tracker step of the sweep chain (of the daily chain on the computer while the sweep runs in the cloud, which writes to no app).
 ---
 
 # tracker: one writer, never a session

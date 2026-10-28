@@ -1,11 +1,12 @@
-"""The computer's leg (spec 4.5): while a workspace's routines run in the cloud, the computer's sync
+"""The computer's leg (spec 4.5): while a workspace's sweep runs in the cloud, the computer's sync
 does what only the computer has. It reads the cloud's run lines before it says a chain did not
 start (and says nothing while it cannot merge main), scans the transcripts at most every six hours,
-runs template sync weekly, writes AGENTS.md again when it is stale, adopts a cloud pull request that
-nothing could merge, and names a space the cloud does not read; two computers that both do so never
-stop each other's merge. Against a throwaway bare origin and clones, as in test_sync.py; GitHub is
-a fake that answers the REST routes. Two of the cloud landing's own guards are here too: a private
-file staged by force never lands, and its `git status` never runs a mount's file monitor."""
+adopts a cloud pull request that nothing could merge, and names a space the cloud does not read; two
+computers that both do so never stop each other's merge. Template sync and AGENTS.md are the daily
+chain's, which the computer the record names keeps: the leg does neither. Against a throwaway bare
+origin and clones, as in test_sync.py; GitHub is a fake that answers the REST routes. Two of the
+cloud landing's own guards are here too: a private file staged by force never lands, and its
+`git status` never runs a mount's file monitor."""
 import datetime as dt
 import json
 import os
@@ -17,7 +18,6 @@ from urllib.parse import unquote
 import pytest
 import yaml
 
-import agents_md
 import chain
 import ghrest
 import pages
@@ -31,9 +31,8 @@ from test_sync import (git, mounted, platform_merges, remote_space, repo,  # noq
 from test_sync_cloud import CloudGh, begin, land
 from test_sync_merge import SOURCE, ClosedPulls, clone_of, cloud_branch, commit, on_main
 
-TASKS = {"sweep": "trig_01AAAAAAAA", "daily": "trig_01BBBBBBBB"}
-GRANT = {"read": ["mcp__mail__get_message"], "write": ["mcp__tracker__create_issue"],
-         "send": ["mcp__mail__send_message"]}
+TASKS = {"sweep": "trig_01AAAAAAAA"}
+GRANT = {"read": ["mcp__mail__get_message"], "write": [], "send": []}
 ITEMS = Path("_inbound") / "needs-you" / "sync.yaml"
 STALE = Path("_meta") / "state" / "stale.yaml"
 SESSIONS = Path("_meta") / "state" / "sessions.yaml"
@@ -361,9 +360,9 @@ def test_two_computers_that_both_scan_never_wedge_on_the_sessions_file(repo, tmp
 
 def test_only_the_computer_the_record_names_does_the_legs_writing(repo, tmp_path, monkeypatch):
     """The move names the computer that keeps the leg (the record's `computer`, its id): here the desktop, where it
-    ran. Another computer's sync still says, after the merge, when a chain did not start, but scans nothing, runs no
-    template sync, writes no AGENTS.md, adopts nothing and names no space: two computers would write the same files
-    and conflict on them."""
+    ran. Another computer's sync still says, after the merge, when a chain did not start, but scans nothing, adopts
+    nothing and names no space: two computers would write the same files and conflict on them. Neither runs template
+    sync or writes AGENTS.md: the desktop's daily does."""
     with_transcripts(repo, tmp_path / "transcripts")
     (repo / "_meta" / "state" / "onboard.yaml").write_text("at: 2026-10-01T08:00:00Z\n", encoding="utf-8")
     landed(repo, "onboarded")
@@ -389,16 +388,15 @@ def test_only_the_computer_the_record_names_does_the_legs_writing(repo, tmp_path
     monkeypatch.setattr(routine, "this_machine", lambda: "m-desktop")
     calls.clear()
     assert sync_run(repo, monkeypatch, gh, "--no-push") == 0
-    assert calls == ["not_started", "scan", "template"] and run_lines(repo)[-1]["notes"]["adopted"] == [7]
-    assert agents_md.check(repo)
+    assert calls == ["not_started", "scan"] and run_lines(repo)[-1]["notes"]["adopted"] == [7]
+    assert not (repo / "AGENTS.md").exists()
     assert [i["text"] for i in items(repo)] == [
         "Your routines in the cloud do not read ada/ada-harbor: it was made after you moved them."]
 
 
-def test_a_pause_stops_the_scan_template_sync_and_agents_md_not_the_adoption(repo, tmp_path, monkeypatch):
+def test_a_pause_stops_the_scan_not_the_adoption(repo, tmp_path, monkeypatch):
     """Paused, the computer's leg leaves what the paused chains would have done (spec 4.6: a pause works as it does
-    today), AGENTS.md among it, which their status would have written; a cloud pull request nothing merges is still
-    adopted, and a chain that did not start still named."""
+    today); a cloud pull request nothing merges is still adopted, and a chain that did not start still named."""
     with_transcripts(repo, tmp_path / "transcripts")
     (repo / "_meta" / "state" / "onboard.yaml").write_text("at: 2026-10-01T08:00:00Z\n", encoding="utf-8")
     landed(repo, "onboarded")
@@ -445,179 +443,23 @@ def test_an_unchanged_scan_leaves_the_sessions_file_alone(tmp_path):
     assert sorted(r["id"] for r in rows) == ["s-one", "s-two"] and path.stat().st_mtime != old
 
 
-# ----- template sync ---------------------------------------------------------------------------------------
-def test_template_sync_runs_weekly_from_the_computers_sync(repo, tmp_path, monkeypatch):
-    (repo / "_meta" / "state" / "onboard.yaml").write_text("at: 2026-10-01T08:00:00Z\n", encoding="utf-8")
-    landed(repo, "onboarded")
-    in_the_cloud(repo)
-    synced = []
-
-    def guarded(root, source=None):
-        synced.append(Path(root).resolve())
-        space = sync.spaceyaml.load(root)
-        with (Path(root) / "_meta" / "state" / "runs.jsonl").open("a", encoding="utf-8", newline="\n") as fh:
-            fh.write(json.dumps({"routine": "template-sync", "at": pages.iso(space.now()), "space": space.name,
-                                 "cost_tokens": 0, "notes": {"guarded": True}}) + "\n")
-        return template_sync.Report(updated=["_meta/tools/x.py"])
-    monkeypatch.setattr(template_sync, "guarded", guarded)
-    start = at(dt.datetime.now(dt.timezone.utc), monkeypatch)
-    assert sync_run(repo, monkeypatch, lambda *args: None, "--no-push") == 0
-    assert synced == [repo.resolve()]
-    assert run_lines(repo)[-1]["notes"]["template_sync"] == {"added": 0, "updated": 1, "reverted": False}
-    at(start + dt.timedelta(days=1), monkeypatch)
-    assert sync_run(repo, monkeypatch, lambda *args: None, "--no-push") == 0
-    assert len(synced) == 1, "weekly"
-    at(start + dt.timedelta(days=7, minutes=1), monkeypatch)
-    assert sync_run(repo, monkeypatch, lambda *args: None, "--no-push") == 0
-    assert len(synced) == 2
-
-
-def test_a_template_sync_that_fails_is_tried_again_a_day_later_not_every_run(repo, tmp_path, monkeypatch):
-    (repo / "_meta" / "state" / "onboard.yaml").write_text("at: 2026-10-01T08:00:00Z\n", encoding="utf-8")
-    landed(repo, "onboarded")
-    in_the_cloud(repo)
-    tried = []
-
-    def offline(root, source=None):
-        tried.append(1)
-        raise OSError("the template could not be fetched")
-    monkeypatch.setattr(template_sync, "guarded", offline)
-    start = at(dt.datetime.now(dt.timezone.utc), monkeypatch)
-    assert sync_run(repo, monkeypatch, lambda *args: None, "--no-push") == 1
-    assert run_lines(repo)[-1]["notes"]["errors"] == ["template sync failed: OSError"]
-    at(start + dt.timedelta(minutes=15), monkeypatch)
-    assert sync_run(repo, monkeypatch, lambda *args: None, "--no-push") == 0
-    assert len(tried) == 1
-    at(start + dt.timedelta(days=1, minutes=1), monkeypatch)
-    sync_run(repo, monkeypatch, lambda *args: None, "--no-push")
-    assert len(tried) == 2
-
-
-def test_two_computers_that_both_sync_the_template_never_wedge_on_its_provenance(repo, tmp_path, monkeypatch):
-    """Where the record names no computer for the leg, two computers read the same template-sync run line and fall
-    due together. A laptop that synced and committed before the desktop's sync landed still merges main a quarter of
-    an hour, an hour and a day later: the two provenance files differ only in when each synced, and the file keeps
-    this checkout's side (`MERGE_RULES`)."""
-    provenance = repo / "_meta" / "state" / "template-version.yaml"
-    write(repo / "_meta" / "state" / "onboard.yaml", "at: 2026-10-01T08:00:00Z\n")
-    write(provenance, yaml.safe_dump({"repo": "ada/template", "commit": "abc", "synced_at": "2026-10-01T08:00:00Z",
-                                      "files": {}}, sort_keys=False))
-    landed(repo, "onboarded")
-    in_the_cloud(repo, named=False)
-
-    def guarded(root, source=None):   # a release the space stays on: the provenance is written again, as it always is
-        space = sync.spaceyaml.load(root)
-        write(Path(root) / "_meta" / "state" / "template-version.yaml",
-              yaml.safe_dump({"repo": "ada/template", "commit": "abc", "synced_at": pages.iso(space.now()),
-                              "files": {}}, sort_keys=False))
-        with (Path(root) / "_meta" / "state" / "runs.jsonl").open("a", encoding="utf-8", newline="\n") as fh:
-            fh.write(json.dumps({"routine": "template-sync", "at": pages.iso(space.now()), "space": space.name,
-                                 "cost_tokens": 0, "notes": {"guarded": True}}) + "\n")
-        return template_sync.Report()
-    monkeypatch.setattr(template_sync, "guarded", guarded)
-    laptop = clone_of(tmp_path, "laptop")
-    now = dt.datetime.now(dt.timezone.utc)
-    for clone, minutes in ((laptop, 0), (repo, 7)):   # each computer's tick, before the other's sync landed
-        at(now + dt.timedelta(minutes=minutes), monkeypatch)
-        assert sync_run(clone, monkeypatch, lambda *args: None, "--no-push", "--min-age-minutes", "0") == 0
-        assert "template_sync" in run_lines(clone)[-1]["notes"]
-    git(repo, "push", "-q", "origin", "HEAD:main")   # the desktop's lands first
-    for minutes in (15, 60, 60 * 30):
-        at(now + dt.timedelta(minutes=minutes), monkeypatch)
-        assert sync_run(laptop, monkeypatch, lambda *args: None, "--no-push", "--min-age-minutes", "0") == 0
-        notes = run_lines(laptop)[-1]["notes"]
-        assert "conflict" not in notes, notes
-        assert git(laptop, "merge-base", "--is-ancestor", "origin/main", "HEAD", check=False).returncode == 0
-    kept = yaml.safe_load((laptop / "_meta" / "state" / "template-version.yaml").read_text(encoding="utf-8"))
-    assert kept["synced_at"] == pages.iso(now.replace(microsecond=0))   # the laptop's own side
-
-
-# ----- AGENTS.md ----------------------------------------------------------------------------------------------
+# ----- template sync and AGENTS.md: the daily's, on the computer ---------------------------------------------
 OLDER = "# Operating contract: ada\n\nAs an older release rendered it.\n"
 
 
-def an_older_contract(clone: Path) -> None:
-    """AGENTS.md on main as an older release of agents_md.py rendered it."""
-    write(clone / "AGENTS.md", OLDER)
-    landed(clone, "an older AGENTS.md")
-    assert not agents_md.check(clone)
-
-
-def test_a_stale_agents_md_is_written_again_by_the_computer_the_record_names(repo, tmp_path, monkeypatch):
-    """While the routines run in the cloud no status runs on the computer, and a cloud run puts back the AGENTS.md its
-    own status wrote: the computer that keeps the leg writes it again. It is protected, so it rides this computer's
-    protected pull request, which the gate lands when main's agents_md.py renders it under the approval of the
-    release the space is on, and otherwise the person's click."""
-    an_older_contract(repo)
+def test_the_leg_leaves_template_sync_and_agents_md_to_the_daily_on_the_computer(repo, monkeypatch):
+    """The computer the record names keeps its daily chain, which runs template sync and whose status writes AGENTS.md:
+    the leg does neither, however stale AGENTS.md is and however long ago the template was synced."""
+    write(repo / "_meta" / "state" / "onboard.yaml", "at: 2026-10-01T08:00:00Z\n")
+    write(repo / "AGENTS.md", OLDER)
+    landed(repo, "onboarded, with an older AGENTS.md")
     in_the_cloud(repo)
-    gh = LegGh(tmp_path / "origin.git")
-    assert sync_run(repo, monkeypatch, gh) == 0
-    assert agents_md.check(repo) and run_lines(repo)[-1]["notes"]["agents_md"] is True
-    git(repo, "fetch", "-q", "origin")
-    protected = f"origin/sync/{sync.hostname()}-protected"
-    assert git(repo, "diff", "--name-only", "origin/main", protected).stdout.split() == ["AGENTS.md"]
-    assert git(repo, "show", f"{protected}:AGENTS.md").stdout == agents_md.render(repo)
-    assert [c for c in gh.calls if c[:3] == ("api", "-X", "POST")
-            and "title=chore: sync (protected)" in c and f"head=sync/{sync.hostname()}-protected" in c]
-    assert sync_run(repo, monkeypatch, gh) == 0
-    assert len([line for line in run_lines(repo) if "agents_md" in (line.get("notes") or {})]) == 1   # current now
-
-
-def test_agents_md_waits_while_main_holds_another_agents_md_py(repo, tmp_path, monkeypatch):
-    """A template release that changes what agents_md.py writes is on this checkout, its pull request not yet merged.
-    The gate renders AGENTS.md with main's agents_md.py, so the file written from the release's would not match it,
-    and the whole release would wait for the person's click: the leg leaves the file while the two differ. Once the
-    release is on main, the next run writes it, and its protected pull request lands through the gate on its own."""
-    an_older_contract(repo)
-    in_the_cloud(repo)
-    release = commit(repo, "a template release", {"_meta/tools/agents_md.py": "# as the release ships it\n"})
-    gh = LegGh(tmp_path / "origin.git")
-    assert sync_run(repo, monkeypatch, gh, "--no-push") == 0
-    assert (repo / "AGENTS.md").read_text(encoding="utf-8") == OLDER
-    assert not [line for line in run_lines(repo) if "agents_md" in (line.get("notes") or {})]
-    git(repo, "push", "-q", "origin", f"{release}:main")   # the release's pull request merged
-    assert sync_run(repo, monkeypatch, gh) == 0
-    assert agents_md.check(repo) and run_lines(repo)[-1]["notes"]["agents_md"] is True
-    git(repo, "fetch", "-q", "origin")
-    protected = f"origin/sync/{sync.hostname()}-protected"
-    assert git(repo, "diff", "--name-only", "origin/main", protected).stdout.split() == ["AGENTS.md"]
-    assert [c for c in gh.calls if c[:3] == ("api", "-X", "POST")
-            and "title=chore: sync (protected)" in c and f"head=sync/{sync.hostname()}-protected" in c]
-
-
-def test_an_agents_md_that_cannot_be_rendered_is_tried_again_a_day_later_not_every_run(repo, monkeypatch):
-    """A template whose placeholders the render cannot fill is said once, as a template sync that failed is, and
-    tried again TEMPLATE_RETRY_HOURS later: status, which the leg stands in for, would try once a day."""
-    write(repo / "_meta" / "templates" / agents_md.TEMPLATE_NAME, "# Operating contract: {name}\n\n{unknown}\n")
-    landed(repo, "a broken template")
-    in_the_cloud(repo)
-    tried, real = [], agents_md.check
-    monkeypatch.setattr(agents_md, "check", lambda root: tried.append(1) or real(root))
-    start = at(dt.datetime.now(dt.timezone.utc), monkeypatch)
-    assert sync_run(repo, monkeypatch, lambda *args: None, "--no-push") == 1
-    assert run_lines(repo)[-1]["notes"]["errors"] == ["writing AGENTS.md failed: KeyError"]
-    at(start + dt.timedelta(minutes=15), monkeypatch)
-    assert sync_run(repo, monkeypatch, lambda *args: None, "--no-push") == 0
-    assert len(tried) == 1
-    at(start + dt.timedelta(hours=sync.TEMPLATE_RETRY_HOURS, minutes=1), monkeypatch)
-    assert sync_run(repo, monkeypatch, lambda *args: None, "--no-push") == 1
-    assert len(tried) == 2
-
-
-@pytest.mark.parametrize("where", ["another computer", "routines on this computer"])
-def test_agents_md_is_left_to_the_computer_that_keeps_the_leg_or_to_status(repo, monkeypatch, where):
-    """Another computer leaves AGENTS.md to the one the record names, as it leaves the scan and template sync. A
-    computer that runs the routines itself runs no leg: its status routine writes the file, as it always did."""
-    an_older_contract(repo)
-    if where == "another computer":
-        monkeypatch.setattr(routine, "this_machine", lambda: "m-desktop")
-        in_the_cloud(repo)
-        monkeypatch.setattr(routine, "this_machine", lambda: "m-laptop")
-    else:
-        on_this_computer(repo, monkeypatch)
+    monkeypatch.setattr(template_sync, "guarded", lambda root, source=None: pytest.fail("template sync ran"))
     assert sync_run(repo, monkeypatch, lambda *args: None, "--no-push") == 0
     assert (repo / "AGENTS.md").read_text(encoding="utf-8") == OLDER
-    assert not [line for line in run_lines(repo) if "agents_md" in (line.get("notes") or {})]
+    notes = run_lines(repo)[-1]["notes"]
+    assert "template_sync" not in notes and "agents_md" not in notes, notes
+    assert chain.gate(repo, chain="daily") is None and chain.gate(repo, chain="sweep") == chain.IN_THE_CLOUD
 
 
 # ----- adoption ---------------------------------------------------------------------------------------------
@@ -639,16 +481,18 @@ def test_a_red_cloud_pull_request_older_than_half_an_hour_rides_the_computers_sy
     assert not any(c[:3] == ("api", "-X", "PUT") or "merge" in c for c in gh.calls)   # never merged on GitHub
 
 
-def test_a_young_or_green_cloud_pull_request_is_left_to_its_run(repo, tmp_path, monkeypatch):
+@pytest.mark.parametrize("pull", ["young", "green"])
+def test_a_young_or_green_cloud_pull_request_is_left_to_its_run(repo, tmp_path, monkeypatch, pull):
     in_the_cloud(repo)
     cloud_branch(tmp_path, {SOURCE: "# r0\n"})
-    cloud_branch(tmp_path, {"knowledge/sources/2026/10/r9.md": "# r9\n"}, chain="daily")
     now = later(monkeypatch)
-    gh = LegGh(tmp_path / "origin.git", {7: ("cloud/sweep", now - dt.timedelta(minutes=10), "dirty"),
-                                         8: ("cloud/daily", now - dt.timedelta(hours=2), "clean")},
-               red={"cloud/sweep"})
+    young = pull == "young"
+    gh = LegGh(tmp_path / "origin.git",
+               {7: ("cloud/sweep", now - (dt.timedelta(minutes=10) if young else dt.timedelta(hours=2)),
+                    "dirty" if young else "clean")},
+               red={"cloud/sweep"} if young else ())
     assert sync_run(repo, monkeypatch, gh, "--no-push") == 0
-    assert not (repo / SOURCE).exists() and not (repo / "knowledge/sources/2026/10/r9.md").exists()
+    assert not (repo / SOURCE).exists()
     assert "adopted" not in run_lines(repo)[-1]["notes"] and items(repo) == []
 
 
@@ -676,8 +520,7 @@ def test_a_cloud_pull_request_that_cannot_be_merged_here_is_one_item(repo, tmp_p
     assert items(repo) == [{
         "id": "cloud-adopt-7", "kind": "request",
         "text": "A cloud run's pull request #7 conflicts with your files in a way the sync cannot settle.",
-        "recommendation": "open it and keep the side you want, or close it: the next cloud run starts again from main, "
-                          "and may make that run's tracker issues and owner notices again",
+        "recommendation": "open it and keep the side you want, or close it: the next cloud run starts again from main",
         "default": "it stays open and the cloud runs keep adding to it", "depends": 1}]
     assert not (repo / ".git" / "MERGE_HEAD").exists() and not git(repo, "diff", "--name-only",
                                                                     "--diff-filter=U").stdout.strip()

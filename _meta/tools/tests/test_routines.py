@@ -3189,8 +3189,8 @@ def test_a_run_held_back_by_its_condition_or_a_pause_leaves_its_line_and_starts_
     assert log.read_text(encoding="utf-8").count("nothing to read") == 2 and not routine.lock_path(ws).exists()
 
 
-# ----- the cloud runner: two scheduled tasks every computer steps aside for --------------------------------
-CLOUD_TASKS = {"sweep": "trig_01AAAAAAAA", "daily": "trig_01BBBBBBBB"}
+# ----- the cloud runner: the sweep's scheduled task, which every routine steps aside for but the move's daily ------
+CLOUD_TASKS = {"sweep": "trig_01AAAAAAAA"}
 CLOUD_ROOTS = ["ada/ada-space", "ada/ada-brain"]
 CLOUD_GRANT = {"read": ["mcp__mail__get_thread"], "write": ["mcp__tracker__create_issue"],
                "send": ["mcp__mail__send_message"]}
@@ -3203,8 +3203,8 @@ def cloud_hosted(ws, zone: str = "Europe/Amsterdam", now=NOW) -> dict:
 def test_a_cloud_claim_reads_back_with_its_tasks_zone_roots_and_grant(tmp_path, monkeypatch):
     ws = workspace(tmp_path)
     rec = cloud_hosted(ws)
-    assert (rec["runner"], rec["machine"], rec["name"], rec["tasks"]["daily"], rec["timezone"], rec["roots"]) == \
-           ("cloud", "m-cloud", "the cloud", "trig_01BBBBBBBB", "Europe/Amsterdam", CLOUD_ROOTS)
+    assert (rec["runner"], rec["machine"], rec["name"], rec["tasks"], rec["timezone"], rec["roots"]) == \
+           ("cloud", "m-cloud", "the cloud", {"sweep": "trig_01AAAAAAAA"}, "Europe/Amsterdam", CLOUD_ROOTS)
     assert rec["grant"] == CLOUD_GRANT and rec["paused_until"] is None and routine.host(ws) == rec
     assert routine.RUNNERS == ("os", "harness", "cloud") and routine.MACHINE.fullmatch(routine.CLOUD_MACHINE)
     lines = [line for line in (ws / routine.HOST).read_text(encoding="utf-8").splitlines() if not line.startswith("#")]
@@ -3252,22 +3252,122 @@ def test_a_computer_claim_never_names_the_cloud(tmp_path):
 
 
 def test_every_computer_steps_aside_for_the_cloud(tmp_path, monkeypatch):
+    """The sweep steps aside on every computer, the move's included; every other routine steps aside on every computer
+    but the one the move ran on (`computer`), which keeps them, the daily first."""
     ws = workspace(tmp_path)
+    on(monkeypatch, "m-desktop")
     cloud_hosted(ws)
     monkeypatch.setattr(routine, "find_claude", lambda: "claude")
     for machine in ("m-desktop", "m-laptop", routine.CLOUD_MACHINE):
         on(monkeypatch, machine)
-        assert routine.gate(ws, NOW) == "they run in the cloud"
+        assert routine.gate(ws, NOW, "sweep-chain") == "they run in the cloud", machine
+        assert routine._held(ws, NOW, "sweep-chain") == ("away", routine.CLOUD), machine
+        for name in ("daily-chain", "backfill-night", None):
+            assert routine.gate(ws, NOW, name) == (None if machine == "m-desktop" else "they run in the cloud"), \
+                (machine, name)
         called = []
         assert routine.main([str(ws / "_meta/state/routines/sweep-chain.md")], run=lambda *a, **k: called.append(a)) == 0
         assert called == [] and not (ws / "_meta/state/runs.jsonl").exists()   # another runner's: no line here
     routine.set_pause(ws, NOW + dt.timedelta(hours=8))
-    assert routine.gate(ws, NOW) == "they run in the cloud"   # paused or not, no computer runs them
+    for machine in ("m-desktop", "m-laptop"):   # paused or not, no computer runs the sweep
+        on(monkeypatch, machine)
+        assert routine.gate(ws, NOW, "sweep-chain") == "they run in the cloud", machine
+
+
+def test_under_a_cloud_record_a_pause_holds_every_routine_on_every_computer(tmp_path, monkeypatch):
+    """A pause still holds everything: on the move's computer the routines it keeps are held as paused, and the sweep,
+    and every routine on another computer, stay away for the cloud. Resumed, the move's computer runs them again."""
+    ws = workspace(tmp_path)
+    on(monkeypatch, "m-desktop")
+    cloud_hosted(ws)
+    routine.set_pause(ws, NOW + dt.timedelta(hours=8))
+    for name in ("daily-chain", "backfill-night", None):
+        held = routine._held(ws, NOW, name)
+        assert held[0] == "paused" and held[1].startswith("paused until "), name
+    assert routine._held(ws, NOW, "sweep-chain") == ("away", routine.CLOUD)
+    on(monkeypatch, "m-laptop")
+    for name in ("daily-chain", "backfill-night", None, "sweep-chain"):
+        assert routine._held(ws, NOW, name) == ("away", routine.CLOUD), name
+    on(monkeypatch, "m-desktop")
+    routine.set_pause(ws, None)
+    for name in ("daily-chain", "backfill-night", None):
+        assert routine._held(ws, NOW, name) is None, name
+
+
+def test_a_cloud_record_that_names_no_computer_keeps_every_routine_but_the_sweep_on_each(tmp_path, monkeypatch):
+    """As the computer's leg reads it (`sync.Run.keeps_leg`): with no computer named, every computer keeps the daily and
+    the rest, so they always have a home; the sweep still steps aside on each."""
+    ws = workspace(tmp_path)
+    cloud_hosted(ws)
+    path = ws / routine.HOST
+    path.write_text("".join(f"{line}\n" for line in path.read_text(encoding="utf-8").splitlines()
+                            if not line.startswith("computer:")), encoding="utf-8")
+    assert "computer" not in routine.host(ws)
+    for machine in ("m-desktop", "m-laptop"):
+        on(monkeypatch, machine)
+        for name in ("daily-chain", "backfill-night", None):
+            assert routine._held(ws, NOW, name) is None, (machine, name)
+        assert routine._held(ws, NOW, "sweep-chain") == ("away", routine.CLOUD), machine
+
+
+def test_under_a_cloud_record_the_daily_runs_on_the_moves_computer_until_paused(tmp_path, monkeypatch):
+    """The computer the move ran on keeps its daily chain: it calls claude there, steps aside on another computer, and
+    a pause holds it with a line; the sweep steps aside even there."""
+    ws = workspace(tmp_path)
+    on(monkeypatch, "m-desktop")
+    cloud_hosted(ws)
+    code, seen = run_routine(ws, monkeypatch, stdout=stream(result_event()), name="daily-chain")
+    assert code == 0 and seen["argv"][:2] == ["claude", "-p"] and "daily chain" in seen["input"]
+    code, seen = run_routine(ws, monkeypatch, name="sweep-chain")
+    assert code == 0 and seen == {}   # the sweep is the cloud's, on this computer too
+    on(monkeypatch, "m-laptop")
+    before = runs_of(ws)
+    code, seen = run_routine(ws, monkeypatch, name="daily-chain")
+    assert code == 0 and seen == {} and runs_of(ws) == before   # another computer's daily: no claude, no line
+    on(monkeypatch, "m-desktop")
+    routine.set_pause(ws, routine._now() + dt.timedelta(hours=8))
+    assert routine.gate(ws, routine._now(), "daily-chain").startswith("paused until")
+    code, seen = run_routine(ws, monkeypatch, name="daily-chain")
+    assert code == 0 and seen == {}
+    assert runs_of(ws)[-1]["outcome"] == "paused" and runs_of(ws)[-1]["routine"] == "daily-chain"
+    routine.set_pause(ws, None)
+    assert routine.gate(ws, routine._now(), "daily-chain") is None
+
+
+def test_a_cloud_record_with_the_sweeps_task_alone_reads_back(tmp_path, monkeypatch):
+    """The move claims the sweep's task alone; a record from before the daily stayed on the computer, which names the
+    daily's task too, still reads, as the sweep's alone."""
+    ws = workspace(tmp_path)
+    on(monkeypatch, "m-desktop")
+    rec = cloud_hosted(ws)
+    assert rec["tasks"] == {"sweep": "trig_01AAAAAAAA"} and routine.host(ws) == rec
+    assert 'tasks: {"sweep": "trig_01AAAAAAAA"}' in (ws / routine.HOST).read_text(encoding="utf-8")
+    older = routine.claim_cloud(ws, {"sweep": "trig_02CCCCCCCC", "daily": "trig_02DDDDDDDD"}, "UTC", CLOUD_ROOTS,
+                                CLOUD_GRANT, NOW)
+    assert older["tasks"] == {"sweep": "trig_02CCCCCCCC"} and routine.host(ws)["tasks"] == {"sweep": "trig_02CCCCCCCC"}
+    path = ws / routine.HOST
+    path.write_text("".join(f"{line}\n" if not line.startswith("tasks:") else
+                            'tasks: {"sweep": "trig_02CCCCCCCC", "daily": "trig_02DDDDDDDD"}\n'
+                            for line in path.read_text(encoding="utf-8").splitlines()), encoding="utf-8")
+    assert routine.host(ws)["tasks"] == {"sweep": "trig_02CCCCCCCC"}
+    assert routine.gate(ws, NOW, "daily-chain") is None and routine.gate(ws, NOW, "sweep-chain") == routine.CLOUD
+
+
+def test_the_daily_chain_prompt_asks_the_gate_for_the_daily_and_runs_the_tracker_step(tmp_path):
+    ws = workspace(tmp_path)
+    text = (ws / "_meta" / "state" / "routines" / "daily-chain.md").read_text(encoding="utf-8")
+    gate = next(line for line in text.splitlines() if "chain.py gate" in line)
+    assert re.search(r"chain\.py gate \S+ --chain daily`", gate), gate
+    assert "tracker/SKILL.md" in text and "tracker.py" in text and " pending" in text
+    assert "issues created" in text
+    sweep = (ws / "_meta" / "state" / "routines" / "sweep-chain.md").read_text(encoding="utf-8")
+    assert "--chain daily" not in sweep
 
 
 @pytest.mark.parametrize("key, line", [
-    ("tasks", 'tasks: {"sweep": null, "daily": "trig_01BBBBBBBB"}'), ("tasks", 'tasks: {"sweep": "trig_01AAAAAAAA"}'),
-    ("tasks", 'tasks: {"sweep": "trig_", "daily": "trig_01BBBBBBBB"}'), ("grant", "grant: null"),
+    ("tasks", 'tasks: {"sweep": null, "daily": "trig_01BBBBBBBB"}'), ("tasks", 'tasks: {"daily": "trig_01BBBBBBBB"}'),
+    ("tasks", 'tasks: {"sweep": "trig_", "daily": "trig_01BBBBBBBB"}'), ("tasks", "tasks: {}"),
+    ("tasks", 'tasks: {"sweep": "trig_01AAAAAAAA", "night": "trig_01CCCCCCCC"}'), ("grant", "grant: null"),
     ("grant", 'grant: {"read": [], "write": []}'), ("grant", 'grant: {"read": ["Bash"], "write": [], "send": []}'),
     ("roots", 'roots: ["not a repository"]'), ("roots", "roots: []"), ("timezone", "timezone: 7"),
     ("timezone", 'timezone: "Mars; rm -rf /"'), ("roots", None), ("machine", 'machine: "m-desktop"'),
@@ -3306,7 +3406,7 @@ def test_a_pause_keeps_the_cloud_claims_keys(tmp_path):
     paused = routine.set_pause(ws, NOW + dt.timedelta(hours=2))
     assert routine.paused_until(paused, NOW) is not None
     assert {k: paused[k] for k in routine.CLOUD_KEYS} == {k: rec[k] for k in routine.CLOUD_KEYS}
-    again = routine.claim_cloud(ws, {"sweep": "trig_02CCCCCCCC", "daily": "trig_02DDDDDDDD"}, "Europe/Amsterdam",
+    again = routine.claim_cloud(ws, {"sweep": "trig_02CCCCCCCC"}, "Europe/Amsterdam",
                                 CLOUD_ROOTS, CLOUD_GRANT, NOW + dt.timedelta(hours=1))
     assert again["tasks"]["sweep"] == "trig_02CCCCCCCC" and again["paused_until"] == paused["paused_until"]   # no resume
     resumed = routine.set_pause(ws, None)
@@ -3366,9 +3466,8 @@ def test_two_merged_claims_one_cloud_one_os_leave_nobody_running(tmp_path, monke
 
 
 def test_the_extra_allow_rules_join_only_a_guarded_profile(tmp_path):
-    import cloud
     ws = workspace(tmp_path)
-    extra = (*cloud.EXTRA_ALLOW, "Bash(gh api orgs/*)")   # the cloud's own, and one more: each joins in its order
+    extra = ("Bash(gh api repos/*)", "Bash(gh api orgs/*)")   # each joins in its order
     allow = routine.routine_settings(ws, "", [ws], extra_allow=extra)["permissions"]["allow"]
     last_tool = max(i for i, rule in enumerate(allow) if "_meta/tools/" in rule)   # they come right after it
     assert [allow.index(rule) for rule in extra] == list(range(last_tool + 1, last_tool + 1 + len(extra)))
@@ -3390,14 +3489,14 @@ def test_a_cloud_profile_runs_sync_only_as_its_chains_landing(tmp_path):
     <chain>`, each root as itself; without it (a computer's routine) the landing takes its arguments as before."""
     ws, other = workspace(tmp_path), make_space(tmp_path / "brain")
     path = tmp_path / "cloud.json"
-    check = guarded(path, routine.routine_settings(ws, "", [ws, other], profile=path, cloud_chain="daily"))
+    check = guarded(path, routine.routine_settings(ws, "", [ws, other], profile=path, cloud_chain="sweep"))
     sync_py = lambda root: f"python3 {root.as_posix()}/_meta/tools/sync.py"   # noqa: E731
     for place in (ws, other):
-        assert check(f"{sync_py(place)} --root {place.as_posix()} --cloud daily") is None, place
-    for command in (f"{sync_py(ws)} --root {ws.as_posix()}", f"{sync_py(ws)} --root {ws.as_posix()} --cloud sweep",
-                    f"{sync_py(ws)} --root {other.as_posix()} --cloud daily",
+        assert check(f"{sync_py(place)} --root {place.as_posix()} --cloud sweep") is None, place
+    for command in (f"{sync_py(ws)} --root {ws.as_posix()}", f"{sync_py(ws)} --root {ws.as_posix()} --cloud daily",
+                    f"{sync_py(ws)} --root {other.as_posix()} --cloud sweep",
                     f"{sync_py(ws)} --root {ws.as_posix()} --release-leg",
-                    f"python3 _meta/tools/sync.py --root {ws.as_posix()} --cloud daily"):
+                    f"python3 _meta/tools/sync.py --root {ws.as_posix()} --cloud sweep"):
         assert check(command) is not None, command
     assert check(f"python3 {ws.as_posix()}/_meta/tools/status.py {ws.as_posix()} --json") is None   # the rest as before
     path = tmp_path / "computer.json"
@@ -3405,8 +3504,10 @@ def test_a_cloud_profile_runs_sync_only_as_its_chains_landing(tmp_path):
     for command in (f"{sync_py(ws)} --root {ws.as_posix()}", f"{sync_py(ws)} --root {ws.as_posix()} --release-leg",
                     "python3 _meta/tools/sync.py --root . --release-leg"):
         assert check(command) is None, command
-    with pytest.raises(ValueError):
-        routine.routine_settings(ws, "", [ws], profile=path, cloud_chain="nightly")
+    for chain in ("nightly", "daily"):   # the daily is no cloud chain: it stays on the computer
+        with pytest.raises(ValueError):
+            routine.routine_settings(ws, "", [ws], profile=path, cloud_chain=chain)
+    assert routine.CLOUD_CHAINS == ("sweep",)
 
 
 def test_no_routine_runs_the_merge_driver_from_its_shell(tmp_path):
@@ -3475,7 +3576,8 @@ def test_a_routine_reads_a_codebase_named_for_graphql_and_never_graphql_itself(t
     assert not any("*graphql" in rule for rule in routine.REST_ONE_WORD)
 
 
-def test_no_cloud_run_edits_the_guard_plugin_or_its_marketplace(tmp_path):
+def test_no_routine_edits_a_plugin_folder_or_a_marketplace_file(tmp_path):
+    """The guard plugin is gone, but a plugin a space would load, and the file that offers it, stay protected."""
     ws = workspace(tmp_path)
     deny = routine.routine_settings(ws, "", [ws])["permissions"]["deny"]
     for pattern in ("_meta/plugins/**", ".claude-plugin/**"):

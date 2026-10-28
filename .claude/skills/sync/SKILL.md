@@ -1,12 +1,12 @@
 ---
 name: sync
-description: What the sync script does every 15 minutes from the OS scheduler and once at the end of a cloud routine run, as the only process that runs git, and how to read its run lines. Use when the person asks why something has not landed or asks to land now, or when a routine needs to understand the landing path. Never run git yourself.
+description: What the sync script does every 15 minutes from the OS scheduler and once at the end of a cloud sweep run, as the only process that runs git, and how to read its run lines. Use when the person asks why something has not landed or asks to land now, or when a routine needs to understand the landing path. Never run git yourself.
 ---
 
 # sync: agents edit files, the script commits, the platform merges
 
 Hard rule 7. Sessions do not commit, so a crash loses nothing; the next run lands what is
-on disk. A cloud routine run starts it once at its end, for each of its spaces.
+on disk. A cloud sweep run starts it once at its end, for each of its spaces.
 
 ## When
 
@@ -15,16 +15,17 @@ on disk. A cloud routine run starts it once at its end, for each of its spaces.
   timer on a Linux that has a user session, else a cron line), one task per checkout on the machine.
   All but cron run a start missed while the machine slept as soon as it wakes.
 - By hand, only when the person asks to land now or asks why something did not land.
-- In a cloud routine run: once at its end for each of its spaces, the workspace last, whether
-  or not the run wrote in it, as the chain's cloud prompt says
-  (`_meta/templates/cloud/<chain>-chain.md`); a proof run lands its workspace alone.
+- In a cloud sweep run: once at its end for each of its spaces, the workspace last, whether
+  or not the run wrote in it, as the cloud prompt says (`_meta/templates/cloud/sweep-chain.md`);
+  a proof run lands its workspace alone, and its run line's `left_out` is the proof that a
+  protected file it changed with a command stayed off main.
 
 ## Run
 
 `python _meta/tools/sync.py --root <root>` (`--dry-run` shows what it would do and writes
 nothing; `--no-push` for a checkout without a remote; `--release-leg` ships due queue items
 first). Running the script is the sanctioned way to land now; running git is not.
-`--cloud sweep|daily` is a cloud run's landing; never start it on a computer.
+`--cloud sweep` is a cloud run's landing; never start it on a computer.
 
 ## What the tool already did
 
@@ -45,7 +46,7 @@ The merge rules, written into the space's own git, settle what GitHub's merge ca
 watermark keeps the later mark, generated pages and state keep this checkout's side, and an
 item under `_inbound/` or `_outbound/` that one side deleted stays deleted.
 
-In a cloud run (`--cloud <chain>`) it commits once, with its own run line, and new files need no
+In a cloud run (`--cloud sweep`) it commits once, with its own run line, and new files need no
 minimum age. It never lands a protected change: `AGENTS.md` is put back quietly, any other
 protected path stays in the clone and is one security item. A line the scan hits is replaced by
 `[a line held back: <kind>]` and the page lands. It pushes `cloud/<chain>`, leased to the head
@@ -58,11 +59,8 @@ While the routines run in the cloud (`_meta/state/routine-host.yaml` has `runner
 computer's sync adds its leg right after the merge. Every computer runs `not_started`, which reads
 the cloud's run lines first, and those the cloud branches hold. The computer the record names
 (`computer`; every computer when it names none) also runs:
-- the transcripts scan, at most every six hours, and template sync, weekly;
-- `AGENTS.md` written again when it is not what the tools render (`agents_md.check`), since a
-  cloud run puts back the one a tool regenerated, but only while this checkout renders it as main
-  does (after a release that changes the renderer, once the release is on main); it rides this
-  computer's protected pull request, and a render that fails is tried again a day later;
+- the transcripts scan, at most every six hours (template sync and `AGENTS.md` stay with its
+  daily chain, which that computer keeps);
 - adopting a cloud pull request only when both hold: it is still open after 30 minutes, and it
   conflicts with main or its checks are red (`Run.stuck`, `Run.adopt`). Merged here, it rides this
   computer's own pull request (a split push keeps its head as a parent of the plain part). A

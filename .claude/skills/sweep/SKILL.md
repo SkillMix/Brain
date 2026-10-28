@@ -19,7 +19,7 @@ export; the tool decides.
   `_meta/templates/cloud/sweep-chain.md`, every command with absolute paths. There every feed
   but the repository's comes through a connector, with no browser and no history to read; step 1
   says how a cloud run reads GitHub and a codebase's files, and step 2 its attachments.
-- While the routines run in the cloud (`_meta/state/routine-host.yaml` has `runner: "cloud"`), a
+- While the sweep runs in the cloud (`_meta/state/routine-host.yaml` has `runner: "cloud"`), a
   session on a computer exports and sweeps nothing: the cloud's sweep reads every feed three times
   a day, and a second reader would read the same mail twice. Say so in one line.
 

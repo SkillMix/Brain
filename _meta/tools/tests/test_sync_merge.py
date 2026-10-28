@@ -447,7 +447,7 @@ def test_a_change_main_moved_into_a_protected_path_is_never_carried(repo, tmp_pa
 def test_protected_paths_are_the_gates_list_and_what_a_routine_may_never_edit(repo):
     guarded = ["space.yaml", "rules.md", "_meta/tools/x.py", ".gitignore", "AGENTS.md", ".gitmodules",
                "_meta/plugins/spaces-guard/guard.py", ".claude-plugin/marketplace.json", "Identity/charter.md",
-               "_meta/templates/cloud/daily-chain.md", "_meta/state/routine-host.yaml",
+               "_meta/templates/cloud/sweep-chain.md", "_meta/state/routine-host.yaml",
                "_meta/state/private/apps.yaml", "work/a/CLAUDE.md", "work/a/.claude/settings.json",
                "work/a/_meta/tools/x.py", "knowledge/policies/p.md"]
     plain = ["knowledge/x.md", "work/identity/x.md", "_meta/state/sweep-watermark.yaml", "_meta/state/runs.jsonl",
@@ -500,9 +500,9 @@ def test_no_branch_to_carry_is_quiet_and_leases_on_absence(repo, tmp_path, capsy
     clone = clone_of(tmp_path, "cloud-run")
     capsys.readouterr()
     gh = ClosedPulls()
-    assert sync.carry(clone, "daily", gh=gh) == {"carried": False, "head": None}
+    assert sync.carry(clone, "sweep", gh=gh) == {"carried": False, "head": None}
     assert capsys.readouterr().out == ""
-    assert (clone / ".git" / "sync-cloud-lease-daily").exists() and lease(clone, "daily") == ""
+    assert (clone / ".git" / "sync-cloud-lease-sweep").exists() and lease(clone, "sweep") == ""
     assert gh.calls == []   # nothing to ask GitHub about
 
 
@@ -515,6 +515,8 @@ def test_a_branch_main_already_holds_is_not_carried_again(repo, tmp_path):
     assert git(clone, "rev-parse", "HEAD").stdout.strip() == before and lease(clone) == head
 
 
-def test_only_the_two_cloud_chains_are_carried(repo):
-    with pytest.raises(ValueError):
-        sync.carry(repo, "main")
+def test_only_the_cloud_sweep_is_carried(repo):
+    assert sync.CLOUD_CHAINS == ("sweep",)
+    for chain in ("main", "daily"):   # the daily stays on the computer: no cloud/daily branch to carry
+        with pytest.raises(ValueError):
+            sync.carry(repo, chain)

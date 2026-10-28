@@ -71,20 +71,22 @@ def test_caches_in_the_template_tree_are_not_machinery(tmp_path):
     assert not (space / "_meta" / "tools" / "stray.pyc").exists()
 
 
-def test_template_sync_carries_the_plugin(tmp_path):
-    """The guard plugin a cloud run enables, and the marketplace that offers it, are machinery like the tools."""
+def test_a_plugin_folder_and_a_marketplace_file_are_not_machinery(tmp_path):
+    """The guard plugin is gone: a plugin folder or a marketplace file in the template is not carried, and one a space
+    still has is left as it is (nothing is ever deleted)."""
+    assert not {"_meta/plugins", ".claude-plugin"} & set(template_sync.MACHINERY)
     tpl = make_template(tmp_path / "tpl")
-    plugin = tpl / "_meta" / "plugins" / "spaces-guard"
-    (plugin / "hooks").mkdir(parents=True)
-    (plugin / "guard.py").write_text("print('guard')\n", encoding="utf-8")
-    (plugin / "hooks" / "hooks.json").write_text("{}\n", encoding="utf-8")
+    (tpl / "_meta" / "plugins" / "spaces-guard").mkdir(parents=True)
+    (tpl / "_meta" / "plugins" / "spaces-guard" / "guard.py").write_text("print('guard')\n", encoding="utf-8")
     (tpl / ".claude-plugin").mkdir()
     (tpl / ".claude-plugin" / "marketplace.json").write_text('{"name": "spaces"}\n', encoding="utf-8")
     space = make_space(tmp_path / "ada")
+    (space / ".claude-plugin").mkdir()
+    (space / ".claude-plugin" / "marketplace.json").write_text('{"name": "ours"}\n', encoding="utf-8")
     report = template_sync.run(space, source=str(tpl))
-    assert {".claude-plugin/marketplace.json", "_meta/plugins/spaces-guard/guard.py",
-            "_meta/plugins/spaces-guard/hooks/hooks.json"} <= set(report.added)
-    assert (space / "_meta" / "plugins" / "spaces-guard" / "guard.py").read_text(encoding="utf-8") == "print('guard')\n"
+    assert sorted(report.added) == [".claude/skills/sweep/SKILL.md", "_meta/tools/sweep.py"]
+    assert not (space / "_meta" / "plugins").exists()
+    assert (space / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8") == '{"name": "ours"}\n'
 
 
 def test_help_prints_usage_and_touches_nothing(capsys):

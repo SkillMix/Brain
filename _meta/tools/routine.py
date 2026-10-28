@@ -149,13 +149,13 @@ PROTECTED_EDITS += ("_meta/state/routine-limits.jsonl",)   # each run's windows 
 PROTECTED_EDITS += ("CLAUDE.local.md",)   # loaded beside CLAUDE.md at any depth, in a folder outside git too (dry run A)
 PROTECTED_EDITS += (".gitattributes",)   # the merge rules the sync script lands every record by
 PROTECTED_EDITS += (".gitignore",)   # what the sync script lands at all
-PROTECTED_EDITS += ("_meta/plugins/**", ".claude-plugin/**")   # the guard a cloud run carries, and what offers it
+PROTECTED_EDITS += ("_meta/plugins/**", ".claude-plugin/**")   # a plugin a space would load, and what offers it
 PROTECTED_EDITS += (".git",)   # a mount's .git is a file naming its git folder, whose config git runs; .git/** is a folder
 # Setup's history reading runs inside the sweep chain (step 0); its own line, away from the list above.
 ROUTINE_TOOLS += ("backfill.py",)
 # A cloud run's proof line (`_meta/templates/cloud/`). Of cloud.py a routine runs that verb alone (ROUTINE_VERBS): its
-# begin writes a cloud run's guard profile and its trigger the task a move records, so CLOUD_ONLY are denied however
-# they are spelled, whatever comes before the script and between it and the word.
+# begin writes a cloud run's marker and its trigger the task a move records, so CLOUD_ONLY are denied however they
+# are spelled, whatever comes before the script and between it and the word.
 ROUTINE_TOOLS += ("cloud.py",)
 ROUTINE_VERBS = {"cloud.py": "proof-line"}
 CLOUD_ONLY = ("begin", "trigger")
@@ -181,7 +181,7 @@ REST_ONE_WORD = ("Bash(gh api * *)", "Bash(gh api *\t*)", *GRAPHQL)
 SYNC_NEVER = ("--mer", "'", '"')
 # A computer's landing (the sweep chain's release leg, the sync skill's land now), each root as itself.
 SYNC_LEGS = ("", " --release-leg")
-CLOUD_CHAINS = ("sweep", "daily")   # a cloud run's chains (`cloud.CHAINS`), each landing on its own branch
+CLOUD_CHAINS = ("sweep",)   # the chain a cloud run is (`cloud.CHAINS`): the daily stays on the computer
 # The built-in tools a routine has (`--tools`, Ruling R30): the shell its tools run in, the files, and
 # ToolSearch, which loads a connector's tools. Web, PowerShell, agents and schedules are left out; the
 # profile denies them by name too (`reader.DENIED`), so one a later version adds under such a name stays out.
@@ -1610,10 +1610,11 @@ def _probe(workspace: Path, run) -> int:
 # a routine (PROTECTED_EDITS). One line per key, the claim's four together and the pause a line apart: a merge that
 # keeps both sides of two claims leaves a key twice, which reads as no record anyone may run under (`host`); of two
 # pauses made before a sync, the later stands. Every space merges the file by union (.gitattributes, sync.MERGE_RULES).
-# The third runner is the cloud (`claim_cloud`): two scheduled tasks on claude.ai under CLOUD_MACHINE, which no
-# computer's id can take, with their ids, the person's zone, the repositories they attach and the connector grant a
-# line each after the claim's four, and then the computer the move ran on, which keeps the computer's leg
-# (`sync.Run.keeps_leg`); every computer steps aside for it (`gate`), and a cloud run asks `cloud_gate`.
+# The third runner is the cloud (`claim_cloud`): the sweep's scheduled task on claude.ai under CLOUD_MACHINE, which
+# no computer's id can take, with its id, the person's zone, the repositories it attaches and the connector grant a
+# line each after the claim's four, and then the computer the move ran on, which keeps its daily chain and the
+# computer's leg (`sync.Run.keeps_leg`); every other routine steps aside for it (`gate`), and a cloud run asks
+# `cloud_gate`.
 HOST = Path("_meta/state/routine-host.yaml")
 RUNNERS = ("os", "harness", "cloud")
 CLAIM_KEYS = ("machine", "name", "runner", "since")
@@ -1714,17 +1715,18 @@ _OneRecord.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _keys
 
 
 def _cloud_value(key: str, value):
-    """One of the cloud's keys as the record keeps it; None for a value not of its shape. `tasks`: the two task ids
-    by chain (`sweep`, `daily`); `timezone`: the person's IANA zone; `roots`: the repositories the tasks attach, at
+    """One of the cloud's keys as the record keeps it; None for a value not of its shape. `tasks`: the sweep's task
+    id (`sweep`; a record from before the daily stayed on the computer also names `daily`, which is let go);
+    `timezone`: the person's IANA zone; `roots`: the repositories the tasks attach, at
     least one; `grant`: the connector tools by their full names, as `read`, `write` and `send`; `computer`: the id
     of the computer the move ran on (`this_machine`), never the cloud's."""
     import reader
     if key == "computer":
         return value if isinstance(value, str) and MACHINE.fullmatch(value) and value != CLOUD_MACHINE else None
     if key == "tasks":
-        ok = isinstance(value, dict) and set(value) == {"sweep", "daily"} and all(
+        ok = isinstance(value, dict) and {"sweep"} <= set(value) <= {"sweep", "daily"} and all(
             isinstance(task, str) and TASK_ID.fullmatch(task) for task in value.values())
-        return {"sweep": value["sweep"], "daily": value["daily"]} if ok else None
+        return {"sweep": value["sweep"]} if ok else None
     if key == "timezone":
         return value if isinstance(value, str) and ZONE.fullmatch(value) else None
     if key == "roots":
@@ -1811,12 +1813,12 @@ def claim_host(workspace, runner: str, now) -> dict:
 
 
 def claim_cloud(workspace, tasks: dict, timezone: str, roots: list, grant: dict, now) -> dict:
-    """The routines run in the cloud from `now` on, as the two scheduled tasks `tasks` names ({"sweep", "daily"}: their
-    ids), in the person's `timezone`, attaching the repositories `roots` (owner/name), under the connector `grant`
-    ({"read", "write", "send"}: full tool names). Every computer's runs stop by themselves (`gate`). The record names
-    this computer, the one the move ran on, by its id (`computer`): it keeps the computer's leg (`sync.Run.keeps_leg`),
-    as it ran the chains before. A pause still to come is kept: a move is no resume. ValueError, writing nothing, for
-    a value not of its shape (`_cloud_value`)."""
+    """The sweep runs in the cloud from `now` on, as the scheduled task `tasks` names ({"sweep": its id}), in the
+    person's `timezone`, attaching the repositories `roots` (owner/name), under the connector `grant` ({"read",
+    "write", "send"}: full tool names, read alone). Every computer's sweep stops by itself (`gate`). The record names
+    this computer, the one the move ran on, by its id (`computer`): it keeps running the daily chain and the
+    computer's leg (`sync.Run.keeps_leg`), as it ran the chains before. A pause still to come is kept: a move is no
+    resume. ValueError, writing nothing, for a value not of its shape (`_cloud_value`)."""
     given = {"tasks": tasks, "timezone": timezone, "roots": roots, "grant": grant}
     cloud = {key: _cloud_value(key, value) for key, value in given.items()}
     wrong = [key for key, value in cloud.items() if value is None]
@@ -1843,21 +1845,24 @@ def set_pause(workspace, until) -> dict | None:
     return _write_host(workspace, {**record, "paused_until": when.isoformat(timespec="seconds") if when else None})
 
 
-def _held(workspace, now) -> tuple | None:
-    """("away", why) when a run must not start on this computer: the routines run in the cloud, another computer is
-    the host, the app's own scheduled tasks run them, or the record is not one; ("paused", why) while paused; None to
-    go on. A pause past what this computer's clock can put in its own time (Windows: past the year 3000) still holds,
-    said as the record keeps it."""
+def _held(workspace, now, routine: str | None = None) -> tuple | None:
+    """("away", why) when a run must not start on this computer: the sweep runs in the cloud (the sweep, `routine`,
+    steps aside everywhere then, and every other routine but on the computer the move ran on, which keeps its daily),
+    another computer is the host, the
+    app's own scheduled tasks run them, or the record is not one; ("paused", why) while paused; None to go on. A
+    pause past what this computer's clock can put in its own time (Windows: past the year 3000) still holds, said as
+    the record keeps it."""
     record = host(workspace)
     if record is None:
         return None
     if record.get("unclear"):
         return "away", UNCLEAR
-    if record["runner"] == "cloud":   # on any computer, paused or not
-        return "away", CLOUD
-    if record["machine"] != this_machine():
+    if record["runner"] == "cloud":   # the sweep everywhere; the rest on any computer but the one the move ran on
+        if routine == "sweep-chain" or record.get("computer") not in (None, this_machine()):   # none named: each, as the leg
+            return "away", CLOUD
+    elif record["machine"] != this_machine():
         return "away", f"runs on {record['name'] or 'another computer'}"
-    if record["runner"] != "os":
+    elif record["runner"] != "os":
         return "away", HARNESS
     until = paused_until(record, now)
     if until is not None:
@@ -1869,11 +1874,11 @@ def _held(workspace, now) -> tuple | None:
     return None
 
 
-def gate(workspace, now) -> str | None:
+def gate(workspace, now, routine: str | None = None) -> str | None:
     """Why a routine run must not start here: "runs on <name>" (another computer is the host), "paused until <time>",
     they run in the cloud or as the app's own scheduled tasks, or which computer does is unclear. None to go on.
     `main` asks it first."""
-    held = _held(workspace, now)
+    held = _held(workspace, now, routine)
     return held[1] if held else None
 
 
@@ -2013,7 +2018,7 @@ def main(argv=None, run=subprocess.run) -> int:
     log = Path.home() / ".spaces" / "logs" / f"{prompt.stem}-{name}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     now = _now()
-    held = _held(workspace, now)   # first (F-11): one computer, one runner, and the pause, before the history is read
+    held = _held(workspace, now, prompt.stem)   # first (F-11): one computer, one runner, and the pause, before the history is read
     if held:
         with log.open("a", encoding="utf-8") as fh:
             fh.write(f"{now.isoformat(timespec='seconds')} {prompt.stem} not run: {held[1]}\n")

@@ -12,8 +12,9 @@ that is not present yet is skipped with a note. Every chain run appends one run 
 A cloud run (`--cloud`) leaves to the computer's sync what needs the computer, the person's click
 or one writer: the sweep chain skips the transcripts scan and settles the outbox after the reply
 step, where the mail feed is read; the daily chain skips template sync, the two request steps, the
-release leg and the outbox, and asks the link check without GraphQL. The computer's sync then
-scans the transcripts at most every TRANSCRIPTS_HOURS and runs template sync when
+release leg and the outbox, and asks the link check without GraphQL (only the sweep runs in the cloud now, so the
+daily's `--cloud` is a run no task makes). The computer's sync then scans the transcripts at most every
+TRANSCRIPTS_HOURS, and the daily kept on the computer runs template sync when
 `_template_sync_due` says so (`sync.Run.computer_leg`).
 
 `chain.py gate <workspace>` is the first step of every task prompt a computer runs: it prints
@@ -272,11 +273,11 @@ IN_THE_CLOUD = "your routines run in the cloud"
 GATED = 3   # the exit of `chain.py gate` when this computer must not run the chains now
 
 
-def gate(workspace, now: dt.datetime | None = None) -> str | None:
+def gate(workspace, now: dt.datetime | None = None, chain: str | None = None) -> str | None:
     """Why this computer must not run the chains now; None to go on. The first step of every
     task prompt a computer runs (`chain.py gate <workspace>`), since the app's own scheduled tasks
     never read the routine host record: the routines run in the cloud, paused or not
-    (IN_THE_CLOUD), another computer is the host ("they run on <name>"), the record is not one
+    (IN_THE_CLOUD; the daily `chain` goes on on the computer the move ran on), another computer is the host ("they run on <name>"), the record is not one
     (`routine.UNCLEAR`), or they are paused ("paused until <time>", in this computer's time, or in
     the record's own for a time this computer cannot put in its own).
     This computer as the host goes on through either of its runners, and so does a workspace with
@@ -288,8 +289,9 @@ def gate(workspace, now: dt.datetime | None = None) -> str | None:
     if record.get("unclear"):
         return routine.UNCLEAR
     if record["runner"] == "cloud":
-        return IN_THE_CLOUD
-    if record["machine"] != routine.this_machine():
+        if chain == "sweep" or record.get("computer") not in (None, routine.this_machine()):   # none named: each
+            return IN_THE_CLOUD
+    elif record["machine"] != routine.this_machine():
         return f"they run on {record['name'] or 'another computer'}"
     until = routine.paused_until(record, now or dt.datetime.now(dt.timezone.utc))
     if until is not None:
@@ -493,6 +495,8 @@ def main(argv=None) -> int:
     day.add_argument("--cloud", action="store_true")
     held = sub.add_parser("gate")
     held.add_argument("workspace", nargs="?", default=".")
+    held.add_argument("--chain", choices=("sweep", "daily"))   # the sweep's prompt names itself; a prompt that names
+    # nothing (one rendered before the sweep could move) is the daily's or another routine's
     places = sub.add_parser("spaces")
     places.add_argument("root", nargs="?", default=".")
     places.add_argument("--person")
@@ -508,7 +512,7 @@ def main(argv=None) -> int:
 
     offline = {k: Path(v) for k, v in _pairs(getattr(args, "offline", [])).items()} or None
     if args.command == "gate":
-        why = gate(Path(args.workspace))
+        why = gate(Path(args.workspace), chain=args.chain)
         if why:
             print(f"The chains do not run on this computer now: {why}.")
         return GATED if why else 0

@@ -325,12 +325,12 @@ routine started on any other leaves by itself.
 - **Run my routines here**: run `onboard.py <workspace> --routines-here` in the background (or with the
   10-minute command timeout) and read its output when it ends: it proves the routines twice through this
   computer's scheduler, about eight minutes, and only then registers them there. While the routines run in the
-  cloud, its first line, printed at once, names the cloud's two scheduled tasks: read it as soon as it appears
-  and turn both off then, before the proof ends (load `RemoteTrigger` with tool search; update each task with
-  `enabled: false`; never delete one), so the cloud and this computer never both run a chain. A failing row: say
-  its fix in one line; the routines keep running where they ran (turn the two cloud tasks back on, `enabled:
-  true`, when you turned them off; never when they were off because a proof showed a refusal missing, as "Run my
-  routines in the cloud" says: then the routines stay stopped until the fix lets them run here). When it passes,
+  cloud, its first line, printed at once, names the cloud's sweep task: read it as soon as it appears and turn
+  it off then, before the proof ends (load `RemoteTrigger` with tool search; update the task with `enabled:
+  false`; never delete one), so the cloud and this computer never both run the sweep. A failing row: say its fix
+  in one line; the routines keep running where they ran (turn the cloud task back on, `enabled: true`, when you
+  turned it off; never when it was off because a proof showed a refusal missing, as "Run my routines in the
+  cloud" says: then the sweep stays stopped until the fix lets it run here). When it passes,
   the other computer stops on its own, and each `turn off: <path>` line names one of the app's scheduled tasks
   that still runs a routine: load `mcp__scheduled-tasks__list_scheduled_tasks` and
   `mcp__scheduled-tasks__update_scheduled_task` with tool search, find the task whose `path` is that path,
@@ -342,20 +342,28 @@ routine started on any other leaves by itself.
 
 ## "Run my routines in the cloud"
 
-Two scheduled tasks on claude.ai then run the routines, the sweep three times a day and the daily chain once,
-so a closed laptop misses nothing; this computer's sync still lands what only it has (its sessions' edits, the
-releases, template sync). The routines move only after a proof run of each task shows the cloud refuses what
-this computer's own profile refuses. `<workspace>` is the person's workspace; every command below runs on this
-computer. `<zone>` is the person's time zone by its IANA name (as `Europe/Amsterdam`), whose hours the tasks keep:
-the one `<workspace>/_meta/state/routine-host.yaml` records (`timezone:`) when it records one; else, on macOS or
-Linux, the one this computer names (where `/etc/localtime` points, the part after `zoneinfo/`); on Windows, the zone
-`Get-TimeZone` gives (its `Id`, as `W. Europe Standard Time`), translated to its IANA name (as `Europe/Berlin`).
-One Windows zone covers several places, so tell the person which IANA zone you chose, and take the one they name
-instead.
+One scheduled task on claude.ai then runs the sweep, three times a day, so a session opened on a phone reads a
+brain that is up to date even when the laptop stayed closed. It only reads the person's apps: it gets their read
+tools and nothing that writes, sends, shares or deletes. The daily chain stays on this computer (it catches up
+after sleep) and sends what the sweep queued: the owner notices, the tracker issues, the briefing. This computer's
+sync still lands what only it has (its sessions' edits, the releases, template sync). The sweep moves only after a
+proof run of its task shows the task keeps what it must from landing. `<workspace>` is the person's workspace;
+every command below runs on this computer. `<zone>` is the person's time zone by its IANA name (as
+`Europe/Amsterdam`), whose hours the task keeps: the one `<workspace>/_meta/state/routine-host.yaml` records
+(`timezone:`) when it records one; else, on macOS or Linux, the one this computer names (where `/etc/localtime`
+points, the part after `zoneinfo/`); on Windows, the zone `Get-TimeZone` gives (its `Id`, as `W. Europe Standard
+Time`), translated to its IANA name (as `Europe/Berlin`). One Windows zone covers several places, so tell the
+person which IANA zone you chose, and take the one they name instead. `<env>` is the cloud environment the task
+runs in: load `RemoteTrigger` with tool search, list the account's routines and take the `environment_id` their
+`job_config.ccr` names (as `env_01...`); with none, ask the person to make one on claude.ai/code. Its network must
+be limited (claude.ai's trusted network, or GitHub alone): the task cannot set that itself, and the proof checks it.
+The move also needs this computer to run the routines, since the daily stays here.
 1. **What blocks the move.** `python <workspace>/_meta/tools/onboard.py <workspace> --routines-cloud --check`
    prints one sentence for each thing in the way, or that nothing is. Say each in plain words.
    - The history is still being read: it is read on a computer only, so the move waits until it is done.
    - No app is granted to the routines: connect the person's apps first ("Connect my mail" above).
+   - The routines do not run on this computer: move from the computer that runs them, or say "run my routines
+     here" first.
    - A space or a mount with no repository on GitHub: the cloud attaches GitHub repositories only; say which.
    - A repository that lets the person's own account push to main past the checks (`enforce_admins` off): it is
      the person's repository setting, so ask once, naming the repositories, whether to hold their account to the
@@ -366,56 +374,56 @@ instead.
      "required_pull_request_reviews": null, "restrictions": null}` on its standard input.
    - A repository the person can push to but does not administer, whose main has no protection: only whoever
      administers it can protect it. Say so; the move waits until it is protected.
-   Run the check again until it says nothing keeps the routines from moving. When the routines already run in the
-   cloud (moving again: for a space made since, or from a computer that replaced the one they moved from), its last
-   line names the two tasks they run as. When a proof stopped them, its last line says instead "Your routines are
-   stopped: ...": that is step 2's refusal missing, so both tasks stay off; say so in plain words and offer "run my
+   Run the check again until it says nothing keeps the sweep from moving. When the sweep already runs in the
+   cloud (moving again: for a space made since; a computer that replaced the one it moved from says "run my
+   routines here" first), its last
+   line names the task it runs as. When a proof stopped it, its last line says instead "Your sweep is stopped:
+   ...": that is step 2's refusal missing, so the task stays off; say so in plain words and offer "run my
    routines here" instead of moving.
-2. **Prove each task.** For `sweep`, then `daily`: `python <workspace>/_meta/tools/cloud.py trigger <workspace> --chain
-   <chain> --proof --timezone <zone>` prints the task's body with two keys it does not send: drop `roots` and `grant`
-   (this computer keeps them for the move), and complete each `mcp_connections` entry with `connector_uuid` and `url`,
-   the id and address of the account's connector of that `name`, keeping its `name` and `permitted_tools`. Every body
-   below, with `--proof` or without, is sent completed the same way. Load `RemoteTrigger` with tool search, create the
-   task with that body (it is made turned off), and start one run of it. When the check named the two tasks the routines
-   already run as, prove those two instead of creating new ones: update each with the proof body (which turns it off
-   while it is proved) and start one run; step 3 updates it back. Its proof run exports and reads nothing, runs no chain
-   and sends nothing; it tries what the profile must refuse, lands its proof line and opens a pull request. Read its run
-   log (the one routine log you read: the run read nothing), its proof line and its pull request; it counts once the
-   pull request merged on green and this computer's sync brought the line here. A proof run is given its task's tools,
-   so the daily's message to `nobody@example.test` reaches the send guard: the send guard counts as proven only when the
-   daily's proof line shows that send refused (`send` true). Tasks you made new for the proof stay off whenever the move
-   stops; the two you proved in place go by why it stops:
-   - **A refusal missing.** A proof line with `guard`, `edit`, `tool` or `send` false, or a run log that shows
-     the command, the edit, the tool or the send going through, stops the move at once: the cloud no longer
-     refuses what the profile must. Turn off whichever of the two tasks is still on (proved in place one after
-     the other, the one not proved yet still runs its real body): update it with `RemoteTrigger` to
-     `enabled: false`; never delete one. Then leave both tasks off and never turn them back on (on their real
-     body they would run under a guard the proof showed does not hold). Proved in place, they were the routines'
-     own, so the routines are stopped: say so plainly, with what the cloud no longer refuses in plain words, and
-     offer "run my routines here". With tasks made new for the proof, say only which refusal is missing; the
-     routines run where they ran.
-   - **Anything else.** When the move stops for what says nothing against the guard, here or in step 3 (a proof
-     older than 48 hours, a task not rendered here, a proof whose pull request did not merge, an id or a zone
-     given wrong, or the person stopping), put the two tasks back before you end: render each without `--proof`
-     (`cloud.py trigger <workspace> --chain <chain> --timezone <zone>`), update it to that body with
-     `RemoteTrigger` and turn it on (`enabled: true`), so the routines keep running in the cloud.
-3. **Move.** On two green proofs: render each task again without `--proof` (`cloud.py trigger <workspace>
-   --chain <chain> --timezone <zone>`), then record the move with `python <workspace>/_meta/tools/onboard.py
-   <workspace> --routines-cloud --sweep <the sweep task's id> --daily <the daily task's id> --timezone <zone>`,
-   with the same `<zone>`. It refuses with one sentence (exit 2), changing nothing, for a task id or a zone
-   that is none, one id given for both tasks, a newest proof that shows a refusal missing, without both proofs
-   from the last 48 hours, or before both tasks were rendered here: say the sentence and do what it names. A
-   sentence that says the cloud does not refuse something, or that the routines are stopped, is a refusal
-   missing: leave both tasks off and never turn them back on, as step 2 says. For any other, when you stop there,
-   put back the two tasks you proved in place, as step 2 says. When it passes, update each task with
-   `RemoteTrigger` to the body just rendered and turn it on (`enabled: true`), then turn off each
-   `turn off: <path>` task it printed, as "Run my routines here" says. When its line says the cloud's earlier
-   tasks still run beside the new ones, turn each of those off at once with `RemoteTrigger` (`enabled: false`;
-   never delete one): until then every chain runs twice. This computer's own OS tasks step aside by themselves.
-4. **Say it.** One sentence names the two tasks, with the links `RemoteTrigger` gave, and how to pause: "pause
-   my routines" on this computer, or, away from it, turning the two tasks off on claude.ai.
+2. **Prove the task.** `python <workspace>/_meta/tools/cloud.py trigger <workspace> --chain sweep --proof
+   --timezone <zone> --environment <env>` prints the task's body with two keys it does not send: drop `roots` and
+   `grant` (this computer keeps them for the move), and complete each `mcp_connections` entry with `connector_uuid`
+   and `url`, the id and address of the account's connector of that `name`, keeping its `name` and
+   `permitted_tools`. Every body below, with `--proof` or without, is sent completed the same way. Create the task
+   with `RemoteTrigger` and that body (it is made turned off), and start one run of it. When the check named the
+   task the sweep already runs as, prove that one instead of creating a new one: update it with the proof body
+   (which turns it off while it is proved) and start one run; step 3 updates it back. Its proof run exports and
+   reads nothing; it tries an edit of `rules.md`, an app tool it was not given, a request to a host outside the
+   network limit and a change of `rules.md` made with a command, writes its proof line and lands it. Read its run
+   log (the one routine log you read: the run read nothing), its proof line and its pull request; it counts once
+   the pull request merged on green and this computer's sync brought the line here, with the sync's line after it
+   showing the changed file left out. A task you made new for the proof stays off whenever the move stops; one you
+   proved in place goes by why it stops:
+   - **A refusal missing.** A proof line with `edit`, `tool` or `network` false, a command's change that went
+     through and a landing that left nothing out, or a run log that shows any of them going through, stops the move
+     at once. Network false: limit the environment's network on claude.ai, then prove a new task. Turn the task
+     off if it is on (update it with `RemoteTrigger` to `enabled: false`; never delete one) and never turn it back
+     on. Proved in place, it was the sweep's own, so the sweep is stopped: say so plainly, with what the cloud no
+     longer refuses in plain words, and offer "run my routines here". With a task made new for the proof, say only
+     which refusal is missing; the sweep runs where it ran.
+   - **Anything else.** When the move stops for what says nothing against the proof, here or in step 3 (a proof
+     older than 48 hours, a task not rendered here, a proof whose pull request did not merge, an id or a zone given
+     wrong, or the person stopping), put a task you proved in place back before you end: render it without
+     `--proof` (`cloud.py trigger <workspace> --chain sweep --timezone <zone> --environment <env>`), update it to
+     that body with `RemoteTrigger` and turn it on (`enabled: true`), so the sweep keeps running in the cloud.
+3. **Move.** On a green proof: render the task again without `--proof` (`cloud.py trigger <workspace> --chain
+   sweep --timezone <zone> --environment <env>`), then record the move with `python
+   <workspace>/_meta/tools/onboard.py <workspace> --routines-cloud --sweep <the task's id> --timezone <zone>`,
+   with the same `<zone>`. It refuses with one sentence (exit 2), changing nothing, for a task id or a zone that
+   is none, a newest proof that shows a refusal missing, without a proof from the last 48 hours, or before the
+   task was rendered here: say the sentence and do what it names. A sentence that says the cloud does not refuse
+   something, or that the sweep is stopped, is a refusal missing: leave the task off and never turn it back on, as
+   step 2 says. For any other, when you stop there, put back a task you proved in place, as step 2 says. When it
+   passes, update the task with `RemoteTrigger` to the body just rendered and turn it on (`enabled: true`), then
+   turn off each `turn off: <path>` task it printed, as "Run my routines here" says. When its line says the
+   cloud's earlier task still runs beside the new one, turn that off at once with `RemoteTrigger` (`enabled:
+   false`; never delete one): until then the sweep runs twice. This computer's own sweep steps aside by itself;
+   its daily keeps running.
+4. **Say it.** One sentence names the task, with the link `RemoteTrigger` gave, says the daily stays on this
+   computer, and how to pause: "pause my routines" on this computer, or, away from it, turning the task off on
+   claude.ai.
 
-Back on a computer: "Run my routines here" (above) turns the cloud's two tasks off first.
+Back on a computer: "Run my routines here" (above) turns the cloud's task off first.
 
 ## "Is this set up?"
 
@@ -423,8 +431,8 @@ Back on a computer: "Run my routines here" (above) turns the cloud's two tasks o
 every read-back, writes each owner step still failing to `_inbound/needs-you/onboard-owner.yaml`,
 and names the fix for the rest. It also rewrites the onboarding page (`page:`). Show only the
 failing rows, and the `routines in the cloud` row whenever it is there, failing or not: it names the
-cloud's two scheduled tasks and how long ago each chain last wrote a run line, or that a proof stopped
-the routines; say it in one plain sentence.
+cloud's sweep task and how long ago the sweep last wrote a run line, or that a proof stopped it; say
+it in one plain sentence.
 
 ## What the tools already did
 

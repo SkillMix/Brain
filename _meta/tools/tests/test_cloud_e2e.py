@@ -1,12 +1,12 @@
-"""End to end (spec 4.2 to 4.5a): the cloud sweep and the cloud daily, each run as its prompt runs it, against two
-throwaway bare origins, Ada's workspace and the brain it mounts. Each run has a machine of its own: a folder standing
-in for /home/user (`SPACES_CLOUD_HOME`) with fresh shallow clones, as the platform clones them, and a home folder the
-last run's guard state went with. The tools run in this process, in the prompt's order: `cloud.py begin`, the export
-from the cursors begin printed, `sweep.py`, `chain.py ... --cloud`, the agent's own run line, then `sync.py --cloud`
-for every root, the workspace last. GitHub is a fake that keeps pull requests in memory and merges them as the
-platform does, with git's own merge, which knows none of the space's merge rules; a `gh` the tools would start
-themselves is not installed here. Ada's computer is one more clone, whose sync adopts the pull request nothing
-merged."""
+"""End to end (spec 4.2 to 4.5a): cloud sweeps, each run as its prompt runs it, against two throwaway bare origins,
+Ada's workspace and the brain it mounts, while the daily chain stays on Ada's computer. Each run has a machine of its
+own: a folder standing in for /home/user (`SPACES_CLOUD_HOME`) with fresh shallow clones, as the platform clones
+them, and a home folder the last run's marker went with. The tools run in this process, in the prompt's order:
+`cloud.py begin`, the export from the cursors begin printed, `sweep.py`, `chain.py ... --cloud`, the agent's own run
+line, then `sync.py --cloud` for every root, the workspace last. GitHub is a fake that keeps pull requests in memory
+and merges them as the platform does, with git's own merge, which knows none of the space's merge rules; a `gh` the
+tools would start themselves is not installed here. Ada's computer is one more clone, which runs the daily chain, and whose sync lands
+it and adopts the pull request nothing merged."""
 import datetime as dt
 import json
 import re
@@ -31,9 +31,8 @@ from test_sync import git, write
 from test_sync_cloud import land
 
 TEMPLATE = Path(__file__).resolve().parents[3]
-TASKS = {"sweep": "trig_01AAAAAAAA", "daily": "trig_01BBBBBBBB"}
-GRANT = {"read": ["mcp__mail__get_message", "mcp__mail__search_threads"], "write": [],
-         "send": ["mcp__mail__send_message"]}
+TASKS = {"sweep": "trig_01AAAAAAAA"}
+GRANT = {"read": ["mcp__mail__get_message", "mcp__mail__search_threads"], "write": [], "send": []}
 SPACE, BRAIN = "ada/ada-space", "ada/ada-brain"
 RUNS = "_meta/state/runs.jsonl"
 WATERMARK = "_meta/state/sweep-watermark.yaml"
@@ -131,7 +130,7 @@ class Platform:
                 self.before_read(slug, int(m[1]), pull["branch"])
             out = json.dumps(self.act(int(m[1])))
         elif m := re.fullmatch(r"repos/[^/]+/[^/]+/commits/([^/]+)/check-runs\?.*", route):
-            red = any((slug, b) in self.red and self.head(slug, b) == m[1] for b in ("cloud/sweep", "cloud/daily"))
+            red = (slug, "cloud/sweep") in self.red and self.head(slug, "cloud/sweep") == m[1]
             run = int(m[1][:6], 16)
             out = json.dumps({"check_runs": [{"name": "checks", "conclusion": "failure" if red else "success",
                                               "details_url": f"https://github.com/{slug}/actions/runs/{run}/job/"
@@ -203,7 +202,7 @@ def world(tmp_path, monkeypatch):
 
 def machine(world, name: str) -> list:
     """A run's own machine: its /home/user holding the platform's fresh shallow clones of the attached repositories,
-    and a home folder without the last run's guard state. The clones, the workspace first."""
+    and a home folder without the last run's marker. The clones, the workspace first."""
     home = world["tmp"] / name
     home.mkdir()
     world["monkeypatch"].setenv("SPACES_CLOUD_HOME", str(home))
@@ -238,7 +237,7 @@ def export(root: Path, cursors: dict, mailbox: list, run: int) -> list:
 
 
 def agent_line(root: Path, routine_name: str, notes: dict) -> dict:
-    """The agent's own run line (the sweep prompt's step 7, the daily's step 4)."""
+    """The agent's own run line (the cloud sweep prompt's step 5; on the computer, the daily's)."""
     line = {"routine": routine_name, "at": pages.iso(dt.datetime.now(dt.timezone.utc)),
             "space": yaml.safe_load((root / "space.yaml").read_text(encoding="utf-8"))["name"], "cost_tokens": 0,
             "notes": {"step": "agent", "cloud": True, "complete": True, **notes}}
@@ -286,8 +285,33 @@ def tree(world, slug: str, ref: str = "main") -> list:
     return git(world["platform"].origin(slug), "ls-tree", "-r", "--name-only", ref).stdout.split()
 
 
+# ----- Ada's computer --------------------------------------------------------------------------------------------
+def computer_sync(world) -> list:
+    """Ada's computer's sync, every quarter of an hour: it merges main in and lands what the computer wrote through its
+    own pull request, which the platform merges on green. The pull requests it opened."""
+    platform, opened = world["platform"], set(world["platform"].pulls)
+    assert sync.main(["--root", str(world["computer"]), "--min-age-minutes", "0"]) == 0
+    mine = [n for n in platform.pulls if n not in opened]
+    assert {platform.pulls[n]["branch"] for n in mine} <= {f"sync/{sync.hostname()}"}
+    assert all(platform.act(n)["merged"] for n in mine)
+    return mine
+
+
+def computer_daily(world) -> dict:
+    """Ada's daily chain on their computer, which the cloud record leaves it (the computer the move ran on), between
+    two of its syncs: the first brought main in, the second lands the daily. The agent's line."""
+    computer = world["computer"]
+    assert chain.gate(computer, chain="daily") is None and chain.gate(computer, chain="sweep") == chain.IN_THE_CLOUD
+    computer_sync(world)
+    assert chain.main(["daily", str(computer)]) == 0
+    line = agent_line(computer, "daily-chain", {"cloud": False, "notices": 0,
+                                                "briefing": "no mail connector in this test"})
+    assert computer_sync(world)
+    return line
+
+
 # ----- the test --------------------------------------------------------------------------------------------------
-def test_cloud_sweeps_and_a_daily_land_end_to_end(world, capsys, monkeypatch):
+def test_cloud_sweeps_land_end_to_end_beside_the_daily_on_the_computer(world, capsys, monkeypatch):
     platform, mailbox = world["platform"], world["mailbox"]
     at = {r["id"]: r["at"] for r in mailbox}
     written = []
@@ -304,27 +328,22 @@ def test_cloud_sweeps_and_a_daily_land_end_to_end(world, capsys, monkeypatch):
     assert {"mail-0001", "mail-0002"} <= {Path(p).stem for p in tree(world, SPACE)
                                           if p.startswith("knowledge/sources/")}
 
-    # 3. The daily begins, and a second sweep begins on its own machine meanwhile.
-    daily = machine(world, "daily-1")
-    said = begin(daily[0], "daily", capsys)
-    assert "cursors" not in said and said["carried"] == []
-    for root in daily:
-        assert chain.main(["daily", str(root), "--cloud"]) == 0
-        written.append(agent_line(root, "daily-chain", {"notices": 0, "briefing": "no mail connector in this test"}))
+    # 3. A second sweep, while the daily runs on Ada's computer and its sync lands it as the sweep's pull request waits.
     second = sweep_until_landing(world, "sweep-2", 2, capsys)
     assert second["exported"]["ada-space"] == ["mail-0003"]   # from the first sweep's marks, which landed
     written += second["lines"]
-    meanwhile = {}
+    meanwhile = []
 
-    def the_second_sweep_lands(slug, number, branch):   # while the daily's pull request waits for its checks
-        if slug == SPACE and branch == "cloud/daily" and not meanwhile:
-            meanwhile.update(land_all(world, second["roots"], "sweep"))
-    platform.before_read = the_second_sweep_lands
-    landed = land_all(world, daily, "daily")
+    def the_daily_lands(slug, number, branch):   # while the sweep's pull request waits for its checks
+        if slug == SPACE and branch == "cloud/sweep" and not meanwhile:
+            meanwhile.append(computer_daily(world))
+    platform.before_read = the_daily_lands
+    landed = land_all(world, second["roots"], "sweep")
     platform.before_read = None
-    # 4. The sweep merged first, so the daily's pull request conflicted on GitHub (the run lines, which GitHub
-    # merges without the union rule); its sync merged main in again with the rules, pushed, and it merged.
-    assert meanwhile["ada-space"]["landing"] == "merged"
+    written += meanwhile
+    # 4. The daily merged first, so the sweep's pull request conflicted on GitHub (the run lines, which GitHub merges
+    # without the union rule); its sync merged main in again with the rules, pushed, and it merged.
+    assert len(meanwhile) == 1
     assert landed["ada-space"]["landing"] == "merged" and landed["ada-space"]["remerged"] == 1
 
     # 5. A third sweep whose pull request stays red: the next sweep's begin carries it, and so does its push.
@@ -363,16 +382,15 @@ def test_cloud_sweeps_and_a_daily_land_end_to_end(world, capsys, monkeypatch):
         if line["space"] == "ada-space":
             assert on_main.count(line) == written.count(line), line
         else:   # the brain's sweeps change only run lines and marks: quiet, each carried by the next, no pull request
-            assert lines_on(world, BRAIN, "main" if line["routine"] == "daily-chain" else "cloud/sweep").count(line) \
-                == written.count(line), line
-    assert [platform.pulls[n]["branch"] for n in platform.posts(BRAIN)] == ["cloud/daily"]
+            assert lines_on(world, BRAIN, "cloud/sweep").count(line) == written.count(line), line
+    assert platform.posts(BRAIN) == []
     counted = {name: sum(1 for line in on_main if line.get("routine") == name)
                for name in ("sweep-chain", "daily-chain", "sweep_chain", "daily")}
     assert counted == {"sweep-chain": 4, "daily-chain": 1, "sweep_chain": 4, "daily": 1}
     clouds = sorted((line for line in on_main if line.get("routine") == "sync" and line.get("cloud")),
                     key=lambda line: line["at"])   # a union merge keeps both sides' lines, not their order in time
-    assert [line["cloud"] for line in clouds] == ["sweep", "daily", "sweep", "sweep", "sweep"]
-    assert [line["notes"]["carried"] for line in clouds if line["cloud"] == "sweep"] == [False, False, False, True]
+    assert [line["cloud"] for line in clouds] == ["sweep"] * 4
+    assert [line["notes"]["carried"] for line in clouds] == [False, False, False, True]
     assert not [line for line in clouds if line["notes"]["left_out"] or line["notes"]["held"]]
     assert "cloud-protected" not in shown(world, SPACE, "main", "_inbound/needs-you/sync-cloud.yaml")
     pages_of = [Path(p).stem for p in tree(world, SPACE) if p.startswith("knowledge/sources/") and p.endswith(".md")]
@@ -383,7 +401,10 @@ def test_cloud_sweeps_and_a_daily_land_end_to_end(world, capsys, monkeypatch):
     for slug in (SPACE, BRAIN):
         assert not [p for p in tree(world, slug) if p.startswith(FEED)]
         changed = git(platform.origin(slug), "diff", "--name-only", world["start"][slug], "main").stdout.split()
-        assert changed and sync.protected_paths(world["seeds"][slug], changed) == [], changed
+        if slug == SPACE:
+            assert changed and sync.protected_paths(world["seeds"][slug], changed) == [], changed
+        else:   # the brain's sweeps were all quiet: nothing reached its main
+            assert changed == [], changed
         # Only the platform wrote to main, merging pull requests: no run pushed to it.
         merged = git(platform.origin(slug), "log", "--first-parent", "--format=%s", "main").stdout.splitlines()
         assert merged[-1] == "init" and all(s.startswith("Merge remote-tracking branch 'origin/") for s in merged[:-1])

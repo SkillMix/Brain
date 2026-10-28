@@ -276,48 +276,39 @@ session has no workspace instruction and its notes would be lost.
 
 ## Routines in the cloud
 
-After "run my routines in the cloud", the sweep and the daily chain run as two scheduled tasks on
-claude.ai. Each run lands its own files: at its end `sync.py --cloud <chain>` pushes
-`cloud/<chain>` and opens a pull request that the space's checks merge. A run's proof is its run
+After "run my routines in the cloud", the sweep runs as a scheduled task on claude.ai, reading the
+person's apps and writing to none of them; the daily chain stays on the computer and sends what the
+sweep queued (owner notices, tracker issues). Each run lands its own files: at its end
+`sync.py --cloud sweep` pushes `cloud/sweep` and opens a pull request that the space's checks merge. A run's proof is its run
 line on `main`, never the platform's "succeeded"; a run that steps aside (the routines are paused,
-or run on a computer again) writes nothing at all.
+or the sweep runs on a computer again) writes nothing at all.
 
 ### A cloud run did not land
 
-Seen: nothing new on `main` after a cloud run's time, or a `cloud/sweep` or `cloud/daily` pull
-request left open.
+Seen: nothing new on `main` after a cloud run's time, or a `cloud/sweep` pull request left open.
 Why: its pull request did not merge in the nine minutes the run waits: it still conflicted with
 `main` after three merges, its checks were still red after one repair, or they were slow. Or the
 run stopped before its landing step: a run whose begin stopped (a carry that conflicted or failed,
-or routines stopped because a proof showed a refusal missing) writes and lands nothing, and says
-why only in the task's run log on claude.ai. While the routines are stopped, a real run stops in
+or the sweep stopped because a proof showed a refusal missing) writes and lands nothing, and says
+why only in the task's run log on claude.ai. While the sweep is stopped, a real run stops in
 code until a proof shows every refusal again.
 The agent: reads the run's line on `main` (the last line of `_meta/state/runs.jsonl` with
-`"cloud": "<chain>"`) and the task's latest run on claude.ai. Nothing is lost: the next run of that
-chain carries the open branch in before it exports. The computer's sync adopts a cloud pull request
+`"cloud": "sweep"`) and the task's latest run on claude.ai. Nothing is lost: the next run carries the open branch in before it exports. The computer's sync adopts a cloud pull request
 only when both hold: it is still open after 30 minutes, and it conflicts with `main` or its checks
 are red (`Run.stuck`, `Run.adopt` in `sync.py`). It merges it into its own pull request (`adopted`
 in its run line). A green pull request that is only slow is not adopted, because auto-merge lands
 it. One the computer cannot merge either is a Needs-you item: the person keeps the side they want,
-or closes it, and the next cloud run starts again from `main`, and may make that run's tracker
-issues and owner notices again; a run already under way when it is closed lands nothing, and its
+or closes it, and the next cloud run starts again from `main`; a run already under way when it is closed lands nothing, and its
 log says the pull request "was closed without merging while this run worked". Run lines and marks
 alone open no pull request: the branch waits for a run with a real change, or six hours.
 
-### "The cloud sweep has not run since …"
+### The cloud sweep stopped running
 
-Seen: a Needs-you item a run of the other chain wrote (the daily names the sweep, the sweep the
-daily).
-Why: that chain's last line on `main` is older than twice the longest gap between its hours, and
-the routines are not paused. Its task is off, failing, or stopping before it lands.
+Seen: `onboard.py --check` says the sweep's newest run line is a day old or more, and nothing is
+paused.
+Why: its task is off, failing, or stopping before it lands.
 The agent: opens the task on claude.ai with the person, reads its latest run, and turns it on again
-when it is off. `onboard.py --check` says where the routines run and when each chain last ran. The
-item goes once the chain runs again.
-
-### "The cloud runs read <mount> as it was more than 3 days ago"
-
-The cloud reads each mount at its pin, and only the computer's sync moves pins. The computer has
-been closed for days, or its sync task stopped: open it, or say "is this set up?".
+when it is off.
 
 ### "A cloud run changed protected files; they were not landed"
 
@@ -328,26 +319,27 @@ that went wrong. Nothing protected lands from the cloud: the change stayed in th
 thrown away. An `AGENTS.md` a tool regenerated is put back without an item (the computer's sync
 writes it again), and answer tests set aside are the one change there that lands.
 The agent: reads that run's log on claude.ai with the person, and what the run read before the
-change, before the task runs again; "pause my routines" holds both tasks meanwhile. The same change
+change, before the task runs again; "pause my routines" holds the task meanwhile. A proof run changes
+`rules.md` with a command on purpose and writes no item: its `left_out` is the proof. The same change
 seen again is not asked twice; a different one is.
 
 ### "Your routines in the cloud do not read <space>"
 
-The space was made after the routines moved, so neither task attaches it and nothing sweeps or
-briefs it. Say "run my routines in the cloud" again to add it.
+The space was made after the sweep moved, so the task does not attach it and nothing sweeps it. Say "run my routines in the cloud" again to add it.
 
 ### The computer the routines moved from was replaced
 
-Seen: the routines run in the cloud, the computer the move ran on is gone (a new laptop took its
-place), and since then cloud pull requests that conflict stay open, template sync does not run and
-new sessions do not show up.
-Why: while the routines run in the cloud, only the computer the routine record names (`computer`
-in `_meta/state/routine-host.yaml`, the one the move ran on) does the computer's leg: the
-transcripts scan, template sync, rewriting a stale `AGENTS.md`, adopting cloud pull requests and
-naming the spaces the cloud does not read. Every other computer's sync leaves them to it.
-The agent: on the new computer, once the workspace is set up there, moves the routines again ("run
-my routines in the cloud", the onboard skill). Its check names the two tasks the routines run as;
-the agent proves those two in place, and the move it records names this computer. Its next sync
+Seen: the sweep runs in the cloud, the computer the move ran on is gone (a new laptop took its
+place), and since then no briefing comes, cloud pull requests that conflict stay open and new
+sessions do not show up.
+Why: while the sweep runs in the cloud, only the computer the routine record names (`computer` in
+`_meta/state/routine-host.yaml`, the one the move ran on) runs the daily chain and the computer's
+leg: the transcripts scan, adopting cloud pull requests and naming the spaces the cloud does not
+read. Every other computer leaves them to it.
+The agent: on the new computer, once the workspace is set up there, says "run my routines here"
+first, so its daily is scheduled and probed there, then moves the sweep again ("run my routines in
+the cloud", the onboard skill). Its check names the task the sweep runs as; the agent proves it in
+place, and the move it records names this computer. Its next sync
 does the leg. A new computer with no probe of its own checks and renders the tasks with the grant
 the record kept. One that has its own probe goes by it: when its check says no app is granted,
 connect the apps there, say "run my routines here" so the probe sees them, then move them to the
@@ -355,11 +347,12 @@ cloud again.
 
 ### A routine's `sync.py` command is refused
 
-Seen: a routine's run log shows its `sync.py` command refused by the guard, after a prompt or a
-skill was changed.
+Seen: a routine's run log shows its `sync.py` command refused, after a prompt or a skill was
+changed.
 Why: a routine runs `sync.py` only in exact commands, its landing: on a computer `--root <root>`
-alone or with `--release-leg`, in the cloud `--root <root> --cloud <chain>`. A prompt or skill that
-names another flag (`--dry-run`, `--no-push`) is refused; on a computer, until
-`routine.SYNC_LEGS` holds it.
+alone or with `--release-leg`, in the cloud `--root <root> --cloud sweep`. A prompt or skill that
+names another flag (`--dry-run`, `--no-push`) is refused: on a computer by the routine profile until
+`routine.SYNC_LEGS` holds it, in the cloud by the task's deny list, which matches the command's text
+only (the cloud has no hook to read it more closely).
 The agent: puts the prompt or skill back to the landing command, or, when a computer's routine
 needs the new flag, adds it to `routine.SYNC_LEGS` in the template.

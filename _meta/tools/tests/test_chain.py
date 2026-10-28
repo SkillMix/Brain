@@ -308,7 +308,7 @@ def test_cli_cloud_sweep_and_daily(tmp_path, fakes):
 
 # ----- the gate: the first step of every task the app's own scheduler starts ---------
 
-CLOUD_TASKS = {"sweep": "trig_01AAAAAAAA", "daily": "trig_01BBBBBBBB"}
+CLOUD_TASKS = {"sweep": "trig_01AAAAAAAA"}
 CLOUD_ROOTS = ["ada/ada-space"]
 CLOUD_GRANT = {"read": ["mcp__mail__get_thread"], "write": [], "send": ["mcp__mail__send_message"]}
 
@@ -322,16 +322,88 @@ def desktop(monkeypatch):
     return routine
 
 
-def test_the_gate_stops_a_computer_task_when_the_routines_run_in_the_cloud(tmp_path, capsys, desktop):
+def test_the_gate_stops_the_sweep_on_every_computer_when_it_runs_in_the_cloud(tmp_path, capsys, desktop, monkeypatch):
+    """`--chain sweep` steps aside on every computer, the one the move ran on included, paused or not, with one
+    sentence and exit 3, and no run line."""
     ws = make_space(tmp_path / "ada")
     desktop.claim_cloud(ws, CLOUD_TASKS, "Europe/Amsterdam", CLOUD_ROOTS, CLOUD_GRANT, NOW)
-    assert chain.gate(ws, NOW) == "your routines run in the cloud"
-    assert chain.main(["gate", str(ws)]) == 3
-    out = capsys.readouterr().out
-    assert "your routines run in the cloud" in out and len(out.strip().splitlines()) == 1
+    for machine in ("m-desktop", "m-laptop"):
+        monkeypatch.setattr(desktop, "this_machine", lambda: machine)
+        assert chain.gate(ws, NOW, chain="sweep") == "your routines run in the cloud", machine
+        assert chain.main(["gate", str(ws), "--chain", "sweep"]) == 3, machine
+        out = capsys.readouterr().out
+        assert "your routines run in the cloud" in out and len(out.strip().splitlines()) == 1
     desktop.set_pause(ws, NOW + dt.timedelta(hours=8))
-    assert chain.gate(ws, NOW) == "your routines run in the cloud"   # paused or not, no computer runs them
+    for machine in ("m-desktop", "m-laptop"):
+        monkeypatch.setattr(desktop, "this_machine", lambda: machine)
+        assert chain.gate(ws, NOW, chain="sweep") == "your routines run in the cloud", machine   # paused or not
     assert not (ws / "_meta" / "state" / "runs.jsonl").exists()
+
+
+def test_under_a_cloud_record_the_gate_lets_the_daily_run_on_the_moves_computer_alone(tmp_path, capsys, desktop,
+                                                                                         monkeypatch):
+    """`--chain daily`, and a prompt that names no chain (the daily's or another routine's, rendered before the sweep
+    could move), go on on the computer the move ran on; on any other computer both step aside, and the sweep
+    everywhere."""
+    ws = make_space(tmp_path / "ada")
+    desktop.claim_cloud(ws, CLOUD_TASKS, "Europe/Amsterdam", CLOUD_ROOTS, CLOUD_GRANT, NOW)
+    for named in ("daily", None):
+        assert chain.gate(ws, NOW, chain=named) is None, named
+    for argv in (["gate", str(ws), "--chain", "daily"], ["gate", str(ws)]):
+        assert chain.main(argv) == 0 and capsys.readouterr().out == "", argv
+    assert chain.main(["gate", str(ws), "--chain", "sweep"]) == 3
+    assert "your routines run in the cloud" in capsys.readouterr().out
+    monkeypatch.setattr(desktop, "this_machine", lambda: "m-laptop")
+    for named in ("daily", None, "sweep"):
+        assert chain.gate(ws, NOW, chain=named) == "your routines run in the cloud", named
+    for argv in (["gate", str(ws), "--chain", "daily"], ["gate", str(ws)]):
+        assert chain.main(argv) == 3, argv
+        assert "your routines run in the cloud" in capsys.readouterr().out
+
+
+def test_under_a_cloud_record_a_pause_still_holds_every_chain_on_every_computer(tmp_path, capsys, desktop,
+                                                                                   monkeypatch):
+    """On the move's computer the daily and a prompt with no chain are held by the pause, said as one; the sweep, and
+    every chain on another computer, step aside for the cloud as before. Resumed, the move's computer runs again."""
+    ws = make_space(tmp_path / "ada")
+    desktop.claim_cloud(ws, CLOUD_TASKS, "Europe/Amsterdam", CLOUD_ROOTS, CLOUD_GRANT, NOW)
+    desktop.set_pause(ws, dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=2))
+    for named in ("daily", None):
+        assert chain.gate(ws, NOW + dt.timedelta(hours=1), chain=named).startswith("paused until "), named
+    for argv in (["gate", str(ws), "--chain", "daily"], ["gate", str(ws)]):
+        assert chain.main(argv) == 3, argv
+        assert "paused until" in capsys.readouterr().out
+    assert chain.gate(ws, NOW, chain="sweep") == "your routines run in the cloud"
+    monkeypatch.setattr(desktop, "this_machine", lambda: "m-laptop")
+    for named in ("daily", None, "sweep"):
+        assert chain.gate(ws, NOW, chain=named) == "your routines run in the cloud", named
+    monkeypatch.setattr(desktop, "this_machine", lambda: "m-desktop")
+    desktop.set_pause(ws, None)
+    assert chain.gate(ws, NOW, chain="daily") is None and chain.gate(ws, NOW) is None
+    assert not (ws / "_meta" / "state" / "runs.jsonl").exists()
+
+
+def test_a_cloud_record_that_names_no_computer_lets_every_computer_run_the_daily(tmp_path, desktop, monkeypatch):
+    """As the computer's leg reads it (`sync.Run.keeps_leg`): with no computer named, none would run the daily
+    otherwise, and no briefing, notice or tracker issue would go out. The sweep still steps aside on each."""
+    ws = make_space(tmp_path / "ada")
+    desktop.claim_cloud(ws, CLOUD_TASKS, "Europe/Amsterdam", CLOUD_ROOTS, CLOUD_GRANT, NOW)
+    host = ws / desktop.HOST
+    host.write_text("".join(line for line in host.read_text(encoding="utf-8").splitlines(keepends=True)
+                            if not line.startswith("computer:")), encoding="utf-8")
+    assert "computer" not in desktop.host(ws)
+    for machine in ("m-desktop", "m-laptop"):
+        monkeypatch.setattr(desktop, "this_machine", lambda: machine)
+        assert chain.gate(ws, NOW, chain="daily") is None and chain.gate(ws, NOW) is None, machine
+        assert chain.gate(ws, NOW, chain="sweep") == "your routines run in the cloud", machine
+
+
+def test_the_gate_takes_no_chain_but_the_sweep_or_the_daily(tmp_path, capsys):
+    ws = make_space(tmp_path / "ada")
+    with pytest.raises(SystemExit):
+        chain.main(["gate", str(ws), "--chain", "nightly"])
+    capsys.readouterr()
+    assert chain.main(["gate", str(ws), "--chain", "daily"]) == 0   # no record: every chain goes on
 
 
 def test_the_gate_lets_the_host_computer_run(tmp_path, capsys, desktop):

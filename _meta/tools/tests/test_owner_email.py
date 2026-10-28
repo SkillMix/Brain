@@ -203,7 +203,7 @@ def test_one_security_finding_reads_as_its_own_notice(tmp_path):
 
 
 def test_security_findings_wait_in_one_digest(tmp_path):
-    """Many findings make one email: each security notice joins the one pending digest, which
+    """Many findings make one email: pending joins the security notices into one digest, which
     counts them by where they showed up, gives the dates and passes the plain-language check."""
     root = make_space(tmp_path / "ada", owner_email="ada@lantern.example")
     oe.queue(root, leak(1, "mail", "16 October 2026"))
@@ -251,3 +251,157 @@ def test_at_most_one_security_email_a_day(tmp_path):
     old.write_text(json.dumps(data), encoding="utf-8")
     os.utime(old, (sent.timestamp(), sent.timestamp()))
     assert kinds(sent + dt.timedelta(hours=2)) == ["action"]
+
+
+def _pending_files(root):
+    return sorted((root / "_meta/state/notices/pending").glob("*.json"))
+
+
+def _read(path):
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_each_security_notice_queued_is_a_pending_file_of_its_own(tmp_path, monkeypatch):
+    """A queue only ever adds a file: the cloud sweep queueing a security notice never rewrites
+    the one the computer's daily may be sending, and never the digest a send joined."""
+    root = make_space(tmp_path / "ada", owner_email="ada@lantern.example")
+    monkeypatch.setenv("SPACE_NOW", "2026-10-28T06:00:00Z")
+    first = oe.queue(root, leak(1, "mail", "16 October 2026"))
+    before = first.read_bytes()
+    monkeypatch.setenv("SPACE_NOW", "2026-10-28T07:00:00Z")
+    second = oe.queue(root, leak(2, "calendar", "9 January 2026"))
+    assert second != first
+    assert _pending_files(root) == [first, second]
+    assert first.read_bytes() == before
+    for path, key in ((first, "security-m-1"), (second, "security-m-2")):
+        data = _read(path)
+        assert data["kind"] == "security" and data["key"] == key and data["keys"] == [key]
+        assert [n["key"] for n in data["notices"]] == [key]
+        assert data["payload"]["subject"].startswith("Security check: A password or key showed up")
+
+    monkeypatch.setenv("SPACE_NOW", "2026-10-28T08:00:00Z")
+    (digest,) = oe.pending(root)
+    joined = digest.read_bytes()
+    monkeypatch.setenv("SPACE_NOW", "2026-10-28T09:00:00Z")
+    third = oe.queue(root, leak(3, "mail", "2 February 2026"))
+    assert third not in (first, second)
+    assert digest.read_bytes() == joined
+    assert _pending_files(root) == [digest, third]
+
+    # A digest still pending (its send failed) joins a newer notice as its notices, never nested as one.
+    monkeypatch.setenv("SPACE_NOW", "2026-10-28T10:00:00Z")
+    assert oe.pending(root) == [digest]
+    assert not third.exists()
+    data = _read(digest)
+    keys = ["security-m-1", "security-m-2", "security-m-3"]
+    assert data["key"] == "security-m-1" and data["keys"] == keys
+    assert data["notices"] == [leak(1, "mail", "16 October 2026"), leak(2, "calendar", "9 January 2026"),
+                               leak(3, "mail", "2 February 2026")]
+    assert data["notice"]["title"] == "3 passwords or keys showed up in your records"
+    assert data["queued_at"] == "2026-10-28T06:00:00Z"   # the oldest's time is kept
+
+
+def test_pending_joins_the_security_files_into_the_oldest_as_one_digest(tmp_path, monkeypatch):
+    """The sender joins every pending security file into the oldest, one digest with every notice
+    and key, removes the others, and leaves the other notices as they were."""
+    import datetime as dt
+    root = make_space(tmp_path / "ada", owner_email="ada@lantern.example")
+    monkeypatch.setenv("SPACE_NOW", "2026-10-28T06:00:00Z")
+    oldest = oe.queue(root, leak(1, "mail", "16 October 2026"))
+    monkeypatch.setenv("SPACE_NOW", "2026-10-28T06:30:00Z")
+    action = oe.queue(root, {"kind": "action", "sender": "request", "title": "One answer arrived",
+                             "summary": "Your question was answered. It waits on your list.",
+                             "steps": ["Open your list and read the answer."], "key": "answer-1"})
+    action_bytes = action.read_bytes()
+    monkeypatch.setenv("SPACE_NOW", "2026-10-28T07:00:00Z")
+    middle = oe.queue(root, leak(2, "mail", "2 February 2026"))
+    monkeypatch.setenv("SPACE_NOW", "2026-10-28T08:00:00Z")
+    newest = oe.queue(root, leak(3, "calendar", "9 January 2026"))
+    assert len(_pending_files(root)) == 4
+
+    now = dt.datetime(2026, 10, 29, 6, 0, tzinfo=dt.timezone.utc)
+    assert oe.pending(root, now=now) == [oldest, action]
+    assert _pending_files(root) == [oldest, action]
+    assert not middle.exists() and not newest.exists()
+    assert action.read_bytes() == action_bytes
+
+    data = _read(oldest)
+    keys = ["security-m-1", "security-m-2", "security-m-3"]
+    assert data["kind"] == "security" and data["key"] == "security-m-1" and data["keys"] == keys
+    assert [n["key"] for n in data["notices"]] == keys
+    assert data["notices"] == [leak(1, "mail", "16 October 2026"), leak(2, "mail", "2 February 2026"),
+                               leak(3, "calendar", "9 January 2026")]
+    assert data["queued_at"] == "2026-10-28T06:00:00Z"   # the oldest's time is kept
+    assert oe.check(data["notice"]) == []
+    assert data["notice"]["title"] == "3 passwords or keys showed up in your records"
+    stats = {s["label"]: s for s in data["notice"]["stats"]}
+    assert stats["in your mail"] == {"count": 2, "label": "in your mail",
+                                     "hint": "from 2 February 2026 to 16 October 2026"}
+    assert stats["in your calendar"] == {"count": 1, "label": "in your calendar", "hint": "on 9 January 2026"}
+    payload = data["payload"]
+    assert payload["to"] == ["ada@lantern.example"]
+    assert payload["subject"] == "Security check: 3 passwords or keys showed up in your records"
+    assert "2026-10-29" in payload["body"]
+    assert payload == oe.render(data["notice"], ["ada@lantern.example"], today="2026-10-29")
+
+    joined = oldest.read_bytes()
+    assert oe.pending(root, now=now) == [oldest, action]   # a second look changes nothing
+    assert oldest.read_bytes() == joined
+    for n in (1, 2, 3):   # every key joined is still known: never queued twice
+        assert oe.queue(root, leak(n)) is None
+    oe.record(root, oldest, message_id="m-1", now=now)
+    sent = _read(root / "_meta/state/notices/sent" / oldest.name)
+    assert sent["keys"] == keys and sent["message_id"] == "m-1"
+
+
+def test_a_security_email_sent_within_a_day_holds_the_join(tmp_path, monkeypatch):
+    """While a security email went out less than 24 hours ago, pending neither returns the
+    security files nor joins them; once the day has passed it joins them into one."""
+    import datetime as dt
+    root = make_space(tmp_path / "ada", owner_email="ada@lantern.example")
+    sent = dt.datetime(2026, 10, 18, 11, 0, tzinfo=dt.timezone.utc)
+    monkeypatch.setenv("SPACE_NOW", "2026-10-18T10:00:00Z")
+    oe.queue(root, leak(1))
+    (path,) = oe.pending(root, now=sent)
+    oe.record(root, path, message_id="m-1", now=sent)
+
+    monkeypatch.setenv("SPACE_NOW", "2026-10-18T12:00:00Z")
+    first = oe.queue(root, leak(2, "mail", "2 February 2026"))
+    monkeypatch.setenv("SPACE_NOW", "2026-10-18T13:00:00Z")
+    second = oe.queue(root, leak(3, "calendar", "9 January 2026"))
+    before = {p: p.read_bytes() for p in (first, second)}
+
+    assert oe.pending(root, now=sent + dt.timedelta(hours=23)) == []
+    assert _pending_files(root) == [first, second]
+    assert {p: p.read_bytes() for p in (first, second)} == before
+
+    assert oe.pending(root, now=sent + dt.timedelta(hours=24, minutes=1)) == [first]
+    assert not second.exists()
+    assert _read(first)["keys"] == ["security-m-2", "security-m-3"]
+
+
+def test_a_single_pending_security_file_is_returned_unchanged(tmp_path, monkeypatch):
+    root = make_space(tmp_path / "ada", owner_email="ada@lantern.example")
+    monkeypatch.setenv("SPACE_NOW", "2026-10-28T06:00:00Z")
+    path = oe.queue(root, leak(1))
+    before = path.read_bytes()
+    assert oe.pending(root) == [path]
+    assert path.read_bytes() == before
+    data = _read(path)
+    assert data["notice"] == leak(1) and data["notices"] == [leak(1)]
+    assert data["payload"]["subject"] == "Security check: A password or key showed up in your mail"
+
+
+def test_a_queue_in_the_same_second_never_reuses_a_name_still_pending(tmp_path, monkeypatch):
+    """After a notice was recorded in the same second, the count of pending files repeats a number: a queue takes the
+    first name not in use, so it never overwrites a notice still waiting."""
+    root = make_space(tmp_path / "ada", owner_email="ada@lantern.example")
+    monkeypatch.setenv("SPACE_NOW", "2026-10-28T06:00:00Z")
+    action = oe.queue(root, {"kind": "action", "sender": "request", "title": "One answer arrived",
+                             "summary": "Your question was answered. It waits on your list.",
+                             "steps": ["Open your list and read the answer."], "key": "answer-1"})
+    first = oe.queue(root, leak(1, "mail", "16 October 2026"))
+    oe.record(root, action, "msg-1")
+    second = oe.queue(root, leak(2, "calendar", "9 January 2026"))
+    assert second != first and first.exists() and second.exists()
+    assert _read(first)["key"] == "security-m-1" and _read(second)["key"] == "security-m-2"

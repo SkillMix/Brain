@@ -76,7 +76,9 @@ DEFAULTS = {
     # the gate's minimum (gate.MINIMUM_PROTECTED), which it adds to any list that leaves some out
     "protected": ["identity/", "rules.md", "space.yaml", ".claude/", "_meta/tools/", ".github/",
                   "CLAUDE.md", "AGENTS.md", ".gitignore", ".gitattributes", ".gitmodules",
-                  "_meta/templates/", "_meta/plugins/", ".claude-plugin/"],
+                  "_meta/templates/", "_meta/plugins/", ".claude-plugin/",
+                  "_meta/state/routines/", "_meta/state/onboard.yaml", "_meta/migrations/", ".mcp.json",
+                  "CLAUDE.local.md", "conftest.py", "pytest.ini", "pyproject.toml", "setup.cfg", "tox.ini"],
     "budget": {"tokens_per_day": 100_000_000_000},
     "window_hours": 24,
     "models": ["any"],
