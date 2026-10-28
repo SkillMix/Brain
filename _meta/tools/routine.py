@@ -210,8 +210,10 @@ class ProbeError(RuntimeError):
 PROBE_PROMPT = "Reply OK."
 PROBE_SECONDS = 180
 # A connector still connecting when the command line starts is `pending` in its init and brings no tools yet: the
-# probe looks again, PENDING_WAIT seconds apart, at most PENDING_LOOKS times and not after PENDING_BUDGET seconds.
-PENDING_LOOKS, PENDING_WAIT, PENDING_BUDGET = 3, 20, 60
+# probe looks again, PENDING_WAIT seconds apart, at most PENDING_LOOKS times, while the next look, as long as the
+# last one took, ends within PENDING_BUDGET seconds of the first: the looks and the waits together, inside the
+# build's wait for the probe (start.PROBE_WAIT) with time left for the rest of the probe.
+PENDING_LOOKS, PENDING_WAIT, PENDING_BUDGET = 3, 20, 150
 _sleep, _clock = time.sleep, time.monotonic   # the tests stand in for them
 
 
@@ -235,6 +237,7 @@ def probe_tools(claude: str, cwd: Path, extra_dirs=(), run=subprocess.run) -> di
     ProbeError when the first run reports no init; a later look that fails keeps the best one so far."""
     began, best = _clock(), None
     for look in range(PENDING_LOOKS):
+        started = _clock()
         try:
             seen = _probe_once(claude, cwd, extra_dirs, run)
         except ProbeError:
@@ -243,7 +246,8 @@ def probe_tools(claude: str, cwd: Path, extra_dirs=(), run=subprocess.run) -> di
             break
         if best is None or _pending(seen) < _pending(best):
             best = seen
-        if not _pending(best) or look == PENDING_LOOKS - 1 or _clock() - began + PENDING_WAIT > PENDING_BUDGET:
+        took = _clock() - started
+        if not _pending(best) or look == PENDING_LOOKS - 1 or _clock() - began + PENDING_WAIT + took > PENDING_BUDGET:
             break
         _sleep(PENDING_WAIT)
     return best

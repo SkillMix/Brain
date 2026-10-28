@@ -307,9 +307,9 @@ def init_with(*statuses) -> str:
                        "apiKeySource": "none", "tools": tools, "mcp_servers": servers}) + "\n"
 
 
-def answering(monkeypatch, *outputs):
-    """A claude that answers each probe with the next init (an exception is raised instead), on a clock
-    that only the waits move."""
+def answering(monkeypatch, *outputs, look=0.0):
+    """A claude that answers each probe with the next init (an exception is raised instead) after `look`
+    seconds, on a clock that only the waits and the looks move."""
     asked, clock = [], [0.0]
     monkeypatch.setattr(routine, "_sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
     monkeypatch.setattr(routine, "_clock", lambda: clock[0])
@@ -317,6 +317,7 @@ def answering(monkeypatch, *outputs):
 
     def run(argv, **kw):
         asked.append(argv)
+        clock[0] += look
         said = outputs.pop(0)
         if isinstance(said, Exception):
             raise said
@@ -344,6 +345,22 @@ def test_a_probe_with_nothing_connecting_asks_once_and_a_failed_second_look_keep
     assert routine.probe_tools("claude", tmp_path, run=run)["tools"] == ["mcp__claude_ai_App0__list"] and len(asked) == 1
     run, asked, _ = answering(monkeypatch, init_with("connected", "pending"), subprocess.TimeoutExpired("claude", 1))
     assert routine.probe_tools("claude", tmp_path, run=run)["tools"] == ["mcp__claude_ai_App0__list"]
+
+
+def test_a_slow_look_still_looks_again_while_an_app_is_connecting(tmp_path, monkeypatch):
+    # the review of #61: a command line that takes 45 seconds to report used up the budget in one look
+    run, asked, clock = answering(monkeypatch, init_with("connected", "pending"), init_with("connected", "connected"),
+                                  look=45)
+    seen = routine.probe_tools("claude", tmp_path, run=run)
+    assert len(asked) == 2 and seen["tools"] == ["mcp__claude_ai_App0__list", "mcp__claude_ai_App1__list"]
+    assert clock[0] <= routine.PENDING_BUDGET   # the looks still end inside what the build waits for
+
+
+def test_a_look_so_slow_the_next_would_end_after_the_budget_is_the_last(tmp_path, monkeypatch):
+    run, asked, clock = answering(monkeypatch, init_with("connected", "pending"), init_with("connected", "connected"),
+                                  look=routine.PENDING_BUDGET * 0.6)
+    assert routine.probe_tools("claude", tmp_path, run=run)["tools"] == ["mcp__claude_ai_App0__list"]
+    assert len(asked) == 1 and clock[0] <= routine.PENDING_BUDGET
 
 
 # ----- #12 and #14: the first push and the brain mount say when they did not happen ------------------------

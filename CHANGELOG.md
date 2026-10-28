@@ -155,8 +155,9 @@ back to back, and nothing a record or the person settled is asked again.
   routine no longer holds the briefing because Claude is signed in on another domain.
 - **An app still connecting is not taken for one that is not connected.** When Claude's command
   line starts, connected apps can still be `pending` for a few seconds. The probe that the apps
-  step, the research and the routines' proof use looks again while one is (three looks in about
-  a minute at most) and keeps the look with the fewest still connecting, so the first apps step no
+  step, the research and the routines' proof use looks again while one is (three looks at most,
+  while the next one, as slow as the last, ends within two and a half minutes of the first) and
+  keeps the look with the fewest still connecting, so the first apps step no
   longer finds no apps and the routines' proof no longer fails an app that was only slow.
 - **The first push and the brain mount say when they did not happen.** git signs in to GitHub
   through gh in everything the tools start, as gh's own clone does, so a credential manager that
