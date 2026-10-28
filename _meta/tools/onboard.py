@@ -1810,10 +1810,9 @@ def pause_routines(workspace, until: str | None = None, now=None, resume: bool =
 CLOUD_CHAINS = ("sweep",)
 CLOUD_PROOF = "cloud-proof"   # the run line a proof run lands (`cloud.py proof-line`)
 PROOF_HOURS = 48   # a proof older than this proves a task as it was, not as it is
-# What a proof run owes: an edit of a protected file, an app tool it was not given and a request past the network limit
-# refused (its proof line), and a protected file it changed with a command kept off main (`landing`: refused at once,
-# its line's `shell`, or left out by its landing, that landing's own sync line).
-CLOUD_REFUSALS = {"sweep": ("edit", "tool", "network", "landing")}
+# What a proof run owes, on its proof line: an edit of a protected file, an app tool it was not given and a request
+# past the network limit, each refused.
+CLOUD_REFUSALS = {"sweep": ("edit", "tool", "network")}
 CLOUD_CLEAR = "Nothing keeps your routines from moving to the cloud."
 CLOUD_HISTORY = ("Your history is still being read, and only a computer reads it: your sweep can move to the cloud "
                  "once it is done.")
@@ -1835,8 +1834,7 @@ CLOUD_NO_PROOF = ("The {chains} {have} no proof run from the last {hours} hours 
                   "sweep stays where it runs.")
 # What each refusal a proof run tries is, in the person's words (CLOUD_REFUSALS).
 REFUSED = {"edit": "a change to a protected file", "tool": "an app tool it was not given",
-           "network": "a request to a host outside its network limit",
-           "landing": "a protected file changed with a command, on its way to main"}
+           "network": "a request to a host outside its network limit"}
 CLOUD_UNREFUSED = "The {proof} that the cloud does not refuse {what}, so your sweep stays where it runs."
 CLOUD_STOPPED = ("Your sweep is stopped: the {proof} that the cloud no longer refuses {what}, so its task stays off; say "
                  "'run my routines here' to run it on this computer again.")
@@ -2050,34 +2048,19 @@ def cloud_blockers(workspace, gh=None) -> list:
 def _proof_lines(workspace) -> dict:
     """{chain: its `cloud-proof` lines, oldest first, each as (its moment, the line)} in this checkout's runs.jsonl
     (where the sync brings them from main); two lines from the same second keep the file's order. A line that cannot
-    be read or dated is passed over. Each line gets `landing`: true when its shell change was refused (`shell`), else
-    from the first proof landing's sync line after it (`notes.proof`), which landed it: true when that landing left a
-    protected path out (the proof's change made with a command), false when it left none out; a proof whose landing
-    line is not there yet has none, and proves nothing either way."""
+    be read or dated is passed over."""
     try:
         text = (Path(workspace) / "_meta" / "state" / "runs.jsonl").read_text(encoding="utf-8", errors="replace")
     except OSError:
         return {}
-    found, waiting = {}, {}
+    found = {}
     for raw in text.splitlines():
         try:
             line = json.loads(raw)
         except ValueError:
             continue
-        if not isinstance(line, dict):
+        if not isinstance(line, dict) or line.get("routine") != CLOUD_PROOF or line.get("chain") not in CLOUD_CHAINS:
             continue
-        notes = line.get("notes") if isinstance(line.get("notes"), dict) else {}
-        if line.get("routine") == "sync" and line.get("cloud") in waiting and notes.get("proof") is True:
-            left_out = notes.get("left_out")   # the proof's own landing, which took its line
-            waiting.pop(line["cloud"])["landing"] = type(left_out) is int and left_out >= 1
-            continue
-        if line.get("routine") != CLOUD_PROOF or line.get("chain") not in CLOUD_CHAINS:
-            continue
-        line = {key: value for key, value in line.items() if key != "landing"}   # the landing's to say, not the run's
-        if line.get("shell") is True:   # the shell change was refused: nothing could reach a landing
-            line["landing"] = True
-        else:
-            waiting[line["chain"]] = line
         try:
             at = pages.parse_iso(line.get("at"))
         except (TypeError, ValueError, OverflowError):   # OverflowError: a moment before the first UTC has

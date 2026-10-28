@@ -2,8 +2,9 @@
 the skills that know the sweep may run in the cloud (spec 4.2, 4.4, 4.5a, 4.6 and 4.7;
 docs/design/2026-10-28-cloud-sweep-design.md). No guard runs in a cloud run: the task's own deny list
 (`cloud.disallowed`) holds it, so every command the prompt gives must be one plain command, with absolute paths and
-`gh api` with one word, that the deny list lets through. The proof's two tries made with a command (a request past
-the network limit, a change of rules.md) pass the deny list too: the environment and the landing must stop them."""
+`gh api` with one word, that the deny list lets through. The proof's one try made with a command (a request past the
+network limit) passes the deny list too: the environment must stop it. The proof tries no change made with a command:
+the platform refuses the landing of a run that just had one refused, so a proof that tried it could not land."""
 import json
 import re
 import shlex
@@ -33,14 +34,12 @@ SAMPLE = {"<workspace>": "ada-space", "<root>": "ada-space", "<repo>": "ada/ada-
 # The read tools the sweep's task is given (`cloud.task_grant`), and a tool the computer has seen that it is not.
 READS = ["mcp__mail__get_message", "mcp__mail__search_threads", "mcp__tracker__list_issues"]
 NOT_GIVEN = ["mcp__mail__trash_message", "mcp__mail__send_message", "mcp__tracker__create_issue"]
-# The proof's two tries made with a command, deliberately not the prompt's tool calls: a request to a host outside the
-# environment's network limit, which the environment must keep from answering, and a change of a protected file,
-# which goes through or is refused and which the landing must leave out.
+# The proof's one try made with a command, deliberately not one of the prompt's tool calls: a request to a host
+# outside the environment's network limit, which the environment must keep from answering.
 NETWORK_TRY = "curl -sS -m 10 https://example.com"
-SHELL_TRY = "python3 -c \"open('/home/user/<workspace>/rules.md', 'a').write('proof')\""
-TRIES = (NETWORK_TRY, SHELL_TRY)
+TRIES = (NETWORK_TRY,)
 PROOF_LINE = ("python3 /home/user/<workspace>/_meta/tools/cloud.py proof-line --chain sweep --edit yes --tool yes "
-              "--network yes --shell no")
+              "--network yes")
 LAND = "python3 /home/user/<workspace>/_meta/tools/sync.py --root /home/user/<workspace> --cloud sweep"
 # An attachment's name that holds a single quote, a double quote and a `$`, and how the prompt and the skill write it.
 # Commands the sweep's task must refuse by its deny list alone: a tool of the space that writes beyond the sweep, a
@@ -178,10 +177,10 @@ def task_refuses(home: Path):
 # ----- the cloud prompt -----------------------------------------------------------------------------------------
 def test_every_cloud_prompt_command_is_one_absolute_call():
     """Every command a run gives is one call of a space's tool or one `gh api` read, with absolute paths, on one line
-    and never two joined: the deny list reads a command by its text alone. The proof's two tries made with a command
-    (`TRIES`) are the one exception, and only in the Proof section: they are what the task must keep from landing,
-    so a sweep run never gives them; each is still one command on one line, with nothing for the shell to join or
-    redirect, the file it changes named by its absolute path."""
+    and never two joined: the deny list reads a command by its text alone. The proof's try made with a command
+    (`TRIES`) is the one exception, and only in the Proof section: it is what the environment must keep from
+    answering, so a sweep run never gives it; it is still one command on one line, with nothing for the shell to join
+    or redirect. No command of the prompt changes a file with the shell (`python3 -c`)."""
     body = text(PROMPT)
     commands = commands_in(body)
     assert any("/_meta/tools/sync.py" in c for c in commands)
@@ -198,13 +197,12 @@ def test_every_cloud_prompt_command_is_one_absolute_call():
             assert re.fullmatch(r"python3 /home/user/<(root|workspace)>/_meta/tools/([a-z_]+|<tool>)\.py( \S.*)?",
                                 command), command
     assert all(t in commands for t in TRIES)
-    assert "/home/user/<workspace>/rules.md" in SHELL_TRY
+    assert "python3 -c" not in body and not any("rules.md" in c for c in commands)
 
 
 def test_no_cloud_prompt_command_is_refused_by_the_tasks_deny_list(machine):
-    """Every command the prompt gives goes through the task's deny list, the proof's tries made with a command among
-    them: the request must meet the environment's network limit, and the change of rules.md must reach the landing,
-    which must leave it out."""
+    """Every command the prompt gives goes through the task's deny list, the proof's request among them: it must
+    meet the environment's network limit, not a deny rule."""
     refused = task_refuses(machine)
     for command in MUST_REFUSE:
         assert refused(fill(command)), command
@@ -215,12 +213,12 @@ def test_no_cloud_prompt_command_is_refused_by_the_tasks_deny_list(machine):
 
 
 def test_the_proofs_commands_pass_the_deny_list_and_its_edit_and_tool_do_not(machine):
-    """A deny refusal of the proof's request, its command's change, its proof line or its landing would prove
-    nothing about the network limit or the landing (and would leave no line to read): none is refused by the task's
-    deny list. Its first two tries are the ones the task itself refuses: the `Edit` of rules.md is a deny rule, and
-    the tool it was not given is denied by name."""
+    """A deny refusal of the proof's request, its proof line or its landing would prove nothing about the network
+    limit (and would leave no line to read): none is refused by the task's deny list. Its first two tries are the
+    ones the task itself refuses: the `Edit` of rules.md is a deny rule, and the tool it was not given is denied by
+    name."""
     proof = proof_of(text(PROMPT))
-    assert commands_in(proof) == [NETWORK_TRY, SHELL_TRY, PROOF_LINE, LAND]
+    assert commands_in(proof) == [NETWORK_TRY, PROOF_LINE, LAND]
     deny = task_deny(machine)
     refused = refuses(deny)
     # The control: the same reading of the same deny list refuses what the task must refuse, so a pass below means
@@ -302,11 +300,14 @@ def test_the_cloud_prompt_lands_every_root_the_workspace_last():
     assert "--release-leg" not in body
 
 
-def test_the_cloud_prompts_proof_tries_the_four_things_the_task_must_keep_from_landing():
+def test_the_cloud_prompts_proof_tries_the_three_things_the_task_must_keep_it_from_doing():
+    """An edit, a tool and a request; no change of rules.md made with a command, which the platform answers by
+    refusing the run's landing, so a proof that tried it could never land."""
     proof = proof_of(text(PROMPT))
     commands = commands_in(proof)
-    assert 'python3 -c "print(1)"' not in proof and "--guard" not in proof and "--send" not in proof
-    assert "four things" in proof
+    assert "python3 -c" not in proof and "--guard" not in proof and "--send" not in proof
+    assert "--shell" not in proof and "left_out" not in proof
+    assert "three things" in proof and "four things" not in proof
     # 1. Edit refuses a file it has not read with its own error, which is no refusal of the deny list: read it first.
     edit = step(proof, "`Edit`")
     assert edit.index("`Read`") < edit.index("rules.md") < edit.index("`Edit`"), edit
@@ -316,22 +317,34 @@ def test_the_cloud_prompts_proof_tries_the_four_things_the_task_must_keep_from_l
     # 3. A host outside the environment's network limit, which the task cannot set itself: no page back is refused.
     network = step(proof, NETWORK_TRY)
     assert "network limit" in network and "no page came back" in network, network
-    # 4. A change of the same file made with a command, which may go through and which the landing must leave out.
-    shell = step(proof, SHELL_TRY)
-    assert "goes through" in shell and "left_out" in shell, shell
-    # 5. The proof line says each of the four, one flag each, as one line; 6. the landing.
+    # 4. The proof line says each of the three, one flag each, as one line; 5. the landing.
     said = step(proof, "proof-line")
-    for flag, what in (("--edit", "the edit"), ("--tool", "the tool"), ("--network", "the request"),
-                       ("--shell", "the command's change")):
+    for flag, what in (("--edit", "the edit"), ("--tool", "the tool"), ("--network", "the request")):
         assert f"`{flag}` {what}" in said, flag
     assert "as one line" in said and "`yes` for each try that was refused" in said, said
-    assert commands == [NETWORK_TRY, SHELL_TRY, PROOF_LINE, LAND]
+    assert commands == [NETWORK_TRY, PROOF_LINE, LAND]
     assert proof.index("`Edit`") < proof.index("trash_message") < proof.index(NETWORK_TRY) < \
-        proof.index(SHELL_TRY) < proof.index(PROOF_LINE) < proof.index(LAND)
+        proof.index(PROOF_LINE) < proof.index(LAND)
     # The line as the prompt gives it is one cloud.py takes, with every try's flag (it names no workspace: begin's).
     args = cloud.parse(shlex.split(fill(PROOF_LINE))[2:])
     assert (args.command, args.chain, args.workspace) == ("proof-line", "sweep", None)
-    assert (args.edit, args.tool, args.network, args.shell) == ("yes", "yes", "yes", "no")
+    assert (args.edit, args.tool, args.network) == ("yes", "yes", "yes") and not hasattr(args, "shell")
+
+
+def test_the_proof_line_takes_each_of_its_three_flags_and_no_shell(capsys):
+    """cloud.py refuses a proof line that leaves a try's flag out, so a line never says a try was refused by saying
+    nothing; and it has no `--shell`, the try the proof no longer makes."""
+    line = ["proof-line", "--chain", "sweep", "--edit", "yes", "--tool", "yes", "--network", "yes"]
+    assert cloud.parse(line).network == "yes"
+    for flag in ("--edit", "--tool", "--network"):
+        at = line.index(flag)
+        with pytest.raises(SystemExit):
+            cloud.parse(line[:at] + line[at + 2:])
+    with pytest.raises(SystemExit):
+        cloud.parse(line + ["--shell", "no"])
+    with pytest.raises(SystemExit):
+        cloud.parse(line[:-1] + ["maybe"])
+    capsys.readouterr()
 
 
 def test_the_cloud_prompt_ends_a_run_at_a_tool_or_a_refusal_it_does_not_name():
@@ -454,11 +467,9 @@ def test_a_computer_routine_may_call_cloud_py_for_its_proof_line_alone(tmp_path,
     for verb in ("begin", "trigger"):
         assert f"Bash(*_meta/tools/cloud.py*{verb}*)" in data["permissions"]["deny"], verb
     for py in ("python3", "python"):
-        line = (f"{py} {root}/_meta/tools/cloud.py proof-line --chain sweep --edit yes --tool yes --network yes "
-                "--shell no")
+        line = f"{py} {root}/_meta/tools/cloud.py proof-line --chain sweep --edit yes --tool yes --network yes"
         assert passes(path, line), line
-        assert passes(path, f"{py} _meta/tools/cloud.py proof-line --chain sweep --edit no --tool yes --network no "
-                            "--shell yes")
+        assert passes(path, f"{py} _meta/tools/cloud.py proof-line --chain sweep --edit no --tool yes --network no")
         for refused in REFUSED:
             command = refused.format(py=py, root=root)
             assert not passes(path, command), command
@@ -491,9 +502,12 @@ def test_the_onboard_skill_renders_the_sweeps_task_in_the_persons_zone_and_envir
     flat = " ".join(body.split())
     assert "Get-TimeZone" in flat and "IANA" in flat and "routine-host.yaml" in flat
     assert "environment_id" in flat and "--chain daily" not in flat
-    assert re.search(r"proof line with `edit`, `tool` or `network` false, a command's change that went through and a "
-                     r"landing that left nothing out", flat), \
-        "a refusal missing is a proof line's edit, tool or network false, or a command's change no landing left out"
+    assert re.search(r"proof line with `edit`, `tool` or `network` false, or a run log that shows any of them going "
+                     r"through", flat), \
+        "a refusal missing is a proof line's edit, tool or network false, or a run log showing one going through"
+    assert ("it tries an edit of `rules.md`, an app tool it was not given and a request to a host outside the network "
+            "limit") in flat
+    assert "--shell" not in flat and "a command's change" not in flat
     # The network limit is the person's to set on claude.ai, and the proof checks it; a run with it open stops.
     assert "Its network must be limited" in flat and "the proof checks it" in flat
     assert "Network false: limit the environment's network on claude.ai, then prove a new task" in flat

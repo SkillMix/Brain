@@ -29,12 +29,12 @@ and is the one that must send mail.
    computer's daily runs the tracker step while the sweep is in the cloud (it already sends the notices). A queue
    only ever adds a notice file; the daily joins the pending security ones into one digest when it sends, so the
    cloud and the computer never write the same file.
-3. **The proof needs no plugin.** A proof run tries four things, each of which must be refused or kept off main:
-   an `Edit` of `rules.md` (the task's deny list), a connector tool the task was not given (it does not exist in
-   the run), a request to a host outside the environment's network limit, and a change to `rules.md` made with a
-   command (refused at once, or left out by `sync.py --cloud`: `left_out` on the sync line of the proof's own
-   landing, which says `proof`). The run's marker says it is a proof, so only a proof's landing skips the security
-   item for what it left out.
+3. **The proof needs no plugin.** A proof run tries three things, each of which must be refused: an `Edit` of
+   `rules.md` (the task's deny list), a connector tool the task was not given (it does not exist in the run) and a
+   request to a host outside the environment's network limit; then it lands its line. It does not try a change made
+   with a command: in the trial the platform's own classifier refused one at once, and then refused that run's
+   landing as a bypass, so a proof that tried it could never land. What a command changes stays off main through the
+   landing (`sync.py --cloud` leaves every protected path out and raises a security item), whatever the run does.
 4. **The gate holds what runs on the computer.** A cloud run has the person's token and a shell, so it could push
    a branch of any name and open a pull request of its own; a branch name proves nothing. The gate's minimum list,
    for every pull request, now also holds what instructs or runs code on the computer: the rendered routine
@@ -57,11 +57,11 @@ transcripts scan on the computer, `--routines-here`, `--pause`.
 What the cloud run can still reach is bounded by the environment's network limit, which the person sets on
 claude.ai and the proof checks: GitHub stays reachable (the landing needs it), so a run led astray by a mail could
 still write on GitHub as the person, within the repositories the task attaches, or open a pull request the gate
-holds for a click. Such a pull request can still land, on green, the state files the computer itself lands
+holds for a click. The gate only keeps that pull request from merging on green; a run that called GitHub's merge
+itself would be stopped by claude.ai's own check of its actions (the one that refused the shell try), not by the
+brain. Such a pull request can still land, on green, the state files the computer itself lands
 (`routine-host.yaml`, `backfill.yaml`, `routine-limits.jsonl`, `_meta/tests/`): holding them would put a click on
-every pause and every sync repair, and none of them runs code or instructs the computer. A run's shell can also
-mark its own marker a proof, which only drops the security item for what its landing left out; the change itself
-still stays off main. No new runner, record key or per-chain host.
+every pause and every sync repair, and none of them runs code or instructs the computer. No new runner, record key or per-chain host.
 
 ## Done when
 

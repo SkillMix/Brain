@@ -1144,7 +1144,8 @@ def test_the_check_shows_the_cloud_task_and_how_long_ago_the_sweep_wrote_a_run_l
         return rows[0].result
 
     assert row() == task + "It has written no run line yet."
-    proof(ada, "sweep", hours_ago=0.5)   # a proof run is no run of the sweep, nor is the landing that carried it
+    proof(ada, "sweep", hours_ago=0.5)   # a proof run is no run of the sweep
+    run_line(ada, "sync", 0.5, cloud="sweep", notes={"left_out": 0})   # nor is the landing that carried it
     run_line(ada, "daily", 0.25)   # nor the daily, which runs on the computer
     assert row() == task + "It has written no run line yet."
     run_line(ada, "sweep_chain", 50)   # the chain tool's line (chain.py)
@@ -1233,19 +1234,13 @@ MOVE = ["--routines-cloud", "--sweep", CLOUD_TASKS["sweep"], "--timezone", "Euro
 SWEEP_GRANT = {"read": ["mcp__mail__get_message", "mcp__calendar__list_events"], "write": [], "send": []}
 
 
-def proof(ada, chain, hours_ago=1.0, left_out=1, **seen) -> None:
-    """One proof run as it lands, `hours_ago` before now: its proof line (`cloud.py proof-line`), the edit, the tool
-    and the request past the network limit refused unless `seen` says otherwise, and its command's change to
-    rules.md not refused at once (`shell` false), then the proof's own cloud sync line that landed it (`notes.proof`),
-    which left `left_out` protected paths out (None: that landing is not here yet)."""
+def proof(ada, chain, hours_ago=1.0, **seen) -> None:
+    """One proof run's line as it lands, `hours_ago` before now (`cloud.py proof-line`): the edit, the tool and the
+    request past the network limit refused unless `seen` says otherwise."""
     at = pages.iso(dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=hours_ago))
-    line = {"routine": "cloud-proof", "chain": chain, "edit": True, "tool": True, "network": True, "shell": False,
-            "at": at, **seen}
+    line = {"routine": "cloud-proof", "chain": chain, "edit": True, "tool": True, "network": True, "at": at, **seen}
     with (ada / "_meta" / "state" / "runs.jsonl").open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(line) + "\n")
-        if left_out is not None:
-            fh.write(json.dumps({"routine": "sync", "cloud": chain, "at": at,
-                                 "notes": {"left_out": left_out, "proof": True}}) + "\n")
 
 
 def routines_run_here(ada) -> Path:
@@ -1306,45 +1301,44 @@ def test_a_proof_that_leaves_a_refusal_out_does_not_count(tmp_path, capsys):
     assert onboard.main([*MOVE, str(ada)]) == 0
 
 
-def test_a_proof_whose_landing_left_nothing_out_is_a_refusal_missing(tmp_path, capsys):
-    """The proof's change to a protected file, made with a command, must be kept off main by the landing: a landing
-    that left nothing out let it through, whatever the proof line says."""
+def test_a_proof_line_that_says_nothing_of_the_network_does_not_prove(tmp_path, capsys):
+    """A proof owes three refusals, the request past the network limit among them: a line with the edit and the tool
+    refused and no word on the network proves nothing, and names no refusal missing either."""
     ada = proven(tmp_path)
-    proof(ada, "sweep", left_out=0)
-    assert onboard.cloud_proofs(ada) == set() and onboard.cloud_unrefused(ada) == {"sweep": ["landing"]}
-    assert onboard.main([*MOVE, str(ada)]) == 2
-    assert capsys.readouterr().out.strip() == (
-        "The sweep task's proof run shows that the cloud does not refuse a protected file changed with a command, on "
-        "its way to main, so your sweep stays where it runs.")
-    assert routine.host(ada) is None
-
-
-def test_a_proof_not_landed_yet_neither_proves_nor_stops(tmp_path, capsys):
-    """A proof line gets its landing from the proof's own cloud sync line after it (`notes.proof`), and only from
-    that one: an earlier landing, a computer's own sync, a real sweep's landing, or a `landing` the run wrote on its
-    own line say nothing about it."""
-    ada = proven(tmp_path)
-    run_line(ada, "sync", 2, cloud="sweep", notes={"left_out": 1, "proof": True})   # an earlier landing: not this one's
-    proof(ada, "sweep", left_out=None, landing=True)
-    run_line(ada, "sync", 0.5, notes={"left_out": 1, "proof": True})   # this computer's own sync lands no cloud run
-    run_line(ada, "sync", 0.4, cloud="sweep", notes={"left_out": 1})   # a real sweep's landing, which is no proof's
-    run_line(ada, "sync", 0.3, cloud="sweep", notes={"left_out": 1, "proof": "yes"})   # only true says proof
+    with (ada / "_meta" / "state" / "runs.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"routine": "cloud-proof", "chain": "sweep", "edit": True, "tool": True,
+                             "at": pages.iso(dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=2))}) + "\n")
     assert onboard.cloud_proofs(ada) == set() and onboard.cloud_unrefused(ada) == {}
     assert onboard.main([*MOVE, str(ada)]) == 2 and "The sweep task has no proof run" in capsys.readouterr().out
-    run_line(ada, "sync", 0.25, cloud="sweep", notes={"left_out": 1, "proof": True})   # the landing that took it
-    assert onboard.cloud_proofs(ada) == {"sweep"}
+    assert routine.host(ada) is None
+    proof(ada, "sweep")
+    assert onboard.main([*MOVE, str(ada)]) == 0 and routine.host(ada)["runner"] == "cloud"
+
+
+def test_a_proof_proves_on_its_own_line_whatever_a_landing_left_out(tmp_path, capsys):
+    """The proof line is the whole proof: it counts as soon as the sync brought it here, with no landing to wait for,
+    and no sync line after it, whatever it left out or says of a proof, mends or stops anything."""
+    ada = proven(tmp_path)
+    proof(ada, "sweep")
+    assert onboard.cloud_proofs(ada) == {"sweep"} and onboard.cloud_unrefused(ada) == {}
+    run_line(ada, "sync", 0.5, cloud="sweep", notes={"left_out": 0, "proof": True})   # a landing that left nothing out
+    run_line(ada, "sync", 0.4, cloud="sweep", notes={"left_out": 2})
+    assert onboard.cloud_proofs(ada) == {"sweep"} and onboard.cloud_unrefused(ada) == {}
+    proof(ada, "sweep", hours_ago=0.3, edit=False)
+    run_line(ada, "sync", 0.2, cloud="sweep", notes={"left_out": 3, "proof": True})   # left out: still no refusal made
+    assert onboard.cloud_proofs(ada) == set() and onboard.cloud_unrefused(ada) == {"sweep": ["edit"]}
+    proof(ada, "sweep", hours_ago=0.1)
     assert onboard.main([*MOVE, str(ada)]) == 0 and routine.host(ada)["runner"] == "cloud"
 
 
 def test_a_refusal_missing_is_not_hidden_by_a_later_proof_that_proves_nothing(tmp_path, capsys):
     """A refusal the cloud did not make stays missing until a later proof shows every refusal: a later line that
-    leaves one out, writes it as a word, or has not landed yet proves nothing either way, and no number of hours
-    mends it."""
+    leaves one out or writes it as a word proves nothing either way, and no number of hours mends it."""
     ada = proven(tmp_path)
     proof(ada, "sweep", hours_ago=72, edit=False)
     proof(ada, "sweep", hours_ago=3, edit=None)
     proof(ada, "sweep", hours_ago=2, tool="yes")
-    proof(ada, "sweep", left_out=None)
+    proof(ada, "sweep", network="yes")
     assert onboard.main([*MOVE, str(ada)]) == 2
     assert capsys.readouterr().out.strip() == (
         "The sweep task's proof run shows that the cloud does not refuse a change to a protected file, so your sweep "
@@ -1415,29 +1409,6 @@ def test_a_proof_that_reached_a_host_past_the_network_limit_is_a_refusal_missing
     proof(ada, "sweep", network=None)   # a proof line that says nothing of the network hides nothing
     assert onboard.cloud_proofs(ada) == set() and onboard.cloud_unrefused(ada) == {"sweep": ["network"]}
     proof(ada, "sweep")
-    assert onboard.main([*MOVE, str(ada)]) == 0 and routine.host(ada)["runner"] == "cloud"
-
-
-def test_a_change_refused_at_once_needs_no_landing_and_one_that_was_not_waits_for_its_own(tmp_path, capsys):
-    """The proof's command changes rules.md: refused at once (`shell` true), nothing could reach a landing, so the
-    line proves the landing by itself. Not refused (`shell` false), it waits for the first proof landing's sync line
-    after it (`notes.proof` true): a real sweep's landing between them is not its landing, whatever it left out."""
-    ada = proven(tmp_path)
-    proof(ada, "sweep", left_out=None, shell=True)
-    assert onboard.cloud_proofs(ada) == {"sweep"}
-    assert onboard._proof_lines(ada)["sweep"][-1][1]["landing"] is True
-    proof(ada, "sweep", left_out=0, shell=True)   # the change never was, so its landing had nothing to leave out
-    assert onboard.cloud_proofs(ada) == {"sweep"} and onboard.cloud_unrefused(ada) == {}
-    proof(ada, "sweep", left_out=None)   # shell false: its landing is still to come
-    assert onboard.cloud_proofs(ada) == set() and onboard.cloud_unrefused(ada) == {}
-    run_line(ada, "sync", 0.5, cloud="sweep", notes={"left_out": 0})   # a real sweep left nothing out: no proof's
-    run_line(ada, "sync", 0.4, cloud="sweep", notes={"left_out": 0, "proof": False})
-    assert onboard.cloud_proofs(ada) == set() and onboard.cloud_unrefused(ada) == {}
-    assert "landing" not in onboard._proof_lines(ada)["sweep"][-1][1]
-    run_line(ada, "sync", 0.25, cloud="sweep", notes={"left_out": 2, "proof": True})   # its own landing
-    assert onboard.cloud_proofs(ada) == {"sweep"}
-    run_line(ada, "sync", 0.1, cloud="sweep", notes={"left_out": 0, "proof": True})   # a later one is not its own
-    assert onboard.cloud_proofs(ada) == {"sweep"} and onboard.cloud_unrefused(ada) == {}
     assert onboard.main([*MOVE, str(ada)]) == 0 and routine.host(ada)["runner"] == "cloud"
 
 
@@ -2011,12 +1982,17 @@ def test_the_skill_reads_a_proof_runs_log_only_and_proves_the_task_the_sweep_alr
     section = section[:section.index("## ", 3)]
     proving = section[section.index("2. **Prove the task.**"):section.index("3. **Move.**")]
     assert "already runs" in proving and "update" in proving and "exports and reads nothing" in proving
-    assert "left out" in proving   # a proof counts with the sync's line after it showing the changed file left out
+    # It tries three things, an edit, a tool and a request, and no change made with a command: the platform refuses
+    # that change and then the run's landing with it, so a proof with it could never land. Its line is the proof.
+    for needed in ("an edit of `rules.md`", "an app tool it was not given", "a request to a host outside the network "
+                   "limit", "writes its proof line and lands it", "this computer's sync brought the line here"):
+        assert needed in proving
+    assert "with a command" not in proving and "left out" not in proving and "--shell" not in proving
     # A proof that shows a refusal missing keeps the task off for good: put back, it would run where the proof showed
     # a refusal does not hold. Proved in place, it was the sweep's own, so the sweep is stopped: say so, and offer to
     # run it on the computer.
     missing = proving[proving.index("**A refusal missing.**"):proving.index("**Anything else.**")]
-    for needed in ("a landing that left nothing out", "never turn it back on", "stopped", "no longer refuses",
+    for needed in ("`edit`, `tool` or `network` false", "never turn it back on", "stopped", "no longer refuses",
                    '"run my routines here"', "`enabled: false`"):
         assert needed in missing
     assert "enabled: true" not in missing and "put" not in missing

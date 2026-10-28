@@ -388,19 +388,17 @@ The move also needs this computer to run the routines, since the daily stays her
    with `RemoteTrigger` and that body (it is made turned off), and start one run of it. When the check named the
    task the sweep already runs as, prove that one instead of creating a new one: update it with the proof body
    (which turns it off while it is proved) and start one run; step 3 updates it back. Its proof run exports and
-   reads nothing; it tries an edit of `rules.md`, an app tool it was not given, a request to a host outside the
-   network limit and a change of `rules.md` made with a command, writes its proof line and lands it. Read its run
-   log (the one routine log you read: the run read nothing), its proof line and its pull request; it counts once
-   the pull request merged on green and this computer's sync brought the line here, with the sync's line after it
-   showing the changed file left out. A task you made new for the proof stays off whenever the move stops; one you
+   reads nothing; it tries an edit of `rules.md`, an app tool it was not given and a request to a host outside the
+   network limit, writes its proof line and lands it. Read its run log (the one routine log you read: the run read
+   nothing), its proof line and its pull request; it counts once the pull request merged on green and this
+   computer's sync brought the line here. A task you made new for the proof stays off whenever the move stops; one you
    proved in place goes by why it stops:
-   - **A refusal missing.** A proof line with `edit`, `tool` or `network` false, a command's change that went
-     through and a landing that left nothing out, or a run log that shows any of them going through, stops the move
-     at once. Network false: limit the environment's network on claude.ai, then prove a new task. Turn the task
-     off if it is on (update it with `RemoteTrigger` to `enabled: false`; never delete one) and never turn it back
-     on. Proved in place, it was the sweep's own, so the sweep is stopped: say so plainly, with what the cloud no
-     longer refuses in plain words, and offer "run my routines here". With a task made new for the proof, say only
-     which refusal is missing; the sweep runs where it ran.
+   - **A refusal missing.** A proof line with `edit`, `tool` or `network` false, or a run log that shows any of them
+     going through, stops the move at once. Network false: limit the environment's network on claude.ai, then prove a
+     new task. Turn the task off if it is on (update it with `RemoteTrigger` to `enabled: false`; never delete one) and
+     never turn it back on. Proved in place, it was the sweep's own, so the sweep is stopped: say so plainly, with what
+     the cloud no longer refuses in plain words, and offer "run my routines here". With a task made new for the proof,
+     say only which refusal is missing; the sweep runs where it ran.
    - **Anything else.** When the move stops for what says nothing against the proof, here or in step 3 (a proof
      older than 48 hours, a task not rendered here, a proof whose pull request did not merge, an id or a zone given
      wrong, or the person stopping), put a task you proved in place back before you end: render it without

@@ -1694,7 +1694,7 @@ class Run:
         self.hold_lines(keep)
         keep = [rel for rel in keep if rel not in self.held]
         staged = {*keep, RUNS_PATH.as_posix()}
-        if self.left_out and not self.cloud_proof() and self.protected_item():
+        if self.left_out and self.protected_item():
             staged.add(CLOUD_ITEMS.as_posix())
         if keep or self.left_out or self.held:
             self.cloud_line(len(staged))
@@ -1740,8 +1740,7 @@ class Run:
             return   # the template keeps no run lines
         self.append_line({"routine": "sync", "cloud": self.cloud, "at": pages.iso(self.now), "space": self.space.name,
                           "cost_tokens": 0, "notes": {"staged": staged, "carried": self.carried(),
-                                                      "held": sorted(self.held), "left_out": len(self.left_out),
-                                                      "proof": self.cloud_proof()}})
+                                                      "held": sorted(self.held), "left_out": len(self.left_out)}})
 
     def lease(self) -> str:
         """The head of `cloud/<chain>` the next push is leased to: the one the carry saw, then the one this
@@ -1790,16 +1789,6 @@ class Run:
         stamps = git(self.root, "log", "--format=%ct", "origin/main..HEAD").stdout.split()
         oldest = min((int(s) for s in stamps if s.isdigit()), default=None)
         return oldest is not None and self.now.timestamp() - oldest < QUIET_HOURS * 3600
-
-    def cloud_proof(self) -> bool:
-        """Whether this cloud run is a proof run, as its begin wrote in the run's marker (`cloud.STATE`). A proof
-        run changes a protected file on purpose, so its landing writes no security item for what it left out, and
-        its run line says `proof`: the left-out count on that line is the proof (`onboard._proof_lines`)."""
-        import cloud
-        try:
-            return json.loads(cloud.state_path().read_text(encoding="utf-8")).get("proof") is True
-        except (OSError, ValueError, AttributeError):
-            return False
 
     def proof_landing(self) -> bool:
         """Whether this branch adds a proof run's line to the run lines main has."""
