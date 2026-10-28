@@ -10,8 +10,10 @@ that enabled the plugin is unchanged. In a cloud run it reads the state `cloud.p
 `begin` wrote with `routine.routine_settings`; `person`, the address the run's mail may go to, the grant's own;
 `chain`):
 - Before `begin` has written it, the one call that goes through is `begin` itself, one plain command (BEGIN:
-  `python3 /home/user/<repo>/_meta/tools/cloud.py begin /home/user/<repo> --chain sweep|daily`, `--proof` at the
-  end or not, a repository's name in letters, digits, `.`, `_` and `-`). Everything else is refused.
+  `python3 /home/user/<repo>/_meta/tools/cloud.py begin /home/user/<repo> --chain sweep|daily`, then `--proof` or
+  not, and after `--proof`, last, `--grant` or not, with the task's grant as one base64url word of at most 8192
+  letters, digits, `-` and `_` (`cloud.grant_word`, `cloud.GRANT_MAX`); a repository's name in letters, digits,
+  `.`, `_` and `-`). Everything else is refused.
 - After, each call goes to the workspace's own guard, as the hooks the computer's profile carries run it: Bash to
   `bash_guard.py <profile>`, Task to `bash_guard.py --task`, a connector tool to `bash_guard.py --connectors
   <profile>`, and a send tool the profile guards to `send_guard.py <person>`. A mode the profile carries no hook
@@ -51,8 +53,9 @@ STATE = Path(".spaces") / "routines" / "cloud.json"   # under the home folder; w
 BASH_MATCHER, TASK_MATCHER, CONNECTOR_MATCHER = "Bash", "Task|Agent", "mcp__.*"
 SEND_MATCHER = "mcp__.*[Ss][Ee][Nn][Dd].*"
 NAME = r"[A-Za-z0-9_-][A-Za-z0-9._-]*"   # a repository's name: no `/`, nothing a shell reads, never `.` or `..`
+GRANT = r"[A-Za-z0-9_-]{1,8192}"   # a proof's grant: base64url, no padding, nothing a shell reads (cloud.GRANT_MAX)
 BEGIN = re.compile(rf"python3 /home/user/{NAME}/_meta/tools/cloud\.py begin /home/user/{NAME} --chain (?:sweep|daily)"
-                   r"(?: --proof)?")
+                   rf"(?: --proof(?: --grant {GRANT})?)?")
 WHY = "a cloud routine runs only what the guard profile of its run allows"
 BEFORE = "a cloud run starts with cloud.py begin, and nothing runs before it"
 NONE = {"bash": "no shell", "task": "no agent", "connector": "no connector tool"}

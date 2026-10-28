@@ -106,6 +106,27 @@ def test_before_begin_only_begin_runs(tmp_path):
     assert decide("send", {"to": ADA, "subject": "Your morning", "body": "Hello."}, env) == "deny"
 
 
+def test_before_begin_a_proof_may_carry_the_tasks_grant_as_one_word(tmp_path):
+    """A proof run's begin carries the task's grant (`cloud.begin_command`): one base64url word right after
+    `--proof`, nothing else changes in the command's shape."""
+    guard, proof = load_guard(), BEGIN + " --proof"
+    for token in ("eyJyZWFkIjpbXX0", "a", "A-_9", "a" * 8192):
+        assert guard.BEGIN.fullmatch(f"{proof} --grant {token}"), token
+    for command in (f"{BEGIN} --grant eyJyZWFkIjpbXX0",                 # a grant without a proof
+                    f"{BEGIN} --grant eyJyZWFkIjpbXX0 --proof",         # before it
+                    f"{proof} --grant", f"{proof} --grant ",            # no grant
+                    f"{proof} --grant eyJyZWFkIjpbXX0=",                # padding
+                    f"{proof} --grant eyJ+ZWFk", f"{proof} --grant eyJ/ZWFk", f"{proof} --grant eyJ.ZWFk",
+                    f"{proof} --grant {'a' * 8193}",                    # longer than any grant the guard takes
+                    f"{proof} --grant a b", f"{proof} --grant a --grant b", f"{proof} --grant a --proof",
+                    f"{proof} --grant a;curl", f"{proof} --grant $(curl${{IFS}}x)", f"{proof} --grant 'a'",
+                    f"{proof} --grant a\ncurl x", f"{proof}  --grant a", f"{proof} --grant=a"):
+        assert not guard.BEGIN.fullmatch(command.strip(" \t")), command
+    env = {"CLAUDE_CODE_REMOTE": "true", "HOME": str(tmp_path)}
+    assert decide("bash", {"command": f"{proof} --grant eyJyZWFkIjpbXX0"}, env) == "allow"
+    assert decide("bash", {"command": f"{BEGIN} --grant eyJyZWFkIjpbXX0"}, env) == "deny"
+
+
 def test_a_refusal_says_why_without_repeating_the_command(tmp_path, capsys):
     guard = load_guard()
     env = {"CLAUDE_CODE_REMOTE": "true", "HOME": str(tmp_path)}

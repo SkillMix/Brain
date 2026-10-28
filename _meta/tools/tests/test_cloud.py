@@ -2,12 +2,15 @@
 4.11). A cloud run's machine is a folder standing in for /home/user (`SPACES_CLOUD_HOME`) that holds Ada's workspace
 clone, cloned from a throwaway bare origin as the platform clones it; the home folder, where begin writes the guard
 profile and the state the guard plugin reads, is conftest's."""
+import base64
 import datetime as dt
+import hashlib
 import importlib.util
 import json
 import os
 import shutil
 import subprocess
+import zlib
 from pathlib import Path
 
 import pytest
@@ -102,6 +105,24 @@ def in_the_cloud(ws: Path, since: dt.datetime = NOW - dt.timedelta(hours=1), zon
     return routine.claim_cloud(ws, TASKS, zone, ["ada/ada-space"], GRANT, since)
 
 
+def next_run() -> None:
+    """A new run's machine: what the last run's begin wrote in the home folder went with the old one (the clone
+    here stands in for what main holds)."""
+    shutil.rmtree(Path.home() / ".spaces" / "routines", ignore_errors=True)
+
+
+def token(value, deflate: bool = True) -> str:
+    """A `--grant` word: the base64url, without padding, of `value`'s compact JSON (or of `value` itself, bytes),
+    deflated (zlib) first unless `deflate` is false."""
+    raw = value if isinstance(value, bytes) else json.dumps(value, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(zlib.compress(raw, 9) if deflate else raw).decode("ascii").rstrip("=")
+
+
+def bare(data: bytes) -> str:
+    """Bytes as a `--grant` word as they are, not deflated again."""
+    return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
+
+
 def profile_of(chain: str) -> dict:
     path = Path.home() / ".spaces" / "routines" / f"cloud-{chain}.settings.json"
     return json.loads(path.read_text(encoding="utf-8"))
@@ -163,6 +184,7 @@ def test_the_cursors_start_from_the_marks_else_ninety_days_back(ada):
         yaml.safe_dump({"at": "2026-10-20T08:00:00Z", "feeds": {"mail": "2026-10-20T08:00:00Z"}}))
     result = cloud.begin(ada, "sweep", now=NOW)
     assert result["cursors"][ada.as_posix()] == {"mail": "2026-10-20T08:00:00Z", "calls": "2026-07-29T09:00:00Z"}
+    next_run()
     assert "cursors" not in cloud.begin(ada, "daily", now=NOW)   # the daily exports nothing
 
 
@@ -364,12 +386,170 @@ def test_the_guard_plugin_holds_a_run_to_what_begin_wrote(ada):
 def test_the_begin_command_is_the_one_the_guard_lets_through_first(ada):
     guard = load_guard()
     for chain in cloud.CHAINS:
-        for proof in (False, True):
-            command = cloud.begin_command("ada-space", chain, proof)
+        for proof, grant in ((False, None), (True, None), (True, cloud.task_grant(GRANT, chain))):
+            command = cloud.begin_command("ada-space", chain, proof, grant)
             assert guard.BEGIN.fullmatch(command), command
             args = cloud.parse(command.split()[2:])
             assert (args.command, args.workspace, args.chain, args.proof) == ("begin", "/home/user/ada-space",
                                                                               chain, proof)
+            assert args.grant == (token(cloud.task_grant(GRANT, chain)) if grant else None)
+
+
+def test_a_proofs_begin_command_carries_the_tasks_grant_and_a_real_runs_none():
+    grant = cloud.task_grant(GRANT, "daily")
+    command = cloud.begin_command("ada-space", "daily", proof=True, grant=grant)
+    assert command == f"{cloud.begin_command('ada-space', 'daily', proof=True)} --grant {token(grant)}"
+    word = command.split()[-1]
+    assert "=" not in word and cloud.grant_of(word) == grant == {"read": [MAIL_READ], "write": [],
+                                                                  "send": [MAIL_SEND]}
+    with pytest.raises(ValueError):
+        cloud.begin_command("ada-space", "daily", proof=False, grant=grant)   # a real run keeps the record's
+    # Names that do not pack: each holds 32 hex digits no other shares, so the word outgrows what the guard takes.
+    many = {"read": [f"mcp__mail__read_{hashlib.sha256(bytes([n % 256, n // 256])).hexdigest()[:32]}"
+                     for n in range(600)], "write": [], "send": []}
+    with pytest.raises(ValueError, match="too many"):   # longer than any word the guard lets through
+        cloud.begin_command("ada-space", "sweep", proof=True, grant=many)
+
+
+def many_apps() -> dict:
+    """A sweep's grant as claude.ai names a person's connectors (`mcp__claude_ai_<App>__<tool>`): twenty read tools of
+    each of eight work apps, the tracker's writes and the mail send. Its compact JSON alone, in base64url, is longer
+    than any word the guard lets through."""
+    apps = ("Linear", "Notion", "Slack", "Gmail", "Google_Drive", "Google_Calendar", "Microsoft_365", "Recorder")
+    reads = [f"{verb}_{thing}" for verb in ("get", "list", "search", "fetch")
+             for thing in ("issues", "comments", "projects", "documents", "messages")]
+    return {"read": [f"mcp__claude_ai_{app}__{tool}" for app in apps for tool in reads],
+            "write": [f"mcp__claude_ai_Linear__{tool}" for tool in ("save_issue", "save_comment", "save_project")],
+            "send": ["mcp__claude_ai_Gmail__send_message"]}
+
+
+def test_a_sweep_grant_of_many_apps_fits_its_proofs_begin_command():
+    grant = many_apps()
+    assert len(token(grant, deflate=False)) > cloud.GRANT_MAX   # it fits deflated only
+    command = cloud.begin_command("ada-space", "sweep", proof=True, grant=grant)
+    word = command.split()[-1]
+    assert len(word) <= cloud.GRANT_MAX and load_guard().BEGIN.fullmatch(command)
+    assert cloud.grant_of(word) == grant and cloud.parse(command.split()[2:]).grant == word
+
+
+def test_the_grant_word_is_as_long_as_the_guard_lets_through():
+    """`cloud.GRANT_MAX` and the guard plugin's BEGIN hold a grant word to the same length."""
+    guard = load_guard()
+    proof = cloud.begin_command("ada-space", "sweep", proof=True)
+    assert guard.BEGIN.fullmatch(f"{proof} --grant {'a' * cloud.GRANT_MAX}")
+    assert not guard.BEGIN.fullmatch(f"{proof} --grant {'a' * (cloud.GRANT_MAX + 1)}")
+    assert cloud.GRANT_WORD.fullmatch("a" * cloud.GRANT_MAX) and not cloud.GRANT_WORD.fullmatch(
+        "a" * (cloud.GRANT_MAX + 1))
+
+
+def guards_in(ws: Path) -> None:
+    tools = ws / "_meta" / "tools"
+    tools.mkdir(parents=True, exist_ok=True)
+    shutil.copy(bash_guard.__file__, tools / "bash_guard.py")
+    shutil.copy(send_guard.__file__, tools / "send_guard.py")
+
+
+def test_a_daily_proof_meets_the_send_guard_with_the_tasks_grant(ada, capsys):
+    """Before the move nothing records a grant, so a proof run takes the task's from its begin command: the send tool
+    is granted, and a send to anyone but the person is refused by the send guard, as it would be after the move."""
+    guards_in(ada)
+    word = token(cloud.task_grant(GRANT, "daily"))
+    assert cloud.main(["begin", str(ada), "--chain", "daily", "--proof", "--grant", word]) == 0
+    prof = profile_of("daily")
+    assert {MAIL_SEND, MAIL_READ} <= set(prof["permissions"]["allow"])
+    assert MAIL_SEND in {entry["matcher"] for entry in prof["hooks"]["PreToolUse"]}
+    guard, env = load_guard(), {"CLAUDE_CODE_REMOTE": "true", "HOME": str(Path.home())}
+
+    def decide(mode, name, tool_input):
+        raw = json.dumps({"hook_event_name": "PreToolUse", "tool_name": name, "tool_input": tool_input}).encode()
+        return guard.main([mode], raw, env)
+    assert decide("connector", MAIL_SEND, {}) == 0   # the grant lets the send tool through: the send guard decides
+    assert decide("send", MAIL_SEND, {"to": "nobody@example.test", "body": "x"}) == guard.BLOCK
+    assert decide("send", MAIL_SEND, {"to": "owner@example.test", "body": "x"}) == 0
+    assert decide("connector", MAIL_TRASH, {}) == guard.BLOCK and decide("connector", TRACKER_WRITE, {}) == guard.BLOCK
+
+
+def test_a_sweep_proof_is_granted_the_sweeps_tools(ada):
+    cloud.begin(ada, "sweep", proof=True, now=NOW, grant=cloud.task_grant(GRANT, "sweep"))
+    allow = profile_of("sweep")["permissions"]["allow"]
+    assert {MAIL_READ, MAIL_SEARCH, TRACKER_READ, TRACKER_WRITE, MAIL_SEND} <= set(allow)
+    assert MAIL_TRASH not in json.dumps(allow)
+
+
+def test_a_proof_after_the_move_is_granted_no_more_than_the_record(ada):
+    """Once the routines run in the cloud the record holds the grant the person moved with: a proof's own grant can
+    only narrow it, so a run talked into a proof cannot grant itself a tool."""
+    in_the_cloud(ada)
+    calendar, update = "mcp__calendar__list_events", "mcp__tracker__update_issue"   # a read and a write, never granted
+    wider = {**GRANT, "read": [*GRANT["read"], calendar], "write": [TRACKER_WRITE, update]}
+    assert "stopped" not in cloud.begin(ada, "sweep", proof=True, now=NOW, grant=wider)
+    allow = profile_of("sweep")["permissions"]["allow"]
+    assert {MAIL_READ, MAIL_SEARCH, TRACKER_READ, TRACKER_WRITE, MAIL_SEND} <= set(allow)
+    assert calendar not in json.dumps(allow) and update not in json.dumps(allow)
+    next_run()
+    cloud.begin(ada, "sweep", proof=True, now=NOW, grant={"read": [MAIL_READ], "write": [], "send": []})
+    allow = profile_of("sweep")["permissions"]["allow"]
+    assert MAIL_READ in allow and not {MAIL_SEARCH, TRACKER_READ, TRACKER_WRITE, MAIL_SEND} & set(allow)
+
+
+DEFLATED = zlib.compress(json.dumps(GRANT, separators=(",", ":")).encode("utf-8"), 9)
+ONE_OFF = token(GRANT)[:20] + ("B" if token(GRANT)[20] == "A" else "A") + token(GRANT)[21:]
+NOT_GRANTS = {"not-base64url": "@@@", "padded": token(GRANT) + "=", "cut-short": "a", "too-long": "a" * 8193,
+              "not-deflated": token(GRANT, deflate=False), "stream-cut-short": bare(DEFLATED[:-4]),
+              "trailing-bytes": bare(DEFLATED + b"x"), "one-letter-off": ONE_OFF,
+              "inflates-too-far": token(b'{"read":[],"write":[],"send":[]' + b" " * (2 * 1024 * 1024) + b"}"),
+              "not-text": token(b"\xff\xfe\xfd"), "not-json": token(b"not json"), "a-list": token([]),
+              "null": token(None), "nested-deep": token(b"[" * 3000 + b"]" * 3000),
+              "another-part": token({**GRANT, "admin": [MAIL_TRASH]}),
+              "a-part-missing": token({"read": [MAIL_READ], "write": []}),
+              "not-a-list": token({**GRANT, "read": MAIL_READ}), "not-a-name": token({**GRANT, "read": [7]}),
+              "a-built-in": token({**GRANT, "send": ["Bash"]}),
+              "a-server-alone": token({**GRANT, "send": ["mcp__mail"]}),
+              "no-server": token({**GRANT, "send": ["mcp____send"]}),
+              "a-space": token({**GRANT, "send": ["mcp__mail__send message"]})}
+
+
+@pytest.mark.parametrize("word", list(NOT_GRANTS.values()), ids=list(NOT_GRANTS))
+def test_a_grant_that_is_none_refuses_the_run_and_writes_nothing(ada, word, capsys):
+    in_the_cloud(ada)   # a real run would go on: the grant alone stops it
+    assert cloud.main(["begin", str(ada), "--chain", "daily", "--proof", "--grant", word]) == 2
+    assert "grant" in capsys.readouterr().out
+    (ada / routine.HOST).unlink()
+    assert untouched(ada)
+
+
+def test_a_grant_without_a_proof_refuses_the_run_and_writes_nothing(ada, capsys):
+    in_the_cloud(ada)
+    assert cloud.main(["begin", str(ada), "--chain", "sweep", "--grant", token(GRANT)]) == 2
+    assert "proof" in capsys.readouterr().out
+    with pytest.raises(ValueError):
+        cloud.begin(ada, "sweep", now=NOW, grant=GRANT)
+    (ada / routine.HOST).unlink()
+    assert untouched(ada)
+
+
+def test_begin_runs_once_per_run(ada, capsys):
+    in_the_cloud(ada)
+    assert "stopped" not in cloud.begin(ada, "sweep", now=NOW)
+    state = Path.home() / ".spaces" / "routines" / "cloud.json"
+    before = state.read_text(encoding="utf-8")
+    runs = ada / "_meta" / "state" / "runs.jsonl"
+    with pytest.raises(ValueError, match="once"):
+        cloud.begin(ada, "daily", now=NOW)
+    capsys.readouterr()
+    for argv in (["--chain", "sweep"], ["--chain", "daily", "--proof"],
+                 ["--chain", "daily", "--proof", "--grant", token(cloud.task_grant(GRANT, "daily"))]):
+        assert cloud.main(["begin", str(ada), *argv]) == 2, argv
+        assert "once" in capsys.readouterr().out
+    assert state.read_text(encoding="utf-8") == before   # still the first begin's: its profile, its chain
+    assert not (Path.home() / ".spaces" / "routines" / "cloud-daily.settings.json").exists()
+    assert not (ada / ".git" / "sync-cloud-lease-daily").exists() and not runs.exists()   # no carry, no line
+
+
+def test_a_begin_that_stepped_aside_leaves_the_next_begin_free(ada):
+    assert cloud.begin(ada, "sweep", now=NOW) == {"stopped": routine.NO_CLOUD}   # it wrote nothing, the state too
+    in_the_cloud(ada)
+    assert "stopped" not in cloud.begin(ada, "sweep", now=NOW)
 
 
 # ----- begin: a proof run, and mounts ----------------------------------------------------------------------------
@@ -441,6 +621,7 @@ def test_a_silent_other_chain_is_one_item(ada):
     assert item["id"] == "cloud-silent-daily-20261024" and result["items"] == [item["id"]]
     assert item["text"].startswith("The cloud daily chain has not run since 2026-10-24 23:00")   # Amsterdam time
     run_line_on_main(ada, "daily-chain", NOW - dt.timedelta(hours=2))
+    next_run()
     assert cloud.begin(ada, "sweep", now=NOW)["items"] == [] and items_of(ada) == []   # it ran again: taken back
 
 
@@ -450,6 +631,7 @@ def test_a_chain_within_twice_its_longest_gap_is_not_silent(ada):
     run_line_on_main(ada, "cloud-proof", NOW - dt.timedelta(hours=1))
     assert cloud.begin(ada, "daily", now=NOW)["items"] == []
     run_line_on_main(ada, "sweep-chain", NOW - dt.timedelta(hours=25))   # an older line changes nothing
+    next_run()
     assert cloud.begin(ada, "daily", now=NOW)["items"] == []
 
 
@@ -457,6 +639,7 @@ def test_a_chain_that_never_ran_is_silent_counted_from_the_move(ada):
     routine.claim_cloud(ada, TASKS, "Europe/Amsterdam", ["ada/ada-space"], GRANT, NOW - dt.timedelta(hours=20))
     assert cloud.begin(ada, "daily", now=NOW)["items"] == []   # moved 20 hours ago: not yet
     routine.claim_cloud(ada, TASKS, "Europe/Amsterdam", ["ada/ada-space"], GRANT, NOW - dt.timedelta(hours=30))
+    next_run()
     result = cloud.begin(ada, "daily", now=NOW)
     [item] = items_of(ada)
     assert result["items"] == [item["id"]] == ["cloud-silent-sweep-20261026"]
@@ -470,6 +653,7 @@ def test_a_pin_older_than_three_days_is_one_item(ada, tmp_path):
     pins = brain_origin(tmp_path, [NOW - dt.timedelta(days=9), NOW - dt.timedelta(days=5)])
     add_mount(ada, tmp_path, "brain", (tmp_path / "ada-brain.git").as_uri(), pins[0])
     assert cloud.begin(ada, "sweep", now=NOW)["items"] == []   # the sweep does not read the pins
+    next_run()
     result = cloud.begin(ada, "daily", now=NOW)
     [item] = items_of(ada)
     assert item["id"] == "cloud-stale-pin-20261022" and result["items"] == [item["id"]]
@@ -485,6 +669,7 @@ def test_a_pin_behind_by_less_than_three_days_or_at_the_tip_is_no_item(ada, tmp_
     add_mount(ada, tmp_path, "brain", (tmp_path / "ada-brain.git").as_uri(), pins[1])
     later = NOW + dt.timedelta(days=30)   # an old brain nobody changed is not a stale pin
     run_line_on_main(ada, "sweep_chain", later - dt.timedelta(hours=2))
+    next_run()
     assert cloud.begin(ada, "daily", now=later)["items"] == []
 
 
@@ -545,6 +730,14 @@ def test_the_trigger_denies_the_machinery_the_shell_shapes_and_git(computer):
             "Edit(//home/user/ada-brain/identity/**)"} <= set(denied)
     # Every dot-entry of the home folder, in both spellings: user site-packages, git's own config, the shell's.
     assert {"Edit(~/.*)", "Edit(~/.*/**)", "Edit(//home/user/.*)", "Edit(//home/user/.*/**)"} <= set(denied)
+    # The system's own folders, where a .pth or a sitecustomize would run inside every python3 the guard and the tools
+    # start; the clones in /home/user and /tmp stay open.
+    system = {rule for rule in denied if rule.startswith("Edit(//") and not rule.startswith(("Edit(//**/",
+                                                                                             "Edit(//home/user/"))}
+    assert system == {f"Edit(//{folder}/**)" for folder in (
+        "bin", "boot", "dev", "etc", "lib", "lib32", "lib64", "libx32", "media", "mnt", "opt", "proc", "root", "run",
+        "sbin", "srv", "sys", "usr", "var")}
+    assert not {"Edit(//home/user/**)", "Edit(//home/**)", "Edit(//tmp/**)", "Edit(//**)"} & set(denied)
     assert {"Bash(python -m *)", "Bash(python3 -m *)", "Bash(git *)", "Bash(gh pr *)", "Bash(gh api *graphql*)",
             "Bash(gh api * *)", "Bash(gh api *\t*)",
             "Bash(*_meta/tools/routine.py*)", "Bash(*_meta/tools/sign.py*)"} <= set(denied)
@@ -637,6 +830,34 @@ def test_the_trigger_prompt_names_the_person_the_clone_and_the_chain_prompt(comp
     assert "Ada Okafor" in said and "/home/user/ada-space" in said
     assert "/home/user/ada-space/_meta/templates/cloud/daily-chain.md" in said and "Proof" not in said
     assert "Proof section only" in prompt(cloud.trigger(computer, "daily", proof=True, timezone="Europe/Amsterdam"))
+
+
+def test_the_prompt_gives_the_exact_begin_command_to_run_first(computer):
+    def prompt(body):
+        return body["job_config"]["ccr"]["events"][0]["data"]["message"]["content"]
+    for chain in cloud.CHAINS:
+        said = prompt(cloud.trigger(computer, chain, timezone="Europe/Amsterdam"))
+        command = cloud.begin_command("ada-space", chain)
+        assert f"`{command}`" in said and "--proof" not in said and "--grant" not in said
+        assert said.index(command) < said.index(f"{chain}-chain.md")   # begin first, then the chain's prompt
+        for words in ("first", "exactly as written", "one command", "refused", "non-zero", "stop"):
+            assert words in said, words
+        proved = prompt(cloud.trigger(computer, chain, proof=True, timezone="Europe/Amsterdam"))
+        kept = json.loads((Path.home() / ".spaces" / f"cloud-{chain}.json").read_text(encoding="utf-8"))
+        command = cloud.begin_command("ada-space", chain, proof=True, grant=kept["grant"])
+        assert f"`{command}`" in proved and cloud.grant_of(command.split()[-1]) == kept["grant"]
+        assert cloud.parse(command.split()[2:]).grant == command.split()[-1]
+
+
+def test_the_trigger_renders_a_sweep_proof_for_many_apps(computer, monkeypatch):
+    """A sweep's proof carries the sweep's whole grant, every read tool of every work app the person granted: its
+    begin command still fits the word the guard lets through."""
+    grant = many_apps()
+    monkeypatch.setattr(routine, "grant", lambda workspace, *a, **k: {
+        **grant, "reconnect": [], "notes": [], "person": "owner@example.test", "shell": "/bin/sh"})
+    body = cloud.trigger(computer, "sweep", proof=True, timezone="Europe/Amsterdam")
+    said = body["job_config"]["ccr"]["events"][0]["data"]["message"]["content"]
+    assert f"`{cloud.begin_command('ada-space', 'sweep', proof=True, grant=grant)}`" in said
 
 
 def test_the_trigger_keeps_what_it_attached_and_granted_for_the_move(computer):
