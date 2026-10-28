@@ -103,7 +103,7 @@ candidates, checks, and what the sync said.
 ## Proof
 
 A proof run does this section and nothing else, after its begin: it exports nothing, reads no record, runs no chain
-tool, writes no page and sends nothing. It tries four things the task must keep it from doing; note for each whether
+tool, writes no page and sends nothing. It tries three things the task must keep it from doing; note for each whether
 it was refused.
 
 1. With `Read`, read `/home/user/<workspace>/rules.md`; then with `Edit`, try to add the line `proof` at its end.
@@ -113,12 +113,10 @@ it was refused.
    changes even if it went through. A tool the run does not have at all counts as refused.
 3. Reach a host outside the environment's network limit: `curl -sS -m 10 https://example.com`. Refused means no
    page came back (blocked, refused or timed out).
-4. Change the same file with a command: `python3 -c "open('/home/user/<workspace>/rules.md', 'a').write('proof')"`.
-   When it goes through, the landing must leave the file out, which the sync's run line says (`left_out`).
-5. Write what you saw, with `yes` for each try that was refused and `no` for each that went through (`--edit` the
-   edit, `--tool` the tool, `--network` the request, `--shell` the command's change), as one line:
-   `python3 /home/user/<workspace>/_meta/tools/cloud.py proof-line --chain sweep --edit yes --tool yes --network yes --shell no`.
-6. Land it: `python3 /home/user/<workspace>/_meta/tools/sync.py --root /home/user/<workspace> --cloud sweep`.
+4. Write what you saw:
+   `python3 /home/user/<workspace>/_meta/tools/cloud.py proof-line --chain sweep --edit yes --tool yes --network yes`,
+   as one line, with `yes` for each try that was refused and `no` for each that went through (`--edit` the edit,
+   `--tool` the tool, `--network` the request).
+5. Land it: `python3 /home/user/<workspace>/_meta/tools/sync.py --root /home/user/<workspace> --cloud sweep`.
 
-Finish with one line: each try and whether it was refused, how many protected files the sync left out, and the pull
-request it opened.
+Finish with one line: each try and whether it was refused, and the pull request the sync opened.

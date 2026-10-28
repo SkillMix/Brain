@@ -24,22 +24,20 @@ marker is there already. Then it:
    branch); a branch the person closed is left quietly;
 3. initialises each clone's mounts at their pins, one at a time; a mount whose repository the task did not
    attach is named, never an error;
-4. writes the run's marker outside every repository (`STATE`: workspace, chain, and whether it is a proof, which the
-   landing reads: a proof's landing writes no security item, and its run line says it was a proof's);
+4. writes the run's marker outside every repository (`STATE`: workspace and chain);
 5. prints where each source's export starts (`sweep.cursor`; a proof run exports nothing, so every cursor is now).
 Its items go to the workspace's `_inbound/needs-you/sync-cloud.yaml`, beside the cloud sync's own.
 
 `trigger` runs on the computer: it renders the body the agent hands to `RemoteTrigger` (Python cannot call it)
 from the space files, and keeps the body with the space repositories it attaches and the tools it grants in
 `~/.spaces/cloud-sweep.json`, which `onboard.py --routines-cloud` reads to record the move. `proof-line` writes a
-proof run's line: which of the refusals the task owes it saw (a protected file changed with the shell, when the
-change went through, is proved by the landing, which leaves it out: `left_out` on the sync's own line).
+proof run's line: which of the refusals the task owes it saw.
 
     python3 cloud.py begin <workspace> --chain sweep [--proof]
                                 # JSON; exit 3 when the run stops, 2 when it may not begin (begun, or a workspace
                                 # that is not this script's clone)
     python cloud.py trigger <workspace> --chain sweep --environment <env_...> [--proof] [--timezone <IANA zone>]
-    python3 cloud.py proof-line [<workspace>] --chain sweep --edit yes|no --tool yes|no --network yes|no --shell yes|no
+    python3 cloud.py proof-line [<workspace>] --chain sweep --edit yes|no --tool yes|no --network yes|no
 """
 from __future__ import annotations
 
@@ -358,8 +356,8 @@ def begin(workspace: Path, chain: str, proof: bool = False, now=None, gh=None) -
     for root in found:
         unreachable += [f"{root.as_posix()}/{path}" for path in init_mounts(root)[1]]
     state_path().parent.mkdir(parents=True, exist_ok=True)
-    state_path().write_text(json.dumps({"workspace": workspace.as_posix(), "chain": chain, "proof": bool(proof)},
-                                       indent=2) + "\n", encoding="utf-8", newline="\n")
+    state_path().write_text(json.dumps({"workspace": workspace.as_posix(), "chain": chain}, indent=2) + "\n",
+                            encoding="utf-8", newline="\n")
     result = {"roots": [r.as_posix() for r in found], "unreachable": unreachable, "carried": carried,
               "cursors": {root.as_posix(): cursors(root, now, proof) for root in found}}
     # the items an earlier shape of the cloud runs wrote (a silent chain, a stale pin) are let go
@@ -565,17 +563,17 @@ def trigger(workspace: Path, chain: str, proof: bool = False, timezone: str | No
 
 
 # ----- the proof line ------------------------------------------------------------------------------------------
-def proof_line(workspace, chain: str, edit: bool, tool: bool, network: bool, shell: bool, now=None) -> dict:
+def proof_line(workspace, chain: str, edit: bool, tool: bool, network: bool, now=None) -> dict:
     """Append a proof run's line to `_meta/state/runs.jsonl`: whether the run saw refused an edit to a protected file
     (`edit`, the task's deny list), a connector tool outside the task's grant (`tool`: absent counts, as each
-    connector's permitted tools make it), a request to a host outside the environment's network limit (`network`)
-    and a change to a protected file made with the shell (`shell`). A shell change that went through is proved by
-    the landing instead, which leaves it out: the sync's line that lands with this one counts it (`left_out`). The
-    sync lands both, and `onboard.cloud_proofs` reads them on main."""
+    connector's permitted tools make it) and a request to a host outside the environment's network limit
+    (`network`). The sync lands it, and `onboard.cloud_proofs` reads it on main. A change made with a command is not
+    tried: the platform refuses the landing of a run that just had one refused, so a proof that tried it could not
+    land; the landing keeps any such change off main (`sync.py --cloud`) whatever a run does."""
     _check(chain)
     now = now or spaceyaml.load(workspace).now()
     line = {"routine": PROOF, "chain": chain, "edit": bool(edit), "tool": bool(tool), "network": bool(network),
-            "shell": bool(shell), "at": pages.iso(now)}
+            "at": pages.iso(now)}
     path = Path(workspace) / sync.RUNS_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8", newline="\n") as handle:
@@ -601,7 +599,7 @@ def parse(argv) -> argparse.Namespace:
     seen = sub.add_parser("proof-line")
     seen.add_argument("workspace", nargs="?")
     seen.add_argument("--chain", required=True, choices=CHAINS)
-    for refusal in ("edit", "tool", "network", "shell"):
+    for refusal in ("edit", "tool", "network"):
         seen.add_argument(f"--{refusal}", required=True, choices=("yes", "no"))
     return parser.parse_args(argv)
 
@@ -634,8 +632,7 @@ def main(argv=None) -> int:
             print("cloud: no workspace given, and no cloud run has begun here")
             return 2
         yes = {"yes": True, "no": False}
-        line = proof_line(Path(workspace), args.chain, yes[args.edit], yes[args.tool], yes[args.network],
-                          yes[args.shell])
+        line = proof_line(Path(workspace), args.chain, yes[args.edit], yes[args.tool], yes[args.network])
         print(json.dumps(line))
         return 0
     except (ValueError, FileNotFoundError) as exc:

@@ -137,13 +137,12 @@ def line_at(clone: Path, ref: str) -> dict:
     return json.loads(shown(clone, ref, RUNS).splitlines()[-1])
 
 
-def marker(clone: Path, proof: bool, chain: str = "sweep") -> Path:
+def marker(clone: Path, chain: str = "sweep", **extra) -> Path:
     """The run's marker `cloud.py begin` writes under the home folder (a temporary one in every test): where the
-    run began, its chain, and whether it is a proof run."""
+    run began and its chain. `extra` adds what an earlier shape of begin wrote there too."""
     path = cloud.state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"workspace": clone.as_posix(), "chain": chain, "proof": proof}) + "\n",
-                    encoding="utf-8")
+    path.write_text(json.dumps({"workspace": clone.as_posix(), "chain": chain, **extra}) + "\n", encoding="utf-8")
     return path
 
 
@@ -172,7 +171,7 @@ def test_its_own_line_lands_with_it(repo, tmp_path, monkeypatch):
     git(repo, "fetch", "-q", "origin")
     line = line_at(repo, "origin/cloud/sweep")
     assert (line["routine"], line["cloud"], line["space"]) == ("sync", "sweep", "ada")
-    assert line["notes"] == {"staged": 2, "carried": True, "held": [], "left_out": 0, "proof": False}
+    assert line["notes"] == {"staged": 2, "carried": True, "held": [], "left_out": 0}
     assert branch_files(repo) == sorted([SOURCE, "knowledge/sources/2026/10/r1.md", RUNS])
 
 
@@ -361,7 +360,7 @@ def test_a_quiet_branch_older_than_six_hours_opens_its_pull_request(repo, tmp_pa
     assert code == 0 and len(gh.posts()) == 1 and notes["landing"] == "merged"
 
 
-PROOF = {"routine": "cloud-proof", "chain": "sweep", "edit": True, "tool": True, "network": True, "shell": True,
+PROOF = {"routine": "cloud-proof", "chain": "sweep", "edit": True, "tool": True, "network": True,
          "at": "2026-10-27T09:00:00Z"}
 
 
@@ -374,12 +373,14 @@ def test_a_proof_line_opens_its_pull_request(repo, tmp_path, monkeypatch):
     assert code == 0 and len(gh.posts()) == 1 and notes["landing"] == "merged"
 
 
-@pytest.mark.parametrize("run", ["a proof", "a sweep after an earlier proof", "a sweep that carries an earlier proof"])
-def test_a_proof_landing_counts_the_file_it_left_out_and_asks_nothing(repo, tmp_path, monkeypatch, run):
-    """A proof run changes rules.md with a command on purpose: its landing leaves the file out, as every landing does,
-    and its sync line counts it (`left_out`) and says `proof`, which is the proof; it writes no security item. Only
-    the run's marker makes a run a proof: a real run that changes a protected file is still one item, whether main
-    holds an earlier proof's line or the branch its begin carried does."""
+@pytest.mark.parametrize("run", ["a proof", "a proof whose marker says proof", "a sweep after an earlier proof",
+                                 "a sweep that carries an earlier proof"])
+def test_a_landing_that_left_a_protected_file_out_always_asks_about_it(repo, tmp_path, monkeypatch, run):
+    """Every landing leaves a protected file out and asks about it as one security item, a proof run's too: a proof
+    tries no change made with a command, so a protected file it changed anyway is as much news as a sweep's. Nothing
+    makes a landing skip the item: not a proof line on its branch, not main or a carried branch holding an earlier
+    proof's line, not a marker an earlier shape of begin wrote with `proof`. Its sync line counts what it left out
+    (`left_out`) and says nothing about proofs; the proof's own line still lands beside it."""
     if run == "a sweep after an earlier proof":
         commit(repo, "an earlier proof", {RUNS: json.dumps(PROOF) + "\n"})
         git(repo, "push", "-q", "origin", "main")
@@ -387,42 +388,27 @@ def test_a_proof_landing_counts_the_file_it_left_out_and_asks_nothing(repo, tmp_
         cloud_branch(tmp_path, {RUNS: json.dumps(PROOF) + "\n"})   # the proof's branch, which never merged
     carried = begin(repo).get("carried") is True
     assert carried is (run == "a sweep that carries an earlier proof")
-    marker(repo, proof=run == "a proof")
+    if run == "a proof whose marker says proof":
+        marker(repo, proof=True)
+    else:
+        marker(repo)
     write(repo / "rules.md", "# Rules\n\nproof\n")
-    line = PROOF if run == "a proof" else {"routine": "sweep-chain", "at": "2026-10-27T10:00:00Z", "space": "ada",
-                                             "cost_tokens": 0, "notes": {"step": "agent", "cloud": True}}
+    proof = run.startswith("a proof")
+    line = PROOF if proof else {"routine": "sweep-chain", "at": "2026-10-27T10:00:00Z", "space": "ada",
+                                "cost_tokens": 0, "notes": {"step": "agent", "cloud": True}}
     with (repo / RUNS).open("a", encoding="utf-8", newline="\n") as fh:
         fh.write(json.dumps(line) + "\n")
     code, notes = land(repo, monkeypatch, CloudGh(tmp_path / "origin.git"))
     assert code == 0 and notes["landing"] == "merged"
     landed = line_at(repo, "origin/cloud/sweep")
-    assert landed["routine"] == "sync" and landed["notes"]["left_out"] == 1
-    assert landed["notes"]["proof"] is (run == "a proof")
+    assert landed["routine"] == "sync" and landed["notes"]["left_out"] == 1 and "proof" not in landed["notes"]
     assert "rules.md" not in branch_files(repo) and "rules.md" in git(repo, "status", "--porcelain").stdout
-    if run == "a proof":
-        assert branch_files(repo) == [RUNS] and not (repo / ITEMS).exists()
-    else:
-        assert branch_files(repo) == sorted([ITEMS, RUNS])
-        [item] = yaml.safe_load(shown(repo, "origin/cloud/sweep", ITEMS))["items"]
-        assert item["id"].startswith("cloud-protected-sweep-") and item["kind"] == "security"
-        assert item["text"] == "A cloud run changed 1 protected file; it was not landed."
-
-
-def test_only_a_marker_that_says_proof_makes_a_proof_run(repo):
-    """`Run.cloud_proof` reads the marker `cloud.py begin` wrote: no marker, one that cannot be read, or one whose
-    `proof` is anything but true is a real run, whose landing asks about every protected file it left out."""
-    run = sync.Run(repo, repo / ".git", sync.parse(["--root", str(repo), "--cloud", "sweep"]))
-    assert not cloud.state_path().exists() and run.cloud_proof() is False
-    path = marker(repo, proof=False)
-    assert run.cloud_proof() is False
-    path.write_text(json.dumps({"workspace": repo.as_posix(), "chain": "sweep", "proof": "yes"}), encoding="utf-8")
-    assert run.cloud_proof() is False
-    path.write_text("{not json", encoding="utf-8")
-    assert run.cloud_proof() is False
-    path.write_text(json.dumps(["proof"]), encoding="utf-8")
-    assert run.cloud_proof() is False
-    marker(repo, proof=True)
-    assert run.cloud_proof() is True
+    assert branch_files(repo) == sorted([ITEMS, RUNS])
+    [item] = yaml.safe_load(shown(repo, "origin/cloud/sweep", ITEMS))["items"]
+    assert item["id"].startswith("cloud-protected-sweep-") and item["kind"] == "security"
+    assert item["text"] == "A cloud run changed 1 protected file; it was not landed."
+    if proof:
+        assert PROOF in [json.loads(raw) for raw in shown(repo, "origin/cloud/sweep", RUNS).splitlines()]
 
 
 # ----- the lease ----------------------------------------------------------------------------------

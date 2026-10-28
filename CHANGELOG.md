@@ -5,22 +5,26 @@ versioning](https://semver.org); while the version starts with 0, a minor releas
 the shape and ships its migration. Each choice behind a change has a line in
 `docs/decisions.md`.
 
-## [Unreleased]
+## [0.3.0] - 2026-10-28
+
+Setup is one guided conversation, the sign sitting asks only what no record answers, and the sweep can run in
+the cloud, read-only, while the computer is closed.
 
 Cloud sweep: the sweep runs when the computer is closed, read-only; the daily stays on the computer.
 
 ### Added
 
 - **The sweep in the cloud.** "Run my routines in the cloud" moves the sweep to a scheduled task on
-  claude.ai, after a proof run shows the task refuses a protected edit and a tool it was not given,
-  and its landing keeps a protected file changed with a command off `main`; "run my routines here"
+  claude.ai, after a proof run shows the task refuses a protected edit, a tool it was not given and
+  a host outside its network limit (claude.ai's own check of a run's actions refused a shell change
+  of `rules.md`, and then the landing after it, so the proof no longer tries one); "run my routines here"
   brings it back. The daily chain stays on the computer: it sends the owner notices and the
   briefing, and now runs the tracker step too. Each run lands its own files once, at its end
   (`sync.py --cloud sweep`): it pushes `cloud/sweep` and opens a pull request through REST that
   the space's checks merge; the next run carries one that did not merge, and the computer's sync
   adopts one that is still open after 30 minutes and conflicts with `main` or is red (a green one
   that is only slow is left to auto-merge). The task gets the read tools of the person's apps
-  alone, and its deny list; the proof also checks the environment's network limit. A protected
+  alone, and its deny list. A protected
   change never lands from the cloud, and the gate's minimum list now holds, for every pull request,
   what instructs or runs code on the computer (the rendered routine prompts, `onboard.yaml`, the
   migrations, `.mcp.json`, `CLAUDE.local.md`, pytest's config), and what Claude Code or pytest load

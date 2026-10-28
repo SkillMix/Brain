@@ -131,12 +131,11 @@ def untouched(ws: Path) -> bool:
             and not list((ws / ".git").glob("sync-cloud-lease-*")))
 
 
-def landed(ws: Path, left_out: int, proof: bool = True) -> None:
-    """The cloud sync's own line, as it lands a run's lines: how many protected paths it left out, and whether the
-    run's marker said it was a proof (`proof`, as `sync.Run.cloud_proof` reads it)."""
+def landed(ws: Path, left_out: int) -> None:
+    """The cloud sync's own line, as it lands a run's lines: how many protected paths it left out."""
     with (ws / "_meta" / "state" / "runs.jsonl").open("a", encoding="utf-8", newline="\n") as fh:
         fh.write(json.dumps({"routine": "sync", "cloud": "sweep", "at": "2026-10-27T08:30:00Z", "space": "ada-space",
-                             "cost_tokens": 0, "notes": {"staged": 2, "left_out": left_out, "proof": proof}}) + "\n")
+                             "cost_tokens": 0, "notes": {"staged": 2, "left_out": left_out}}) + "\n")
 
 
 # ----- begin: the gate -------------------------------------------------------------------------------------------
@@ -175,7 +174,8 @@ def test_the_cli_exits_three_and_prints_why_when_it_steps_aside(ada, capsys):
 def test_a_real_run_stays_stopped_while_a_proof_shows_a_refusal_missing(ada, capsys):
     """While a proof on main shows a refusal missing that no later proof showed again, the sweep is stopped, and
     begin holds that in code: a real run stops, writing nothing, with the sentence the person reads. A proof run still
-    begins, so a proof that shows every refusal again, its landing included, can end the stop."""
+    begins, so a proof that shows every refusal again can end the stop; one that shows another missing cannot, and
+    no landing, whatever it left out, ends it."""
     in_the_cloud(ada)
     put(ada / "_meta" / "state" / "runs.jsonl", json.dumps(
         {"routine": "cloud-proof", "chain": "sweep", "edit": True, "tool": False, "at": "2026-10-27T08:00:00Z"}) + "\n")
@@ -187,13 +187,13 @@ def test_a_real_run_stays_stopped_while_a_proof_shows_a_refusal_missing(ada, cap
     assert json.loads(capsys.readouterr().out) == {"stopped": said}
     assert "stopped" not in cloud.begin(ada, "sweep", proof=True, now=NOW)   # a re-proof runs
     next_run()
-    # the shell's change of rules.md went through: the proof's own landing must leave it out
-    cloud.proof_line(ada, "sweep", edit=True, tool=True, network=True, shell=False, now=NOW)
-    assert cloud.begin(ada, "sweep", now=NOW)["stopped"] == said   # its landing has not said yet
-    landed(ada, left_out=1, proof=False)   # a real run's landing is not the proof's, whatever it left out
-    assert cloud.begin(ada, "sweep", now=NOW)["stopped"] == said
-    landed(ada, left_out=1)
-    next_run()
+    # the tool is refused again, but the request went through: the stop stays, now for both
+    cloud.proof_line(ada, "sweep", edit=True, tool=True, network=False, now=NOW)
+    both = onboard.unrefused_sentence(ada, {"sweep": ["tool", "network"]})
+    assert cloud.begin(ada, "sweep", now=NOW) == {"stopped": both}
+    landed(ada, left_out=1)   # a landing that left a protected file out proves nothing either way
+    assert cloud.begin(ada, "sweep", now=NOW) == {"stopped": both}
+    cloud.proof_line(ada, "sweep", edit=True, tool=True, network=True, now=NOW)
     assert "stopped" not in cloud.begin(ada, "sweep", now=NOW)
 
 
@@ -347,18 +347,17 @@ def test_once_moved_only_the_spaces_the_move_recorded_are_roots(ada, machine, tm
 
 
 # ----- begin: the run's marker -----------------------------------------------------------------------------------
-def test_begin_writes_the_runs_marker_with_the_workspace_the_chain_and_whether_it_is_a_proof(ada):
-    """The marker says a proof is one, so the landing (`sync.Run.cloud_proof`) skips the security item for what a
-    proof's landing left out, and a real run's never."""
+def test_begin_writes_the_runs_marker_with_the_workspace_and_the_chain_alone(ada):
+    """The marker says where the run works and which chain it runs, and nothing about a proof: a proof's landing is
+    a landing like any other, so a protected file it left out is a security item too."""
     in_the_cloud(ada)
     assert "stopped" not in cloud.begin(ada, "sweep", now=NOW)
-    assert marker() == {"workspace": ada.as_posix(), "chain": "sweep", "proof": False}
-    assert marker()["proof"] is False   # a boolean, not a 0 the landing would read as no proof by luck
+    assert marker() == {"workspace": ada.as_posix(), "chain": "sweep"}
     assert sorted(p.name for p in (Path.home() / ".spaces" / "routines").iterdir()) == ["cloud.json"]   # no profile
     next_run()
     cloud.begin(ada, "sweep", proof=True, now=NOW)
-    assert marker() == {"workspace": ada.as_posix(), "chain": "sweep", "proof": True}
-    assert marker()["proof"] is True   # `sync.Run.cloud_proof` takes only true itself
+    assert marker() == {"workspace": ada.as_posix(), "chain": "sweep"}   # a proof's marker is the same
+    assert not hasattr(sync.Run, "cloud_proof")   # nothing in the landing asks whether a run was a proof
 
 
 def test_a_real_run_lets_go_of_the_items_an_earlier_shape_wrote_and_a_proof_keeps_them(ada):
@@ -785,74 +784,79 @@ def test_the_trigger_cli_prints_the_render(computer, capsys):
 
 
 # ----- the proof line --------------------------------------------------------------------------------------------
-REFUSALS = ("edit", "tool", "network", "shell")   # what a proof run tries, each a yes or a no on its line
+REFUSALS = ("edit", "tool", "network")   # what a proof run tries, each a yes or a no on its line
 
 
-def test_a_proof_line_lands_the_four_refusals_it_saw(tmp_path):
+def test_a_proof_line_lands_the_three_refusals_it_saw(tmp_path):
+    assert REFUSALS == onboard.CLOUD_REFUSALS["sweep"]   # what the line writes is what the move reads
     ws = make_space(tmp_path / "ada-space")
-    line = cloud.proof_line(ws, "sweep", edit=True, tool=False, network=True, shell=False, now=NOW)
+    line = cloud.proof_line(ws, "sweep", edit=True, tool=False, network=True, now=NOW)
     assert line == {"routine": "cloud-proof", "chain": "sweep", "edit": True, "tool": False, "network": True,
-                    "shell": False, "at": "2026-10-27T09:00:00Z"}
-    runs = (ws / "_meta" / "state" / "runs.jsonl").read_text(encoding="utf-8")
-    assert [json.loads(raw) for raw in runs.splitlines()] == [line]
+                    "at": "2026-10-27T09:00:00Z"}
+    runs = ws / "_meta" / "state" / "runs.jsonl"
+    assert [json.loads(raw) for raw in runs.read_text(encoding="utf-8").splitlines()] == [line]
     with pytest.raises(ValueError):
-        cloud.proof_line(ws, "daily", edit=True, tool=True, network=True, shell=True, now=NOW)
-    for missing in ("network", "shell"):   # a line without one of the four would prove nothing either way
+        cloud.proof_line(ws, "daily", edit=True, tool=True, network=True, now=NOW)
+    for missing in REFUSALS:   # a line without one of the three would prove nothing either way
         given = {refusal: True for refusal in REFUSALS if refusal != missing}
         with pytest.raises(TypeError):
             cloud.proof_line(ws, "sweep", now=NOW, **given)
-    assert [json.loads(raw) for raw in runs.splitlines()] == [line]   # nothing more was written
+    with pytest.raises(TypeError):   # the change made with a command is tried no more
+        cloud.proof_line(ws, "sweep", edit=True, tool=True, network=True, shell=True, now=NOW)
+    assert [json.loads(raw) for raw in runs.read_text(encoding="utf-8").splitlines()] == [line]   # nothing more
 
 
 def test_the_proof_line_cli_reads_the_workspace_from_the_runs_state(tmp_path, capsys):
     ws = make_space(tmp_path / "ada-space")
     state = Path.home() / ".spaces" / "routines" / "cloud.json"
     state.parent.mkdir(parents=True)
-    state.write_text(json.dumps({"workspace": ws.as_posix(), "chain": "sweep", "proof": True}), encoding="utf-8")
-    flags = ["--edit", "yes", "--tool", "no", "--network", "yes", "--shell", "no"]
+    state.write_text(json.dumps({"workspace": ws.as_posix(), "chain": "sweep"}), encoding="utf-8")
+    flags = ["--edit", "yes", "--tool", "no", "--network", "yes"]
     assert cloud.main(["proof-line", "--chain", "sweep", *flags]) == 0
     printed = json.loads(capsys.readouterr().out)
-    assert {refusal: printed[refusal] for refusal in REFUSALS} == {"edit": True, "tool": False, "network": True,
-                                                                  "shell": False}
+    assert {refusal: printed[refusal] for refusal in REFUSALS} == {"edit": True, "tool": False, "network": True}
+    assert "shell" not in printed
     runs = ws / "_meta" / "state" / "runs.jsonl"
     assert [json.loads(raw) for raw in runs.read_text(encoding="utf-8").splitlines()] == [printed]
-    for refusal in REFUSALS:   # each of the four is required: a run cannot leave one out
+    for refusal in REFUSALS:   # each of the three is required: a run cannot leave one out
         given = [word for at in range(0, len(flags), 2) if flags[at] != f"--{refusal}" for word in flags[at:at + 2]]
         with pytest.raises(SystemExit):
             cloud.main(["proof-line", str(ws), "--chain", "sweep", *given])
         with pytest.raises(SystemExit):
             cloud.main(["proof-line", str(ws), "--chain", "sweep", *given, f"--{refusal}", "maybe"])
-    for gone in (["--guard", "yes"], ["--send", "yes"]):   # the plugin's guard and the send are no proof's now
+    # the plugin's guard, the send and the change made with a command are no proof's now
+    for gone in (["--guard", "yes"], ["--send", "yes"], ["--shell", "yes"], ["--shell", "no"]):
         with pytest.raises(SystemExit):
             cloud.main(["proof-line", str(ws), "--chain", "sweep", *flags, *gone])
     assert len(runs.read_text(encoding="utf-8").splitlines()) == 1   # no refused call wrote a line
     capsys.readouterr()
 
 
-def test_onboard_moves_the_sweep_on_what_trigger_proof_line_and_the_landing_wrote(computer):
-    """The move reads what the cloud's own tools wrote: the render `trigger` kept, the proof's line, and the sync
-    line of the proof's own landing, paired by the `proof` the run's marker gave it. It moves only from a computer
-    that runs the routines, which keeps the daily."""
+def test_onboard_moves_the_sweep_on_what_trigger_and_proof_line_wrote(computer):
+    """The move reads what the cloud's own tools wrote: the render `trigger` kept and the proof's line, which proves
+    only when it saw all three refusals. No landing proves or unproves anything. It moves only from a computer that
+    runs the routines, which keeps the daily."""
     assert cloud.CHAINS == onboard.CLOUD_CHAINS   # the chains sync lands are the ones onboard reads
     render(computer)
     now = dt.datetime.now(dt.timezone.utc)
-    (computer / "_meta" / "state" / "runs.jsonl").unlink(missing_ok=True)
+    runs = computer / "_meta" / "state" / "runs.jsonl"
+    runs.unlink(missing_ok=True)
     every = {refusal: True for refusal in REFUSALS}
-    # the shell's change of rules.md went through, and the proof's landing took it
-    cloud.proof_line(computer, "sweep", **{**every, "shell": False}, now=now - dt.timedelta(hours=3))
-    landed(computer, left_out=0)
+    # the request went through: the line proves nothing, and says what the cloud did not refuse
+    cloud.proof_line(computer, "sweep", **{**every, "network": False}, now=now - dt.timedelta(hours=4))
     assert onboard.cloud_proofs(computer, now) == set()
-    assert onboard.cloud_unrefused(computer) == {"sweep": ["landing"]}
-    cloud.proof_line(computer, "sweep", **{**every, "shell": False}, now=now - dt.timedelta(hours=2))
-    assert onboard.cloud_proofs(computer, now) == set()   # no landing line yet: it proves nothing either way
-    landed(computer, left_out=1, proof=False)   # a real run's landing, not the proof's: it pairs with no proof
+    assert onboard.cloud_unrefused(computer) == {"sweep": ["network"]}
+    # a line of an earlier shape, without the request, proves nothing either way: what was missing stays missing
+    with runs.open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps({"routine": "cloud-proof", "chain": "sweep", "edit": True, "tool": True, "shell": True,
+                             "at": pages.iso(now - dt.timedelta(hours=3))}) + "\n")
     assert onboard.cloud_proofs(computer, now) == set()
-    assert onboard.cloud_unrefused(computer) == {"sweep": ["landing"]}
-    landed(computer, left_out=1)   # the proof's own landing left the shell's change out
+    assert onboard.cloud_unrefused(computer) == {"sweep": ["network"]}
+    # every refusal seen: proved, and nothing missing
+    cloud.proof_line(computer, "sweep", **every, now=now - dt.timedelta(hours=2))
     assert onboard.cloud_proofs(computer, now) == {"sweep"} and onboard.cloud_unrefused(computer) == {}
-    # a shell change refused at once reached no landing: that proof needs none, and a later landing changes nothing
-    cloud.proof_line(computer, "sweep", **every, now=now - dt.timedelta(hours=1))
-    assert onboard.cloud_proofs(computer, now) == {"sweep"}
+    # a landing that left a protected file out, or none, changes nothing: no landing is paired with a proof
+    landed(computer, left_out=1)
     landed(computer, left_out=0)
     assert onboard.cloud_proofs(computer, now) == {"sweep"} and onboard.cloud_unrefused(computer) == {}
     assert onboard._rendered("sweep")

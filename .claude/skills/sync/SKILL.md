@@ -17,8 +17,8 @@ on disk. A cloud sweep run starts it once at its end, for each of its spaces.
 - By hand, only when the person asks to land now or asks why something did not land.
 - In a cloud sweep run: once at its end for each of its spaces, the workspace last, whether
   or not the run wrote in it, as the cloud prompt says (`_meta/templates/cloud/sweep-chain.md`);
-  a proof run lands its workspace alone, and its run line's `left_out` is the proof that a
-  protected file it changed with a command stayed off main.
+  a proof run lands its workspace alone, like any other landing: a protected file left out
+  raises the security item.
 
 ## Run
 

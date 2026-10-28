@@ -319,8 +319,8 @@ that went wrong. Nothing protected lands from the cloud: the change stayed in th
 thrown away. An `AGENTS.md` a tool regenerated is put back without an item (the computer's sync
 writes it again), and answer tests set aside are the one change there that lands.
 The agent: reads that run's log on claude.ai with the person, and what the run read before the
-change, before the task runs again; "pause my routines" holds the task meanwhile. A proof run changes
-`rules.md` with a command on purpose and writes no item: its `left_out` is the proof. The same change
+change, before the task runs again; "pause my routines" holds the task meanwhile. A proof run's
+landing is no exception: a protected file it left out means its edit went through. The same change
 seen again is not asked twice; a different one is.
 
 ### "Your routines in the cloud do not read <space>"

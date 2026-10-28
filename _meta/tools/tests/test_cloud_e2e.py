@@ -22,6 +22,7 @@ import agents_md
 import chain
 import cloud
 import ghrest
+import onboard
 import pages
 import routine
 import sweep
@@ -214,10 +215,10 @@ def machine(world, name: str) -> list:
 
 
 # ----- a run, as its prompt runs it ------------------------------------------------------------------------------
-def begin(workspace: Path, chain_name: str, capsys) -> dict:
-    """Step 0: the begin command, exactly once; its JSON."""
+def begin(workspace: Path, chain_name: str, capsys, proof: bool = False) -> dict:
+    """Step 0: the begin command, exactly once (with `--proof` for a proof run); its JSON."""
     capsys.readouterr()
-    code = cloud.main(["begin", str(workspace), "--chain", chain_name])
+    code = cloud.main(["begin", str(workspace), "--chain", chain_name, *(["--proof"] if proof else [])])
     out = capsys.readouterr().out
     said = json.loads(out[out.rfind("\n{\n") + 1 if not out.startswith("{") else 0:])
     assert code == 0, said
@@ -413,3 +414,58 @@ def test_cloud_sweeps_land_end_to_end_beside_the_daily_on_the_computer(world, ca
     assert all(c[0] in ("api", "run", "--version") and "graphql" not in " ".join(c) for c in platform.calls)
     writes = {"-X", "--method", "-f", "-F", "--field", "--raw-field", "--input"}
     assert all(c[1] == "api" and "graphql" not in " ".join(c) and not writes & set(c) for c in world["stray"])
+
+
+def proof_run(world, name: str, capsys, edit_went_through: bool) -> tuple:
+    """A proof run as the prompt's Proof section runs it: begin with `--proof`, the three tries (the edit of rules.md
+    goes through when `edit_went_through`; the tool and the request are refused), the proof line, and the landing of
+    the workspace alone. The workspace's clone and the landing's notes."""
+    workspace = machine(world, name)[0]
+    said = begin(workspace, "sweep", capsys, proof=True)
+    assert said["items"] == [] and said["roots"][0] == workspace.as_posix()
+    if edit_went_through:   # 1. `Edit` added the line `proof` at the end of rules.md
+        with (workspace / "rules.md").open("a", encoding="utf-8", newline="\n") as fh:
+            fh.write("proof\n")
+    # 2. trash_message is not the task's tool, and 3. the request to example.com timed out: both refused.
+    yes = "no" if edit_went_through else "yes"
+    assert cloud.main(["proof-line", "--chain", "sweep", "--edit", yes, "--tool", "yes", "--network", "yes"]) == 0
+    capsys.readouterr()
+    code, notes = land(workspace, world["monkeypatch"], world["platform"])   # 5. land it
+    assert code == 0, notes
+    return workspace, notes
+
+
+def protected_items(world) -> list:
+    held = yaml.safe_load(shown(world, SPACE, "main", "_inbound/needs-you/sync-cloud.yaml") or "{}") or {}
+    return [item for item in held.get("items") or [] if item["id"].startswith("cloud-protected-sweep-")]
+
+
+def test_a_proof_runs_landing_leaves_a_protected_change_out_and_asks_about_it_as_any_runs_does(world, capsys):
+    """A proof run lands like any cloud run: an edit of rules.md that went through is left out and written as the
+    security item, no proof exception, and main never holds it. Its line on main tells the move the edit was not
+    refused; a later proof that saw all three refusals proves the task again, with nothing left out and no new item."""
+    rules = shown(world, SPACE, "main", "rules.md")
+    _, notes = proof_run(world, "proof-1", capsys, edit_went_through=True)
+    assert notes["landing"] == "merged", notes
+    assert shown(world, SPACE, "main", "rules.md") == rules
+    [item] = protected_items(world)
+    assert item["kind"] == "security" and "1 protected file" in item["text"]
+    clouds = [line for line in lines_on(world, SPACE) if line.get("routine") == "sync" and line.get("cloud")]
+    assert [line["notes"]["left_out"] for line in clouds] == [1] and "proof" not in clouds[0]["notes"]
+    [line] = [line for line in lines_on(world, SPACE) if line.get("routine") == "cloud-proof"]
+    assert {key: line[key] for key in ("chain", "edit", "tool", "network")} == {
+        "chain": "sweep", "edit": False, "tool": True, "network": True} and "shell" not in line
+    computer_sync(world)   # the computer brings main in, and the move reads what it brought
+    now = dt.datetime.now(dt.timezone.utc)
+    assert onboard.cloud_proofs(world["computer"], now) == set()
+    assert onboard.cloud_unrefused(world["computer"]) == {"sweep": ["edit"]}
+
+    _, notes = proof_run(world, "proof-2", capsys, edit_went_through=False)
+    assert notes["landing"] == "merged", notes
+    assert shown(world, SPACE, "main", "rules.md") == rules and protected_items(world) == [item]
+    clouds = sorted((line for line in lines_on(world, SPACE) if line.get("routine") == "sync" and line.get("cloud")),
+                    key=lambda line: line["at"])
+    assert [line["notes"]["left_out"] for line in clouds] == [1, 0]
+    computer_sync(world)
+    assert onboard.cloud_proofs(world["computer"], now) == {"sweep"}
+    assert onboard.cloud_unrefused(world["computer"]) == {}
