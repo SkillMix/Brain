@@ -1410,9 +1410,11 @@ def _read_company(args, card: dict, prior: dict, journal: dict, reading: _Readin
         answer = ask(research.site_prompt(card), rules, research.SITE_SCHEMA)
         hosts = research.hosts_of(rules)
         moved = research.moved_host(answer, card["domain"])
-        if moved:   # the domain redirects to a host the reader may not fetch: read once more there
-            there = research.web_rules(moved)
-            answer = ask(research.site_prompt(card, moved), there, research.WEB_SCHEMA)
+        if moved:   # the domain redirects to a host the reader may not fetch: read once more there, keeping
+            there = research.web_rules(moved)   # what the first read found on the pages that did not move
+            again = ask(research.site_prompt(card, moved), there, research.WEB_SCHEMA)
+            answer = {"name": again.get("name") or answer.get("name"),
+                      "records": [*(answer.get("records") or []), *(again.get("records") or [])]}
             hosts += research.hosts_of(there)
         if not args.company and answer.get("name"):
             card["name"] = " ".join(str(answer["name"]).split())[:80]

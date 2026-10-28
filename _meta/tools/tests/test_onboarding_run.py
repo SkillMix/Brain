@@ -207,12 +207,15 @@ def test_a_protected_change_in_a_copy_that_still_has_the_marker_waits_for_the_ow
 class MovingGh(FakeGh):
     """A sync pull request that gets a new head every run, red on the checks named in `failing`."""
 
-    def __init__(self, failing):
+    def __init__(self, failing, rerun_ends="failure"):
         super().__init__("checks\tUnit tests\t2026-10-27T10:44:00Z FAILED test_onboard.py::test_x\n")
-        self.failing, self.head = list(failing), 0
+        self.failing, self.head, self.rerun_ends = list(failing), 0, rerun_ends
 
     def __call__(self, *args):
         route = next((a for a in args if a.startswith("repos/")), "")
+        if args[:2] == ("run", "view") and "--json" in args:   # how a rerun run ended
+            self.calls.append(args)
+            return subprocess.CompletedProcess(["gh", *args], 0, json.dumps({"conclusion": self.rerun_ends}), "")
         if re.fullmatch(r"repos/[^/]+/[^/]+/pulls\?state=open.*", route):   # the sync's pull request, a new head
             self.head += 1
             self.pulls = {7: (f"sync/{sync.hostname()}", f"h{self.head}")}
@@ -249,6 +252,27 @@ def test_a_sync_pull_request_is_rerun_three_times_a_day_at_most(repo, monkeypatc
     for n in range(4):
         sync_again(repo, n)
     assert reruns(gh) == sync.HEAL_RERUNS == 3 and "pr_red" in run_lines(repo)[-1]["notes"]
+
+
+def test_a_check_whose_rerun_passed_is_rerun_when_it_fails_by_chance_again(repo, monkeypatch):
+    # the review of #61: a rerun that passed still counted as "failed again", so a flaky check stayed red
+    gh = MovingGh([["checks"], ["checks"]], rerun_ends="success")
+    monkeypatch.setattr(sync.Run, "gh", gh)
+    sync_again(repo, 1)
+    sync_again(repo, 2)
+    assert reruns(gh) == 2 and "pr_red" not in run_lines(repo)[-1]["notes"]
+
+
+def test_setting_answer_tests_aside_keeps_the_day_s_reruns(repo, monkeypatch):
+    import tests_run
+    gh = MovingGh([["a"], ["b"], ["c"], ["d"], ["e"]])
+    monkeypatch.setattr(sync.Run, "gh", gh)
+    real = tests_run.hold
+    for n in range(5):
+        held = n == 1   # the second run sets an answer test aside instead of rerunning
+        monkeypatch.setattr(tests_run, "hold", (lambda *a, **k: ["What are the notes?"]) if held else real)
+        sync_again(repo, n)
+    assert reruns(gh) == sync.HEAL_RERUNS and "pr_red" in run_lines(repo)[-1]["notes"]
 
 
 # ----- #13: the briefing goes to the work mailbox the app card named -------------------------------------
@@ -308,9 +332,9 @@ def init_with(*statuses) -> str:
                        "apiKeySource": "none", "tools": tools, "mcp_servers": servers}) + "\n"
 
 
-def answering(monkeypatch, *outputs):
-    """A claude that answers each probe with the next init (an exception is raised instead), on a clock
-    that only the waits move."""
+def answering(monkeypatch, *outputs, look=0.0):
+    """A claude that answers each probe with the next init (an exception is raised instead) after `look`
+    seconds, on a clock that only the waits and the looks move."""
     asked, clock = [], [0.0]
     monkeypatch.setattr(routine, "_sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
     monkeypatch.setattr(routine, "_clock", lambda: clock[0])
@@ -318,6 +342,7 @@ def answering(monkeypatch, *outputs):
 
     def run(argv, **kw):
         asked.append(argv)
+        clock[0] += look
         said = outputs.pop(0)
         if isinstance(said, Exception):
             raise said
@@ -345,6 +370,22 @@ def test_a_probe_with_nothing_connecting_asks_once_and_a_failed_second_look_keep
     assert routine.probe_tools("claude", tmp_path, run=run)["tools"] == ["mcp__claude_ai_App0__list"] and len(asked) == 1
     run, asked, _ = answering(monkeypatch, init_with("connected", "pending"), subprocess.TimeoutExpired("claude", 1))
     assert routine.probe_tools("claude", tmp_path, run=run)["tools"] == ["mcp__claude_ai_App0__list"]
+
+
+def test_a_slow_look_still_looks_again_while_an_app_is_connecting(tmp_path, monkeypatch):
+    # the review of #61: a command line that takes 45 seconds to report used up the budget in one look
+    run, asked, clock = answering(monkeypatch, init_with("connected", "pending"), init_with("connected", "connected"),
+                                  look=45)
+    seen = routine.probe_tools("claude", tmp_path, run=run)
+    assert len(asked) == 2 and seen["tools"] == ["mcp__claude_ai_App0__list", "mcp__claude_ai_App1__list"]
+    assert clock[0] <= routine.PENDING_BUDGET   # the looks still end inside what the build waits for
+
+
+def test_a_look_so_slow_the_next_would_end_after_the_budget_is_the_last(tmp_path, monkeypatch):
+    run, asked, clock = answering(monkeypatch, init_with("connected", "pending"), init_with("connected", "connected"),
+                                  look=routine.PENDING_BUDGET * 0.6)
+    assert routine.probe_tools("claude", tmp_path, run=run)["tools"] == ["mcp__claude_ai_App0__list"]
+    assert len(asked) == 1 and clock[0] <= routine.PENDING_BUDGET
 
 
 # ----- #12 and #14: the first push and the brain mount say when they did not happen ------------------------
@@ -470,6 +511,30 @@ def test_a_site_that_moved_to_another_host_is_read_on_that_host(phase, capsys, t
     assert research_journal()["company"]["domain"] == "lanternworks.example"   # the register is still the .example one
 
 
+HERE = {"name": "Lantern Works", "moved_to": "https://lanternworks.test/", "records": [
+    {"title": "Our team", "url": "https://lanternworks.example/team", "about": "people", "text": "Ada Okafor, founder."}]}
+
+
+def test_what_the_first_read_found_is_kept_when_part_of_the_site_moved(phase, capsys, tmp_path):
+    # the review of #61: the read on the host the site moved to replaced the first read's records
+    the_home(tmp_path)
+    the_apps()
+    Readers(phase, {"site": lambda prompt: THERE if "https://lanternworks.test/" in prompt else HERE})
+    code, _ = research_run(capsys)
+    assert code == 0 and "site" in research_journal()["sources_done"]
+    urls = sorted(r["url"] for r in records_on_disk() if r["id"].startswith("site"))
+    assert urls == ["https://lanternworks.example/team", "https://lanternworks.test/"]
+
+
+def test_a_second_read_that_finds_nothing_keeps_the_first_read(phase, capsys, tmp_path):
+    the_home(tmp_path)
+    the_apps()
+    Readers(phase, {"site": lambda prompt: {"records": []} if "https://lanternworks.test/" in prompt else HERE})
+    code, _ = research_run(capsys)
+    assert code == 0 and "site" in research_journal()["sources_done"]
+    assert [r["url"] for r in records_on_disk() if r["id"].startswith("site")] == ["https://lanternworks.example/team"]
+
+
 def test_a_site_that_says_it_moved_to_itself_or_to_no_host_is_read_once(phase, capsys, tmp_path):
     the_home(tmp_path)
     the_apps()
@@ -525,6 +590,38 @@ def test_a_task_name_another_account_holds_says_so_with_the_way_out(tmp_path, mo
     assert not step.done and step.needs_owner
     assert "another account" in step.result and "schtasks /Delete /F /TN space-sync-ada" in step.result
     assert "--task-prefix" in step.result and "Access is denied" not in step.result
+
+
+def taken_in(monkeypatch, tmp_path, said: str, words: list):
+    """The row register_task writes when schtasks refuses with `said`, on a Windows whose own words for
+    "access is denied" are `words`."""
+    monkeypatch.setattr(onboard, "SYSTEM", "Windows")
+    monkeypatch.setattr(onboard, "_denied_words", lambda: words)
+    monkeypatch.setattr(onboard, "run_cmd", lambda argv, dry_run=False, cwd=None: subprocess.CompletedProcess(argv, 1, "", said))
+    report = onboard.Report("person")
+    onboard.register_task(report, "sync task registered", "space-sync-ada", tmp_path / "ada",
+                          [tmp_path / "ada" / "sync.py"], minutes=15)
+    return report.steps[-1]
+
+
+def test_a_task_name_another_account_holds_is_named_in_the_computer_s_own_language(tmp_path, monkeypatch):
+    # the review of #61: schtasks says "access is denied" in the display language, not in English
+    step = taken_in(monkeypatch, tmp_path, "FOUT: Toegang geweigerd.\r\n", ["Access is denied.", "Toegang geweigerd."])
+    assert step.needs_owner and "another account" in step.result
+    # a console code page that is not the one Python decodes with only garbles the accented letters
+    said = "ERREUR : Accès refusé.\r\n".encode("cp850").decode("cp1252")
+    step = taken_in(monkeypatch, tmp_path, said, ["Access is denied.", "Accès refusé."])
+    assert step.needs_owner and "another account" in step.result
+    step = taken_in(monkeypatch, tmp_path, "ERROR: The task XML is malformed.\r\n", ["Access is denied.", "Toegang geweigerd."])
+    assert not step.needs_owner and "malformed" in step.result
+
+
+def test_windows_own_words_for_access_denied_are_asked_of_windows():
+    words = onboard._denied_words()
+    assert "Access is denied." in words
+    if os.name == "nt":
+        import ctypes
+        assert ctypes.FormatError(5).strip() in words
 
 
 def yaml_load(path: Path):

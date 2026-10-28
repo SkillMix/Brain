@@ -105,7 +105,8 @@ The task runs `conhost.exe --headless`; re-running onboard re-registers an old t
 
 ### "Access is denied" for a scheduled task (Windows)
 
-Another account on this computer already has a task with that name, and Windows lets no other
+Windows says it in its display language ("Toegang geweigerd", "Zugriff verweigert"). Another
+account on this computer already has a task with that name, and Windows lets no other
 account read or replace it. The row names the task. Either an administrator removes it
 (`schtasks /Delete /F /TN <name>`), or you set up again with names of your own:
 `start.py build --task-prefix space-<your initials>-`. The prefix is kept in

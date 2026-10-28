@@ -904,9 +904,9 @@ class Run:
         (`heal`) and a cloud run's (`wait_landed`): answer tests the failed log names are set aside
         for CI (`held: {by: ci}`, which only a person brings back, since a pass here does not prove a
         pass there) and committed, for the caller's push; any other failure of an Actions run is rerun
-        once per head, as a flaky one (`healing`), unless the same checks failed on the head rerun before
-        (a failure with a cause: the next push would only fail it again), and HEAL_RERUNS times a day at
-        most. True when it repaired something; False when nothing failed, or when nothing could be
+        once per head, as a flaky one (`healing`), unless the same checks failed again after the last
+        rerun (a failure with a cause: the next push would only fail it again; `failed_again`), and
+        HEAL_RERUNS times a day at most. True when it repaired something; False when nothing failed, or when nothing could be
         repaired (no answer test to set aside, and no run that may be rerun), which stays in the run line (`pr_red`) for the maintenance agent, not the owner."""
         failed = ghrest.failed_checks(self.gh, self.slug, head) or []
         if not failed:
@@ -918,25 +918,40 @@ class Run:
         held = tests_run.hold(self.root, tests_run.failures_in("".join(d.stdout for d in logs if d), self.root),
                               "ci", self.now)
         names, day = sorted({str(c.get("name")) for c in failed}), self.now.date().isoformat()
-        mine = state.get("pr") == pr
-        again = mine and state.get("failing") == names   # what failed after the last rerun failed once more
-        today = int(state.get("count") or 0) if mine and state.get("day") == day else 0
+        today = int(state.get("count") or 0) if state.get("pr") == pr and state.get("day") == day else 0
         if held:
             git(self.root, "add", "--", tests_run.ANSWERS_PATH.as_posix())
             self.commit("chore: sync")
             self.notes["healing"] = {"pr": pr, "held_tests": held}
-            self.heal_state({"pr": pr, "what": f"set aside {len(held)} answer test(s) the checks could not "
-                                               f"pass: {'; '.join(held)}"})
+            self.heal_state({"pr": pr, "day": day, "count": today,   # the day's reruns still count
+                             "what": f"set aside {len(held)} answer test(s) the checks could not pass: {'; '.join(held)}"})
             return True
-        if runs and state.get("rerun") != head and not again and today < HEAL_RERUNS:
+        if runs and state.get("rerun") != head and today < HEAL_RERUNS and not self.failed_again(state, pr, names):
             for run in runs:
                 self.gh("run", "rerun", run, "--failed")
             self.notes["healing"] = {"pr": pr, "rerun": runs}
-            self.heal_state({"pr": pr, "rerun": head, "failing": names, "day": day, "count": today + 1,
-                             "what": "reran a failed check"})
+            self.heal_state({"pr": pr, "rerun": head, "failing": names, "runs": runs, "day": day,
+                             "count": today + 1, "what": "reran a failed check"})
             return True
         self.notes["pr_red"] = {"pr": pr, "checks": [c.get("name") for c in failed]}
         return False
+
+    def failed_again(self, state: dict, pr, names: list) -> bool:
+        """Whether the checks `names` of sync pull request `pr` are the ones the last rerun was for, and that rerun
+        has not passed (still running counts as not passed: the next run looks again). A rerun that passed was
+        chance, so the same checks failing on a later head are rerun too."""
+        if state.get("pr") != pr or state.get("failing") != names:
+            return False
+        reran = state.get("runs") or []
+        return not reran or not all(self._passed(run) for run in reran)
+
+    def _passed(self, run) -> bool:
+        viewed = self.gh("run", "view", str(run), "--json", "conclusion")   # the run's latest attempt
+        try:
+            return viewed is not None and viewed.returncode == 0 and \
+                json.loads(viewed.stdout or "{}").get("conclusion") == "success"
+        except ValueError:
+            return False
 
     def heal_state(self, new: dict | None = None) -> dict:
         path = self.gdir / HEAL_STATE
