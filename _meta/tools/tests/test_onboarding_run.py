@@ -216,10 +216,10 @@ class MovingGh(FakeGh):
         if args[:2] == ("run", "view") and "--json" in args:   # how a rerun run ended
             self.calls.append(args)
             return subprocess.CompletedProcess(["gh", *args], 0, json.dumps({"conclusion": self.rerun_ends}), "")
-        if re.fullmatch(r"repos/[^/]+/[^/]+/pulls\?state=open.*", route):   # the sync's pull request, a new head
+        if re.fullmatch(r"repos/[^/]+/[^/]+/pulls\?state=open.*", route):   # the head the run's checks will be on
+            self.pulls = {7: (f"sync/{sync.hostname()}", f"h{self.head + 1}")}
+        elif re.fullmatch(r"repos/[^/]+/[^/]+/commits/[^/]+/check-runs\?.*", route):   # heal reads them once a run
             self.head += 1
-            self.pulls = {7: (f"sync/{sync.hostname()}", f"h{self.head}")}
-        elif re.fullmatch(r"repos/[^/]+/[^/]+/commits/[^/]+/check-runs\?.*", route):
             self.calls.append(args)
             names = self.failing[min(self.head, len(self.failing)) - 1]
             return subprocess.CompletedProcess(["gh", *args], 0, json.dumps({"check_runs": [
