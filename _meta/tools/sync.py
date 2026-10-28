@@ -23,7 +23,9 @@ routines only edit files. Each run:
   5b. read this machine's open sync pull request: when its checks failed, set aside the answer
      tests the failed log names (`by: ci`) and commit, or else rerun the failed run once per
      head; a repair is recorded `healed` once the pull request merges (the briefing's "Fixed by
-     itself"), and what stays red after a rerun is left in the run line as `pr_red`
+     itself"), and what stays red after a rerun is left in the run line as `pr_red`. Pull
+     requests are read and opened through REST (`ghrest`), never GraphQL, which a cloud run
+     refuses
   6. when local main differs from origin/main: push it to sync/<machine> (a hash, never the
      machine's name) and open the pull request the platform merges. Changes under a
      `protected:` path go to their own branch sync/<machine>-protected (their own pull
@@ -65,6 +67,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import doctor  # noqa: E402
+import ghrest  # noqa: E402
 import pages  # noqa: E402
 import scan  # noqa: E402
 import spaceyaml  # noqa: E402
@@ -166,6 +169,7 @@ class Run:
         self.min_age = self.space.scale(float(args.min_age_minutes) / 60)
         self.notes: dict = {}
         self.dry = bool(args.dry_run)
+        self.slug = ghrest.repo_slug(root)   # the repository the pull request calls name; None when origin names none
 
     # ----- lock ------------------------------------------------------------
     def lock(self) -> bool:
@@ -439,25 +443,21 @@ class Run:
         back, since a pass here does not prove a pass there) and land with this run's push; any
         other failure is rerun once per head, as a flaky one. A repair counts once the pull
         request merges: the run line says `healed` and the briefing lists it. What is still red
-        after a rerun stays in the run line (`pr_red`) for the maintenance agent, not the owner."""
+        after a rerun stays in the run line (`pr_red`) for the maintenance agent, not the owner.
+        Quiet when GitHub cannot be asked: the push that follows says why."""
+        if self.slug is None:
+            return
         state = self.heal_state()
         if state.get("pr"):
-            viewed = self.gh("pr", "view", str(state["pr"]), "--json", "state")
-            if viewed is not None and viewed.returncode == 0 and \
-                    json.loads(viewed.stdout or "{}").get("state") == "MERGED":
+            viewed = ghrest.pull_state(self.gh, self.slug, state["pr"])
+            if viewed is not None and viewed["merged"]:
                 self.notes["healed"] = {"what": state.get("what"), "pr": state["pr"]}
                 state = self.heal_state({})
-        listed = self.gh("pr", "list", "--head", f"sync/{hostname()}", "--state", "open",
-                         "--json", "number,headRefOid")
-        try:
-            open_prs = json.loads(listed.stdout or "[]") if listed is not None and listed.returncode == 0 else []
-            if not open_prs:
-                return
-            pr, head = open_prs[0]["number"], open_prs[0].get("headRefOid")
-            checks = self.gh("pr", "checks", str(pr), "--json", "name,bucket,link")   # exits 1 when one failed
-            failed = [c for c in json.loads(checks.stdout or "[]") if c.get("bucket") == "fail"] if checks else []
-        except (ValueError, KeyError, TypeError, AttributeError):
+        open_prs = ghrest.open_pulls(self.gh, self.slug, head=f"sync/{hostname()}")
+        if not open_prs:
             return
+        pr, head = open_prs[0]["number"], open_prs[0]["head_sha"]
+        failed = ghrest.failed_checks(self.gh, self.slug, head) or []
         if not failed:
             return
         runs = sorted({m.group(1) for c in failed for m in [re.search(r"/actions/runs/(\d+)", str(c.get("link")))] if m})
@@ -730,23 +730,35 @@ class Run:
         except FileNotFoundError:
             return None
 
-    def open_pr(self, branch: str, title: str = "chore: sync") -> None:
-        listed = self.gh("pr", "list", "--head", branch, "--state", "open", "--json", "number")
-        if listed is None:
+    def rest(self, *args: str) -> subprocess.CompletedProcess | None:
+        """`gh` as the pull request calls run it: `gh: absent` in the run line when it is not installed."""
+        done = self.gh(*args)
+        if done is None:
             self.notes["gh"] = "absent"
-            return
-        if listed.returncode != 0:
-            self.error("gh pr list failed")
-            return
-        if json.loads(listed.stdout or "[]"):
-            return
-        created = self.gh("pr", "create", "--base", "main", "--head", branch, "--title", title,
-                          "--body", "Landed by the sync script.")
-        if created is None or created.returncode != 0:
-            self.error("gh pr create failed")
-            return
+        return done
+
+    def open_pr(self, branch: str, title: str = "chore: sync") -> int | None:
+        """The number of the open pull request from `branch` into main, opened now when there is
+        none (`pr: opened`). None when GitHub could not be asked: gh not installed, origin naming
+        no repository (one error a run, however many branches were pushed), or a call that failed."""
+        if self.slug is None:
+            if "no GitHub repository behind origin" not in self.notes.get("errors", []):
+                self.error("no GitHub repository behind origin")
+            return None
+        listed = ghrest.open_pulls(self.rest, self.slug, head=branch)
+        if listed is None:
+            if self.notes.get("gh") != "absent":
+                self.error("the open pull requests could not be read")
+            return None
+        if listed:
+            return listed[0]["number"]
+        number = ghrest.create_pull(self.rest, self.slug, branch, title, "Landed by the sync script.")
+        if number is None:
+            self.error("the pull request could not be opened")
+            return None
         self.notes["pr"] = "opened"
-        print(f"pull request opened for {branch}")
+        print(f"pull request #{number} opened for {branch}")
+        return number
 
     # ----- run line ------------------------------------------------------------
     def heartbeat_today(self, path: Path) -> bool:

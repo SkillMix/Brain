@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+import ghrest
 import sync
 from conftest import make_space
 
@@ -554,23 +555,48 @@ def test_a_failing_answer_test_is_set_aside_so_the_desk_still_lands(repo, monkey
 
 
 class FakeGh:
-    """The platform as the sync sees it: one open sync pull request whose checks failed."""
+    """The platform as the sync sees it, through REST (`gh api`) and `gh run`: the open sync pull
+    requests, their checks and their failed logs. By default one open sync pull request, #7,
+    whose checks failed; `pulls={}` starts with none, and a POST opens one whose checks pass.
+    `state = "MERGED"` merges them all."""
 
-    def __init__(self, log: str):
+    RED = "abc123"
+
+    def __init__(self, log: str, pulls: dict | None = None):
         self.log, self.state, self.calls = log, "OPEN", []
+        # number: (head branch, head sha)
+        self.pulls = {7: (f"sync/{sync.hostname()}", self.RED)} if pulls is None else dict(pulls)
 
     def __call__(self, *args):   # set on the class, an instance is not bound: no self of the run
         self.calls.append(args)
-        out = ""
-        if args[:2] == ("pr", "list"):
-            out = json.dumps([{"number": 7, "headRefOid": "abc123"}] if self.state == "OPEN" else [])
-        elif args[:2] == ("pr", "checks"):
-            out = json.dumps([{"name": "checks", "bucket": "fail",
-                               "link": "https://github.com/o/r/actions/runs/123/job/456"}])
+        route = next((a for a in args if a.startswith("repos/")), "")
+        slug, out = "/".join(route.split("/")[1:3]), ""
+        if args[:3] == ("api", "-X", "POST") and re.fullmatch(r"repos/[^/]+/[^/]+/pulls", route):
+            number = max(self.pulls, default=11) + 1
+            head = next(a[len("head="):] for a in args if a.startswith("head="))
+            self.pulls[number] = (head, f"sha{number}")
+            out = json.dumps({"number": number})
+        elif re.fullmatch(r"repos/[^/]+/[^/]+/pulls\?.*", route):
+            wanted = route.split("&head=")[1].split(":", 1)[1] if "&head=" in route else None
+            out = json.dumps([] if self.state == "MERGED" else [
+                {"number": n, "title": "chore: sync", "draft": False, "auto_merge": None,
+                 "html_url": f"https://github.com/{slug}/pull/{n}", "created_at": "2026-10-27T07:10:00Z",
+                 "head": {"ref": ref, "sha": sha, "repo": {"full_name": slug}},
+                 "base": {"repo": {"full_name": slug}}}
+                for n, (ref, sha) in self.pulls.items() if wanted in (None, ref)])
+        elif m := re.fullmatch(r"repos/[^/]+/[^/]+/pulls/(\d+)", route):
+            merged = self.state == "MERGED"
+            out = json.dumps({"number": int(m[1]), "state": "closed" if merged else "open", "merged": merged,
+                              "mergeable_state": "unknown" if merged else "clean",
+                              "head": {"sha": self.pulls.get(int(m[1]), ("", ""))[1]}})
+        elif m := re.fullmatch(r"repos/[^/]+/[^/]+/commits/([^/]+)/check-runs\?.*", route):
+            link = "https://github.com/o/r/actions/runs/123/job/456"
+            out = json.dumps({"check_runs": [{"name": "checks", "details_url": link,
+                                              "conclusion": "failure" if m[1] == self.RED else "success"}]})
         elif args[:2] == ("run", "view"):
             out = self.log
-        elif args[:2] == ("pr", "view"):
-            out = json.dumps({"state": self.state})
+        elif args[:2] != ("run", "rerun"):
+            return subprocess.CompletedProcess(["gh", *args], 1, "", "unknown command")
         return subprocess.CompletedProcess(["gh", *args], 0, out, "")
 
 
@@ -614,6 +640,64 @@ def test_a_red_sync_pull_request_with_no_known_cause_is_rerun_once(repo, monkeyp
     assert sync.main(["--root", str(repo)]) == 0   # the same head is still red: not rerun again
     assert len([c for c in gh.calls if c[:2] == ("run", "rerun")]) == 1
     assert run_lines(repo)[-1]["notes"]["pr_red"] == {"pr": 7, "checks": ["checks"]}
+
+
+def test_the_sync_never_calls_graphql(repo, monkeypatch):
+    """A cloud run refuses GraphQL, which every `gh pr` command is: the sync reads and opens its
+    pull request, reads its checks and reruns them through `gh api` and `gh run` only."""
+    gh = FakeGh("")
+    monkeypatch.setattr(sync.Run, "gh", gh)
+    write(repo / "work" / "notes.md", "# Notes\n\nline two\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    assert gh.calls and all(c[0] in ("api", "run") and "graphql" not in c for c in gh.calls)
+
+
+def test_a_sync_pull_request_opens_through_rest_once(repo, monkeypatch):
+    """No sync pull request open: one POST into main from this machine's branch. Once it is open,
+    the next run that pushes finds it and opens no second one."""
+    gh = FakeGh("", pulls={})
+    monkeypatch.setattr(sync.Run, "gh", gh)
+    write(repo / "work" / "notes.md", "# Notes\n\nline one\nline two\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    posts = [c for c in gh.calls if c[:3] == ("api", "-X", "POST")]
+    assert len(posts) == 1 and posts[0][3] == f"repos/{ghrest.repo_slug(repo)}/pulls"
+    assert {f"head=sync/{sync.hostname()}", "base=main", "title=chore: sync"} <= set(posts[0])
+    assert run_lines(repo)[-1]["notes"]["pr"] == "opened"
+    write(repo / "work" / "notes.md", "# Notes\n\nline one\nline two\nline three\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    assert len([c for c in gh.calls if c[:3] == ("api", "-X", "POST")]) == 1
+    notes = run_lines(repo)[-1]["notes"]
+    assert notes.get("pushed") and "pr" not in notes
+
+
+def test_open_pr_answers_the_number_of_the_open_or_new_pull_request(repo, monkeypatch):
+    monkeypatch.setattr(sync.Run, "gh", FakeGh("", pulls={}))
+    run = sync.Run(repo, repo / ".git", sync.parse(["--root", str(repo)]))
+    assert run.slug == ghrest.repo_slug(repo) and run.slug
+    assert run.open_pr("sync/m-0000aaaa") == 12 and run.notes == {"pr": "opened"}
+    run.notes.clear()
+    assert run.open_pr("sync/m-0000aaaa") == 12 and run.notes == {}   # found open: not opened again
+
+
+def test_without_gh_the_run_line_says_so_and_nothing_fails(repo, monkeypatch):
+    monkeypatch.setattr(sync.Run, "gh", lambda self, *args: None)
+    write(repo / "work" / "notes.md", "# Notes\n\nline one\nline two\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 0
+    notes = run_lines(repo)[-1]["notes"]
+    assert notes["gh"] == "absent" and not notes.get("errors")
+
+
+def test_an_origin_that_names_no_repository_is_said_once(repo, monkeypatch):
+    """A protected change splits the push into two branches, and origin names no repository to
+    ask: one error for the run, not one per branch, and GitHub is never called."""
+    gh = FakeGh("", pulls={})
+    monkeypatch.setattr(sync.Run, "gh", gh)
+    monkeypatch.setattr(ghrest, "repo_slug", lambda root: None)
+    write(repo / "space.yaml", (repo / "space.yaml").read_text(encoding="utf-8") + "x: 1\n", minutes_old=20)
+    write(repo / "work" / "notes.md", "# Notes\n\nline one\nline two\n", minutes_old=20)
+    assert sync.main(["--root", str(repo)]) == 1
+    assert run_lines(repo)[-1]["notes"]["errors"] == ["no GitHub repository behind origin"]
+    assert gh.calls == []
 
 
 def test_sync_rewrites_the_page_every_run(repo, monkeypatch):
