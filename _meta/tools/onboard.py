@@ -1688,9 +1688,8 @@ def pause_routines(workspace, until: str | None = None, now=None, resume: bool =
         return True, f"{said} {PAUSE_CLOUD}"
     if record["machine"] != routine.this_machine():
         said += f" {record['name'] or 'The other computer'} hears of it at its next sync."
-    if record["runner"] != "os":
-        said += (" They run as scheduled tasks in the Claude app, which this pause does not stop; say 'run my routines "
-                 "here' first.")
+    if record["runner"] != "os":   # each prompt's first step, `chain.py gate`, reads the pause
+        said += " They run as scheduled tasks in the Claude app, and each one reads the pause first and stops."
     return True, said
 
 
@@ -1991,13 +1990,14 @@ def routines_cloud(workspace, tasks: dict, timezone: str, now=None) -> tuple:
     `unrefused_sentence`), since the skill keeps the two tasks off for it alone; then a task id or a zone that is
     none, or one id given for both tasks, in plain words. The routines move only when the history is read (it is
     read on a computer only), when each task's newest proof run from the last PROOF_HOURS showed every refusal
-    (`cloud_proofs`), and when both were rendered here: the record keeps the repositories either task attaches and
-    the apps either was given, as `cloud.py trigger` kept them (`_rendered`). Then the cloud is the host
-    (`routine.claim_cloud`, a pause still to come kept): every computer's runs stop by themselves, and the app's
-    scheduled tasks the routines ran as are no longer read back (`routine_checks` goes; their files are returned, as
-    `--routines-here` returns them). A move from the cloud to new tasks (moving again, for a space made since) says
-    which of the earlier tasks still run: the cloud's gate cannot tell one task from another, so they run beside the
-    new ones until they are turned off. Nothing is written when the move is refused."""
+    (`cloud_proofs`), and when both were rendered here: the record keeps the space repositories the tasks attach
+    (their roots, never the codebases the sweep task also attaches) and the apps either was given, as `cloud.py
+    trigger` kept them (`_rendered`). Then the cloud is the host (`routine.claim_cloud`, a pause still to come kept):
+    every computer's runs stop by themselves, and the app's scheduled tasks the routines ran as are no longer read
+    back (`routine_checks` goes; their files are returned, as `--routines-here` returns them). A move from the cloud
+    to new tasks (moving again, for a space made since) says which of the earlier tasks still run: the cloud's gate
+    cannot tell one task from another, so they run beside the new ones until they are turned off. Nothing is written
+    when the move is refused."""
     import backfill
     import routine
     workspace = Path(workspace).resolve()

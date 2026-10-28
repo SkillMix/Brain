@@ -302,8 +302,8 @@ routine started on any other leaves by itself.
   `python <workspace>/_meta/tools/onboard.py <workspace> --pause`, with `--until <YYYY-MM-DD or YYYY-MM-DDTHH:MM>`
   when the person names an end (a date alone means 06:00 that day; a time without a zone is this computer's
   own). Without one the pause lasts until 06:00 the next morning. Say the one line it prints. The history's
-  parts pause with the routines; a run that falls in the pause is skipped, not made up later. When the line
-  says the app's scheduled tasks run them, offer "run my routines here". When it says none of the routines'
+  parts pause with the routines; a run that falls in the pause is skipped, not made up later (each routine's
+  first step, the gate, reads the pause, in the app's scheduled tasks too). When it says none of the routines'
   tasks is on this computer, say that line: the pause is made on the computer that runs them.
 - **Resume my routines**: `onboard.py <workspace> --resume`; say the line it prints.
 - **Run my routines here**: run `onboard.py <workspace> --routines-here` in the background (or with the
@@ -330,7 +330,12 @@ Two scheduled tasks on claude.ai then run the routines, the sweep three times a 
 so a closed laptop misses nothing; this computer's sync still lands what only it has (its sessions' edits, the
 releases, template sync). The routines move only after a proof run of each task shows the cloud refuses what
 this computer's own profile refuses. `<workspace>` is the person's workspace; every command below runs on this
-computer.
+computer. `<zone>` is the person's time zone by its IANA name (as `Europe/Amsterdam`), whose hours the tasks keep:
+the one `<workspace>/_meta/state/routine-host.yaml` records (`timezone:`) when it records one; else, on macOS or
+Linux, the one this computer names (where `/etc/localtime` points, the part after `zoneinfo/`); on Windows, the zone
+`Get-TimeZone` gives (its `Id`, as `W. Europe Standard Time`), translated to its IANA name (as `Europe/Berlin`).
+One Windows zone covers several places, so tell the person which IANA zone you chose, and take the one they name
+instead.
 1. **What blocks the move.** `python <workspace>/_meta/tools/onboard.py <workspace> --routines-cloud --check`
    prints one sentence for each thing in the way, or that nothing is. Say each in plain words.
    - The history is still being read: it is read on a computer only, so the move waits until it is done.
@@ -348,14 +353,16 @@ computer.
    Run the check again until it says nothing keeps the routines from moving. When the routines already run in the
    cloud (moving again, for a space made since), its last line names the two tasks they run as.
 2. **Prove each task.** For `sweep`, then `daily`: `python <workspace>/_meta/tools/cloud.py trigger <workspace>
-   --chain <chain> --proof` prints the task's body. Load `RemoteTrigger` with tool search, create the task with
-   that body (it is made turned off), and start one run of it. When the check named the two tasks the routines
-   already run as, prove those two instead of creating new ones: update each with the proof body (which turns it
-   off while it is proved) and start one run; step 3 updates it back. Its proof run exports and reads nothing,
-   runs no chain and sends nothing; it tries what the profile must refuse, lands its proof line and opens a pull
-   request. Read its run log (the one routine log you read: the run read nothing), its proof line and its pull
-   request; it counts once the pull request merged on green and this computer's sync brought the line here. Tasks
-   you made new for the proof stay off whenever the move stops; the two you proved in place go by why it stops:
+   --chain <chain> --proof --timezone <zone>` prints the task's body. Load `RemoteTrigger` with tool search, create the
+   task with that body (it is made turned off), and start one run of it. When the check named the two tasks the routines
+   already run as, prove those two instead of creating new ones: update each with the proof body (which turns it off
+   while it is proved) and start one run; step 3 updates it back. Its proof run exports and reads nothing, runs no chain
+   and sends nothing; it tries what the profile must refuse, lands its proof line and opens a pull request. Read its run
+   log (the one routine log you read: the run read nothing), its proof line and its pull request; it counts once the
+   pull request merged on green and this computer's sync brought the line here. A proof run is given its task's tools,
+   so the daily's message to `nobody@example.test` reaches the send guard: the send guard counts as proven only when the
+   daily's proof line shows that send refused (`send` true). Tasks you made new for the proof stay off whenever the move
+   stops; the two you proved in place go by why it stops:
    - **A refusal missing.** A proof line with `guard`, `edit`, `tool` or `send` false, or a run log that shows
      the command, the edit, the tool or the send going through, stops the move at once: the cloud no longer
      refuses what the profile must. Turn off whichever of the two tasks is still on (proved in place one after
@@ -368,13 +375,12 @@ computer.
    - **Anything else.** When the move stops for what says nothing against the guard, here or in step 3 (a proof
      older than 48 hours, a task not rendered here, a proof whose pull request did not merge, an id or a zone
      given wrong, or the person stopping), put the two tasks back before you end: render each without `--proof`
-     (`cloud.py trigger <workspace> --chain <chain>`), update it to that body with `RemoteTrigger` and turn it on
-     (`enabled: true`), so the routines keep running in the cloud.
+     (`cloud.py trigger <workspace> --chain <chain> --timezone <zone>`), update it to that body with
+     `RemoteTrigger` and turn it on (`enabled: true`), so the routines keep running in the cloud.
 3. **Move.** On two green proofs: render each task again without `--proof` (`cloud.py trigger <workspace>
-   --chain <chain>`), then record the move with `python <workspace>/_meta/tools/onboard.py <workspace>
-   --routines-cloud --sweep <the sweep task's id> --daily <the daily task's id> --timezone <zone>`, where
-   `<zone>` is this computer's own IANA zone (as `Europe/Amsterdam`; read it from the computer: on Windows map
-   its zone to the IANA name). It refuses with one sentence (exit 2), changing nothing, for a task id or a zone
+   --chain <chain> --timezone <zone>`), then record the move with `python <workspace>/_meta/tools/onboard.py
+   <workspace> --routines-cloud --sweep <the sweep task's id> --daily <the daily task's id> --timezone <zone>`,
+   with the same `<zone>`. It refuses with one sentence (exit 2), changing nothing, for a task id or a zone
    that is none, one id given for both tasks, a newest proof that shows a refusal missing, without both proofs
    from the last 48 hours, or before both tasks were rendered here: say the sentence and do what it names. A
    sentence that says the cloud does not refuse something, or that the routines are stopped, is a refusal

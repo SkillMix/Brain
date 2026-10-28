@@ -931,7 +931,7 @@ def test_pausing_with_nothing_recorded_records_this_computer_and_resuming_clears
     assert onboard.main([str(ada), "--resume"]) == 0 and "not paused" in capsys.readouterr().out.splitlines()[-1]
 
 
-def test_a_pause_says_the_apps_own_tasks_are_not_paused_by_it(tmp_path, capsys):
+def test_a_pause_says_the_apps_own_tasks_read_it_first(tmp_path, capsys):
     ada = make_space(tmp_path / "ada", name="ada")
     task = tmp_path / "scheduled-tasks" / "daily" / "SKILL.md"
     task.parent.mkdir(parents=True)
@@ -939,7 +939,10 @@ def test_a_pause_says_the_apps_own_tasks_are_not_paused_by_it(tmp_path, capsys):
     onboard.write_yaml(ada / "_meta" / "state" / "onboard.yaml", {"routine_checks": [
         {"name": "routine scheduled 1", "check": f"test -f {task.as_posix()}"}]})
     assert onboard.main([str(ada), "--pause"]) == 0
-    assert "does not stop" in capsys.readouterr().out and routine.host(ada)["runner"] == "harness"
+    said = capsys.readouterr().out
+    assert "does not stop" not in said and routine.host(ada)["runner"] == "harness"
+    assert said.rstrip().endswith("They run as scheduled tasks in the Claude app, and each one reads the pause first "
+                                  "and stops.")
 
 
 def test_a_pause_in_the_past_or_on_a_record_that_is_not_one_changes_nothing(tmp_path, capsys):

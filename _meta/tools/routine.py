@@ -153,8 +153,20 @@ PROTECTED_EDITS += ("_meta/plugins/**", ".claude-plugin/**")   # the guard a clo
 PROTECTED_EDITS += (".git",)   # a mount's .git is a file naming its git folder, whose config git runs; .git/** is a folder
 # Setup's history reading runs inside the sweep chain (step 0); its own line, away from the list above.
 ROUTINE_TOOLS += ("backfill.py",)
+# A cloud run's proof line (`_meta/templates/cloud/`). Of cloud.py a routine runs that verb alone (ROUTINE_VERBS): its
+# begin writes a cloud run's guard profile and its trigger the task a move records, so CLOUD_ONLY are denied however
+# they are spelled, whatever comes before the script and between it and the word.
+ROUTINE_TOOLS += ("cloud.py",)
+ROUTINE_VERBS = {"cloud.py": "proof-line"}
+CLOUD_ONLY = ("begin", "trigger")
 READ_ONLY =("Bash(gh pr view *)", "Bash(gh pr list *)", "Bash(git status *)", "Bash(git log *)",
              "Bash(git diff *)", "Bash(git show *)")
+# The repository feed's reads of GitHub (the sweep skill), through REST as a cloud run must: `gh api` and one word,
+# its endpoint, so each is a read, never GraphQL. Anything after that word is refused (REST_ONE_WORD), as a cloud
+# run's guard refuses it (`cloud.GH_DENY`), however a flag is spelled. The query goes in quotes that open before its
+# `?` (`search/issues'?q=...'`), since zsh, a Mac's login shell, refuses a `?` outside quotes that matches no file.
+REST_READS = ("Bash(gh api search/issues*)", "Bash(gh api repos/*/pulls/*)")
+REST_ONE_WORD = ("Bash(gh api * *)", "Bash(gh api *\t*)", "Bash(gh api *graphql*)")
 # The built-in tools a routine has (`--tools`, Ruling R30): the shell its tools run in, the files, and
 # ToolSearch, which loads a connector's tools. Web, PowerShell, agents and schedules are left out; the
 # profile denies them by name too (`reader.DENIED`), so one a later version adds under such a name stays out.
@@ -378,7 +390,9 @@ def routine_settings(workspace, body: str, roots=None, person: str = "", read_to
     rules win over every allow rule in every scope, so the space's own profile cannot widen these, and
     `"disableAllHooks": false` keeps its hooks on whatever the person's own settings say.
 
-    Bash runs only the routine tools and the read-only gh and git commands: a PreToolUse hook on Bash
+    Bash runs only the routine tools (cloud.py for its proof line alone, `ROUTINE_VERBS`; its begin and trigger
+    are denied in any spelling, CLOUD_ONLY) and the read-only gh and git commands, GitHub's REST reads among them
+    as one word each (REST_READS, REST_ONE_WORD): a PreToolUse hook on Bash
     (`bash_guard.py <profile>`, the workspace's own) lets through one plain command of a shape this profile
     allows, so a Bash allow in the person's own settings never widens a routine. When that hook's command
     cannot be written, Bash is denied outright. The other built-in tools a routine could reach out with are
@@ -420,9 +434,10 @@ def routine_settings(workspace, body: str, roots=None, person: str = "", read_to
                                   for mode in (None, "--task", "--connectors"))
     except ValueError:   # a path the hook's command cannot carry: no Bash, Task or connector at all, rather than unguarded
         bash = task = connectors = None
-    allow = [f"Bash({py} _meta/tools/{tool} *)" for py in pys for tool in ROUTINE_TOOLS] if bash else []
-    allow += [f"Bash({py} {place}/_meta/tools/{tool} *)"
-              for place in places for py in pys for tool in ROUTINE_TOOLS] if bash else []
+    shapes = [f"{tool} {ROUTINE_VERBS[tool]}" if tool in ROUTINE_VERBS else tool for tool in ROUTINE_TOOLS]
+    allow = [f"Bash({py} _meta/tools/{shape} *)" for py in pys for shape in shapes] if bash else []
+    allow += [f"Bash({py} {place}/_meta/tools/{shape} *)"
+              for place in places for py in pys for shape in shapes] if bash else []
     allow += [rule for rule in dict.fromkeys(_strings(list(extra_allow or [])))
               if re.fullmatch(r"Bash\(.+\)", rule) and not re.search(r"[\r\n]", rule)] if bash else []
     others = sorted({p.name for root in [workspace, *roots] for p in (root / "_meta" / "tools").glob("*.py")}
@@ -431,9 +446,10 @@ def routine_settings(workspace, body: str, roots=None, person: str = "", read_to
     deny += [f"Edit(/{rule_path(root)}/{pattern})" for root in roots for pattern in PROTECTED_IN_ROOT]
     deny += [f"Edit(~/{folder}/**)" for folder in (".claude", ".spaces")]
     deny += [f"Bash(*_meta/tools/{tool}*)" for tool in others]
+    deny += [f"Bash(*_meta/tools/cloud.py*{verb}*)" for verb in CLOUD_ONLY]
     # `-m` puts the working folder first on the import path, so a planted module would run;
     # `--output` lets a read-only git command write a file.
-    deny += ["Bash(python -m *)", "Bash(python3 -m *)", "Bash(git *--output*)"]
+    deny += ["Bash(python -m *)", "Bash(python3 -m *)", "Bash(git *--output*)", *REST_ONE_WORD]
     deny += [t for t in dict.fromkeys([*reader.DENIED, "WebFetch"])
              if t not in ROUTINE_BUILTINS or (t in ("Bash", "Task") and not bash)]
     read_tools, write_tools, send_tools = (_strings(list(x or [])) for x in (read_tools, write_tools, send_tools))
@@ -449,8 +465,9 @@ def routine_settings(workspace, body: str, roots=None, person: str = "", read_to
     granted = list(dict.fromkeys(reads + writes + sends)) if connectors else []
     deny += sorted({t for t in [*reader._known(known_tools), *given]
                     if reader.CONNECTOR_TOOL.fullmatch(t) and t not in granted})
+    shell_reads = list(READ_ONLY + REST_READS) if bash else []
     data = {"disableAllHooks": False,
-            "permissions": {"allow": allow + (list(READ_ONLY) if bash else []) + granted, "deny": deny}}
+            "permissions": {"allow": list(dict.fromkeys(allow + shell_reads + granted)), "deny": deny}}
     hook = lambda command: {"type": "command", "command": command, "timeout": GUARD_TIMEOUT}   # noqa: E731
     hooks = [{"matcher": "Bash", "hooks": [hook(bash)]}] if bash else []
     hooks += [{"matcher": tool, "hooks": [hook(guard)]} for tool in sends]

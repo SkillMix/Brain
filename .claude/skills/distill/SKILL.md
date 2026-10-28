@@ -22,6 +22,11 @@ search until the gap is closed, and let a second agent check.
   touching the candidate (someone may be reading it back): a settled answer reaches the page
   at its next refresh, or in the sitting's write-up.
 - A quiet sweep: the tool reports zero candidates and you stop.
+- While the routines run in the cloud (`_meta/state/routine-host.yaml` has `runner: "cloud"`), a
+  session on a computer runs no distill: the cloud's sweep does, three times a day, and two
+  writers of one candidate would conflict. Say so in one line, and answer "what is ready to
+  sign?" from the candidates that landed. The cloud's own run follows this skill as its prompt
+  (`_meta/templates/cloud/sweep-chain.md`) says.
 
 ## Run
 
