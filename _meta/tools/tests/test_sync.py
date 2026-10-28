@@ -784,7 +784,8 @@ def test_without_gh_the_run_line_says_so_and_nothing_fails(repo, monkeypatch):
 
 def test_an_origin_that_names_no_repository_is_said_once(repo, monkeypatch):
     """A protected change splits the push into two branches, and origin names no repository to
-    ask: one error for the run, not one per branch, and GitHub is never called."""
+    ask: one error for the run, not one per branch, and GitHub is never called (gh is asked only
+    whether it is there)."""
     gh = FakeGh("", pulls={})
     monkeypatch.setattr(sync.Run, "gh", gh)
     monkeypatch.setattr(ghrest, "repo_slug", lambda root: None)
@@ -792,7 +793,7 @@ def test_an_origin_that_names_no_repository_is_said_once(repo, monkeypatch):
     write(repo / "work" / "notes.md", "# Notes\n\nline one\nline two\n", minutes_old=20)
     assert sync.main(["--root", str(repo)]) == 1
     assert run_lines(repo)[-1]["notes"]["errors"] == ["no GitHub repository behind origin"]
-    assert gh.calls == []
+    assert gh.calls == [("--version",)]
 
 
 def test_sync_rewrites_the_page_every_run(repo, monkeypatch):

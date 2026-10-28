@@ -150,6 +150,7 @@ PROTECTED_EDITS += ("CLAUDE.local.md",)   # loaded beside CLAUDE.md at any depth
 PROTECTED_EDITS += (".gitattributes",)   # the merge rules the sync script lands every record by
 PROTECTED_EDITS += (".gitignore",)   # what the sync script lands at all
 PROTECTED_EDITS += ("_meta/plugins/**", ".claude-plugin/**")   # the guard a cloud run carries, and what offers it
+PROTECTED_EDITS += (".git",)   # a mount's .git is a file naming its git folder, whose config git runs; .git/** is a folder
 # Setup's history reading runs inside the sweep chain (step 0); its own line, away from the list above.
 ROUTINE_TOOLS += ("backfill.py",)
 READ_ONLY =("Bash(gh pr view *)", "Bash(gh pr list *)", "Bash(git status *)", "Bash(git log *)",

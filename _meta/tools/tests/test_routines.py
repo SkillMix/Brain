@@ -2845,6 +2845,12 @@ def test_no_routine_may_move_pause_or_unregister_the_routines(tmp_path):
         assert path in routine.PROTECTED_EDITS and f"Edit(//**/{path})" in rules["deny"]
 
 
+def test_no_routine_may_edit_a_mounts_git_file(tmp_path):
+    """A mount's .git is a file that names its git folder; a status in the root runs that folder's config."""
+    ws = workspace(tmp_path)
+    assert "Edit(//**/.git)" in routine.routine_settings(ws, "", [ws])["permissions"]["deny"]
+
+
 def test_without_a_record_a_build_claims_this_computer_once_its_tasks_are_registered(tmp_path, monkeypatch):
     ws = workspace(tmp_path)
     nothing_outside(monkeypatch)
