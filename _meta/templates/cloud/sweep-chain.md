@@ -46,14 +46,14 @@ Then, for each root, the workspace first:
    `gh api search/issues'?q=repo:<repo>+is:pr+is:merged+merged:>=<since>+NOT+chore+in:title&per_page=100'`
    lists the pull requests merged since the cursor (while `total_count` says there are more, add `&page=2` and on
    inside the quotes); `gh api repos/<repo>/pulls/<number>` gives each one's merge commit;
-   `gh api repos/<repo>/pulls/<number>/files'?per_page=100'` its files. A kept file's text is the file as that
-   codebase's clone holds it now, `/home/user/<codebase>/<path>` (`<codebase>` the repository's name after its
-   owner, its clone on `main`): this run has no git to read it at its merge commit. A file the clone does not hold
-   is named under `unreachable`, with its pull request. A repository whose answer says GitHub access to it "is not
-   enabled for this session" is one this task does not attach: name it under `unreachable` and go on. Keep personal
-   and academic records out (count them) and park an unsure one in
-   `/home/user/<root>/_meta/state/private/unsure.jsonl`, as the skill says. There is no history to read in the
-   cloud: the routines move here only once it is read.
+   `gh api repos/<repo>/pulls/<number>/files'?per_page=100'` its files. A kept file's text is the file as a clone
+   on the repository's default branch holds it, here `/home/user/<codebase>/<path>` (`<codebase>` the repository's
+   name after its owner, which the task clones on that branch): this run has no git to read it at its merge commit.
+   A file that clone does not hold is left out and named under `unreachable` in your run line, with its pull
+   request. A repository whose answer says GitHub access to it "is not enabled for this session" is one this task
+   does not attach: name it under `unreachable` and go on. Keep personal and academic records out (count them) and
+   park an unsure one in `/home/user/<root>/_meta/state/private/unsure.jsonl`, as the skill says. There is no
+   history to read in the cloud: the routines move here only once it is read.
 2. **Attachments.** `python3 /home/user/<root>/_meta/tools/sweep.py /home/user/<root> --attachments` prints one
    row per attachment to read: the record id, its subject and the file name, separated by a tab each; the subject
    is empty on some rows (`<record id>\t\t<name>`). Read each with the mail connector's attachment reader (it
@@ -63,9 +63,9 @@ Then, for each root, the workspace first:
    `python3 /home/user/<root>/_meta/tools/sweep.py /home/user/<root> --attachment-unread <record id> <name>`,
    so every later run lists it again until it is read; for one read that holds no text (an image), run
    `python3 /home/user/<root>/_meta/tools/sweep.py /home/user/<root> --attachment-read <record id> <name>`.
-   A name with anything but letters, digits, `.`, `-` and `_` in it goes in single quotes; a name with a single
-   quote in it goes in double quotes, which the guard allows while the name holds no `$`, backtick or backslash. A
-   name with a single quote and one of those cannot be written: leave it and name it in your last line.
+   A name holding anything but letters, digits, `.`, `-` and `_` goes in single quotes, each single quote in it
+   written as `'"'"'`: `Ada's "final" $5.pdf` is `'Ada'"'"'s "final" $5.pdf'`. A name holding a line break is left
+   unmarked: name it in your run line.
 3. **Sweep and route.** `python3 /home/user/<root>/_meta/tools/sweep.py /home/user/<root>`. When `space.yaml`
    has `routing:`, route as `/home/user/<root>/.claude/skills/route/SKILL.md` says: understand each subject first
    (its brief, built when missing), research what the records leave open (what a search finds is exported too),
@@ -89,8 +89,8 @@ Then, for each root, the workspace first:
    `python3 /home/user/<root>/_meta/tools/owner_email.py record <file> --id <message id> --root /home/user/<root>`.
 7. **Run line.** Append one line to `/home/user/<root>/_meta/state/runs.jsonl`: `{"routine": "sweep-chain", "at":
    <ISO time>, "space": <name>, "cost_tokens": <your estimate>, "notes": {"step": "agent", "cloud": true,
-   "complete": true or false, "unreachable": [<sources and repositories you could not read>], "skipped": {<source>:
-   <personal and academic records left out>}}}`.
+   "complete": true or false, "unreachable": [<sources, repositories and files you could not read>], "skipped":
+   {<source>: <personal and academic records left out>}}}`.
 
 Then land:
 

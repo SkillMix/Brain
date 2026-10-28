@@ -16,7 +16,11 @@ export; the tool decides.
 - On request: "sweep my mail", "anything new from the calendar?". No `sources` and no `repos`
   in `_meta/state/links.json`: nothing to do.
 - In the cloud: the sweep chain's cloud task follows this skill through
-  `_meta/templates/cloud/sweep-chain.md`, every command with absolute paths.
+  `_meta/templates/cloud/sweep-chain.md`, every command with absolute paths. There every feed
+  comes through a connector (no browser, no history to read); an attachment it cannot read, or
+  that holds no text, is marked with `--attachment-unread` or `--attachment-read`, since the
+  feed goes with the clone (step 2); a codebase's files are read from its clone in /home/user;
+  and GitHub is read through REST alone, one endpoint word a call (step 1).
 - While the routines run in the cloud (`_meta/state/routine-host.yaml` has `runner: "cloud"`), a
   session on a computer exports and sweeps nothing: the cloud's sweep reads every feed three times
   a day, and a second reader would read the same mail twice. Say so in one line.
@@ -68,11 +72,14 @@ export; the tool decides.
    or `.mdx` file that is under `docs/`, `specs/` or `.kiro/specs/`, or under any folder named
    `adr` or `decisions`, or whose file name contains
    `design`; nothing else (`src/design.py` stays out). Each kept file is one `document` record:
-   `id` `<repo>@<merge commit>:<path>`, `text` the file's content as the codebase's own checkout
-   holds it now (a cloud run has it as a clone beside the workspace in /home/user; one the checkout
-   no longer holds is left out and named in your run line),
-   `identifiers.repo`, `attachments` its permalink
-   `https://github.com/<repo>/blob/<commit>/<path>`. `audience` is the one `_meta/state/links.json`
+   `id` `<repo>@<merge commit>:<path>`, `text` the file's content, `identifiers.repo`,
+   `attachments` its permalink `https://github.com/<repo>/blob/<commit>/<path>`. The content is
+   the file as a clone on the repository's default branch holds it (the pull request's
+   `base.repo.default_branch`): in a cloud run, `/home/user/<codebase>/<path>`, the codebase's
+   clone beside the workspace (`<codebase>` the repository's name after its owner); on a
+   computer, the codebase's checkout, only while that checkout is on that branch and the file
+   has no change there. Any other file is left out and named in your run line.
+   `audience` is the one `_meta/state/links.json`
    gives (a source's declared one for its `repo`), copied as is. `id` is the system's own id, stable across runs. A backfill (a person's first 90 days, or a project's
    history back to its first mention) re-reads older records in full with the same `id` and
    adds `"backfill": true`: the sweep reads them behind the feed's mark and deepens their pages.
@@ -100,11 +107,11 @@ export; the tool decides.
    `subject` the file name as it is, `text` its full text (a file with no text, such as an image:
    empty `text`, then `python _meta/tools/sweep.py <root> --attachment-read <record id> <name>`,
    so it is not listed again; it gets no witness page), `read_via: connector | preview |
-   approved_batch`, and `from`, `to`, `cc`, `at` and `identifiers` copied from its mail. A name
-   with anything but letters, digits, `.`, `-` and `_` in it goes in single quotes; a name with
-   a single quote in it goes in double quotes, which a routine's guard allows while the name holds
-   no `$`, backtick or backslash. A name with a single quote and one of those cannot be written:
-   leave it and name it in your run line.
+   approved_batch`, and `from`, `to`, `cc`, `at` and `identifiers` copied from its mail. In
+   these two commands, a name holding anything but letters, digits, `.`, `-` and `_` goes in
+   single quotes, each single quote in it written as `'"'"'`: `Ada's "final" $5.pdf` is
+   `'Ada'"'"'s "final" $5.pdf'`. A name holding a line break is left unmarked and named in your
+   run line.
 3. `python _meta/tools/sweep.py <root>` (`--dry-run` prints the plan and writes nothing).
 4. With `routing:` in `space.yaml`: route what the sweep wrote, as
    `.claude/skills/route/SKILL.md` says. The sweep itself then releases nothing.

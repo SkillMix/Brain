@@ -5,6 +5,7 @@ the guard reads it: one plain command, absolute paths, and `gh api` with one wor
 import json
 import re
 import shlex
+import shutil
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,12 @@ SAMPLE = {"<workspace>": "ada-space", "<root>": "ada-space", "<repo>": "ada/ada-
           "<since>": "2026-10-01T08:00:00Z", "<source>": "mail", "<record id>": "gmail-1a2b", "<name>": "report.pdf",
           "<file>": "/home/user/ada-space/_meta/state/private/notices/n1.json", "<message id>": "m1",
           "<address>": "ada@example.test", "<id>": "t1", "<key>": "ADA-1", "<tool>": "status"}
+# The task's grant a cloud run's profile is written from (`cloud.write_profile`): read tools, a tracker write, a send.
+GRANT = {"read": ["mcp__mail__get_message", "mcp__mail__search_threads", "mcp__tracker__list_issues"],
+         "write": ["mcp__tracker__create_issue"], "send": ["mcp__mail__send_message"]}
+# An attachment's name that holds a single quote, a double quote and a `$`, and how the prompt and the skill write it.
+AWKWARD = 'Ada\'s "final" $5.pdf'
+AWKWARD_WRITTEN = "'Ada'\"'\"'s \"final\" $5.pdf'"
 
 
 def text(path: Path) -> str:
@@ -35,6 +42,19 @@ def text(path: Path) -> str:
 
 def spans(body: str) -> list:
     return re.findall(r"`([^`]+)`", body)
+
+
+def step(body: str, needle: str) -> str:
+    """The numbered step of `body` that holds `needle`, on one line."""
+    return " ".join(next(p for p in re.split(r"\n(?=\d+\. )", body) if needle in p).split())
+
+
+def written(name: str) -> str:
+    """An attachment's name as the cloud sweep and the sweep skill say to write it in a command: as it is when it
+    holds only letters, digits, `.`, `-` and `_`; else between single quotes, each single quote in it as '"'"'."""
+    if re.fullmatch(r"[A-Za-z0-9._-]+", name):
+        return name
+    return "'" + name.replace("'", "'\"'\"'") + "'"
 
 
 def commands_in(body: str) -> list:
@@ -89,24 +109,38 @@ def unquoted(command: str) -> str:
 
 
 def clone(home: Path, name: str) -> Path:
-    """A space cloned in the cloud's home: its tool scripts there, as every clone has them."""
+    """A space cloned in the cloud's home: its tool scripts there, as every clone has them, and the cloud prompts
+    the run's profile is written from."""
     root = make_space(home / name, name=name)
     (root / "_meta" / "tools").mkdir(parents=True, exist_ok=True)
     for tool in TOOLS.glob("*.py"):
         (root / "_meta" / "tools" / tool.name).write_text("", encoding="utf-8")
+    shutil.copytree(TEMPLATE / "_meta" / "templates" / "cloud", root / "_meta" / "templates" / "cloud",
+                    dirs_exist_ok=True)
     return root.resolve()
 
 
-def run_profile(tmp_path: Path, chain: str) -> tuple:
-    """(the guard profile a cloud run of `chain` holds, the cloud's home), written as `cloud.write_profile` writes
-    it: `routine.routine_settings` over the run's roots, the prompt as its body, the cloud's `gh` rules added."""
+@pytest.fixture
+def machine(tmp_path, monkeypatch):
+    """The cloud's /home/user, as test_cloud.py's: an empty folder `SPACES_CLOUD_HOME` names. The home folder, where
+    begin writes the guard profile and the state the guard plugin reads, is conftest's."""
     home = (tmp_path / "home-user").resolve()
+    home.mkdir()
+    monkeypatch.setenv("SPACES_CLOUD_HOME", str(home))
+    return home
+
+
+def profiles(tmp_path: Path, home: Path, chain: str = "sweep") -> dict:
+    """The two profiles a routine's commands meet, over Ada's workspace cloned in the cloud's home: a computer
+    routine's (`routine.routine_settings`), and a cloud run's of `chain` as its begin writes it
+    (`cloud.write_profile`, from the task's grant). {"root": the workspace, name: (path, data)}."""
     ws = clone(home, "ada-space")
-    body = routine.split_prompt(text(PROMPTS[chain]))[1]
-    data = routine.routine_settings(ws, body, [ws], "owner@example.test", profile=tmp_path / "p.json",
-                                    shell="/bin/sh", extra_allow=cloud.EXTRA_ALLOW)
-    data["permissions"]["deny"] += [rule for rule in cloud.GH_DENY if rule not in data["permissions"]["deny"]]
-    return write(tmp_path / f"cloud-{chain}.settings.json", data), home
+    computer = tmp_path / "computer.json"
+    write(computer, routine.routine_settings(ws, "", [ws], profile=computer))
+    run = cloud.write_profile(ws, [ws], chain, GRANT, "ada@example.test")
+    return {"root": ws.as_posix(),
+            **{name: (path, json.loads(path.read_text(encoding="utf-8"))) for name, path in
+               (("computer", computer), ("cloud", run))}}
 
 
 # ----- the cloud prompts ----------------------------------------------------------------------------------------
@@ -126,11 +160,12 @@ def test_every_cloud_prompt_command_is_one_absolute_call(chain):
 
 
 @pytest.mark.parametrize("chain", cloud.CHAINS)
-def test_every_cloud_prompt_command_passes_the_guard_its_begin_writes(tmp_path, chain):
-    profile, home = run_profile(tmp_path, chain)
+def test_every_cloud_prompt_command_passes_the_guard_its_begin_writes(tmp_path, machine, chain):
+    profile = profiles(tmp_path, machine, chain)["cloud"][0]
+    assert profile == cloud.profile_path(chain)   # begin's own file, which the guard plugin reads
     commands = commands_in(text(PROMPTS[chain]))
     for command in commands:
-        filled = fill(command, home.as_posix())
+        filled = fill(command, machine.as_posix())
         assert passes(profile, filled) == (command != TRY), filled
     assert TRY in commands   # the proof tries the one command the guard must refuse
 
@@ -226,21 +261,57 @@ def test_both_cloud_prompts_end_a_run_at_a_tool_or_a_refusal_they_do_not_name(ch
 
 
 def test_the_cloud_sweep_names_the_attachment_commands_and_the_rows_they_read():
-    for body in (text(PROMPTS["sweep"]), text(SKILLS / "sweep" / "SKILL.md")):
+    for path in (PROMPTS["sweep"], SKILLS / "sweep" / "SKILL.md"):
+        body = text(path)
         assert "--attachment-unread <record id> <name>" in body and "--attachment-read <record id> <name>" in body
         assert "--attachments" in body and r"<record id>\t\t<name>" in body and "tab" in body
-        # A single quote cannot sit between single quotes without the backslash the guard refuses.
-        said = " ".join(body.split())
-        assert "single quotes" in said and "a single quote in it goes in double quotes" in said, body[:60]
+        # One rule for a name, the same in both: single quotes, each single quote in it closed, given between
+        # double quotes and opened again; a line break, which the guard refuses even between quotes, is not marked.
+        said = step(body, "--attachment-unread <record id> <name>")
+        assert "letters, digits, `.`, `-` and `_`" in said and "single quotes" in said, path.name
+        assert "`'\"'\"'`" in said, path.name
+        assert "line break" in said and "left unmarked" in said and "run line" in said, path.name
+        assert "double quotes" not in said and "cannot be written" not in said, path.name
+
+
+def test_an_attachment_name_with_quotes_and_a_dollar_reaches_sweep_py_whole(tmp_path, machine):
+    """A name the sender chose can hold anything: written as the rule says, its attachment command passes the guard
+    of a computer's routine and of a cloud run, and the shell hands sweep.py the exact name."""
+    assert written(AWKWARD) == AWKWARD_WRITTEN and written("report-1_v2.pdf") == "report-1_v2.pdf"
+    made = profiles(tmp_path, machine)
+    for path in (PROMPTS["sweep"], SKILLS / "sweep" / "SKILL.md"):
+        assert f"`{AWKWARD_WRITTEN}`" in text(path), path.name   # the example each gives is this name, so written
+        for flag in ("--attachment-unread", "--attachment-read"):
+            command = next(c for c in commands_in(text(path)) if f"{flag} <record id> <name>" in c)
+            filled = fill(command.replace("<name>", written(AWKWARD)), machine.as_posix())
+            assert shlex.split(filled)[-3:] == [flag, "gmail-1a2b", AWKWARD], filled
+            for name in ("computer", "cloud"):
+                assert passes(made[name][0], filled), (path.name, name, filled)
 
 
 def test_a_kept_codebase_file_is_read_from_its_clone_as_it_is_now():
-    """The cloud runs no git, so a kept file's text is the file as the codebase's clone holds it: a placeholder of
-    its own (`<codebase>`, not an attachment's `<name>`), and a file the clone lacks is named, never guessed."""
-    said = " ".join(text(PROMPTS["sweep"]).split())
-    assert "`/home/user/<codebase>/<path>`" in said and "/home/user/<name>/" not in said
-    kept = said.split("`/home/user/<codebase>/<path>`", 1)[1].split(". ", 2)
-    assert "unreachable" in ". ".join(kept[:2]), kept[:2]
+    """The cloud runs no git, so a kept codebase file's text is the file as a clone on the repository's default
+    branch holds it: in the cloud its clone in /home/user (a placeholder of its own, `<codebase>`, not an attachment's
+    `<name>`); on a computer a checkout, only while it is on that branch and the file has no change there. Any other
+    file is left out and named in the run line, never guessed."""
+    for path in (PROMPTS["sweep"], SKILLS / "sweep" / "SKILL.md"):
+        said = step(text(path), "<codebase>")
+        assert "`/home/user/<codebase>/<path>`" in said and "/home/user/<name>/" not in said, path.name
+        assert "on `main`" not in said, path.name
+        rule = said[said.index("default branch"):]   # the rule, from where it names the branch
+        assert "`/home/user/<codebase>/<path>`" in rule and "left out" in rule and "run line" in rule, path.name
+    skill = step(text(SKILLS / "sweep" / "SKILL.md"), "<codebase>")
+    assert re.search(r"on a computer[^.]*checkout[^.]*on that branch[^.]*no change", skill), skill
+
+
+def test_the_sweep_skill_says_how_a_cloud_sweep_differs():
+    """Where the skill says when it runs, a session learns what a cloud sweep does its own way: every feed through a
+    connector, an attachment marked with the two commands, codebase files from their clones, and GitHub through REST,
+    one endpoint word a call."""
+    when = text(SKILLS / "sweep" / "SKILL.md").split("\n## When\n", 1)[1].split("\n## ", 1)[0]
+    said = " ".join(next(b for b in when.split("\n- ") if b.startswith("In the cloud")).split())
+    for part in ("connector", "--attachment-unread", "--attachment-read", "clone", "REST", "one endpoint word"):
+        assert part in said, part
 
 
 def test_the_cloud_prompts_sit_outside_the_computers_tasks_and_are_protected(tmp_path):
@@ -282,20 +353,9 @@ REFUSED = ("{py} {root}/_meta/tools/cloud.py begin {root} --chain sweep",
            "python3 _meta/tools/cloud.py begin . --chain sweep", "python _meta/tools/cloud.py trigger . --chain daily")
 
 
-def profiles(tmp_path: Path) -> dict:
-    """The two profiles routine_settings writes: a computer routine's, and a cloud run's (`extra_allow`)."""
-    home = (tmp_path / "home-user").resolve()
-    ws = clone(home, "ada-space")
-    made = {}
-    for name, extra in (("computer", ()), ("cloud", cloud.EXTRA_ALLOW)):
-        data = routine.routine_settings(ws, "", [ws], profile=tmp_path / f"{name}.json", extra_allow=extra)
-        made[name] = (write(tmp_path / f"{name}.json", data), data)
-    return {"root": ws.as_posix(), **made}
-
-
-def test_a_routine_may_call_cloud_py_for_its_proof_line_alone(tmp_path):
+def test_a_routine_may_call_cloud_py_for_its_proof_line_alone(tmp_path, machine):
     assert "cloud.py" in routine.ROUTINE_TOOLS
-    made = profiles(tmp_path)
+    made = profiles(tmp_path, machine)
     root = made["root"]
     for name in ("computer", "cloud"):
         path, data = made[name]
