@@ -23,8 +23,9 @@ brings it back when the host finds it again, sets the readers against the home's
 public repository is always wider), keeps the older of two claims wherever each is homed, applies
 a link question answered since, and lists the linked repositories for the space's repository
 feed in `_meta/state/links.json` (space.yaml is protected); the health line shows `links N,
-wider M, repaired K`. Without the host (no `gh`, signed out, a fixture space) both skip their host calls
-and try again next run.
+wider M, repaired K`. Without the host (no `gh`, signed out, a fixture space, a cloud run the
+repository is not attached to) both skip their host calls and try again next run. Both ask the
+host through REST; only the by-id question is GraphQL, and a cloud run's check leaves it out.
 
 Entries point into a codebase with a `ref:` line: `owner/repo:path@commit`, `owner/repo@commit`
 or a pull request URL. In a personal space, an entry about a subject homed elsewhere that points
@@ -482,8 +483,12 @@ def _gh(*args) -> tuple:
 
 def _answer(code: int, out: str, err: str):
     """The JSON a `gh` call printed; None when the host says it is not there; OSError for any
-    other failure (signed out, rate limited), so nothing is marked gone on a bad day."""
+    other failure (signed out, rate limited), so nothing is marked gone on a bad day. A cloud run
+    asking a repository not attached to it is told access "is not enabled", with a 404: that is a
+    host it could not ask, never a repository that is gone."""
     if code != 0:
+        if re.search(r"is not enabled", f"{err}\n{out}", re.I):
+            raise OSError("access to this repository is not enabled in this session")
         if re.search(r"HTTP 404|Could not resolve to a node", err, re.I):
             return None
         raise OSError(err.strip()[:200] or "gh failed")
@@ -493,13 +498,33 @@ def _answer(code: int, out: str, err: str):
         raise OSError("gh printed no JSON") from exc
 
 
-def _host_repos(owner: str) -> list | None:
+def _host_text(*args) -> str | None:
+    """What one `gh` call printed, stripped; None when it failed or could not run."""
     try:
-        code, out, _ = _gh("repo", "list", owner, "--limit", "200", "--json", "nameWithOwner",
-                           "--jq", ".[].nameWithOwner")
+        code, out, _ = _gh(*args)
     except OSError:
         return None
-    return [line.strip() for line in out.splitlines() if line.strip()] if code == 0 else None
+    return out.strip() if code == 0 else None
+
+
+def _host_repos(owner: str) -> list | None:
+    """Every repository `owner` holds that the signed-in account can see, through REST (a cloud
+    run refuses GraphQL): an organisation's through its own route; the signed-in person's own,
+    private ones included, through `user/repos`; another person's public ones. None when the host
+    does not answer one of the calls."""
+    kind = _host_text("api", f"users/{owner}", "--jq", ".type")
+    if kind is None:
+        return None
+    if kind == "Organization":
+        route = f"orgs/{owner}/repos?type=all&per_page=100"
+    else:
+        login = _host_text("api", "user", "--jq", ".login")
+        if login is None:
+            return None
+        route = ("user/repos?affiliation=owner&per_page=100" if login.lower() == owner.lower()
+                 else f"users/{owner}/repos?per_page=100")
+    out = _host_text("api", route, "--paginate", "--jq", ".[].full_name")
+    return None if out is None else [line.strip() for line in out.splitlines() if line.strip()]
 
 
 def _host_id(repo: str) -> str | None:
@@ -510,10 +535,12 @@ def _host_id(repo: str) -> str | None:
     return (out.strip() or None) if code == 0 else None
 
 
-def _host_lookup(repo: str, repo_id=None) -> dict | None:
+def _host_lookup(repo: str, repo_id=None, graphql: bool = True) -> dict | None:
     """The repository by name (the host follows a rename), else by its id; None only when both
     say it is not there. OSError when the host cannot be asked (no `gh`, signed out, a repository
-    not on GitHub), so the link is kept as it is."""
+    not on GitHub, access not enabled in a cloud run), so the link is kept as it is. The question
+    by id is GraphQL, which a cloud run refuses: with `graphql` False it is not asked, and a link
+    the name alone cannot settle is kept as it is too."""
     if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo_key(repo) or ""):
         raise OSError("not a GitHub repository")
     found = _answer(*_gh("api", f"repos/{repo_key(repo)}", "--jq",
@@ -522,6 +549,8 @@ def _host_lookup(repo: str, repo_id=None) -> dict | None:
         return found
     if not repo_id:
         return None
+    if not graphql:
+        raise OSError("not asked by id")
     node = _answer(*_gh("api", "graphql", "-f", "query=query($id: ID!) { node(id: $id) { "
                         "... on Repository { nameWithOwner id isPrivate } } }", "-f", f"id={repo_id}",
                         "--jq", ".data.node"))
@@ -584,7 +613,7 @@ def scan(root, now=None, list_fn=None, id_fn=None) -> dict:
     return out
 
 
-def check(root, now=None, lookup_fn=None, readers_fn=None) -> dict:
+def check(root, now=None, lookup_fn=None, readers_fn=None, graphql: bool = True) -> dict:
     """Keep the links homed in this space, wherever the registry entry sits: every change is a
     link note (applied at once here, else sent to the holder, which keeps one entry per
     repository). A renamed repository is followed in one note and keeps its old names in `was`
@@ -592,7 +621,8 @@ def check(root, now=None, lookup_fn=None, readers_fn=None) -> dict:
     a client's private repository, is kept) and comes back when found again,
     readers are set against this space's audience (a public repository is wider), the older of two
     claims stays, a link question answered since is applied, and STATE lists what is linked for
-    the repository feed. Never an owner alert."""
+    the repository feed. Never an owner alert. A cloud run passes `graphql` False: the host is
+    asked by name only, and a link only its id could settle is kept for a computer's check."""
     import classify
     import status
     root = Path(root)
@@ -600,7 +630,8 @@ def check(root, now=None, lookup_fn=None, readers_fn=None) -> dict:
     now = now or space.now()
     today = now.date().isoformat()
     fixture = space.mode == "fixture"   # a fixture space never asks the host with the default functions
-    lookup = lookup_fn or (None if fixture else _host_lookup)
+    lookup = lookup_fn or (None if fixture else
+                           (lambda repo, repo_id=None: _host_lookup(repo, repo_id, graphql=graphql)))
     readers_of = readers_fn or (None if fixture else access.readers)
     for row in list(_seen_rows(root).values()):   # a question answered since: detect applies the answer
         if row.get("outcome") == "asked":

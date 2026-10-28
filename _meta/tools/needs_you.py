@@ -20,7 +20,6 @@ import argparse
 import datetime as dt
 import json
 import re
-import subprocess
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -28,10 +27,11 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ghrest  # noqa: E402
 import pages  # noqa: E402
 import spaceyaml  # noqa: E402
 
-KIND_ORDER = ["leaving", "high_stakes", "answer", "request", "question", "check", "candidate",
+KIND_ORDER = ["security", "leaving", "high_stakes", "answer", "request", "question", "check", "candidate",
               "reconnect", "protected_pr", "fork_pr", "outbox", "classification", "doubt", "sample"]
 VERBS_LINE = "Answer with the number and yes, edit, no, later or always; then submit."
 OUTBOX_DAYS = 14
@@ -564,33 +564,40 @@ def _protected_prs(root: Path) -> list:
     """Open pull requests on this repository that auto-merge did not arm: protected paths wait
     for the owner's one click (rules.md section 8). A pull request from a fork is never offered
     for merging: its checks ran the fork's own workflow and its title is a stranger's text, so
-    all of them become one line with their numbers and no titles. Silent when offline or not
-    a repository."""
+    all of them become one line with their numbers and no titles. They are read through REST
+    (ghrest), which a cloud run allows. Silent when this is not a repository with an origin, or
+    when this computer has no `gh` at all: the one `gh` call goes through a wrapper that notes
+    whether gh ran, so a call that ran and failed (signed out, offline, refused) is told apart
+    and becomes one item saying the list is incomplete, never an empty list."""
     if not (root / ".git").exists():
         return []
-    try:
-        res = subprocess.run(["gh", "pr", "list", "--state", "open", "--json",
-                              "number,title,url,autoMergeRequest,isDraft,isCrossRepository"],
-                             capture_output=True, text=True, cwd=str(root), timeout=30)
-    except (OSError, subprocess.TimeoutExpired):
+    slug = ghrest.repo_slug(root)
+    if slug is None:
         return []
-    if res.returncode != 0:
-        return []
-    try:
-        prs = json.loads(res.stdout or "[]")
-    except ValueError:
-        return []
-    if not isinstance(prs, list):
-        return []
+    gh, ran = ghrest.runner(root), []
+
+    def asked(*args: str):
+        done = gh(*args)
+        ran.append(done is not None)
+        return done
+    prs = ghrest.open_pulls(asked, slug)
+    if prs is None:
+        if not any(ran):
+            return []
+        return [Item(id="pr-list-unreadable", kind="request",
+                     text="your open pull requests could not be read: any waiting for your merge are missing "
+                          "from this list",
+                     recommendation="check that gh is signed in on this computer (gh auth status)",
+                     default="they wait unseen")]
     out, forks = [], []
     for pr in prs:
         number = _pr_number(pr)
-        if number is None or pr.get("isDraft"):
+        if number is None or pr.get("draft"):
             continue
-        if pr.get("isCrossRepository") is not False:   # a fork, or gh could not say: never "merge it"
+        if pr.get("cross_repo") is not False:   # a fork, or GitHub could not say: never "merge it"
             forks.append(number)
             continue
-        if pr.get("autoMergeRequest"):
+        if pr.get("auto_merge"):
             continue
         out.append(Item(id=f"pr-{number}", kind="protected_pr",
                         text=f"pull request {number} waits for your merge: {untrusted_line(pr.get('title'))}",

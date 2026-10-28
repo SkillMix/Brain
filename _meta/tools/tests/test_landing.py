@@ -1,6 +1,7 @@
 """Landing at the home (vision section 9): silent, pending, disagreement, duplicate; the sample."""
 import datetime as dt
 import json
+import subprocess
 
 import yaml
 
@@ -177,3 +178,34 @@ def test_the_domain_owners_yes_files_a_pending_record_as_evidence(tmp_path):
     fm, _ = pages.read(filed[0])
     assert fm["status"] == "draft"
     assert not (root / "_inbound/candidates/p-0000a022.md").exists()
+
+
+def signer_gh(monkeypatch, code, stdout="", stderr=""):
+    """The signer's `log.md` as `gh api` answers it; every other command runs as it would."""
+    real = subprocess.run
+
+    def run(args, **kwargs):
+        if args[0] == "gh":
+            return subprocess.CompletedProcess(args, code, stdout, stderr)
+        return real(args, **kwargs)
+    monkeypatch.setattr(subprocess, "run", run)
+
+
+def test_a_signer_history_the_run_cannot_reach_leaves_the_release_waiting(tmp_path, monkeypatch):
+    root = harbor_space(tmp_path)
+    path = released(root, "p-0000a301", "Harbor goes live on 3 November.\n", signed_repo="ada/ada-space")
+    before = path.read_bytes()
+    signer_gh(monkeypatch, 1, stderr="GitHub access to this repository is not enabled for this session (HTTP 404)\n")
+    assert landing.verified(pages.read(path)[0], {}) == "unknown"
+    report = landing.land(root, now=NOW)
+    assert report.silent == [] and report.pending == []
+    assert path.read_bytes() == before   # neither landed nor marked: a later run that can ask decides
+    assert not (root / "knowledge/projects/harbor/p-0000a301.md").exists()
+
+
+def test_a_signer_history_that_cannot_be_read_still_waits_pending(tmp_path, monkeypatch):
+    root = harbor_space(tmp_path)
+    path = released(root, "p-0000a302", "Harbor goes live on 3 November.\n", signed_repo="ada/ada-space")
+    signer_gh(monkeypatch, 1, stderr="gh: Not Found (HTTP 404)\n")
+    assert landing.land(root, now=NOW).pending == ["p-0000a302"]
+    assert "signer's history" in pages.read(path)[0]["landing"]
