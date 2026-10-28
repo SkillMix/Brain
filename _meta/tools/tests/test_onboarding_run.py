@@ -485,6 +485,30 @@ def test_a_site_that_moved_to_another_host_is_read_on_that_host(phase, capsys, t
     assert research_journal()["company"]["domain"] == "lanternworks.example"   # the register is still the .example one
 
 
+HERE = {"name": "Lantern Works", "moved_to": "https://lanternworks.test/", "records": [
+    {"title": "Our team", "url": "https://lanternworks.example/team", "about": "people", "text": "Ada Okafor, founder."}]}
+
+
+def test_what_the_first_read_found_is_kept_when_part_of_the_site_moved(phase, capsys, tmp_path):
+    # the review of #61: the read on the host the site moved to replaced the first read's records
+    the_home(tmp_path)
+    the_apps()
+    Readers(phase, {"site": lambda prompt: THERE if "https://lanternworks.test/" in prompt else HERE})
+    code, _ = research_run(capsys)
+    assert code == 0 and "site" in research_journal()["sources_done"]
+    urls = sorted(r["url"] for r in records_on_disk() if r["id"].startswith("site"))
+    assert urls == ["https://lanternworks.example/team", "https://lanternworks.test/"]
+
+
+def test_a_second_read_that_finds_nothing_keeps_the_first_read(phase, capsys, tmp_path):
+    the_home(tmp_path)
+    the_apps()
+    Readers(phase, {"site": lambda prompt: {"records": []} if "https://lanternworks.test/" in prompt else HERE})
+    code, _ = research_run(capsys)
+    assert code == 0 and "site" in research_journal()["sources_done"]
+    assert [r["url"] for r in records_on_disk() if r["id"].startswith("site")] == ["https://lanternworks.example/team"]
+
+
 def test_a_site_that_says_it_moved_to_itself_or_to_no_host_is_read_once(phase, capsys, tmp_path):
     the_home(tmp_path)
     the_apps()

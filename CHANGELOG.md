@@ -169,8 +169,8 @@ back to back, and nothing a record or the person settled is asked again.
 - **A company site that moved is read where it moved to.** The site's reader may fetch only the
   company's domain and its `www.` twin, so a domain that redirects to another host (a `.nl` that
   moved to a `.com`) came back with nothing and the build said the site gave nothing to keep. The
-  reader now says where the site sent it, and the research reads once more on that host; the
-  company's domain stays the one given.
+  reader now says where the site sent it, and the research reads once more on that host, keeping
+  what the first read found on the pages that did not move; the company's domain stays the one given.
 - **Task names another Windows account holds.** Where another account on the computer already has
   the space's task names, Windows said only "Access is denied". The row now says the name is
   another account's, with the line an administrator runs to remove it, and
