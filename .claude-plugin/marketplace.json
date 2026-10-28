@@ -1,0 +1,13 @@
+{
+  "name": "spaces",
+  "owner": {
+    "name": "spaces"
+  },
+  "plugins": [
+    {
+      "name": "spaces-guard",
+      "source": "./_meta/plugins/spaces-guard",
+      "description": "Holds a cloud routine run to the guard of the person's computer: its shell allow list, its agents, its connector grant and mail only to the person."
+    }
+  ]
+}

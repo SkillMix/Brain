@@ -71,6 +71,22 @@ def test_caches_in_the_template_tree_are_not_machinery(tmp_path):
     assert not (space / "_meta" / "tools" / "stray.pyc").exists()
 
 
+def test_template_sync_carries_the_plugin(tmp_path):
+    """The guard plugin a cloud run enables, and the marketplace that offers it, are machinery like the tools."""
+    tpl = make_template(tmp_path / "tpl")
+    plugin = tpl / "_meta" / "plugins" / "spaces-guard"
+    (plugin / "hooks").mkdir(parents=True)
+    (plugin / "guard.py").write_text("print('guard')\n", encoding="utf-8")
+    (plugin / "hooks" / "hooks.json").write_text("{}\n", encoding="utf-8")
+    (tpl / ".claude-plugin").mkdir()
+    (tpl / ".claude-plugin" / "marketplace.json").write_text('{"name": "spaces"}\n', encoding="utf-8")
+    space = make_space(tmp_path / "ada")
+    report = template_sync.run(space, source=str(tpl))
+    assert {".claude-plugin/marketplace.json", "_meta/plugins/spaces-guard/guard.py",
+            "_meta/plugins/spaces-guard/hooks/hooks.json"} <= set(report.added)
+    assert (space / "_meta" / "plugins" / "spaces-guard" / "guard.py").read_text(encoding="utf-8") == "print('guard')\n"
+
+
 def test_help_prints_usage_and_touches_nothing(capsys):
     assert template_sync.main(["--help"]) == 0
     assert "template-version.yaml" in capsys.readouterr().out

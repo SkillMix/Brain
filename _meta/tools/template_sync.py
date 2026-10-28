@@ -1,7 +1,8 @@
 """Template sync: bring the template's machinery into this space, file by file.
 
 Machinery is everything a company does not change: the tools, their tests, the page
-templates, the skills, the workflows, the permission profile, the conformance page.
+templates, the skills, the workflows, the permission profile, the cloud run's guard plugin,
+the conformance page.
 Each file is copied when this space still has the version it received last time (or
 never had it); a file this space changed is kept and reported. Nothing is ever deleted.
 Provenance lives in `_meta/state/template-version.yaml` (the template commit and the
@@ -38,6 +39,8 @@ MACHINERY = ("_meta/tools", "_meta/templates", "_meta/migrations", "_meta/tests/
              "_meta/tests/README.md",
              ".claude/skills", ".claude/settings.json", ".github/workflows", "docs/shape-1.md",
              "LICENSE", "README.md", "CLAUDE.md")
+# The guard plugin a cloud routine run enables, and the space's marketplace file that offers it.
+MACHINERY += ("_meta/plugins", ".claude-plugin")
 NEVER = (".github/CODEOWNERS", ".github/template-marker", "_meta/tests/fixture",
          "_meta/tests/forbidden-names.sha256")
 PROVENANCE = Path("_meta") / "state" / "template-version.yaml"

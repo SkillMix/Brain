@@ -1,0 +1,5 @@
+{
+  "name": "spaces-guard",
+  "version": "1.0.0",
+  "description": "Holds a cloud routine run to the guard of the person's computer: its shell allow list, its agents, its connector grant and mail only to the person."
+}
