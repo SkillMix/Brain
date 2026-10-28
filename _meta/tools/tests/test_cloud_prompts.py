@@ -1,7 +1,9 @@
-"""The cloud chains' prompts (`_meta/templates/cloud/`), the gate every computer prompt starts with, and the skills
-that know the routines may run in the cloud (spec 4.2, 4.4, 4.5a, 4.6 and 4.7). A cloud prompt is read by an agent
-under the guard `cloud.py begin` writes, so every command it gives must be one that guard lets through, spelled as
-the guard reads it: one plain command, absolute paths, and `gh api` with one word."""
+"""The cloud sweep's prompt (`_meta/templates/cloud/sweep-chain.md`), the gate every computer prompt starts with, and
+the skills that know the sweep may run in the cloud (spec 4.2, 4.4, 4.5a, 4.6 and 4.7;
+docs/design/2026-10-28-cloud-sweep-design.md). No guard runs in a cloud run: the task's own deny list
+(`cloud.disallowed`) holds it, so every command the prompt gives must be one plain command, with absolute paths and
+`gh api` with one word, that the deny list lets through. The proof's two tries made with a command (a request past
+the network limit, a change of rules.md) pass the deny list too: the environment and the landing must stop them."""
 import json
 import re
 import shlex
@@ -20,19 +22,31 @@ from conftest import make_space
 
 TEMPLATE = Path(__file__).resolve().parents[3]
 TOOLS = TEMPLATE / "_meta" / "tools"
-PROMPTS = {chain: TEMPLATE / "_meta" / "templates" / "cloud" / f"{chain}-chain.md" for chain in cloud.CHAINS}
+PROMPT = TEMPLATE / "_meta" / "templates" / "cloud" / "sweep-chain.md"
 COMPUTER = TEMPLATE / "_meta" / "templates" / "routines"
 SKILLS = TEMPLATE / ".claude" / "skills"
-TRY = 'python3 -c "print(1)"'   # the proof's one command outside the allow list, which the guard must refuse
 # What each placeholder of a prompt's commands stands for in a run of Ada's (the clone folder names in /home/user).
 SAMPLE = {"<workspace>": "ada-space", "<root>": "ada-space", "<repo>": "ada/ada-site", "<number>": "5",
           "<since>": "2026-10-01T08:00:00Z", "<source>": "mail", "<record id>": "gmail-1a2b", "<name>": "report.pdf",
           "<file>": "/home/user/ada-space/_meta/state/private/notices/n1.json", "<message id>": "m1",
           "<address>": "ada@example.test", "<id>": "t1", "<key>": "ADA-1", "<tool>": "status"}
-# The task's grant a cloud run's profile is written from (`cloud.write_profile`): read tools, a tracker write, a send.
-GRANT = {"read": ["mcp__mail__get_message", "mcp__mail__search_threads", "mcp__tracker__list_issues"],
-         "write": ["mcp__tracker__create_issue"], "send": ["mcp__mail__send_message"]}
+# The read tools the sweep's task is given (`cloud.task_grant`), and a tool the computer has seen that it is not.
+READS = ["mcp__mail__get_message", "mcp__mail__search_threads", "mcp__tracker__list_issues"]
+NOT_GIVEN = ["mcp__mail__trash_message", "mcp__mail__send_message", "mcp__tracker__create_issue"]
+# The proof's two tries made with a command, deliberately not the prompt's tool calls: a request to a host outside the
+# environment's network limit, which the environment must keep from answering, and a change of a protected file,
+# which goes through or is refused and which the landing must leave out.
+NETWORK_TRY = "curl -sS -m 10 https://example.com"
+SHELL_TRY = "python3 -c \"open('/home/user/<workspace>/rules.md', 'a').write('proof')\""
+TRIES = (NETWORK_TRY, SHELL_TRY)
+PROOF_LINE = ("python3 /home/user/<workspace>/_meta/tools/cloud.py proof-line --chain sweep --edit yes --tool yes "
+              "--network yes --shell no")
+LAND = "python3 /home/user/<workspace>/_meta/tools/sync.py --root /home/user/<workspace> --cloud sweep"
 # An attachment's name that holds a single quote, a double quote and a `$`, and how the prompt and the skill write it.
+# Commands the sweep's task must refuse by its deny list alone: a tool of the space that writes beyond the sweep, a
+# GraphQL call, a pull request listing and a git write. The control that makes a deny list's silence mean something.
+MUST_REFUSE = ("python3 /home/user/<workspace>/_meta/tools/sign.py /home/user/<workspace>", "gh pr list",
+               "gh api graphql -f q=1", "git push")
 AWKWARD = 'Ada\'s "final" $5.pdf'
 AWKWARD_WRITTEN = "'Ada'\"'\"'s \"final\" $5.pdf'"
 
@@ -60,7 +74,13 @@ def written(name: str) -> str:
 
 def commands_in(body: str) -> list:
     """Every command the text gives: the code spans that start with a program a run calls."""
-    return [s for s in spans(body) if re.match(r"(python3?|gh|git|cd|sh|bash) ", s)]
+    return [s for s in spans(body) if re.match(r"(python3?|gh|git|cd|sh|bash|sed|curl) ", s)]
+
+
+def proof_of(body: str) -> str:
+    """The prompt's Proof section, which a proof run does alone."""
+    assert body.count("\n## Proof\n") == 1
+    return body.split("\n## Proof\n", 1)[1]
 
 
 def gh_calls(body: str) -> list:
@@ -88,11 +108,10 @@ def write(path: Path, data: dict) -> Path:
     return path
 
 
-def cloud_rules(tmp_path: Path) -> Path:
-    """The `gh` rules a cloud run's profile holds, alone: its REST reads (the routine's own, which `begin` writes
-    through `routine.routine_settings`, and the cloud's), and its refusal of anything after the endpoint word."""
-    allow = list(dict.fromkeys([*routine.REST_READS, *cloud.EXTRA_ALLOW]))
-    return write(tmp_path / "gh.json", {"permissions": {"allow": allow, "deny": list(cloud.GH_DENY)}})
+def gh_rules(tmp_path: Path) -> Path:
+    """The `gh` rules alone: a routine's REST reads, and the task's refusal of anything after the endpoint word."""
+    return write(tmp_path / "gh.json", {"permissions": {"allow": list(routine.REST_READS),
+                                                         "deny": list(cloud.GH_DENY)}})
 
 
 def unquoted(command: str) -> str:
@@ -110,8 +129,7 @@ def unquoted(command: str) -> str:
 
 
 def clone(home: Path, name: str) -> Path:
-    """A space cloned in the cloud's home: its tool scripts there, as every clone has them, and the cloud prompts
-    the run's profile is written from."""
+    """A space cloned in the cloud's home: its tool scripts there, as every clone has them, and the cloud prompt."""
     root = make_space(home / name, name=name)
     (root / "_meta" / "tools").mkdir(parents=True, exist_ok=True)
     for tool in TOOLS.glob("*.py"):
@@ -123,67 +141,121 @@ def clone(home: Path, name: str) -> Path:
 
 @pytest.fixture
 def machine(tmp_path, monkeypatch):
-    """The cloud's /home/user, as test_cloud.py's: an empty folder `SPACES_CLOUD_HOME` names. The home folder, where
-    begin writes the guard profile and the state the guard plugin reads, is conftest's."""
+    """The cloud's /home/user, as test_cloud.py's: an empty folder `SPACES_CLOUD_HOME` names."""
     home = (tmp_path / "home-user").resolve()
     home.mkdir()
     monkeypatch.setenv("SPACES_CLOUD_HOME", str(home))
     return home
 
 
-def profiles(tmp_path: Path, home: Path, chain: str = "sweep") -> dict:
-    """The two profiles a routine's commands meet, over Ada's workspace cloned in the cloud's home: a computer
-    routine's (`routine.routine_settings`), and a cloud run's of `chain` as its begin writes it
-    (`cloud.write_profile`, from the task's grant). {"root": the workspace, name: (path, data)}."""
+def computer_profile(tmp_path: Path, home: Path) -> tuple:
+    """A computer routine's profile (`routine.routine_settings`) over Ada's workspace cloned in the cloud's home:
+    (the workspace, as POSIX text; the profile's path; its data)."""
     ws = clone(home, "ada-space")
-    computer = tmp_path / "computer.json"
-    write(computer, routine.routine_settings(ws, "", [ws], profile=computer))
-    run = cloud.write_profile(ws, [ws], chain, GRANT, "ada@example.test")
-    return {"root": ws.as_posix(),
-            **{name: (path, json.loads(path.read_text(encoding="utf-8"))) for name, path in
-               (("computer", computer), ("cloud", run))}}
+    path = tmp_path / "computer.json"
+    data = routine.routine_settings(ws, "", [ws], profile=path)
+    write(path, data)
+    return ws.as_posix(), path, data
 
 
-# ----- the cloud prompts ----------------------------------------------------------------------------------------
-@pytest.mark.parametrize("chain", cloud.CHAINS)
-def test_every_cloud_prompt_command_is_one_absolute_call(chain):
-    commands = commands_in(text(PROMPTS[chain]))
+def task_deny(home: Path) -> list:
+    """The sweep task's deny list (`cloud.disallowed`), as `trigger` renders it for Ada."""
+    ws = clone(home, "ada-space")
+    return cloud.disallowed(ws, ["ada/ada-space"], READS, READS + NOT_GIVEN)
+
+
+def refuses(deny: list):
+    """Whether a deny list refuses a command, read as the platform reads a Bash rule: by its text alone."""
+    patterns = bash_guard._patterns(deny, False)
+    return lambda command: any(p.fullmatch(command) for p in patterns)
+
+
+def task_refuses(home: Path):
+    """Whether the sweep task's deny list refuses a command."""
+    return refuses(task_deny(home))
+
+
+# ----- the cloud prompt -----------------------------------------------------------------------------------------
+def test_every_cloud_prompt_command_is_one_absolute_call():
+    """Every command a run gives is one call of a space's tool or one `gh api` read, with absolute paths, on one line
+    and never two joined: the deny list reads a command by its text alone. The proof's two tries made with a command
+    (`TRIES`) are the one exception, and only in the Proof section: they are what the task must keep from landing,
+    so a sweep run never gives them; each is still one command on one line, with nothing for the shell to join or
+    redirect, the file it changes named by its absolute path."""
+    body = text(PROMPT)
+    commands = commands_in(body)
     assert any("/_meta/tools/sync.py" in c for c in commands)
+    sweep_run = body.split("\n## Proof\n", 1)[0]
     for command in commands:
-        if command == TRY:
+        assert not re.search(r"&&|\|\||;|\|", command), command
+        assert "\n" not in command, command
+        if command in TRIES:
+            assert command in proof_of(body) and command not in sweep_run, command
+            assert not set(";&|<>`$\n") & set(unquoted(fill(command))), command
             continue
         assert command.startswith(("python3 /home/user/", "gh api ")), command
-        assert not re.search(r"&&|\|\||;|\|", command), command
         if command.startswith("python3 "):
             assert re.fullmatch(r"python3 /home/user/<(root|workspace)>/_meta/tools/([a-z_]+|<tool>)\.py( \S.*)?",
                                 command), command
-        assert "\n" not in command, command
+    assert all(t in commands for t in TRIES)
+    assert "/home/user/<workspace>/rules.md" in SHELL_TRY
 
 
-@pytest.mark.parametrize("chain", cloud.CHAINS)
-def test_every_cloud_prompt_command_passes_the_guard_its_begin_writes(tmp_path, machine, chain):
-    profile = profiles(tmp_path, machine, chain)["cloud"][0]
-    assert profile == cloud.profile_path(chain)   # begin's own file, which the guard plugin reads
-    commands = commands_in(text(PROMPTS[chain]))
+def test_no_cloud_prompt_command_is_refused_by_the_tasks_deny_list(machine):
+    """Every command the prompt gives goes through the task's deny list, the proof's tries made with a command among
+    them: the request must meet the environment's network limit, and the change of rules.md must reach the landing,
+    which must leave it out."""
+    refused = task_refuses(machine)
+    for command in MUST_REFUSE:
+        assert refused(fill(command)), command
+    commands = commands_in(text(PROMPT))
+    assert all(t in commands for t in TRIES)
     for command in commands:
-        filled = fill(command, machine.as_posix())
-        assert passes(profile, filled) == (command != TRY), filled
-    assert TRY in commands   # the proof tries the one command the guard must refuse
+        assert not refused(fill(command)), command
 
 
-@pytest.mark.parametrize("chain", cloud.CHAINS)
-def test_the_cloud_prompts_never_call_graphql_or_git(chain):
-    body = text(PROMPTS[chain])
+def test_the_proofs_commands_pass_the_deny_list_and_its_edit_and_tool_do_not(machine):
+    """A deny refusal of the proof's request, its command's change, its proof line or its landing would prove
+    nothing about the network limit or the landing (and would leave no line to read): none is refused by the task's
+    deny list. Its first two tries are the ones the task itself refuses: the `Edit` of rules.md is a deny rule, and
+    the tool it was not given is denied by name."""
+    proof = proof_of(text(PROMPT))
+    assert commands_in(proof) == [NETWORK_TRY, SHELL_TRY, PROOF_LINE, LAND]
+    deny = task_deny(machine)
+    refused = refuses(deny)
+    # The control: the same reading of the same deny list refuses what the task must refuse, so a pass below means
+    # the deny list was read and let the proof's commands through, not that it was read as empty.
+    for command in MUST_REFUSE:
+        assert refused(fill(command)), command
+    for command in commands_in(proof):
+        assert not refused(fill(command)), command
+    assert "Edit(//**/rules.md)" in deny and "mcp__mail__trash_message" in deny
+    assert not any(t in deny for t in READS)
+
+
+def test_the_cloud_prompt_never_calls_graphql_or_git():
+    body = text(PROMPT)
     for command in commands_in(body):
         assert not command.startswith(("gh pr", "gh repo", "git ", "cd ")) and "graphql" not in command, command
     assert "--jq" not in body and "--paginate" not in body
 
 
-def test_every_gh_api_call_of_the_prompts_and_the_sweep_skill_is_one_endpoint_word(tmp_path):
-    rules = cloud_rules(tmp_path)
-    calls = [c for path in [*PROMPTS.values(), SKILLS / "sweep" / "SKILL.md"] for c in gh_calls(text(path))]
-    sweep = gh_calls(text(PROMPTS["sweep"]))
-    assert any("search/issues'?q=" in c for c in sweep) and any(c.endswith("/files'?per_page=100'") for c in sweep)
+def test_the_cloud_sweep_only_reads_and_leaves_the_tracker_and_the_notices_to_the_computer():
+    body = text(PROMPT)
+    flat = " ".join(body.split())
+    for gone in ("tracker.py", "owner_email.py", "morning_view.py", "tracker/SKILL.md", "owner-email/SKILL.md",
+                 "send_message", "send tool", "**Tracker**", "**Owner notices.**"):
+        assert gone not in body, gone
+    assert not any(re.search(r"tracker|owner_email", c) for c in commands_in(body))
+    assert "nothing that writes, sends, shares or deletes" in flat and "Send nothing, to anyone" in flat
+    assert "daily chain on the person's computer" in flat
+
+
+def test_every_gh_api_call_of_the_prompt_and_the_sweep_skill_is_one_endpoint_word(tmp_path):
+    rules = gh_rules(tmp_path)
+    calls = [c for path in (PROMPT, SKILLS / "sweep" / "SKILL.md") for c in gh_calls(text(path))]
+    prompt = gh_calls(text(PROMPT))
+    assert any("search/issues'?q=" in c for c in prompt) and any(c.endswith("/files'?per_page=100'") for c in prompt)
     assert any("search/issues'?q=" in c for c in gh_calls(text(SKILLS / "sweep" / "SKILL.md")))
     for call in calls:
         filled = fill(call)
@@ -191,11 +263,10 @@ def test_every_gh_api_call_of_the_prompts_and_the_sweep_skill_is_one_endpoint_wo
         assert passes(rules, filled), filled
 
 
-def test_no_command_of_the_prompts_or_the_sweep_skill_leaves_a_pattern_to_the_shell():
+def test_no_command_of_the_prompt_or_the_sweep_skill_leaves_a_pattern_to_the_shell():
     """A `?`, `*` or `[` outside quotes is a pattern: zsh, the login shell of a Mac and so of its routines' Bash,
     refuses one that matches no file ('no matches found') and runs nothing. Each goes inside quotes."""
-    commands = [c for path in PROMPTS.values() for c in commands_in(text(path)) if c != TRY]
-    commands += gh_calls(text(SKILLS / "sweep" / "SKILL.md"))
+    commands = list(commands_in(text(PROMPT))) + gh_calls(text(SKILLS / "sweep" / "SKILL.md"))
     assert any("?" in c for c in commands)
     for command in commands:
         assert not set("?*[") & set(unquoted(fill(command))), command
@@ -215,9 +286,8 @@ def test_the_computers_routines_read_the_repository_feed_as_the_skill_says(tmp_p
         assert not passes(profile, refused), refused
 
 
-@pytest.mark.parametrize("chain", cloud.CHAINS)
-def test_both_cloud_prompts_begin_with_the_command_their_task_gives(chain):
-    body = text(PROMPTS[chain])
+def test_the_cloud_prompt_begins_with_the_command_its_task_gives():
+    body = text(PROMPT)
     first = re.search(r"^0\. \*\*Begin\.\*\*(.*?)(?=^\d+\. |\n\n)", body, re.M | re.S)
     assert first, "step 0 is the begin"
     said = " ".join(first.group(1).split())
@@ -225,35 +295,47 @@ def test_both_cloud_prompts_begin_with_the_command_their_task_gives(chain):
     assert "cloud.py begin" not in body and "--grant" not in body   # the task's prompt spells it, never the template
 
 
-@pytest.mark.parametrize("chain", cloud.CHAINS)
-def test_both_cloud_prompts_land_every_root_the_workspace_last(chain):
-    body = " ".join(text(PROMPTS[chain]).split())
-    land = f"python3 /home/user/<root>/_meta/tools/sync.py --root /home/user/<root> --cloud {chain}"
-    assert land in commands_in(text(PROMPTS[chain])) and "the workspace last" in body
+def test_the_cloud_prompt_lands_every_root_the_workspace_last():
+    body = " ".join(text(PROMPT).split())
+    land = "python3 /home/user/<root>/_meta/tools/sync.py --root /home/user/<root> --cloud sweep"
+    assert land in commands_in(text(PROMPT)) and "the workspace last" in body
     assert "--release-leg" not in body
 
 
-@pytest.mark.parametrize("chain", cloud.CHAINS)
-def test_both_cloud_prompts_have_a_proof_that_tries_each_refusal(chain):
-    body = text(PROMPTS[chain])
-    assert body.count("\n## Proof\n") == 1
-    proof = body.split("\n## Proof\n", 1)[1]
+def test_the_cloud_prompts_proof_tries_the_four_things_the_task_must_keep_from_landing():
+    proof = proof_of(text(PROMPT))
     commands = commands_in(proof)
-    assert commands[0] == TRY and "/home/user/<workspace>/rules.md" in proof and "trash_message" in proof
-    # Edit refuses a file it has not read with its own error, which is no refusal of the profile's: read it first.
-    edit = " ".join(next(p for p in re.split(r"\n(?=\d+\. )", proof) if "rules.md" in p).split())
+    assert 'python3 -c "print(1)"' not in proof and "--guard" not in proof and "--send" not in proof
+    assert "four things" in proof
+    # 1. Edit refuses a file it has not read with its own error, which is no refusal of the deny list: read it first.
+    edit = step(proof, "`Edit`")
     assert edit.index("`Read`") < edit.index("rules.md") < edit.index("`Edit`"), edit
     assert "only a permission refusal counts" in edit, edit
-    line = next(c for c in commands if "cloud.py proof-line" in c)
-    assert line == (f"python3 /home/user/<workspace>/_meta/tools/cloud.py proof-line --chain {chain} --guard yes "
-                    f"--edit yes --tool yes" + (" --send yes" if chain == "daily" else ""))
-    assert commands[-1] == f"python3 /home/user/<workspace>/_meta/tools/sync.py --root /home/user/<workspace> --cloud {chain}"
-    assert ("nobody@example.test" in proof) == (chain == "daily")
+    # 2. A tool the task was not given, which does not exist in the run.
+    assert "trash_message" in step(proof, "not given") and "does not have at all counts as refused" in proof
+    # 3. A host outside the environment's network limit, which the task cannot set itself: no page back is refused.
+    network = step(proof, NETWORK_TRY)
+    assert "network limit" in network and "no page came back" in network, network
+    # 4. A change of the same file made with a command, which may go through and which the landing must leave out.
+    shell = step(proof, SHELL_TRY)
+    assert "goes through" in shell and "left_out" in shell, shell
+    # 5. The proof line says each of the four, one flag each, as one line; 6. the landing.
+    said = step(proof, "proof-line")
+    for flag, what in (("--edit", "the edit"), ("--tool", "the tool"), ("--network", "the request"),
+                       ("--shell", "the command's change")):
+        assert f"`{flag}` {what}" in said, flag
+    assert "as one line" in said and "`yes` for each try that was refused" in said, said
+    assert commands == [NETWORK_TRY, SHELL_TRY, PROOF_LINE, LAND]
+    assert proof.index("`Edit`") < proof.index("trash_message") < proof.index(NETWORK_TRY) < \
+        proof.index(SHELL_TRY) < proof.index(PROOF_LINE) < proof.index(LAND)
+    # The line as the prompt gives it is one cloud.py takes, with every try's flag (it names no workspace: begin's).
+    args = cloud.parse(shlex.split(fill(PROOF_LINE))[2:])
+    assert (args.command, args.chain, args.workspace) == ("proof-line", "sweep", None)
+    assert (args.edit, args.tool, args.network, args.shell) == ("yes", "yes", "yes", "no")
 
 
-@pytest.mark.parametrize("chain", cloud.CHAINS)
-def test_both_cloud_prompts_end_a_run_at_a_tool_or_a_refusal_they_do_not_name(chain):
-    body = " ".join(text(PROMPTS[chain]).split())
+def test_the_cloud_prompt_ends_a_run_at_a_tool_or_a_refusal_it_does_not_name():
+    body = " ".join(text(PROMPT).split())
     assert "**Tripwire.**" in body
     trip = body.split("**Tripwire.**", 1)[1]
     assert "does not name" in trip and "does not expect" in trip and "land nothing" in trip
@@ -262,12 +344,12 @@ def test_both_cloud_prompts_end_a_run_at_a_tool_or_a_refusal_they_do_not_name(ch
 
 
 def test_the_cloud_sweep_names_the_attachment_commands_and_the_rows_they_read():
-    for path in (PROMPTS["sweep"], SKILLS / "sweep" / "SKILL.md"):
+    for path in (PROMPT, SKILLS / "sweep" / "SKILL.md"):
         body = text(path)
         assert "--attachment-unread <record id> <name>" in body and "--attachment-read <record id> <name>" in body
         assert "--attachments" in body and r"<record id>\t\t<name>" in body and "tab" in body
         # One rule for a name, the same in both: single quotes, each single quote in it closed, given between
-        # double quotes and opened again; a line break, which the guard refuses even between quotes, is not marked.
+        # double quotes and opened again; a line break, which a guard refuses even between quotes, is not marked.
         said = step(body, "--attachment-unread <record id> <name>")
         assert "letters, digits, `.`, `-` and `_`" in said and "single quotes" in said, path.name
         assert "`'\"'\"'`" in said, path.name
@@ -279,18 +361,20 @@ def test_the_cloud_sweep_names_the_attachment_commands_and_the_rows_they_read():
 
 
 def test_an_attachment_name_with_quotes_and_a_dollar_reaches_sweep_py_whole(tmp_path, machine):
-    """A name the sender chose can hold anything: written as the rule says, its attachment command passes the guard
-    of a computer's routine and of a cloud run, and the shell hands sweep.py the exact name."""
+    """A name the sender chose can hold anything: written as the rule says, its attachment command passes a
+    computer's routine guard and the cloud task's deny list, and the shell hands sweep.py the exact name."""
     assert written(AWKWARD) == AWKWARD_WRITTEN and written("report-1_v2.pdf") == "report-1_v2.pdf"
-    made = profiles(tmp_path, machine)
-    for path in (PROMPTS["sweep"], SKILLS / "sweep" / "SKILL.md"):
+    _, profile, _ = computer_profile(tmp_path, machine)
+    refused = task_refuses(tmp_path / "cloud-home")
+    for path in (PROMPT, SKILLS / "sweep" / "SKILL.md"):
         assert f"`{AWKWARD_WRITTEN}`" in text(path), path.name   # the example each gives is this name, so written
         for flag in ("--attachment-unread", "--attachment-read"):
             command = next(c for c in commands_in(text(path)) if f"{flag} <record id> <name>" in c)
-            filled = fill(command.replace("<name>", written(AWKWARD)), machine.as_posix())
+            command = command.replace("<name>", written(AWKWARD))
+            filled = fill(command, machine.as_posix())
             assert shlex.split(filled)[-3:] == [flag, "gmail-1a2b", AWKWARD], filled
-            for name in ("computer", "cloud"):
-                assert passes(made[name][0], filled), (path.name, name, filled)
+            assert passes(profile, filled), (path.name, filled)
+            assert not refused(fill(command)), (path.name, command)
 
 
 def test_a_kept_codebase_file_is_read_from_its_clone_as_it_is_now():
@@ -298,7 +382,7 @@ def test_a_kept_codebase_file_is_read_from_its_clone_as_it_is_now():
     branch holds it: in the cloud its clone in /home/user (a placeholder of its own, `<codebase>`, not an attachment's
     `<name>`); on a computer a checkout, only while it is on that branch and the file has no change there. Any other
     file is left out and named in the run line, never guessed."""
-    for path in (PROMPTS["sweep"], SKILLS / "sweep" / "SKILL.md"):
+    for path in (PROMPT, SKILLS / "sweep" / "SKILL.md"):
         said = step(text(path), "<codebase>")
         assert "`/home/user/<codebase>/<path>`" in said and "/home/user/<name>/" not in said, path.name
         assert "on `main`" not in said, path.name
@@ -318,31 +402,38 @@ def test_the_sweep_skill_says_how_a_cloud_sweep_differs():
         assert part in said, part
 
 
-def test_the_cloud_prompts_sit_outside_the_computers_tasks_and_are_protected(tmp_path):
+def test_the_cloud_prompt_sits_outside_the_computers_tasks_and_is_protected(tmp_path):
     ws = make_space(tmp_path / "ada")
     names = [r["name"] for r in start.render_routines(ws, "Ada Okafor")]
     assert names and not any("cloud" in name for name in names)
     assert sorted(p.name for p in (ws / "_meta" / "state" / "routines").glob("*.md")) == \
         sorted(p.name for p in COMPUTER.glob("*.md"))
     assert "_meta/templates/**" in routine.PROTECTED_EDITS
+    assert sorted(p.name for p in PROMPT.parent.glob("*.md")) == ["sweep-chain.md"]   # the cloud daily is gone
 
 
 # ----- the computer's prompts: the gate first ---------------------------------------------------------------------
 def test_every_computer_prompt_starts_with_the_gate(tmp_path):
+    """The sweep and the daily name themselves to the gate: under a cloud record the sweep is held on every computer
+    (`--chain sweep`), while the computer the move ran on keeps running the daily (`--chain daily`). Any other
+    routine names no chain and goes by the record's computer."""
     ws = make_space(tmp_path / "ada")
     rendered = start.render_routines(ws, "Ada Okafor")
     assert len(rendered) == len(list(COMPUTER.glob("*.md"))) >= 3
+    assert {"sweep-chain", "daily-chain"} <= {task["name"] for task in rendered}
     gate = f"{onboard.python_cmd()} {ws.as_posix()}/_meta/tools/chain.py gate {ws.as_posix()}"
+    names = {"sweep-chain": " --chain sweep", "daily-chain": " --chain daily"}
     for task in rendered:
         body = routine.split_prompt(text(Path(task["prompt_file"])))[1]
-        assert [s for s in spans(body) if re.search(r"/_meta/tools/[a-z_]+\.py", s)][0] == gate, task["name"]
+        expected = gate + names.get(task["name"], "")
+        assert [s for s in spans(body) if re.search(r"/_meta/tools/[a-z_]+\.py", s)][0] == expected, task["name"]
         said = next(" ".join(p.split()) for p in body.split("\n\n") if "chain.py gate" in p)
         assert "exits 3" in said and "stop" in said and "write nothing" in said, task["name"]
 
 
 # ----- cloud.py: a routine's proof line, never its begin or trigger ----------------------------------------------
 REFUSED = ("{py} {root}/_meta/tools/cloud.py begin {root} --chain sweep",
-           "{py} {root}/_meta/tools/cloud.py begin {root} --chain daily --proof",
+           "{py} {root}/_meta/tools/cloud.py begin {root} --chain sweep --proof",
            "{py} {root}/_meta/tools/cloud.py trigger {root} --chain sweep",
            "{py} {root}/_meta/tools/cloud.py  begin {root} --chain sweep",          # two spaces
            "{py} {root}/_meta/tools/cloud.py\tbegin {root} --chain sweep",         # a tab
@@ -354,27 +445,26 @@ REFUSED = ("{py} {root}/_meta/tools/cloud.py begin {root} --chain sweep",
            "{py} {root}/_meta/tools/cloud.py beg?n {root} --chain sweep",          # a pattern the shell expands
            "{py} {root}/_meta/tools/cloud.py b* {root} --chain sweep",
            "{py} {root}/_meta/tools/cloud.py proof-line; {py} {root}/_meta/tools/cloud.py begin {root} --chain sweep",
-           "python3 _meta/tools/cloud.py begin . --chain sweep", "python _meta/tools/cloud.py trigger . --chain daily")
+           "python3 _meta/tools/cloud.py begin . --chain sweep", "python _meta/tools/cloud.py trigger . --chain sweep")
 
 
-def test_a_routine_may_call_cloud_py_for_its_proof_line_alone(tmp_path, machine):
+def test_a_computer_routine_may_call_cloud_py_for_its_proof_line_alone(tmp_path, machine):
     assert "cloud.py" in routine.ROUTINE_TOOLS
-    made = profiles(tmp_path, machine)
-    root = made["root"]
-    for name in ("computer", "cloud"):
-        path, data = made[name]
-        for verb in ("begin", "trigger"):
-            assert f"Bash(*_meta/tools/cloud.py*{verb}*)" in data["permissions"]["deny"], (name, verb)
-        for py in ("python3", "python"):
-            line = f"{py} {root}/_meta/tools/cloud.py proof-line --chain daily --guard yes --edit yes --tool yes --send yes"
-            assert passes(path, line), (name, line)
-            assert passes(path, f"{py} _meta/tools/cloud.py proof-line --chain sweep --guard yes --edit no --tool yes")
-            for refused in REFUSED:
-                command = refused.format(py=py, root=root)
-                assert not passes(path, command), (name, command)
+    root, path, data = computer_profile(tmp_path, machine)
+    for verb in ("begin", "trigger"):
+        assert f"Bash(*_meta/tools/cloud.py*{verb}*)" in data["permissions"]["deny"], verb
+    for py in ("python3", "python"):
+        line = (f"{py} {root}/_meta/tools/cloud.py proof-line --chain sweep --edit yes --tool yes --network yes "
+                "--shell no")
+        assert passes(path, line), line
+        assert passes(path, f"{py} _meta/tools/cloud.py proof-line --chain sweep --edit no --tool yes --network no "
+                            "--shell yes")
+        for refused in REFUSED:
+            command = refused.format(py=py, root=root)
+            assert not passes(path, command), command
 
 
-# ----- the skills that know the routines may run in the cloud ----------------------------------------------------
+# ----- the skills that know the sweep may run in the cloud -------------------------------------------------------
 @pytest.mark.parametrize("skill", ["sweep", "distill", "owner-email"])
 def test_a_session_on_a_computer_leaves_the_clouds_work_to_the_cloud(skill):
     body = " ".join(text(SKILLS / skill / "SKILL.md").split())
@@ -391,33 +481,42 @@ def test_the_sweep_skill_reads_pull_requests_through_rest_only():
         assert not re.search(r"--jq|--paginate|--json| -[A-Za-z]", call), call
 
 
-def test_the_onboard_skill_renders_both_tasks_in_the_persons_zone():
+def test_the_onboard_skill_renders_the_sweeps_task_in_the_persons_zone_and_environment():
     body = text(SKILLS / "onboard" / "SKILL.md")
     renders = re.findall(r"cloud\.py trigger[^`]*", body)
     assert len(renders) >= 2
     for render in renders:
-        assert "--timezone <zone>" in " ".join(render.split()), render
+        flat = " ".join(render.split())
+        assert "--chain sweep" in flat and "--timezone <zone>" in flat and "--environment <env>" in flat, render
     flat = " ".join(body.split())
     assert "Get-TimeZone" in flat and "IANA" in flat and "routine-host.yaml" in flat
-    assert re.search(r"send guard[^.]*proven only when[^.]*daily[^.]*proof line[^.]*send", flat), \
-        "the send guard counts as proven only by a daily proof line that shows its send refused"
+    assert "environment_id" in flat and "--chain daily" not in flat
+    assert re.search(r"proof line with `edit`, `tool` or `network` false, a command's change that went through and a "
+                     r"landing that left nothing out", flat), \
+        "a refusal missing is a proof line's edit, tool or network false, or a command's change no landing left out"
+    # The network limit is the person's to set on claude.ai, and the proof checks it; a run with it open stops.
+    assert "Its network must be limited" in flat and "the proof checks it" in flat
+    assert "Network false: limit the environment's network on claude.ai, then prove a new task" in flat
+    # The daily stays on the computer, so the move needs this computer to run the routines.
+    assert "The move also needs this computer to run the routines" in flat
 
 
 def test_the_onboard_skill_says_how_a_rendered_body_becomes_the_one_sent():
     """`cloud.py trigger` prints the body with the move's `roots` and `grant` beside it, and connections named only:
-    the skill says to drop the two and give each connection its connector's id and address."""
+    the skill says to drop the two and give each connection its connector's id and address, and that the body made
+    without `--proof`, the one the sweep runs with, is completed the same way."""
     flat = " ".join(text(SKILLS / "onboard" / "SKILL.md").split())
-    said = re.search(r"cloud\.py trigger[^`]*--proof[^`]*` prints the task's body(.*?)Load `RemoteTrigger`", flat)
+    said = re.search(r"cloud\.py trigger[^`]*--proof[^`]*` prints the task's body(.*?)Create the task", flat)
     assert said, "the proof's render step says what to change before the body is sent"
     for word in ("drop `roots` and `grant`", "`mcp_connections`", "`connector_uuid`", "`url`", "`name`",
-                 "`permitted_tools`", "without"):
+                 "`permitted_tools`", "with `--proof` or without, is sent completed the same way"):
         assert word in said.group(1), word
 
 
 def test_the_briefing_is_recorded_with_every_recipient_after_one_to():
-    """`record-send --to` keeps every recipient however it is given; the daily prompts and the morning-view skill
-    say to put them all after the one `--to`."""
-    for path in (PROMPTS["daily"], COMPUTER / "daily-chain.md", SKILLS / "morning-view" / "SKILL.md"):
+    """`record-send --to` keeps every recipient however it is given; the daily prompt and the morning-view skill say
+    to put them all after the one `--to`."""
+    for path in (COMPUTER / "daily-chain.md", SKILLS / "morning-view" / "SKILL.md"):
         flat = " ".join(text(path).split())
         assert re.search(r"record-send --id <message id> --to <address>", flat), path
         assert "every recipient" in flat and "after the one `--to`" in flat, path

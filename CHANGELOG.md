@@ -7,22 +7,48 @@ the shape and ships its migration. Each choice behind a change has a line in
 
 ## [Unreleased]
 
-Cloud routines: the sweep and the daily chain run when the computer is closed.
+Cloud sweep: the sweep runs when the computer is closed, read-only; the daily stays on the computer.
 
 ### Added
 
-- **Routines in the cloud.** "Run my routines in the cloud" moves the sweep and daily chains to
-  two scheduled tasks on claude.ai, after a proof run of each shows every refusal the guard owes;
-  "run my routines here" brings them back. Each run lands its own files once, at its end
-  (`sync.py --cloud <chain>`): it pushes `cloud/<chain>` and opens a pull request through REST that
+- **The sweep in the cloud.** "Run my routines in the cloud" moves the sweep to a scheduled task on
+  claude.ai, after a proof run shows the task refuses a protected edit and a tool it was not given,
+  and its landing keeps a protected file changed with a command off `main`; "run my routines here"
+  brings it back. The daily chain stays on the computer: it sends the owner notices and the
+  briefing, and now runs the tracker step too. Each run lands its own files once, at its end
+  (`sync.py --cloud sweep`): it pushes `cloud/sweep` and opens a pull request through REST that
   the space's checks merge; the next run carries one that did not merge, and the computer's sync
   adopts one that is still open after 30 minutes and conflicts with `main` or is red (a green one
-  that is only slow is left to auto-merge). The task carries the computer's guard (the
-  `spaces-guard` plugin, the connector grant by tool name, the send guard), and a protected change
-  never lands from the cloud. The computer's sync keeps the transcripts scan, template sync, the
-  release leg and requests, and writes `AGENTS.md` again when it is stale. Merges settle by file
-  kind and never wedge, GitHub is read through REST, the gate always protects a minimum list
-  whatever `space.yaml` says, and `main` gets `enforce_admins`. Rule 7 names the cloud's landing.
+  that is only slow is left to auto-merge). The task gets the read tools of the person's apps
+  alone, and its deny list; the proof also checks the environment's network limit. A protected
+  change never lands from the cloud, and the gate's minimum list now holds, for every pull request,
+  what instructs or runs code on the computer (the rendered routine prompts, `onboard.yaml`, the
+  migrations, `.mcp.json`, `CLAUDE.local.md`, pytest's config), and what Claude Code or pytest load
+  wherever it sits at any depth. `cloud.py trigger --environment`
+  names the cloud environment claude.ai requires. The computer's sync keeps the transcripts scan, the
+  release leg and requests. Merges settle by file kind and never wedge, GitHub is read through
+  REST, the gate always protects a minimum list whatever `space.yaml` says, and `main` gets
+  `enforce_admins`. Rule 7 names the cloud's landing.
+
+### Changed
+
+- **No guard plugin.** The trial of 0.3.0-rc3 showed claude.ai never loads a repository's plugin
+  in a cloud run, so the `spaces-guard` plugin, its marketplace file, the cloud daily task and the
+  proof's `--guard` and `--send` are gone. The cloud sweep sends nothing and writes to no app; the
+  proof needs no plugin.
+
+### Fixed
+
+- **`onboard.py --dry-run` writes nothing.** It used to fill the template and create a workspace
+  folder while saying what it would do. An offline `--register-sync --dry-run` records no command
+  either, and `--dry-run` beside a mode that cannot honour it (the routines' moves, a pause,
+  `--connect`, `--invite`) is refused instead of ignored.
+- **The move renders the routine prompts again**, so a daily rendered before this version gains
+  the tracker step it now runs, and the computer's sweep its `--chain sweep`.
+- **A notice is never overwritten.** A queue in the same second as a recorded notice could reuse a
+  pending file's name; it now takes the first name not in use. A security notice is its own file,
+  and the daily joins them into one digest when it sends.
+- **A new space is written with the gate's whole minimum list.**
 
 <!-- onboarding-launch-entry -->
 ### Added

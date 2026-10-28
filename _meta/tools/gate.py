@@ -50,10 +50,20 @@ RELEASE_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 PAGE_ZONES = ("knowledge/", "live/", "identity/", "_inbound/")
 NEVER_SIGNED = {"knowledge/sources/": "witness pages are never signed",
                 "live/": "status pages are operational state, never signed"}
-# What the gate guards whatever space.yaml says: a list that names fewer never shrinks it.
+# What the gate guards whatever space.yaml says: a list that names fewer never shrinks it. The second line is what
+# instructs or runs code on the person's computer: the routines' rendered prompts, the task records `--check` runs, the
+# migrations, and the files Claude Code or pytest read at their start. A cloud run has the person's token and a shell,
+# so whatever branch it pushes, none of these lands without a click.
 MINIMUM_PROTECTED = ("identity/", "rules.md", "space.yaml", ".claude/", "_meta/tools/", ".github/",
                      "CLAUDE.md", "AGENTS.md", ".gitignore", ".gitattributes", ".gitmodules",
-                     "_meta/templates/", "_meta/plugins/", ".claude-plugin/")
+                     "_meta/templates/", "_meta/plugins/", ".claude-plugin/",
+                     "_meta/state/routines/", "_meta/state/onboard.yaml", "_meta/migrations/", ".mcp.json",
+                     "CLAUDE.local.md", "conftest.py", "pytest.ini", "pyproject.toml", "setup.cfg", "tox.ini")
+# Read wherever they sit, not only at the root: Claude Code loads a CLAUDE.md, a CLAUDE.local.md and a `.claude/`
+# beside the files it opens, and pytest a conftest.py in any folder it collects and its config from any folder above
+# the tests. Held at any depth, so a pull request a run pushed cannot put one below the root either.
+ANY_DEPTH = ("CLAUDE.md", "CLAUDE.local.md", ".claude", ".mcp.json", "conftest.py", "pytest.ini", "pyproject.toml",
+             "setup.cfg", "tox.ini")
 # Generated in each space by agents_md.py, so never a release's own file: it rides a release
 # when it is what the gate's agents_md.py renders from the pull request's files. The gate's
 # agents_md.py is the base branch's, so when a release changes what agents_md.py writes, the
@@ -325,6 +335,11 @@ def classify(root, changed_files, base_ref: str | None = None, head: str = "HEAD
                 reasons.append(f"{rel}: protected by `{prefix}`")
                 guarded.append(rel)
                 break
+        else:
+            name = next((n for n in ANY_DEPTH if n.casefold() in rel.casefold().split("/")), None)
+            if name:
+                reasons.append(f"{rel}: protected by `{name}`, at any depth")
+                guarded.append(rel)
     renamed = bool(rules) and PROVENANCE in {_posix(str(p)) for p in changed_files} \
         and _yaml_at(root, head, PROVENANCE).get("repo") != rules["repo"]
     if renamed:

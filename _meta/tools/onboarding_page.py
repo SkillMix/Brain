@@ -937,24 +937,24 @@ HOST_UNCLEAR = ("Which computer runs your routines is unclear, so none of them r
 
 
 HOST_ELSEWHERE = "Your routines run on {name}. Say 'run my routines here' to run them on this computer."
-HOST_CLOUD = ("Your routines run in the cloud, as two scheduled tasks. Say 'run my routines here' to bring them to this "
-              "computer.")
-HOST_STOPPED = ("Your routines are stopped: the cloud no longer refuses {what}, so its two scheduled tasks stay off. "
-                "Say 'run my routines here' to run them on this computer.")
+HOST_CLOUD = ("Your sweep runs in the cloud, as a scheduled task, and your daily on the computer it moved from. Say "
+              "'run my routines here' to bring the sweep back to this computer.")
+HOST_STOPPED = ("Your sweep is stopped: the cloud no longer refuses {what}, so its scheduled task stays off. Say 'run "
+                "my routines here' to run it on this computer.")
 
 
 def _host_rows(ws, now) -> list:
     """The lines on where the routines run, from the record every computer reads (`routine.host`); only read.
     Paused: until when. Unclear: that none runs. Another computer: that they run there, or, once the sync script saw
-    them not start, since when they have not. The cloud is no computer, so it is never named as one: they run there as
-    two scheduled tasks, or have not since when. Stopped (`onboard.cloud_stopped`: in the cloud, whose two tasks stay
+    them not start, since when they have not. The cloud is no computer, so it is never named as one: the sweep runs
+    there as a scheduled task, or has not since when. Stopped (`onboard.cloud_stopped`: in the cloud, whose task stays
     off once a proof showed a refusal missing): that they are, what the cloud no longer refuses, and 'run my routines
-    here', in place of both, and of the pause, since resuming starts nothing while the cloud's tasks stay off. A
+    here', in place of both, and of the pause, since resuming starts nothing while the cloud's task stays off. A
     routine paused, or one nobody may run, is not one the scheduler failed to start, so then no `not started` line;
     with nothing recorded, those lines are as the sync script wrote."""
     import onboard
     import routine
-    until, away, cloud, stopped = None, "", False, {}
+    until, away, cloud, stopped, daily_here = None, "", False, {}, False
     try:
         record = routine.host(ws) if ws else None
         if record is not None and not record.get("unclear"):
@@ -962,6 +962,7 @@ def _host_rows(ws, now) -> list:
             mine = record["machine"] == routine.this_machine()
             away = "" if cloud or mine else (_text(record["name"]) or "another computer")   # the cloud is no computer
             stopped = onboard.cloud_stopped(ws) if cloud else {}
+            daily_here = cloud and record.get("computer") in (None, routine.this_machine())   # it keeps the daily
     except Exception:   # never a file it could not read (`routine.host` reads that as unclear): said, not hidden
         return [_could_not_read("Where your routines run")]
     if record is None:
@@ -975,7 +976,7 @@ def _host_rows(ws, now) -> list:
     if not (away or cloud):
         return rows or _missed_rows(ws, now)
     there = HOST_CLOUD if cloud else HOST_ELSEWHERE.format(name=away)
-    return rows + (([] if until else _missed_rows(ws, now, away, cloud)) or [_fact("Routines", there)])
+    return rows + (([] if until else _missed_rows(ws, now, away, cloud, daily_here)) or [_fact("Routines", there)])
 
 
 def _held(plan: dict, run) -> bool:
@@ -1083,31 +1084,34 @@ def _stopped_rows(ws, now, skip=()) -> list:
     return rows
 
 
-def _missed_rows(ws, now, away: str = "", cloud: bool = False) -> list:
+def _missed_rows(ws, now, away: str = "", cloud: bool = False, daily_here: bool = False) -> list:
     """What the sync script saw not start (`<routine> not started`, since when), as it writes it. When another
     computer runs the routines (`away`, its name) or the cloud does (`cloud`), one line from the earliest says so and
-    offers to run them here."""
+    offers to run them here; but the daily, which stays on the computer the sweep moved from (`daily_here`), is said
+    as this computer's own."""
     try:
         data = _yaml(ws / STALE) if ws else {}
     except Unreadable:
         return [_could_not_read("The list of routines that did not start")]
-    if away or cloud:
-        entries = [since for entry, since in data.items() if str(entry).endswith(" not started")]
-        if not entries:
-            return []
-        since = sorted(s for s in map(stamp, entries) if s)
-        day = f" since {_day(_shown(since[0]))}" if since else ""
-        where, offer = (("in the cloud", "bring them to this computer") if cloud else
-                        (f"on {away}", "run them on this computer"))
-        return [_fact("Not started", f"Your routines haven't run {where}{day}; say 'run my routines here' to {offer}.")]
+    missed = {entry: since for entry, since in data.items() if str(entry).endswith(" not started")}
+    here = {entry: since for entry, since in missed.items() if daily_here and str(entry) == "daily not started"}
     rows = []
-    for entry, since in data.items():
-        if str(entry).endswith(" not started"):
-            name, plural = _routine_name(routine_key(str(entry)[:-len(" not started")]))
-            when = words(since, now, on=True)
-            rows.append(_fact("Not started", f"Your {name} {'have' if plural else 'has'} not started"
-                              + (f" since {when}" if when else "")
-                              + ". This computer's scheduler may not be running it. Say \"Schedule my routines\" to set it up again."))
+    if away or cloud:
+        entries = [since for entry, since in missed.items() if entry not in here]
+        if entries:
+            since = sorted(s for s in map(stamp, entries) if s)
+            day = f" since {_day(_shown(since[0]))}" if since else ""
+            where, offer = (("in the cloud", "bring them to this computer") if cloud else
+                            (f"on {away}", "run them on this computer"))
+            rows.append(_fact("Not started",
+                              f"Your routines haven't run {where}{day}; say 'run my routines here' to {offer}."))
+        missed = here
+    for entry, since in missed.items():
+        name, plural = _routine_name(routine_key(str(entry)[:-len(" not started")]))
+        when = words(since, now, on=True)
+        rows.append(_fact("Not started", f"Your {name} {'have' if plural else 'has'} not started"
+                          + (f" since {when}" if when else "")
+                          + ". This computer's scheduler may not be running it. Say \"Schedule my routines\" to set it up again."))
     return rows
 
 

@@ -1,7 +1,7 @@
-"""sync.py --cloud <chain>: a cloud run lands its own files once, on its chain's branch, through
-one REST pull request, and waits for the merge (spec 4.3). Against a throwaway bare origin and
-clones, as in test_sync.py; GitHub is a fake that answers the REST routes. The secret below is
-assembled from parts so this file passes the scan itself."""
+"""sync.py --cloud sweep: a cloud run lands its own files once, on its chain's branch, through
+one REST pull request, and waits for the merge (spec 4.3). Only the sweep runs in the cloud.
+Against a throwaway bare origin and clones, as in test_sync.py; GitHub is a fake that answers the
+REST routes. The secret below is assembled from parts so this file passes the scan itself."""
 import datetime as dt
 import json
 import re
@@ -12,6 +12,7 @@ from urllib.parse import unquote
 import pytest
 import yaml
 
+import cloud
 import pages
 import scan
 import sync
@@ -136,6 +137,16 @@ def line_at(clone: Path, ref: str) -> dict:
     return json.loads(shown(clone, ref, RUNS).splitlines()[-1])
 
 
+def marker(clone: Path, proof: bool, chain: str = "sweep") -> Path:
+    """The run's marker `cloud.py begin` writes under the home folder (a temporary one in every test): where the
+    run began, its chain, and whether it is a proof run."""
+    path = cloud.state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"workspace": clone.as_posix(), "chain": chain, "proof": proof}) + "\n",
+                    encoding="utf-8")
+    return path
+
+
 # ----- the landing --------------------------------------------------------------------------------
 def test_a_cloud_run_lands_on_its_chain_branch_through_one_rest_pull_request(repo, tmp_path, monkeypatch):
     main = git(repo, "rev-parse", "HEAD").stdout.strip()
@@ -161,7 +172,7 @@ def test_its_own_line_lands_with_it(repo, tmp_path, monkeypatch):
     git(repo, "fetch", "-q", "origin")
     line = line_at(repo, "origin/cloud/sweep")
     assert (line["routine"], line["cloud"], line["space"]) == ("sync", "sweep", "ada")
-    assert line["notes"] == {"staged": 2, "carried": True, "held": [], "left_out": 0}
+    assert line["notes"] == {"staged": 2, "carried": True, "held": [], "left_out": 0, "proof": False}
     assert branch_files(repo) == sorted([SOURCE, "knowledge/sources/2026/10/r1.md", RUNS])
 
 
@@ -350,15 +361,68 @@ def test_a_quiet_branch_older_than_six_hours_opens_its_pull_request(repo, tmp_pa
     assert code == 0 and len(gh.posts()) == 1 and notes["landing"] == "merged"
 
 
+PROOF = {"routine": "cloud-proof", "chain": "sweep", "edit": True, "tool": True, "network": True, "shell": True,
+         "at": "2026-10-27T09:00:00Z"}
+
+
 def test_a_proof_line_opens_its_pull_request(repo, tmp_path, monkeypatch):
     """A proof run writes only its line, and the move to the cloud reads that line on main."""
     begin(repo)
-    proof = {"routine": "cloud-proof", "chain": "sweep", "guard": True, "edit": True, "tool": True,
-             "at": "2026-10-27T09:00:00Z"}
-    write(repo / RUNS, json.dumps(proof) + "\n")
+    write(repo / RUNS, json.dumps(PROOF) + "\n")
     gh = CloudGh(tmp_path / "origin.git")
     code, notes = land(repo, monkeypatch, gh)
     assert code == 0 and len(gh.posts()) == 1 and notes["landing"] == "merged"
+
+
+@pytest.mark.parametrize("run", ["a proof", "a sweep after an earlier proof", "a sweep that carries an earlier proof"])
+def test_a_proof_landing_counts_the_file_it_left_out_and_asks_nothing(repo, tmp_path, monkeypatch, run):
+    """A proof run changes rules.md with a command on purpose: its landing leaves the file out, as every landing does,
+    and its sync line counts it (`left_out`) and says `proof`, which is the proof; it writes no security item. Only
+    the run's marker makes a run a proof: a real run that changes a protected file is still one item, whether main
+    holds an earlier proof's line or the branch its begin carried does."""
+    if run == "a sweep after an earlier proof":
+        commit(repo, "an earlier proof", {RUNS: json.dumps(PROOF) + "\n"})
+        git(repo, "push", "-q", "origin", "main")
+    if run == "a sweep that carries an earlier proof":
+        cloud_branch(tmp_path, {RUNS: json.dumps(PROOF) + "\n"})   # the proof's branch, which never merged
+    carried = begin(repo).get("carried") is True
+    assert carried is (run == "a sweep that carries an earlier proof")
+    marker(repo, proof=run == "a proof")
+    write(repo / "rules.md", "# Rules\n\nproof\n")
+    line = PROOF if run == "a proof" else {"routine": "sweep-chain", "at": "2026-10-27T10:00:00Z", "space": "ada",
+                                             "cost_tokens": 0, "notes": {"step": "agent", "cloud": True}}
+    with (repo / RUNS).open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps(line) + "\n")
+    code, notes = land(repo, monkeypatch, CloudGh(tmp_path / "origin.git"))
+    assert code == 0 and notes["landing"] == "merged"
+    landed = line_at(repo, "origin/cloud/sweep")
+    assert landed["routine"] == "sync" and landed["notes"]["left_out"] == 1
+    assert landed["notes"]["proof"] is (run == "a proof")
+    assert "rules.md" not in branch_files(repo) and "rules.md" in git(repo, "status", "--porcelain").stdout
+    if run == "a proof":
+        assert branch_files(repo) == [RUNS] and not (repo / ITEMS).exists()
+    else:
+        assert branch_files(repo) == sorted([ITEMS, RUNS])
+        [item] = yaml.safe_load(shown(repo, "origin/cloud/sweep", ITEMS))["items"]
+        assert item["id"].startswith("cloud-protected-sweep-") and item["kind"] == "security"
+        assert item["text"] == "A cloud run changed 1 protected file; it was not landed."
+
+
+def test_only_a_marker_that_says_proof_makes_a_proof_run(repo):
+    """`Run.cloud_proof` reads the marker `cloud.py begin` wrote: no marker, one that cannot be read, or one whose
+    `proof` is anything but true is a real run, whose landing asks about every protected file it left out."""
+    run = sync.Run(repo, repo / ".git", sync.parse(["--root", str(repo), "--cloud", "sweep"]))
+    assert not cloud.state_path().exists() and run.cloud_proof() is False
+    path = marker(repo, proof=False)
+    assert run.cloud_proof() is False
+    path.write_text(json.dumps({"workspace": repo.as_posix(), "chain": "sweep", "proof": "yes"}), encoding="utf-8")
+    assert run.cloud_proof() is False
+    path.write_text("{not json", encoding="utf-8")
+    assert run.cloud_proof() is False
+    path.write_text(json.dumps(["proof"]), encoding="utf-8")
+    assert run.cloud_proof() is False
+    marker(repo, proof=True)
+    assert run.cloud_proof() is True
 
 
 # ----- the lease ----------------------------------------------------------------------------------
@@ -408,7 +472,7 @@ def test_a_protected_push_between_begin_and_the_landing_is_one_security_item(rep
 
 
 # ----- the wait -----------------------------------------------------------------------------------
-def test_two_chains_landing_at_once_remerge_main_and_land(repo, tmp_path, monkeypatch):
+def test_a_main_that_moves_while_it_waits_is_merged_in_again_and_lands(repo, tmp_path, monkeypatch):
     commit(repo, "base", {WATERMARK: marks("19", "19", "19"), RUNS: '{"routine": "daily", "at": "x"}\n'})
     git(repo, "push", "-q", "origin", "main")
     begin(repo)
@@ -416,7 +480,7 @@ def test_two_chains_landing_at_once_remerge_main_and_land(repo, tmp_path, monkey
     write(repo / WATERMARK, marks(mail="26", calls="21", at="26"))
     daily = '{"routine": "daily-chain", "at": "2026-10-27T07:00:00Z"}'
 
-    def daily_lands(read):   # the daily's pull request merged while the sweep's waited
+    def daily_lands(read):   # the computer's daily landed while the sweep's pull request waited
         if read == 0:
             on_main(tmp_path, {RUNS: '{"routine": "daily", "at": "x"}\n' + daily + "\n",
                                WATERMARK: marks(mail="20", calls="25", at="25")}, name="daily")
@@ -469,7 +533,7 @@ def test_a_pull_request_the_person_closes_while_it_waits_is_closed(repo, tmp_pat
     assert code == 0 and notes["landing"] == "closed" and gh.reads == 2 and gh.slept == [sync.POLL_SECONDS]
     said = capsys.readouterr().out
     assert "pull request #12 was closed without merging; the next cloud run starts again from main" in said
-    assert "tracker issues and owner notices" in said   # what closing repeats
+    assert "tracker issues" not in said and "owner notices" not in said   # the cloud sweep makes neither
 
 
 def red_run(repo: Path, tmp_path: Path, monkeypatch) -> tuple:
@@ -579,7 +643,20 @@ def test_cloud_excludes_the_release_leg():
             sync.parse(["--cloud", "sweep", *extra])
     with pytest.raises(SystemExit):
         sync.parse(["--cloud", "main"])
-    assert sync.parse(["--cloud", "daily"]).wait_minutes == 9 and sync.parse([]).cloud is None
+    assert sync.parse(["--cloud", "sweep"]).wait_minutes == 9 and sync.parse([]).cloud is None
+
+
+def test_a_cloud_daily_is_refused_and_nothing_runs(repo, monkeypatch, capsys):
+    """Only the sweep runs in the cloud: the daily stays on the computer, so `--cloud daily` is no landing."""
+    monkeypatch.setattr(sync.Run, "gh", lambda self, *args: pytest.fail("GitHub was asked"))
+    write(repo / "work" / "notes.md", "# Notes\n\nline two\n")
+    head = git(repo, "rev-parse", "HEAD").stdout
+    with pytest.raises(SystemExit) as stopped:
+        sync.main(["--root", str(repo), "--cloud", "daily"])
+    assert stopped.value.code == 2 and "invalid choice: 'daily'" in capsys.readouterr().err
+    assert git(repo, "rev-parse", "HEAD").stdout == head and not (repo / RUNS).exists()
+    with pytest.raises(ValueError):
+        sync.carry(repo, "daily", gh=ClosedPulls())
 
 
 @pytest.mark.parametrize("extra", [[], ["--dry-run"], ["--release-leg"]])

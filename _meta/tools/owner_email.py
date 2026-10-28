@@ -331,23 +331,45 @@ def _security_digest(notices: list) -> dict:
                         "You get at most one of these emails a day."}
 
 
+def _security_file(path: Path, notices: list, to: str, today: str, queued_at: str) -> None:
+    combined = notices[0] if len(notices) == 1 else _security_digest(notices)
+    data = {"key": notices[0].get("key"), "keys": [n["key"] for n in notices if n.get("key")], "kind": "security",
+            "queued_at": queued_at, "notices": notices, "notice": combined, "payload": render(combined, to, today)}
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
+
+
+def _new_file(folder: Path, stem: str) -> Path:
+    """The first `<stem>-<n>.json` not in use: a queue only ever adds a file, never one a notice still holds."""
+    n = len(list(folder.glob("*.json"))) + 1
+    while (folder / f"{stem}-{n}.json").exists():
+        n += 1
+    return folder / f"{stem}-{n}.json"
+
+
 def _queue_security(root: Path, notice: dict, space, today: str) -> Path:
-    """Add a security notice to the one pending digest (a single notice renders as itself)."""
+    """A security notice in a pending file of its own: a queue only ever adds a file, so the cloud sweep queueing one
+    never touches the file the computer's daily is sending (`pending` joins them into one digest there)."""
     to = recipient(root)
     render(notice, to, today)   # the notice itself must pass the check
     folder = root / NOTICES / "pending"
     folder.mkdir(parents=True, exist_ok=True)
-    path = next((p for p in sorted(folder.glob("*.json")) if _kind(p) == "security"), None)
-    data = json.loads(path.read_text(encoding="utf-8")) if path else {}
-    notices = list(data.get("notices") or ([data["notice"]] if data.get("notice") else [])) + [notice]
-    combined = notices[0] if len(notices) == 1 else _security_digest(notices)
-    if path is None:
-        path = folder / f"{space.now():%Y%m%dT%H%M%S}-security-{len(list(folder.glob('*.json'))) + 1}.json"
-    data.update({"key": notices[0].get("key"), "keys": [n["key"] for n in notices if n.get("key")],
-                 "kind": "security", "queued_at": data.get("queued_at") or f"{space.now():%Y-%m-%dT%H:%M:%SZ}",
-                 "notices": notices, "notice": combined, "payload": render(combined, to, today)})
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
+    path = _new_file(folder, f"{space.now():%Y%m%dT%H%M%S}-security")
+    _security_file(path, [notice], to, today, f"{space.now():%Y-%m-%dT%H:%M:%SZ}")
     return path
+
+
+def _join_security(root: Path, paths: list, now: dt.datetime) -> list:
+    """The pending security files joined into the oldest, as one digest, the others removed: one email for them all.
+    Only the sender, on the computer, joins; a queue never rewrites a file."""
+    found = [p for p in paths if _kind(p) == "security"]
+    if len(found) < 2:
+        return paths
+    datas = [json.loads(p.read_text(encoding="utf-8")) for p in found]
+    notices = [n for d in datas for n in (d.get("notices") or ([d["notice"]] if d.get("notice") else []))]
+    _security_file(found[0], notices, recipient(root), f"{now:%Y-%m-%d}", datas[0].get("queued_at") or "")
+    for extra in found[1:]:
+        extra.unlink()
+    return [p for p in paths if p not in found[1:]]
 
 
 def _security_sent_within(root: Path, now: dt.datetime) -> bool:
@@ -383,8 +405,7 @@ def queue(root, notice: dict, today: str | None = None) -> Path | None:
     payload = render(notice, recipient(root), today)
     folder = root / NOTICES / "pending"
     folder.mkdir(parents=True, exist_ok=True)
-    stamp = space.now().strftime("%Y%m%dT%H%M%S")
-    path = folder / f"{stamp}-{notice.get('kind')}-{len(list(folder.glob('*.json'))) + 1}.json"
+    path = _new_file(folder, f"{space.now():%Y%m%dT%H%M%S}-{notice.get('kind')}")
     path.write_text(json.dumps({"key": key, "kind": notice.get("kind"), "queued_at": f"{space.now():%Y-%m-%dT%H:%M:%SZ}",
                                 "notice": notice, "payload": payload}, ensure_ascii=False, indent=2) + "\n",
                     encoding="utf-8", newline="\n")
@@ -392,12 +413,15 @@ def queue(root, notice: dict, today: str | None = None) -> Path | None:
 
 
 def pending(root, now: dt.datetime | None = None) -> list:
-    """The notices to send now: a security one waits while one went out in the last 24 hours."""
+    """The notices to send now: a security one waits while one went out in the last 24 hours; the security ones
+    pending are joined into one digest first (`_join_security`)."""
     paths = sorted((Path(root) / NOTICES / "pending").glob("*.json"))
     if any(_kind(p) == "security" for p in paths):
         now = now or spaceyaml.load(root).now()
         if _security_sent_within(Path(root), now):
             paths = [p for p in paths if _kind(p) != "security"]
+        else:
+            paths = _join_security(Path(root), paths, now)
     return paths
 
 

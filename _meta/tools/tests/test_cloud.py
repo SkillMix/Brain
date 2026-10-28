@@ -1,16 +1,12 @@
-"""cloud.py: a cloud run's begin, the scheduled task it runs as, and its proof line (spec 4.1, 4.2, 4.6, 4.7, 4.9,
-4.11). A cloud run's machine is a folder standing in for /home/user (`SPACES_CLOUD_HOME`) that holds Ada's workspace
-clone, cloned from a throwaway bare origin as the platform clones it; the home folder, where begin writes the guard
-profile and the state the guard plugin reads, is conftest's."""
-import base64
+"""cloud.py: a cloud sweep's begin, the scheduled task it runs as, and its proof line (spec 4.1, 4.2, 4.6, 4.7, 4.9,
+4.11; docs/design/2026-10-28-cloud-sweep-design.md). A cloud run's machine is a folder standing in for /home/user
+(`SPACES_CLOUD_HOME`) that holds Ada's workspace clone, cloned from a throwaway bare origin as the platform clones it;
+the home folder, where begin writes the run's marker, is conftest's."""
 import datetime as dt
-import hashlib
-import importlib.util
 import json
 import os
 import shutil
 import subprocess
-import zlib
 import zoneinfo
 from pathlib import Path
 
@@ -22,7 +18,6 @@ import cloud
 import onboard
 import pages
 import routine
-import send_guard
 import sync
 from conftest import make_space
 
@@ -33,12 +28,14 @@ needs_zones = pytest.mark.skipif(not zoneinfo.available_timezones(),
 
 TEMPLATE = Path(__file__).resolve().parents[3]
 NOW = dt.datetime(2026, 10, 27, 9, 0, tzinfo=dt.timezone.utc)
-TASKS = {"sweep": "trig_01AAAAAAAA", "daily": "trig_01BBBBBBBB"}
+TASKS = {"sweep": "trig_01AAAAAAAA"}
+ENV = "env_01Test"   # the cloud environment the task runs in
 MAIL_READ, MAIL_SEARCH = "mcp__mail__get_message", "mcp__mail__search_threads"
 MAIL_SEND, MAIL_TRASH = "mcp__mail__send_message", "mcp__mail__trash_message"
 TRACKER_READ, TRACKER_WRITE, TRACKER_DELETE = ("mcp__tracker__list_issues", "mcp__tracker__create_issue",
                                                "mcp__tracker__delete_issue")
 GRANT = {"read": [MAIL_READ, MAIL_SEARCH, TRACKER_READ], "write": [TRACKER_WRITE], "send": [MAIL_SEND]}
+READ_ONLY = {"read": [MAIL_READ, MAIL_SEARCH, TRACKER_READ], "write": [], "send": []}   # what the task is given
 ITEMS = Path("_inbound") / "needs-you" / "sync-cloud.yaml"
 GIT_ID = ["-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false"]
 
@@ -107,8 +104,8 @@ def ada(machine, tmp_path):
 
 
 def in_the_cloud(ws: Path, since: dt.datetime = NOW - dt.timedelta(hours=1), zone: str = "Europe/Amsterdam") -> dict:
-    """The routines moved to the cloud at `since` (an hour before now: neither chain is silent yet)."""
-    return routine.claim_cloud(ws, TASKS, zone, ["ada/ada-space"], GRANT, since)
+    """The sweep moved to the cloud at `since` (an hour before now)."""
+    return routine.claim_cloud(ws, TASKS, zone, ["ada/ada-space"], READ_ONLY, since)
 
 
 def next_run() -> None:
@@ -117,21 +114,9 @@ def next_run() -> None:
     shutil.rmtree(Path.home() / ".spaces" / "routines", ignore_errors=True)
 
 
-def token(value, deflate: bool = True) -> str:
-    """A `--grant` word: the base64url, without padding, of `value`'s compact JSON (or of `value` itself, bytes),
-    deflated (zlib) first unless `deflate` is false."""
-    raw = value if isinstance(value, bytes) else json.dumps(value, separators=(",", ":")).encode("utf-8")
-    return base64.urlsafe_b64encode(zlib.compress(raw, 9) if deflate else raw).decode("ascii").rstrip("=")
-
-
-def bare(data: bytes) -> str:
-    """Bytes as a `--grant` word as they are, not deflated again."""
-    return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
-
-
-def profile_of(chain: str) -> dict:
-    path = Path.home() / ".spaces" / "routines" / f"cloud-{chain}.settings.json"
-    return json.loads(path.read_text(encoding="utf-8"))
+def marker() -> dict:
+    """The run's marker begin wrote."""
+    return json.loads((Path.home() / ".spaces" / "routines" / "cloud.json").read_text(encoding="utf-8"))
 
 
 def items_of(ws: Path) -> list:
@@ -140,19 +125,36 @@ def items_of(ws: Path) -> list:
 
 
 def untouched(ws: Path) -> bool:
-    """Nothing a run writes is there: no run line, no profile, no state, no item, no carry's lease."""
+    """Nothing a run writes is there: no run line, no marker, no item, no carry's lease."""
     return (not (ws / "_meta" / "state" / "runs.jsonl").exists() and not (ws / ITEMS).exists()
             and not (Path.home() / ".spaces" / "routines").exists()
             and not list((ws / ".git").glob("sync-cloud-lease-*")))
+
+
+def landed(ws: Path, left_out: int, proof: bool = True) -> None:
+    """The cloud sync's own line, as it lands a run's lines: how many protected paths it left out, and whether the
+    run's marker said it was a proof (`proof`, as `sync.Run.cloud_proof` reads it)."""
+    with (ws / "_meta" / "state" / "runs.jsonl").open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps({"routine": "sync", "cloud": "sweep", "at": "2026-10-27T08:30:00Z", "space": "ada-space",
+                             "cost_tokens": 0, "notes": {"staged": 2, "left_out": left_out, "proof": proof}}) + "\n")
 
 
 # ----- begin: the gate -------------------------------------------------------------------------------------------
 def test_a_run_that_steps_aside_writes_nothing(ada):
     assert cloud.begin(ada, "sweep", now=NOW) == {"stopped": routine.NO_CLOUD}
     routine.claim_host(ada, "os", NOW)   # a computer runs them
-    said = cloud.begin(ada, "daily", now=NOW)
+    said = cloud.begin(ada, "sweep", now=NOW)
     assert said["stopped"].startswith("they run on ") and set(said) == {"stopped"}
     (ada / routine.HOST).unlink()
+    assert untouched(ada)
+
+
+def test_only_the_sweep_is_a_cloud_chain(ada):
+    assert cloud.CHAINS == ("sweep",)
+    with pytest.raises(ValueError, match="no cloud chain"):
+        cloud.begin(ada, "daily", now=NOW)
+    with pytest.raises(SystemExit):
+        cloud.parse(["begin", str(ada), "--chain", "daily"])
     assert untouched(ada)
 
 
@@ -171,29 +173,33 @@ def test_the_cli_exits_three_and_prints_why_when_it_steps_aside(ada, capsys):
 
 
 def test_a_real_run_stays_stopped_while_a_proof_shows_a_refusal_missing(ada, capsys):
-    """While a proof on main shows a refusal missing that no later proof showed again, the routines are stopped, and
-    begin holds that in code: a real run of either task stops, writing nothing, with the sentence the person reads.
-    A proof run still begins, so a proof that shows every refusal again can end the stop."""
+    """While a proof on main shows a refusal missing that no later proof showed again, the sweep is stopped, and
+    begin holds that in code: a real run stops, writing nothing, with the sentence the person reads. A proof run still
+    begins, so a proof that shows every refusal again, its landing included, can end the stop."""
     in_the_cloud(ada)
     put(ada / "_meta" / "state" / "runs.jsonl", json.dumps(
-        {"routine": "cloud-proof", "chain": "daily", "guard": True, "edit": True, "tool": True, "send": False,
-         "at": "2026-10-27T08:00:00Z"}) + "\n")
-    said = onboard.unrefused_sentence(ada, {"daily": ["send"]})
-    assert said.startswith("Your routines are stopped")
-    for chain in cloud.CHAINS:
-        assert cloud.begin(ada, chain, now=NOW) == {"stopped": said}
+        {"routine": "cloud-proof", "chain": "sweep", "edit": True, "tool": False, "at": "2026-10-27T08:00:00Z"}) + "\n")
+    said = onboard.unrefused_sentence(ada, {"sweep": ["tool"]})
+    assert said.startswith("Your sweep is stopped")
+    assert cloud.begin(ada, "sweep", now=NOW) == {"stopped": said}
     assert items_of(ada) == [] and not (Path.home() / ".spaces" / "routines").exists()
     assert cloud.main(["begin", str(ada), "--chain", "sweep"]) == cloud.STOPPED
     assert json.loads(capsys.readouterr().out) == {"stopped": said}
-    assert "stopped" not in cloud.begin(ada, "daily", proof=True, now=NOW)   # a re-proof runs
+    assert "stopped" not in cloud.begin(ada, "sweep", proof=True, now=NOW)   # a re-proof runs
     next_run()
-    cloud.proof_line(ada, "daily", guard=True, edit=True, tool=True, send=True, now=NOW)
-    assert "stopped" not in cloud.begin(ada, "daily", now=NOW)
+    # the shell's change of rules.md went through: the proof's own landing must leave it out
+    cloud.proof_line(ada, "sweep", edit=True, tool=True, network=True, shell=False, now=NOW)
+    assert cloud.begin(ada, "sweep", now=NOW)["stopped"] == said   # its landing has not said yet
+    landed(ada, left_out=1, proof=False)   # a real run's landing is not the proof's, whatever it left out
+    assert cloud.begin(ada, "sweep", now=NOW)["stopped"] == said
+    landed(ada, left_out=1)
+    next_run()
+    assert "stopped" not in cloud.begin(ada, "sweep", now=NOW)
 
 
 def test_begin_runs_only_on_the_clone_its_own_script_is_in(ada, machine, tmp_path, monkeypatch):
     """A begin run from a clone in the cloud's home is that clone's cloud.py on that clone: one that names another
-    clone as the workspace is refused, writing nothing, so that clone's guards and owner never become the run's."""
+    clone as the workspace is refused, writing nothing, so that clone's owner never becomes the run's."""
     in_the_cloud(ada)
     origin_space(tmp_path, "ada-harbor", profile="project")
     harbor = cloned(machine, tmp_path, "ada-harbor", "ada/ada-harbor")
@@ -201,7 +207,7 @@ def test_begin_runs_only_on_the_clone_its_own_script_is_in(ada, machine, tmp_pat
     with pytest.raises(ValueError, match="its own"):
         cloud.begin(ada, "sweep", now=NOW)
     with pytest.raises(ValueError, match="its own"):
-        cloud.begin(ada, "daily", proof=True, now=NOW, grant=cloud.task_grant(GRANT, "daily"))
+        cloud.begin(ada, "sweep", proof=True, now=NOW)
     assert cloud.main(["begin", str(ada), "--chain", "sweep", "--proof"]) == 2
     assert untouched(ada) and untouched(harbor)
     monkeypatch.setattr(cloud, "own_clone", lambda: ada)
@@ -229,8 +235,6 @@ def test_the_cursors_start_from_the_marks_else_ninety_days_back(ada):
         yaml.safe_dump({"at": "2026-10-20T08:00:00Z", "feeds": {"mail": "2026-10-20T08:00:00Z"}}))
     result = cloud.begin(ada, "sweep", now=NOW)
     assert result["cursors"][ada.as_posix()] == {"mail": "2026-10-20T08:00:00Z", "calls": "2026-07-29T09:00:00Z"}
-    next_run()
-    assert "cursors" not in cloud.begin(ada, "daily", now=NOW)   # the daily exports nothing
 
 
 def stub_carry(monkeypatch, **said):
@@ -244,20 +248,20 @@ def stub_carry(monkeypatch, **said):
 
 
 def test_a_carry_that_conflicts_stops_the_run_and_writes_nothing(ada, monkeypatch):
-    """A stopped run writes no profile, so nothing it wrote could land: it writes nothing at all, and says why in its
+    """A stopped run writes no marker, so nothing it wrote could land: it writes nothing at all, and says why in its
     log alone."""
     in_the_cloud(ada)
     stub_carry(monkeypatch, conflict=True)
     result = cloud.begin(ada, "sweep", now=NOW)
     assert result == {"stopped": "the last cloud run's branch conflicts with main in ada-space"}
     assert items_of(ada) == []
-    assert not (Path.home() / ".spaces" / "routines").exists()   # no profile, no state: the guard lets only begin run
+    assert not (Path.home() / ".spaces" / "routines").exists()   # no marker: the next begin is free
 
 
 def test_a_carry_that_fails_stops_the_run_too(ada, monkeypatch):
     in_the_cloud(ada)
     stub_carry(monkeypatch, error="the branch could not be fetched")
-    result = cloud.begin(ada, "daily", now=NOW)
+    result = cloud.begin(ada, "sweep", now=NOW)
     assert result == {"stopped": "the last cloud run's branch could not be brought into ada-space: the branch could "
                                  "not be fetched"}
     assert items_of(ada) == [] and not (Path.home() / ".spaces" / "routines").exists()
@@ -271,7 +275,7 @@ def test_a_branch_with_a_protected_change_is_one_security_item_and_the_run_goes_
     [item] = items_of(ada)
     assert item["kind"] == "security" and item["id"] == "cloud-branch-sweep-01234567"
     assert "cloud/sweep" in item["text"] and "2 protected files" in item["text"] and "not used" in item["text"]
-    assert profile_of("sweep")
+    assert marker()["chain"] == "sweep"
 
 
 def test_a_branch_the_person_closed_is_left_quietly(ada, monkeypatch):
@@ -291,7 +295,7 @@ def test_a_clean_carry_after_a_stop_goes_on(ada, monkeypatch):
 
 def test_every_clone_the_person_owns_is_a_root_the_workspace_first(ada, machine, tmp_path, monkeypatch):
     routine.claim_cloud(ada, TASKS, "Europe/Amsterdam", ["ada/ada-space", "ada/ada-brain", "ada/ada-harbor",
-                                                         "ben/ben-space"], GRANT, NOW - dt.timedelta(hours=1))
+                                                         "ben/ben-space"], READ_ONLY, NOW - dt.timedelta(hours=1))
     origin_space(tmp_path, "ada-brain", profile="brain")
     origin_space(tmp_path, "ada-harbor", profile="project")
     origin_space(tmp_path, "ben-space", owner="Ben Liu")
@@ -330,322 +334,46 @@ def test_a_linked_codebase_that_claims_to_be_a_space_is_no_root(ada, machine, tm
     result = cloud.begin(ada, "sweep", proof=True, now=NOW)   # a proof run: no record to read the spaces from
     assert result["roots"] == [ada.as_posix(), harbor.as_posix()]
     assert [root.name for root, _ in seen] == ["ada-space", "ada-harbor"]
-    allowed = json.dumps(profile_of("sweep")["permissions"]["allow"])
-    assert not any(name in allowed for name in ("ada-app", "ada-lib", "ada-site"))
 
 
 def test_once_moved_only_the_spaces_the_move_recorded_are_roots(ada, machine, tmp_path, monkeypatch):
-    routine.claim_cloud(ada, TASKS, "Europe/Amsterdam", ["ada/ada-space", "ada/ada-harbor"], GRANT,
+    routine.claim_cloud(ada, TASKS, "Europe/Amsterdam", ["ada/ada-space", "ada/ada-harbor"], READ_ONLY,
                         NOW - dt.timedelta(hours=1))
     origin_space(tmp_path, "ada-harbor", profile="project")
     harbor = cloned(machine, tmp_path, "ada-harbor", "ada/ada-harbor")
     codebase_claiming_a_space(machine, tmp_path, "ada-app", "ada/ada-app")   # attached, but no space the move kept
     stub_carry(monkeypatch)
-    assert cloud.begin(ada, "daily", now=NOW)["roots"] == [ada.as_posix(), harbor.as_posix()]
-
-
-# ----- begin: the guard profile ----------------------------------------------------------------------------------
-def test_begin_writes_the_guard_profile_from_the_records_grant(ada):
-    in_the_cloud(ada)
-    cloud.begin(ada, "sweep", now=NOW)
-    prof = profile_of("sweep")
-    allow, deny = prof["permissions"]["allow"], prof["permissions"]["deny"]
-    assert {*routine.REST_READS, *cloud.EXTRA_ALLOW} <= set(allow) and "Bash(gh api search/issues?*)" not in allow
-    path = Path.home() / ".spaces" / "routines" / "cloud-sweep.settings.json"
-    check = lambda command: bash_guard.check(path, {"tool_input": {"command": command}})   # noqa: E731
-    for read in ("gh api search/issues'?q=repo:ada/ada-site+is:pr+updated:>=2026-10-01&per_page=100'",
-                 "gh api repos/ada/ada-site/pulls/5/files'?per_page=100'"):   # spelled as the prompts spell them
-        assert check(read) is None, read
-    for refused in ("gh api search/issues'?q=x' -XPOST", *GRAPHQL_CALLS, "gh pr list", "gh pr list --state open"):
-        assert check(refused) is not None, refused
-    assert {MAIL_READ, MAIL_SEARCH, TRACKER_READ, TRACKER_WRITE, MAIL_SEND} <= set(allow)
-    assert MAIL_TRASH not in json.dumps(allow)
-    assert {"Bash(gh api * *)", "Bash(gh api *\t*)", *routine.GRAPHQL} <= set(deny)
-    hooks = {entry["matcher"] for entry in prof["hooks"]["PreToolUse"]}
-    assert {"Bash", MAIL_SEND, routine.TASK_MATCHER, routine.CONNECTOR_MATCHER} <= hooks
-    state = json.loads((Path.home() / ".spaces" / "routines" / "cloud.json").read_text(encoding="utf-8"))
-    assert state == {"workspace": ada.as_posix(), "profile": (Path.home() / ".spaces" / "routines"
-                                                                / "cloud-sweep.settings.json").as_posix(),
-                     "person": "owner@example.test", "chain": "sweep"}
-
-
-def test_begin_lets_sync_run_only_as_the_chains_own_landing(ada, machine, tmp_path, monkeypatch):
-    """sync.py runs in a cloud run only as its prompt's last step, `--root <root> --cloud <chain>`, each root landed
-    as itself on the task's own chain: without `--cloud` it is the computer's landing, which pushes a machine's
-    branch, and `--merge-latest` is git's merge driver, which git runs itself and which writes any file it is given."""
-    routine.claim_cloud(ada, TASKS, "Europe/Amsterdam", ["ada/ada-space", "ada/ada-harbor"], GRANT,
-                        NOW - dt.timedelta(hours=1))
-    origin_space(tmp_path, "ada-harbor", profile="project")
-    harbor = cloned(machine, tmp_path, "ada-harbor", "ada/ada-harbor")
-    stub_carry(monkeypatch)
     assert cloud.begin(ada, "sweep", now=NOW)["roots"] == [ada.as_posix(), harbor.as_posix()]
-    path = Path.home() / ".spaces" / "routines" / "cloud-sweep.settings.json"
-    check = lambda command: bash_guard.check(path, {"tool_input": {"command": command}})   # noqa: E731
-    sync_py = lambda root: f"python3 {root.as_posix()}/_meta/tools/sync.py"   # noqa: E731
-    for root in (ada, harbor):
-        assert check(f"{sync_py(root)} --root {root.as_posix()} --cloud sweep") is None, root
-    for command in (f"{sync_py(ada)} --root {ada.as_posix()}", f"{sync_py(ada)} --root {ada.as_posix()} --cloud daily",
-                    f"{sync_py(ada)} --root {harbor.as_posix()} --cloud sweep",
-                    f"{sync_py(ada)} --cloud sweep --root {ada.as_posix()}",
-                    f"{sync_py(ada)} --root {ada.as_posix()} --cloud sweep --dry-run",
-                    f"{sync_py(ada)} --root {ada.as_posix()} --release-leg",
-                    f"{sync_py(ada)} --merge-latest a {ada.as_posix()}/space.yaml b",
-                    f"{sync_py(ada)} --merge-l a {ada.as_posix()}/space.yaml b",
-                    f"python3 _meta/tools/sync.py --root {ada.as_posix()} --cloud sweep"):
-        assert check(command) is not None, command
 
 
-def test_a_codebase_named_for_graphql_is_read_like_any_other(ada):
-    """GraphQL is refused by its endpoint, never by a word inside a repository's name."""
+# ----- begin: the run's marker -----------------------------------------------------------------------------------
+def test_begin_writes_the_runs_marker_with_the_workspace_the_chain_and_whether_it_is_a_proof(ada):
+    """The marker says a proof is one, so the landing (`sync.Run.cloud_proof`) skips the security item for what a
+    proof's landing left out, and a real run's never."""
     in_the_cloud(ada)
-    cloud.begin(ada, "sweep", now=NOW)
-    path = Path.home() / ".spaces" / "routines" / "cloud-sweep.settings.json"
-    check = lambda command: bash_guard.check(path, {"tool_input": {"command": command}})   # noqa: E731
-    for read in GRAPHQL_SLUG_READS:
-        assert check(read) is None, read
-    for refused in GRAPHQL_CALLS:
-        assert check(refused) is not None, refused
-
-
-def test_the_clouds_own_reads_are_none_a_routine_has_already():
-    """The cloud adds to a routine's profile only the reads it lacks: `routine.REST_READS` covers the search for pull
-    requests, which a computer's routine makes too."""
-    reads = bash_guard._patterns(routine.REST_READS, True)
-    for rule in cloud.EXTRA_ALLOW:
-        assert not any(read.fullmatch(rule[len("Bash("):-1]) for read in reads), rule
-
-
-def test_the_daily_profile_holds_only_the_send_and_its_read_back(ada):
-    in_the_cloud(ada)
-    cloud.begin(ada, "daily", now=NOW)
-    allow = profile_of("daily")["permissions"]["allow"]
-    assert {MAIL_SEND, MAIL_READ} <= set(allow)
-    assert not {MAIL_SEARCH, TRACKER_READ, TRACKER_WRITE} & set(allow)
-
-
-# The repository feed's reads of a codebase whose name holds "graphql", spelled as the prompts spell them, and calls
-# that reach GraphQL however its endpoint is written.
-GRAPHQL_SLUG_READS = (
-    "gh api search/issues'?q=repo:acme/graphql-gateway+is:pr+is:merged+merged:>=2026-10-01&per_page=100'",
-    "gh api repos/acme/graphql-gateway/pulls/5", "gh api repos/acme/graphql-gateway/pulls/5/files'?per_page=100'",
-    "gh api repos/graphql/graphql-js/pulls/5")
-GRAPHQL_CALLS = ("gh api graphql", "gh api graphql -f query=x", "gh api /graphql", "gh api repos/../graphql",
-                 "gh api search/issues/../../graphql", "gh api https://api.github.com/graphql",
-                 "gh api HTTPS://api.github.com/graphql", "gh api repos/%2e%2e/graphql", "gh api repos/%2E%2E/graphql")
-
-
-# The reads a cloud run's repository feed makes, one endpoint word each, and calls that write to GitHub however the
-# write is spelled: a flag after a space, joined to another (-iXPUT), quoted, after a tab, out of a brace.
-GH_READS = ("gh api repos/ada/ada-space/pulls", "gh api repos/ada/ada-space/pulls/5/files",
-            "gh api search/issues?q=repo:ada/ada-space+is:pr")
-GH_WRITES = ("gh api -X POST repos/ada/ada-space/pulls -f title=x",
-             "gh api repos/ada/ada-space/pulls -X POST",
-             "gh api repos/ada/ada-space/pulls/5/merge -iXPUT",
-             "gh api repos/ada/ada-space/pulls/5/merge '-XPUT'",
-             'gh api repos/ada/ada-space/pulls/5/merge "-XPUT"',
-             "gh api repos/ada/ada-space/pulls/5/merge\t-XPUT",
-             "gh api repos/ada/ada-space/pulls/5/merge {-XPUT,}",
-             "gh api repos/ada/ada-space/branches/main/protection/enforce_admins '-X' DELETE",
-             "gh api repos/ada/ada-space/contents/rules.md '-XPUT' '-fmessage=x' '-fcontent=eA==' '-fbranch=main'",
-             "gh api repos/ada/ada-space/pulls\t-ftitle=x\t-fhead=cloud/sweep\t-fbase=main",
-             "gh api repos/ada/ada-space/pulls --paginate",
-             "gh api graphql -f query=x")
-
-
-def load_guard():
-    spec = importlib.util.spec_from_file_location("spaces_guard", TEMPLATE / "_meta" / "plugins" / "spaces-guard"
-                                                  / "guard.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def test_the_guard_plugin_holds_a_run_to_what_begin_wrote(ada):
-    tools = ada / "_meta" / "tools"
-    tools.mkdir(parents=True, exist_ok=True)
-    shutil.copy(bash_guard.__file__, tools / "bash_guard.py")
-    shutil.copy(send_guard.__file__, tools / "send_guard.py")
-    in_the_cloud(ada)
-    guard, env = load_guard(), {"CLAUDE_CODE_REMOTE": "true", "HOME": str(Path.home())}
-
-    def decide(mode, name, tool_input):
-        raw = json.dumps({"hook_event_name": "PreToolUse", "tool_name": name, "tool_input": tool_input}).encode()
-        return guard.main([mode], raw, env)
-    begin = {"command": cloud.begin_command("ada-space", "daily")}
-    assert decide("bash", "Bash", {"command": 'python3 -c "print(1)"'}) == guard.BLOCK   # before begin: begin only
-    assert decide("bash", "Bash", begin) == 0
-    cloud.begin(ada, "daily", now=NOW)
-    cursor = f"python3 {ada.as_posix()}/_meta/tools/sweep.py {ada.as_posix()} --cursor mail"
-    assert decide("bash", "Bash", {"command": cursor}) == 0
-    assert decide("bash", "Bash", {"command": 'python3 -c "print(1)"'}) == guard.BLOCK
-    for read in GH_READS:
-        assert decide("bash", "Bash", {"command": read}) == 0, read
-    for write in GH_WRITES:
-        assert decide("bash", "Bash", {"command": write}) == guard.BLOCK, write
-    assert decide("connector", MAIL_READ, {}) == 0 and decide("connector", MAIL_TRASH, {}) == guard.BLOCK
-    assert decide("connector", TRACKER_WRITE, {}) == guard.BLOCK   # the daily writes no issue
-    assert decide("send", MAIL_SEND, {"to": "nobody@example.test", "body": "x"}) == guard.BLOCK
-    assert decide("send", MAIL_SEND, {"to": "owner@example.test", "body": "x"}) == 0
-
-
-def test_the_begin_command_is_the_one_the_guard_lets_through_first(ada):
-    guard = load_guard()
-    for chain in cloud.CHAINS:
-        for proof, grant in ((False, None), (True, None), (True, cloud.task_grant(GRANT, chain))):
-            command = cloud.begin_command("ada-space", chain, proof, grant)
-            assert guard.BEGIN.fullmatch(command), command
-            args = cloud.parse(command.split()[2:])
-            assert (args.command, args.workspace, args.chain, args.proof) == ("begin", "/home/user/ada-space",
-                                                                              chain, proof)
-            assert args.grant == (token(cloud.task_grant(GRANT, chain)) if grant else None)
-
-
-def test_a_proofs_begin_command_carries_the_tasks_grant_and_a_real_runs_none():
-    grant = cloud.task_grant(GRANT, "daily")
-    command = cloud.begin_command("ada-space", "daily", proof=True, grant=grant)
-    assert command == f"{cloud.begin_command('ada-space', 'daily', proof=True)} --grant {token(grant)}"
-    word = command.split()[-1]
-    assert "=" not in word and cloud.grant_of(word) == grant == {"read": [MAIL_READ], "write": [],
-                                                                  "send": [MAIL_SEND]}
-    with pytest.raises(ValueError):
-        cloud.begin_command("ada-space", "daily", proof=False, grant=grant)   # a real run keeps the record's
-    # Names that do not pack: each holds 32 hex digits no other shares, so the word outgrows what the guard takes.
-    many = {"read": [f"mcp__mail__read_{hashlib.sha256(bytes([n % 256, n // 256])).hexdigest()[:32]}"
-                     for n in range(600)], "write": [], "send": []}
-    with pytest.raises(ValueError, match="too many"):   # longer than any word the guard lets through
-        cloud.begin_command("ada-space", "sweep", proof=True, grant=many)
-
-
-def many_apps() -> dict:
-    """A sweep's grant as claude.ai names a person's connectors (`mcp__claude_ai_<App>__<tool>`): twenty read tools of
-    each of eight work apps, the tracker's writes and the mail send. Its compact JSON alone, in base64url, is longer
-    than any word the guard lets through."""
-    apps = ("Linear", "Notion", "Slack", "Gmail", "Google_Drive", "Google_Calendar", "Microsoft_365", "Recorder")
-    reads = [f"{verb}_{thing}" for verb in ("get", "list", "search", "fetch")
-             for thing in ("issues", "comments", "projects", "documents", "messages")]
-    return {"read": [f"mcp__claude_ai_{app}__{tool}" for app in apps for tool in reads],
-            "write": [f"mcp__claude_ai_Linear__{tool}" for tool in ("save_issue", "save_comment", "save_project")],
-            "send": ["mcp__claude_ai_Gmail__send_message"]}
-
-
-def test_a_sweep_grant_of_many_apps_fits_its_proofs_begin_command():
-    grant = many_apps()
-    assert len(token(grant, deflate=False)) > cloud.GRANT_MAX   # it fits deflated only
-    command = cloud.begin_command("ada-space", "sweep", proof=True, grant=grant)
-    word = command.split()[-1]
-    assert len(word) <= cloud.GRANT_MAX and load_guard().BEGIN.fullmatch(command)
-    assert cloud.grant_of(word) == grant and cloud.parse(command.split()[2:]).grant == word
-
-
-def test_the_grant_word_is_as_long_as_the_guard_lets_through():
-    """`cloud.GRANT_MAX` and the guard plugin's BEGIN hold a grant word to the same length."""
-    guard = load_guard()
-    proof = cloud.begin_command("ada-space", "sweep", proof=True)
-    assert guard.BEGIN.fullmatch(f"{proof} --grant {'a' * cloud.GRANT_MAX}")
-    assert not guard.BEGIN.fullmatch(f"{proof} --grant {'a' * (cloud.GRANT_MAX + 1)}")
-    assert cloud.GRANT_WORD.fullmatch("a" * cloud.GRANT_MAX) and not cloud.GRANT_WORD.fullmatch(
-        "a" * (cloud.GRANT_MAX + 1))
-
-
-def guards_in(ws: Path) -> None:
-    tools = ws / "_meta" / "tools"
-    tools.mkdir(parents=True, exist_ok=True)
-    shutil.copy(bash_guard.__file__, tools / "bash_guard.py")
-    shutil.copy(send_guard.__file__, tools / "send_guard.py")
-
-
-def test_a_daily_proof_meets_the_send_guard_with_the_tasks_grant(ada, capsys):
-    """Before the move nothing records a grant, so a proof run takes the task's from its begin command: the send tool
-    is granted, and a send to anyone but the person is refused by the send guard, as it would be after the move."""
-    guards_in(ada)
-    word = token(cloud.task_grant(GRANT, "daily"))
-    assert cloud.main(["begin", str(ada), "--chain", "daily", "--proof", "--grant", word]) == 0
-    prof = profile_of("daily")
-    assert {MAIL_SEND, MAIL_READ} <= set(prof["permissions"]["allow"])
-    assert MAIL_SEND in {entry["matcher"] for entry in prof["hooks"]["PreToolUse"]}
-    guard, env = load_guard(), {"CLAUDE_CODE_REMOTE": "true", "HOME": str(Path.home())}
-
-    def decide(mode, name, tool_input):
-        raw = json.dumps({"hook_event_name": "PreToolUse", "tool_name": name, "tool_input": tool_input}).encode()
-        return guard.main([mode], raw, env)
-    assert decide("connector", MAIL_SEND, {}) == 0   # the grant lets the send tool through: the send guard decides
-    assert decide("send", MAIL_SEND, {"to": "nobody@example.test", "body": "x"}) == guard.BLOCK
-    assert decide("send", MAIL_SEND, {"to": "owner@example.test", "body": "x"}) == 0
-    assert decide("connector", MAIL_TRASH, {}) == guard.BLOCK and decide("connector", TRACKER_WRITE, {}) == guard.BLOCK
-
-
-def test_a_sweep_proof_is_granted_the_sweeps_tools(ada):
-    cloud.begin(ada, "sweep", proof=True, now=NOW, grant=cloud.task_grant(GRANT, "sweep"))
-    allow = profile_of("sweep")["permissions"]["allow"]
-    assert {MAIL_READ, MAIL_SEARCH, TRACKER_READ, TRACKER_WRITE, MAIL_SEND} <= set(allow)
-    assert MAIL_TRASH not in json.dumps(allow)
-
-
-def test_a_proof_after_the_move_is_granted_no_more_than_the_record(ada):
-    """Once the routines run in the cloud the record holds the grant the person moved with: a proof's own grant can
-    only narrow it, so a run talked into a proof cannot grant itself a tool."""
-    in_the_cloud(ada)
-    calendar, update = "mcp__calendar__list_events", "mcp__tracker__update_issue"   # a read and a write, never granted
-    wider = {**GRANT, "read": [*GRANT["read"], calendar], "write": [TRACKER_WRITE, update]}
-    assert "stopped" not in cloud.begin(ada, "sweep", proof=True, now=NOW, grant=wider)
-    allow = profile_of("sweep")["permissions"]["allow"]
-    assert {MAIL_READ, MAIL_SEARCH, TRACKER_READ, TRACKER_WRITE, MAIL_SEND} <= set(allow)
-    assert calendar not in json.dumps(allow) and update not in json.dumps(allow)
+    assert "stopped" not in cloud.begin(ada, "sweep", now=NOW)
+    assert marker() == {"workspace": ada.as_posix(), "chain": "sweep", "proof": False}
+    assert marker()["proof"] is False   # a boolean, not a 0 the landing would read as no proof by luck
+    assert sorted(p.name for p in (Path.home() / ".spaces" / "routines").iterdir()) == ["cloud.json"]   # no profile
     next_run()
-    cloud.begin(ada, "sweep", proof=True, now=NOW, grant={"read": [MAIL_READ], "write": [], "send": []})
-    allow = profile_of("sweep")["permissions"]["allow"]
-    assert MAIL_READ in allow and not {MAIL_SEARCH, TRACKER_READ, TRACKER_WRITE, MAIL_SEND} & set(allow)
+    cloud.begin(ada, "sweep", proof=True, now=NOW)
+    assert marker() == {"workspace": ada.as_posix(), "chain": "sweep", "proof": True}
+    assert marker()["proof"] is True   # `sync.Run.cloud_proof` takes only true itself
 
 
-DEFLATED = zlib.compress(json.dumps(GRANT, separators=(",", ":")).encode("utf-8"), 9)
-ONE_OFF = token(GRANT)[:20] + ("B" if token(GRANT)[20] == "A" else "A") + token(GRANT)[21:]
-NOT_GRANTS = {"not-base64url": "@@@", "padded": token(GRANT) + "=", "cut-short": "a", "too-long": "a" * 8193,
-              "not-deflated": token(GRANT, deflate=False), "stream-cut-short": bare(DEFLATED[:-4]),
-              "trailing-bytes": bare(DEFLATED + b"x"), "one-letter-off": ONE_OFF,
-              "inflates-too-far": token(b'{"read":[],"write":[],"send":[]' + b" " * (2 * 1024 * 1024) + b"}"),
-              "not-text": token(b"\xff\xfe\xfd"), "not-json": token(b"not json"), "a-list": token([]),
-              "null": token(None), "nested-deep": token(b"[" * 3000 + b"]" * 3000),
-              "another-part": token({**GRANT, "admin": [MAIL_TRASH]}),
-              "a-part-missing": token({"read": [MAIL_READ], "write": []}),
-              "not-a-list": token({**GRANT, "read": MAIL_READ}), "not-a-name": token({**GRANT, "read": [7]}),
-              "a-built-in": token({**GRANT, "send": ["Bash"]}),
-              "a-server-alone": token({**GRANT, "send": ["mcp__mail"]}),
-              "no-server": token({**GRANT, "send": ["mcp____send"]}),
-              "a-space": token({**GRANT, "send": ["mcp__mail__send message"]})}
-
-
-@pytest.mark.parametrize("word", list(NOT_GRANTS.values()), ids=list(NOT_GRANTS))
-def test_a_grant_that_is_none_refuses_the_run_and_writes_nothing(ada, word, capsys):
-    in_the_cloud(ada)   # a real run would go on: the grant alone stops it
-    assert cloud.main(["begin", str(ada), "--chain", "daily", "--proof", "--grant", word]) == 2
-    assert "grant" in capsys.readouterr().out
-    (ada / routine.HOST).unlink()
-    assert untouched(ada)
-
-
-def test_a_grant_without_a_proof_refuses_the_run_and_writes_nothing(ada, capsys):
+def test_a_real_run_lets_go_of_the_items_an_earlier_shape_wrote_and_a_proof_keeps_them(ada):
+    """The cloud once watched a silent chain and a stale pin; it no longer does. A real run takes their items out,
+    keeping the cloud sync's own; a proof run, which proves the task and nothing else, leaves the file as it is."""
+    old = [{"id": "cloud-silent-daily-20261024", "kind": "check", "text": "x", "recommendation": "x", "default": "x"},
+           {"id": "cloud-stale-pin-20261022", "kind": "check", "text": "x", "recommendation": "x", "default": "x"},
+           {"id": "sync-cloud-held-1", "kind": "check", "text": "x", "recommendation": "x", "default": "x"}]
+    put(ada / ITEMS, yaml.safe_dump({"items": old}, sort_keys=False))
+    cloud.begin(ada, "sweep", proof=True, now=NOW)
+    assert [i["id"] for i in items_of(ada)] == [i["id"] for i in old]
+    next_run()
     in_the_cloud(ada)
-    assert cloud.main(["begin", str(ada), "--chain", "sweep", "--grant", token(GRANT)]) == 2
-    assert "proof" in capsys.readouterr().out
-    with pytest.raises(ValueError):
-        cloud.begin(ada, "sweep", now=NOW, grant=GRANT)
-    assert untouched(ada)
-
-
-def test_a_proofs_grant_is_refused_while_the_record_is_unclear(ada, capsys):
-    """An unclear record may be the move's, garbled by a merge: nothing could narrow a proof's grant to what the
-    person moved with, so the grant is not trusted, and the run writes nothing."""
-    in_the_cloud(ada)
-    path = ada / routine.HOST
-    path.write_text(path.read_text(encoding="utf-8") + 'machine: "m-cloud"\n', encoding="utf-8")   # a key twice
-    assert routine.host(ada) == {"unclear": True}
-    word = token(cloud.task_grant(GRANT, "daily"))
-    assert cloud.main(["begin", str(ada), "--chain", "daily", "--proof", "--grant", word]) == 2
-    said = capsys.readouterr().out.strip()
-    assert said == f"cloud: {cloud.UNCLEAR_GRANT}" and said.count(".") == 1 and said.endswith(".")
-    with pytest.raises(ValueError, match="unclear"):
-        cloud.begin(ada, "daily", proof=True, now=NOW, grant=cloud.task_grant(GRANT, "daily"))
-    assert untouched(ada)
+    assert cloud.begin(ada, "sweep", now=NOW)["items"] == []
+    assert [i["id"] for i in items_of(ada)] == ["sync-cloud-held-1"]
 
 
 def test_begin_runs_once_per_run(ada, capsys):
@@ -655,15 +383,13 @@ def test_begin_runs_once_per_run(ada, capsys):
     before = state.read_text(encoding="utf-8")
     runs = ada / "_meta" / "state" / "runs.jsonl"
     with pytest.raises(ValueError, match="once"):
-        cloud.begin(ada, "daily", now=NOW)
+        cloud.begin(ada, "sweep", now=NOW)
     capsys.readouterr()
-    for argv in (["--chain", "sweep"], ["--chain", "daily", "--proof"],
-                 ["--chain", "daily", "--proof", "--grant", token(cloud.task_grant(GRANT, "daily"))]):
+    for argv in (["--chain", "sweep"], ["--chain", "sweep", "--proof"]):
         assert cloud.main(["begin", str(ada), *argv]) == 2, argv
         assert "once" in capsys.readouterr().out
-    assert state.read_text(encoding="utf-8") == before   # still the first begin's: its profile, its chain
-    assert not (Path.home() / ".spaces" / "routines" / "cloud-daily.settings.json").exists()
-    assert not (ada / ".git" / "sync-cloud-lease-daily").exists() and not runs.exists()   # no carry, no line
+    assert state.read_text(encoding="utf-8") == before   # still the first begin's
+    assert not runs.exists()   # no line
 
 
 def test_a_begin_that_stepped_aside_leaves_the_next_begin_free(ada):
@@ -672,13 +398,22 @@ def test_a_begin_that_stepped_aside_leaves_the_next_begin_free(ada):
     assert "stopped" not in cloud.begin(ada, "sweep", now=NOW)
 
 
+def test_the_begin_command_is_the_one_its_parser_reads_back():
+    for proof in (False, True):
+        command = cloud.begin_command("ada-space", "sweep", proof)
+        assert command.startswith("python3 /home/user/ada-space/_meta/tools/cloud.py begin ") and "--grant" not in command
+        args = cloud.parse(command.split()[2:])
+        assert (args.command, args.workspace, args.chain, args.proof) == ("begin", "/home/user/ada-space",
+                                                                          "sweep", proof)
+
+
 # ----- begin: a proof run, and mounts ----------------------------------------------------------------------------
 def test_a_proof_begin_skips_only_the_runner_check_and_exports_nothing(ada, monkeypatch):
     seen = stub_carry(monkeypatch)
     result = cloud.begin(ada, "sweep", proof=True, now=NOW)   # no record yet: a proof runs before the claim
     assert "stopped" not in result and seen == [(ada, "sweep")]
     assert result["cursors"] == {ada.as_posix(): {"mail": pages.iso(NOW), "calls": pages.iso(NOW)}}
-    assert profile_of("sweep")["permissions"]["deny"] and result["items"] == []
+    assert marker()["chain"] == "sweep" and result["items"] == []
 
 
 def add_mount(ws: Path, tmp_path: Path, path: str, url: str, pin: str) -> None:
@@ -722,77 +457,33 @@ def test_a_mount_is_read_at_its_pin(ada, tmp_path):
     assert (ada / "brain" / "note-0.md").exists() and not (ada / "brain" / "note-1.md").exists()
 
 
-# ----- begin: a run that did nothing (4.11) ----------------------------------------------------------------------
-def run_line_on_main(ws: Path, routine_name: str, at: dt.datetime) -> None:
-    path = ws / "_meta" / "state" / "runs.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8", newline="\n") as fh:
-        fh.write(json.dumps({"routine": routine_name, "at": pages.iso(at), "space": "ada-space"}) + "\n")
-    git(ws, "add", "--", "_meta/state/runs.jsonl")   # the line alone: a mount's checkout is not its pin
-    git(ws, "commit", "-q", "-m", "chore: sync")
-    git(ws, "push", "-q", "origin", "HEAD:main")
+# The repository feed's reads of a codebase whose name holds "graphql", spelled as the prompts spell them, and calls
+# that reach GraphQL however its endpoint is written.
+GRAPHQL_SLUG_READS = (
+    "gh api search/issues'?q=repo:acme/graphql-gateway+is:pr+is:merged+merged:>=2026-10-01&per_page=100'",
+    "gh api repos/acme/graphql-gateway/pulls/5", "gh api repos/acme/graphql-gateway/pulls/5/files'?per_page=100'",
+    "gh api repos/graphql/graphql-js/pulls/5")
+GRAPHQL_CALLS = ("gh api graphql", "gh api graphql -f query=x", "gh api /graphql", "gh api repos/../graphql",
+                 "gh api search/issues/../../graphql", "gh api https://api.github.com/graphql",
+                 "gh api HTTPS://api.github.com/graphql", "gh api repos/%2e%2e/graphql", "gh api repos/%2E%2E/graphql")
 
 
-@needs_zones
-def test_a_silent_other_chain_is_one_item(ada):
-    in_the_cloud(ada, since=NOW - dt.timedelta(days=10))
-    run_line_on_main(ada, "daily", NOW - dt.timedelta(hours=60))   # the daily runs once a day: silent past 48 hours
-    result = cloud.begin(ada, "sweep", now=NOW)
-    [item] = items_of(ada)
-    assert item["id"] == "cloud-silent-daily-20261024" and result["items"] == [item["id"]]
-    assert item["text"].startswith("The cloud daily chain has not run since 2026-10-24 23:00")   # Amsterdam time
-    run_line_on_main(ada, "daily-chain", NOW - dt.timedelta(hours=2))
-    next_run()
-    assert cloud.begin(ada, "sweep", now=NOW)["items"] == [] and items_of(ada) == []   # it ran again: taken back
-
-
-def test_a_chain_within_twice_its_longest_gap_is_not_silent(ada):
-    in_the_cloud(ada, since=NOW - dt.timedelta(days=10))
-    run_line_on_main(ada, "sweep_chain", NOW - dt.timedelta(hours=23))   # the sweep's longest gap is 12 hours
-    run_line_on_main(ada, "cloud-proof", NOW - dt.timedelta(hours=1))
-    assert cloud.begin(ada, "daily", now=NOW)["items"] == []
-    run_line_on_main(ada, "sweep-chain", NOW - dt.timedelta(hours=25))   # an older line changes nothing
-    next_run()
-    assert cloud.begin(ada, "daily", now=NOW)["items"] == []
-
-
-@needs_zones
-def test_a_chain_that_never_ran_is_silent_counted_from_the_move(ada):
-    routine.claim_cloud(ada, TASKS, "Europe/Amsterdam", ["ada/ada-space"], GRANT, NOW - dt.timedelta(hours=20))
-    assert cloud.begin(ada, "daily", now=NOW)["items"] == []   # moved 20 hours ago: not yet
-    routine.claim_cloud(ada, TASKS, "Europe/Amsterdam", ["ada/ada-space"], GRANT, NOW - dt.timedelta(hours=30))
-    next_run()
-    result = cloud.begin(ada, "daily", now=NOW)
-    [item] = items_of(ada)
-    assert result["items"] == [item["id"]] == ["cloud-silent-sweep-20261026"]
-    assert item["text"].startswith("The cloud sweep has not run since 2026-10-26 04:00")
-
-
-def test_a_pin_older_than_three_days_is_one_item(ada, tmp_path):
-    in_the_cloud(ada, since=NOW - dt.timedelta(days=10))
-    run_line_on_main(ada, "sweep_chain", NOW - dt.timedelta(hours=2))
-    run_line_on_main(ada, "daily", NOW - dt.timedelta(hours=3))
-    pins = brain_origin(tmp_path, [NOW - dt.timedelta(days=9), NOW - dt.timedelta(days=5)])
-    add_mount(ada, tmp_path, "brain", (tmp_path / "ada-brain.git").as_uri(), pins[0])
-    assert cloud.begin(ada, "sweep", now=NOW)["items"] == []   # the sweep does not read the pins
-    next_run()
-    result = cloud.begin(ada, "daily", now=NOW)
-    [item] = items_of(ada)
-    assert item["id"] == "cloud-stale-pin-20261022" and result["items"] == [item["id"]]
-    assert "ada-space/brain" in item["text"] and "3 days" in item["text"]
-
-
-def test_a_pin_behind_by_less_than_three_days_or_at_the_tip_is_no_item(ada, tmp_path):
-    in_the_cloud(ada, since=NOW - dt.timedelta(days=10))
-    run_line_on_main(ada, "sweep_chain", NOW - dt.timedelta(hours=2))
-    pins = brain_origin(tmp_path, [NOW - dt.timedelta(days=9), NOW - dt.timedelta(days=2)])
-    add_mount(ada, tmp_path, "brain", (tmp_path / "ada-brain.git").as_uri(), pins[0])
-    assert cloud.begin(ada, "daily", now=NOW)["items"] == []   # behind for two days only
-    add_mount(ada, tmp_path, "brain", (tmp_path / "ada-brain.git").as_uri(), pins[1])
-    later = NOW + dt.timedelta(days=30)   # an old brain nobody changed is not a stale pin
-    run_line_on_main(ada, "sweep_chain", later - dt.timedelta(hours=2))
-    next_run()
-    assert cloud.begin(ada, "daily", now=later)["items"] == []
+# The reads a cloud run's repository feed makes, one endpoint word each, and calls that write to GitHub however the
+# write is spelled: a flag after a space, joined to another (-iXPUT), quoted, after a tab, out of a brace.
+GH_READS = ("gh api repos/ada/ada-space/pulls", "gh api repos/ada/ada-space/pulls/5/files",
+            "gh api search/issues?q=repo:ada/ada-space+is:pr")
+GH_WRITES = ("gh api -X POST repos/ada/ada-space/pulls -f title=x",
+             "gh api repos/ada/ada-space/pulls -X POST",
+             "gh api repos/ada/ada-space/pulls/5/merge -iXPUT",
+             "gh api repos/ada/ada-space/pulls/5/merge '-XPUT'",
+             'gh api repos/ada/ada-space/pulls/5/merge "-XPUT"',
+             "gh api repos/ada/ada-space/pulls/5/merge\t-XPUT",
+             "gh api repos/ada/ada-space/pulls/5/merge {-XPUT,}",
+             "gh api repos/ada/ada-space/branches/main/protection/enforce_admins '-X' DELETE",
+             "gh api repos/ada/ada-space/contents/rules.md '-XPUT' '-fmessage=x' '-fcontent=eA==' '-fbranch=main'",
+             "gh api repos/ada/ada-space/pulls\t-ftitle=x\t-fhead=cloud/sweep\t-fbase=main",
+             "gh api repos/ada/ada-space/pulls --paginate",
+             "gh api graphql -f query=x")
 
 
 # ----- the trigger -----------------------------------------------------------------------------------------------
@@ -828,22 +519,35 @@ def context(body: dict) -> dict:
     return body["job_config"]["ccr"]["session_context"]
 
 
+def render(ws: Path, **given) -> dict:
+    """The sweep's task, in Ada's zone and the test environment unless `given` says otherwise."""
+    return cloud.trigger(ws, "sweep", **{"timezone": "Europe/Amsterdam", "environment": ENV, **given})
+
+
+def test_the_task_grant_is_the_read_tools_alone():
+    assert cloud.task_grant(GRANT) == READ_ONLY
+    assert cloud.task_grant({"read": [MAIL_READ, MAIL_READ, 7], "send": [MAIL_SEND]}) == {
+        "read": [MAIL_READ], "write": [], "send": []}
+
+
+def test_the_task_may_call_the_read_tools_and_never_a_write_or_a_send(computer):
+    body = render(computer)
+    allowed, denied = context(body)["allowed_tools"], context(body)["disallowed_tools"]
+    assert set(READ_ONLY["read"]) <= set(allowed)
+    assert not {TRACKER_WRITE, MAIL_SEND} & set(allowed) and {TRACKER_WRITE, MAIL_SEND} <= set(denied)
+    assert body["mcp_connections"] == [{"name": "mail", "permitted_tools": ["get_message", "search_threads"]},
+                                       {"name": "tracker", "permitted_tools": ["list_issues"]}]
+
+
 def test_the_trigger_denies_every_ungranted_tool_by_name(computer):
-    body = cloud.trigger(computer, "daily", timezone="Europe/Amsterdam")
-    denied = context(body)["disallowed_tools"]
+    denied = context(render(computer))["disallowed_tools"]
     assert MAIL_TRASH in denied and "WebFetch" in denied and "mcp__github" in denied and "RemoteTrigger" in denied
-    assert {MAIL_SEARCH, TRACKER_READ, TRACKER_WRITE} <= set(denied)   # granted, but not to the daily
     assert {TRACKER_DELETE, "mcp__calendar__delete_event"} <= set(denied)   # all the probe saw, as on the computer
-    assert not {MAIL_SEND, MAIL_READ} & set(denied)
-    assert body["mcp_connections"] == [{"name": "mail", "permitted_tools": ["get_message", "send_message"]}]
-    sweep = cloud.trigger(computer, "sweep", timezone="Europe/Amsterdam")
-    assert {MAIL_TRASH, TRACKER_DELETE} <= set(context(sweep)["disallowed_tools"])
-    assert not set(GRANT["read"] + GRANT["write"] + GRANT["send"]) & set(context(sweep)["disallowed_tools"])
-    assert [c["name"] for c in sweep["mcp_connections"]] == ["mail", "tracker"]
+    assert not set(READ_ONLY["read"]) & set(denied)
 
 
 def test_the_trigger_denies_the_machinery_the_shell_shapes_and_git(computer):
-    denied = context(cloud.trigger(computer, "sweep", timezone="Europe/Amsterdam"))["disallowed_tools"]
+    denied = context(render(computer))["disallowed_tools"]
     assert {f"Edit(//**/{pattern})" for pattern in routine.PROTECTED_EDITS} <= set(denied)
     # A mount's `.git` is a file naming its git folder, which `.git/**` does not cover: pointed elsewhere, a status
     # in the root would run that folder's config.
@@ -852,8 +556,8 @@ def test_the_trigger_denies_the_machinery_the_shell_shapes_and_git(computer):
             "Edit(//home/user/ada-brain/identity/**)"} <= set(denied)
     # Every dot-entry of the home folder, in both spellings: user site-packages, git's own config, the shell's.
     assert {"Edit(~/.*)", "Edit(~/.*/**)", "Edit(//home/user/.*)", "Edit(//home/user/.*/**)"} <= set(denied)
-    # The system's own folders, where a .pth or a sitecustomize would run inside every python3 the guard and the tools
-    # start; the clones in /home/user and /tmp stay open.
+    # The system's own folders, where a .pth or a sitecustomize would run inside every python3 the tools start; the
+    # clones in /home/user and /tmp stay open.
     system = {rule for rule in denied if rule.startswith("Edit(//") and not rule.startswith(("Edit(//**/",
                                                                                              "Edit(//home/user/"))}
     assert system == {f"Edit(//{folder}/**)" for folder in (
@@ -878,35 +582,42 @@ def test_the_trigger_denies_the_machinery_the_shell_shapes_and_git(computer):
 
 def test_the_trigger_refuses_every_spelling_of_a_github_write_by_its_text_alone(computer):
     # The platform matches a Bash rule against the command's text only (spec 3): read the rules as the guard does.
-    denied = bash_guard._patterns(context(cloud.trigger(computer, "sweep", timezone="Europe/Amsterdam"))
-                                  ["disallowed_tools"], False)
+    denied = bash_guard._patterns(context(render(computer))["disallowed_tools"], False)
     for write in GH_WRITES:
         assert any(rule.fullmatch(write) for rule in denied), write
     for read in GH_READS:
         assert not any(rule.fullmatch(read) for rule in denied), read
 
 
-def test_the_trigger_enables_the_guard_plugin_and_never_runs_enabled(computer):
-    """The guard comes from the workspace's own marketplace, which the task attaches and which holds the guard as the
-    person's click landed it, never from the template's (spec 4.7)."""
+def test_the_trigger_names_its_environment_and_no_plugin_and_never_runs_enabled(computer):
+    """claude.ai drops a plugin, its marketplace and a soft deny list from a cloud task without a word: the body sends
+    none of them, and names the environment the task runs in, which claude.ai requires."""
     (computer / "_meta" / "state" / "template-origin.yaml").write_text("repo: ada/spaces-template\n", encoding="utf-8")
-    for chain in cloud.CHAINS:
-        body = cloud.trigger(computer, chain, timezone="Europe/Amsterdam")
-        assert body["enabled"] is False
-        assert context(body)["enabled_plugins"] == ["spaces-guard@spaces"]
-        assert context(body)["extra_marketplaces"] == {"spaces": {"source": {"source": "github",
-                                                                             "repo": "ada/ada-space"}}}
-        assert "https://github.com/ada/ada-space" in [s["git_repository"]["url"] for s in context(body)["sources"]]
-    assert len(context(body)["auto_mode_soft_deny"]) == 5
-    assert "Bash" in context(body)["allowed_tools"] and MAIL_SEND in context(body)["allowed_tools"]
+    body = render(computer)
+    assert body["enabled"] is False
+    assert body["job_config"]["ccr"]["environment_id"] == ENV
+    for key in ("enabled_plugins", "extra_marketplaces", "auto_mode_soft_deny"):
+        assert key not in json.dumps(body), key
+    assert "https://github.com/ada/ada-space" in [s["git_repository"]["url"] for s in context(body)["sources"]]
+    assert "Bash" in context(body)["allowed_tools"] and MAIL_SEND not in context(body)["allowed_tools"]
+
+
+@pytest.mark.parametrize("environment", [None, "", "01Test", "env_", "env_01 Test", "env_01/../x", "ENV_01Test",
+                                         "env_" + "a" * 65])
+def test_a_trigger_without_an_environment_is_never_rendered(computer, environment, capsys):
+    with pytest.raises(ValueError, match="environment"):
+        render(computer, environment=environment)
+    assert not (Path.home() / ".spaces" / "cloud-sweep.json").exists()
+    argv = ["trigger", str(computer), "--chain", "sweep", "--timezone", "Europe/Amsterdam"]
+    assert cloud.main(argv + (["--environment", environment] if environment is not None else [])) == 2
+    assert "environment" in capsys.readouterr().out
+    assert not (Path.home() / ".spaces" / "cloud-sweep.json").exists()
 
 
 def test_the_sweeps_task_keeps_the_shell_out_of_every_codebase_it_attaches(computer):
     """The sweep's task attaches codebases other people can push to, cloned beside the workspace: no shell command
-    of the task names one's clone, so a begin (or anything else) run from or on one is refused whatever the guard
-    does. The daily attaches none."""
-    sweep = context(cloud.trigger(computer, "sweep", timezone="Europe/Amsterdam"))["disallowed_tools"]
-    patterns = bash_guard._patterns(sweep, False)
+    of the task names one's clone, so a begin (or anything else) run from or on one is refused."""
+    patterns = bash_guard._patterns(context(render(computer))["disallowed_tools"], False)
     refused = lambda command: any(p.fullmatch(command) for p in patterns)   # noqa: E731
     for name in ("ada-app", "ada-site", "ada-lib"):
         for command in (f"python3 /home/user/{name}/_meta/tools/cloud.py begin /home/user/{name} --chain sweep",
@@ -919,99 +630,82 @@ def test_the_sweeps_task_keeps_the_shell_out_of_every_codebase_it_attaches(compu
                     "python3 /home/user/ada-brain/_meta/tools/sync.py --root /home/user/ada-brain --cloud sweep",
                     "python3 /home/user/ada-application/_meta/tools/x.py"):
         assert not refused(command), command
-    daily = context(cloud.trigger(computer, "daily", timezone="Europe/Amsterdam"))["disallowed_tools"]
-    assert not any("ada-app" in rule for rule in daily)
 
 
 def test_the_tasks_refuse_graphql_by_its_endpoint_and_not_a_codebases_name(computer):
-    denied = bash_guard._patterns(context(cloud.trigger(computer, "sweep", timezone="Europe/Amsterdam"))
-                                  ["disallowed_tools"], False)
+    denied = bash_guard._patterns(context(render(computer))["disallowed_tools"], False)
     for read in GRAPHQL_SLUG_READS:
         assert not any(rule.fullmatch(read) for rule in denied), read
     for call in GRAPHQL_CALLS:
         assert any(rule.fullmatch(call) for rule in denied), call
 
 
-def test_the_dailys_read_back_is_the_send_connectors_own(computer, monkeypatch):
-    """The daily may read back a sent message only through the connector it sends with: another connector's
-    `get_message`, a read-only mailbox's, is the sweep's alone."""
-    other = "mcp__Gmail-readonly__get_message"
-    grant = {"read": [MAIL_READ, other, MAIL_SEARCH], "write": [], "send": [MAIL_SEND]}
-    assert cloud.task_grant(grant, "daily") == {"read": [MAIL_READ], "write": [], "send": [MAIL_SEND]}
-    assert cloud.task_grant(grant, "sweep") == grant
+def no_grant(monkeypatch, **grant) -> None:
+    """This computer grants the routines nothing (or only `grant`), as one with no probe of its own does."""
     monkeypatch.setattr(routine, "grant", lambda workspace, *a, **k: {
-        **grant, "reconnect": [], "notes": [], "person": "owner@example.test", "shell": "/bin/sh"})
-    body = cloud.trigger(computer, "daily", timezone="Europe/Amsterdam")
-    assert other in context(body)["disallowed_tools"] and other not in context(body)["allowed_tools"]
-    assert body["mcp_connections"] == [{"name": "mail", "permitted_tools": ["get_message", "send_message"]}]
+        "read": [], "write": [], "send": [], **grant, "reconnect": [], "notes": [], "person": "owner@example.test",
+        "shell": ""})
 
 
-def no_grant(monkeypatch) -> None:
-    """This computer grants the routines nothing, as one with no probe of its own does."""
-    monkeypatch.setattr(routine, "grant", lambda workspace, *a, **k: {
-        "read": [], "write": [], "send": [], "reconnect": [], "notes": [], "person": "owner@example.test", "shell": ""})
-
-
-def test_a_computer_without_a_probe_renders_the_moved_tasks_with_the_records_grant(computer, monkeypatch):
-    """A computer that replaced the one the routines moved from has no probe of its own (its build does not probe
-    while the routines run in the cloud): it renders the tasks with the grant the move recorded."""
+def test_a_computer_without_a_probe_renders_the_moved_task_with_the_records_grant(computer, monkeypatch):
+    """A computer that replaced the one the sweep moved from has no probe of its own (its build does not probe
+    while the sweep runs in the cloud): it renders the task with the grant the move recorded, its reads alone."""
     routine.claim_cloud(computer, TASKS, "Europe/Amsterdam", ["ada/ada-space", "ada/ada-brain"], GRANT, NOW)
     (Path.home() / ".spaces" / "probe.json").unlink()
     no_grant(monkeypatch)
-    for chain in cloud.CHAINS:
-        body = cloud.trigger(computer, chain, timezone="Europe/Amsterdam")
-        kept = json.loads((Path.home() / ".spaces" / f"cloud-{chain}.json").read_text(encoding="utf-8"))
-        assert kept["grant"] == cloud.task_grant(GRANT, chain)
-        assert set(cloud._tools(kept["grant"])) <= set(context(body)["allowed_tools"])
-    assert kept["grant"] == {"read": [MAIL_READ], "write": [], "send": [MAIL_SEND]}
+    body = render(computer)
+    kept = json.loads((Path.home() / ".spaces" / "cloud-sweep.json").read_text(encoding="utf-8"))
+    assert kept["grant"] == READ_ONLY
+    assert set(cloud._tools(kept["grant"])) <= set(context(body)["allowed_tools"])
 
 
-def test_a_task_with_no_app_granted_is_never_rendered(computer, monkeypatch):
-    """A render with nothing granted would prove nothing and read nothing: it is refused in one sentence, and
-    nothing is kept. A probe on this computer is this computer's word, even beside a record that holds a grant."""
+def test_a_task_with_no_app_to_read_is_never_rendered(computer, monkeypatch):
+    """A render with nothing to read would prove nothing and read nothing: it is refused in one sentence, and nothing
+    is kept. A grant of writes and sends alone is none, since the task gets neither. A probe on this computer is this
+    computer's word, even beside a record that holds a grant."""
     no_grant(monkeypatch)
     with pytest.raises(ValueError, match="None of your apps"):
-        cloud.trigger(computer, "sweep", timezone="Europe/Amsterdam")
+        render(computer)
+    no_grant(monkeypatch, write=[TRACKER_WRITE], send=[MAIL_SEND])
+    with pytest.raises(ValueError, match="None of your apps"):
+        render(computer)
+    no_grant(monkeypatch)
     routine.claim_cloud(computer, TASKS, "Europe/Amsterdam", ["ada/ada-space", "ada/ada-brain"], GRANT, NOW)
     with pytest.raises(ValueError, match="None of your apps"):
-        cloud.trigger(computer, "daily", timezone="Europe/Amsterdam")
+        render(computer)
     (Path.home() / ".spaces" / "probe.json").unlink()
     routine.claim_host(computer, "os", NOW)   # no cloud record: nothing to fall back on
     with pytest.raises(ValueError, match="None of your apps"):
-        cloud.trigger(computer, "sweep", timezone="Europe/Amsterdam")
-    assert not any((Path.home() / ".spaces" / f"cloud-{chain}.json").exists() for chain in cloud.CHAINS)
-    assert cloud.main(["trigger", str(computer), "--chain", "sweep", "--timezone", "Europe/Amsterdam"]) == 2
+        render(computer)
+    assert not (Path.home() / ".spaces" / "cloud-sweep.json").exists()
+    assert cloud.main(["trigger", str(computer), "--chain", "sweep", "--timezone", "Europe/Amsterdam",
+                       "--environment", ENV]) == 2
 
 
 def test_the_trigger_schedule_keeps_the_persons_hours_off_the_hour(computer):
-    body = cloud.trigger(computer, "sweep", timezone="Europe/Amsterdam")
+    body = render(computer)
     assert body["cron_expression"].startswith("CRON_TZ=Europe/Amsterdam ")
     assert body["cron_expression"].split()[1:] == ["7", "7,13,19", "*", "*", "*"]
-    assert cloud.trigger(computer, "daily", timezone="Europe/Amsterdam")["cron_expression"] == \
-           "CRON_TZ=Europe/Amsterdam 30 6 * * *"
 
 
 @needs_zones
 def test_the_trigger_takes_the_zone_from_the_record_and_refuses_none(computer, monkeypatch):
     routine.claim_cloud(computer, TASKS, "America/New_York", ["ada/ada-space"], GRANT, NOW)
-    assert cloud.trigger(computer, "daily")["cron_expression"].startswith("CRON_TZ=America/New_York ")
+    assert render(computer, timezone=None)["cron_expression"].startswith("CRON_TZ=America/New_York ")
     (computer / routine.HOST).unlink()
     monkeypatch.setattr(cloud, "local_zone", lambda: None)
     with pytest.raises(ValueError, match="time zone"):
-        cloud.trigger(computer, "daily")
+        render(computer, timezone=None)
     with pytest.raises(ValueError, match="time zone"):
-        cloud.trigger(computer, "daily", timezone="Mars/Olympus")
+        render(computer, timezone="Mars/Olympus")
 
 
-def test_the_sweep_attaches_linked_codebases_and_the_daily_attaches_no_template(computer):
+def test_the_sweep_attaches_linked_codebases_and_no_template(computer):
     (computer / "_meta" / "state" / "template-origin.yaml").write_text("repo: ada/spaces-template\n", encoding="utf-8")
-    urls = lambda body: [s["git_repository"]["url"] for s in context(body)["sources"]]   # noqa: E731
-    sweep = cloud.trigger(computer, "sweep", timezone="Europe/Amsterdam")
-    assert urls(sweep) == [f"https://github.com/ada/{name}" for name in
-                           ("ada-space", "ada-brain", "ada-app", "ada-site", "ada-lib")]
-    daily = cloud.trigger(computer, "daily", timezone="Europe/Amsterdam")
-    assert urls(daily) == ["https://github.com/ada/ada-space", "https://github.com/ada/ada-brain"]
-    assert not any("template" in url for url in urls(sweep) + urls(daily))
+    urls = [s["git_repository"]["url"] for s in context(render(computer))["sources"]]
+    assert urls == [f"https://github.com/ada/{name}" for name in
+                    ("ada-space", "ada-brain", "ada-app", "ada-site", "ada-lib")]
+    assert not any("template" in url for url in urls)
 
 
 def test_a_repository_named_twice_in_two_cases_is_attached_once_as_first_named(computer):
@@ -1020,7 +714,7 @@ def test_a_repository_named_twice_in_two_cases_is_attached_once_as_first_named(c
     (computer / "_meta" / "state" / "links.json").write_text(json.dumps(
         {"links": 3, "repos": ["ADA/Ada-Brain", "https://github.com/ada/Ada-App.git", "ada/ada-app", "ada/ada-space"]}),
         encoding="utf-8")
-    body = cloud.trigger(computer, "sweep", timezone="Europe/Amsterdam")
+    body = render(computer)
     assert [s["git_repository"]["url"] for s in context(body)["sources"]] == \
            [f"https://github.com/ada/{name}" for name in ("Ada-Space", "ada-brain", "Ada-App", "ada-lib")]
     assert "Edit(//home/user/Ada-App/identity/**)" in context(body)["disallowed_tools"]   # the clone's own folder
@@ -1038,115 +732,144 @@ def test_the_zone_of_a_computer_whose_tz_is_no_iana_name_is_where_its_localtime_
     assert cloud.local_zone() is None
 
 
+def prompt(body: dict) -> str:
+    [event] = body["job_config"]["ccr"]["events"]
+    assert event["data"]["type"] == "user" and event["data"]["message"]["role"] == "user"
+    return event["data"]["message"]["content"]
+
+
 def test_the_trigger_prompt_names_the_person_the_clone_and_the_chain_prompt(computer):
-    def prompt(body):
-        [event] = body["job_config"]["ccr"]["events"]
-        assert event["data"]["type"] == "user" and event["data"]["message"]["role"] == "user"
-        return event["data"]["message"]["content"]
-    body = cloud.trigger(computer, "daily", timezone="Europe/Amsterdam")
+    body = render(computer)
     said = prompt(body)
-    assert body["name"] == "Ada Okafor's daily"
+    assert body["name"] == "Ada Okafor's sweep"
     assert "Ada Okafor" in said and "/home/user/ada-space" in said
-    assert "/home/user/ada-space/_meta/templates/cloud/daily-chain.md" in said and "Proof" not in said
-    assert "Proof section only" in prompt(cloud.trigger(computer, "daily", proof=True, timezone="Europe/Amsterdam"))
+    assert "/home/user/ada-space/_meta/templates/cloud/sweep-chain.md" in said and "Proof" not in said
+    assert "Proof section only" in prompt(render(computer, proof=True))
 
 
 def test_the_prompt_gives_the_exact_begin_command_to_run_first(computer):
-    def prompt(body):
-        return body["job_config"]["ccr"]["events"][0]["data"]["message"]["content"]
-    for chain in cloud.CHAINS:
-        said = prompt(cloud.trigger(computer, chain, timezone="Europe/Amsterdam"))
-        command = cloud.begin_command("ada-space", chain)
-        assert f"`{command}`" in said and "--proof" not in said and "--grant" not in said
-        assert said.index(command) < said.index(f"{chain}-chain.md")   # begin first, then the chain's prompt
-        for words in ("first", "exactly as written", "one command", "refused", "non-zero", "stop"):
-            assert words in said, words
-        proved = prompt(cloud.trigger(computer, chain, proof=True, timezone="Europe/Amsterdam"))
-        kept = json.loads((Path.home() / ".spaces" / f"cloud-{chain}.json").read_text(encoding="utf-8"))
-        command = cloud.begin_command("ada-space", chain, proof=True, grant=kept["grant"])
-        assert f"`{command}`" in proved and cloud.grant_of(command.split()[-1]) == kept["grant"]
-        assert cloud.parse(command.split()[2:]).grant == command.split()[-1]
-
-
-def test_the_trigger_renders_a_sweep_proof_for_many_apps(computer, monkeypatch):
-    """A sweep's proof carries the sweep's whole grant, every read tool of every work app the person granted: its
-    begin command still fits the word the guard lets through."""
-    grant = many_apps()
-    monkeypatch.setattr(routine, "grant", lambda workspace, *a, **k: {
-        **grant, "reconnect": [], "notes": [], "person": "owner@example.test", "shell": "/bin/sh"})
-    body = cloud.trigger(computer, "sweep", proof=True, timezone="Europe/Amsterdam")
-    said = body["job_config"]["ccr"]["events"][0]["data"]["message"]["content"]
-    assert f"`{cloud.begin_command('ada-space', 'sweep', proof=True, grant=grant)}`" in said
+    said = prompt(render(computer))
+    command = cloud.begin_command("ada-space", "sweep")
+    assert f"`{command}`" in said and "--proof" not in said and "--grant" not in said
+    assert said.index(command) < said.index("sweep-chain.md")   # begin first, then the chain's prompt
+    for words in ("first", "exactly as written", "one command", "refused", "non-zero", "stop"):
+        assert words in said, words
+    proved = prompt(render(computer, proof=True))
+    assert f"`{cloud.begin_command('ada-space', 'sweep', proof=True)}`" in proved and "--grant" not in proved
 
 
 def test_the_trigger_keeps_what_it_attached_and_granted_for_the_move(computer):
-    body = cloud.trigger(computer, "daily", timezone="Europe/Amsterdam")
-    kept = json.loads((Path.home() / ".spaces" / "cloud-daily.json").read_text(encoding="utf-8"))
+    body = render(computer)
+    kept = json.loads((Path.home() / ".spaces" / "cloud-sweep.json").read_text(encoding="utf-8"))
     assert {k: v for k, v in kept.items() if k not in ("roots", "grant")} == json.loads(json.dumps(body))
-    assert kept["roots"] == ["ada/ada-space", "ada/ada-brain"]
-    assert kept["grant"] == {"read": [MAIL_READ], "write": [], "send": [MAIL_SEND]}
     # The sweep attaches the codebases too, but its roots are the spaces alone: a codebase is never one.
-    assert cloud.trigger(computer, "sweep", timezone="Europe/Amsterdam") and json.loads(
-        (Path.home() / ".spaces" / "cloud-sweep.json").read_text(encoding="utf-8"))["roots"] == kept["roots"]
+    assert kept["roots"] == ["ada/ada-space", "ada/ada-brain"]
+    assert kept["grant"] == READ_ONLY
 
 
 def test_a_workspace_without_a_github_repository_renders_no_task(computer):
     subprocess.run(["git", "-C", str(computer), "remote", "remove", "origin"], check=True)
     with pytest.raises(ValueError, match="GitHub"):
-        cloud.trigger(computer, "sweep", timezone="Europe/Amsterdam")
+        render(computer)
 
 
 @needs_zones
 def test_the_trigger_cli_prints_the_render(computer, capsys):
-    assert cloud.main(["trigger", str(computer), "--chain", "sweep", "--timezone", "Europe/Amsterdam"]) == 0
+    assert cloud.main(["trigger", str(computer), "--chain", "sweep", "--timezone", "Europe/Amsterdam",
+                       "--environment", ENV]) == 0
     printed = json.loads(capsys.readouterr().out)
     assert printed["roots"][0] == "ada/ada-space" and printed["enabled"] is False
-    assert cloud.main(["trigger", str(computer), "--chain", "sweep", "--timezone", "Nowhere/Zone"]) == 2
+    assert printed["job_config"]["ccr"]["environment_id"] == ENV
+    assert cloud.main(["trigger", str(computer), "--chain", "sweep", "--timezone", "Nowhere/Zone",
+                       "--environment", ENV]) == 2
 
 
 # ----- the proof line --------------------------------------------------------------------------------------------
-def test_a_proof_line_lands_the_refusals_it_saw(tmp_path):
+REFUSALS = ("edit", "tool", "network", "shell")   # what a proof run tries, each a yes or a no on its line
+
+
+def test_a_proof_line_lands_the_four_refusals_it_saw(tmp_path):
     ws = make_space(tmp_path / "ada-space")
-    line = cloud.proof_line(ws, "daily", guard=True, edit=True, tool=False, send=True, now=NOW)
-    assert line == {"routine": "cloud-proof", "chain": "daily", "guard": True, "edit": True, "tool": False,
-                    "send": True, "at": "2026-10-27T09:00:00Z"}
-    sweep = cloud.proof_line(ws, "sweep", guard=True, edit=True, tool=True, now=NOW)
-    assert "send" not in sweep
+    line = cloud.proof_line(ws, "sweep", edit=True, tool=False, network=True, shell=False, now=NOW)
+    assert line == {"routine": "cloud-proof", "chain": "sweep", "edit": True, "tool": False, "network": True,
+                    "shell": False, "at": "2026-10-27T09:00:00Z"}
     runs = (ws / "_meta" / "state" / "runs.jsonl").read_text(encoding="utf-8")
-    lines = [json.loads(raw) for raw in runs.splitlines()]
-    assert lines == [line, sweep]
+    assert [json.loads(raw) for raw in runs.splitlines()] == [line]
     with pytest.raises(ValueError):
-        cloud.proof_line(ws, "daily", guard=True, edit=True, tool=True, now=NOW)   # the daily owes the send
+        cloud.proof_line(ws, "daily", edit=True, tool=True, network=True, shell=True, now=NOW)
+    for missing in ("network", "shell"):   # a line without one of the four would prove nothing either way
+        given = {refusal: True for refusal in REFUSALS if refusal != missing}
+        with pytest.raises(TypeError):
+            cloud.proof_line(ws, "sweep", now=NOW, **given)
+    assert [json.loads(raw) for raw in runs.splitlines()] == [line]   # nothing more was written
 
 
 def test_the_proof_line_cli_reads_the_workspace_from_the_runs_state(tmp_path, capsys):
     ws = make_space(tmp_path / "ada-space")
     state = Path.home() / ".spaces" / "routines" / "cloud.json"
     state.parent.mkdir(parents=True)
-    state.write_text(json.dumps({"workspace": ws.as_posix(), "profile": "p", "person": "", "chain": "sweep"}),
-                     encoding="utf-8")
-    assert cloud.main(["proof-line", "--chain", "sweep", "--guard", "yes", "--edit", "yes", "--tool", "no"]) == 0
-    assert json.loads(capsys.readouterr().out)["tool"] is False
-    assert cloud.main(["proof-line", str(ws), "--chain", "daily", "--guard", "yes", "--edit", "yes",
-                       "--tool", "yes"]) == 2   # the daily's proof says whether the send was refused
-    assert cloud.main(["proof-line", str(ws), "--chain", "sweep", "--guard", "yes", "--edit", "yes",
-                       "--tool", "yes", "--send", "yes"]) == 2
+    state.write_text(json.dumps({"workspace": ws.as_posix(), "chain": "sweep", "proof": True}), encoding="utf-8")
+    flags = ["--edit", "yes", "--tool", "no", "--network", "yes", "--shell", "no"]
+    assert cloud.main(["proof-line", "--chain", "sweep", *flags]) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert {refusal: printed[refusal] for refusal in REFUSALS} == {"edit": True, "tool": False, "network": True,
+                                                                  "shell": False}
+    runs = ws / "_meta" / "state" / "runs.jsonl"
+    assert [json.loads(raw) for raw in runs.read_text(encoding="utf-8").splitlines()] == [printed]
+    for refusal in REFUSALS:   # each of the four is required: a run cannot leave one out
+        given = [word for at in range(0, len(flags), 2) if flags[at] != f"--{refusal}" for word in flags[at:at + 2]]
+        with pytest.raises(SystemExit):
+            cloud.main(["proof-line", str(ws), "--chain", "sweep", *given])
+        with pytest.raises(SystemExit):
+            cloud.main(["proof-line", str(ws), "--chain", "sweep", *given, f"--{refusal}", "maybe"])
+    for gone in (["--guard", "yes"], ["--send", "yes"]):   # the plugin's guard and the send are no proof's now
+        with pytest.raises(SystemExit):
+            cloud.main(["proof-line", str(ws), "--chain", "sweep", *flags, *gone])
+    assert len(runs.read_text(encoding="utf-8").splitlines()) == 1   # no refused call wrote a line
+    capsys.readouterr()
 
 
-def test_onboard_moves_the_routines_on_what_trigger_and_proof_line_wrote(computer):
+def test_onboard_moves_the_sweep_on_what_trigger_proof_line_and_the_landing_wrote(computer):
+    """The move reads what the cloud's own tools wrote: the render `trigger` kept, the proof's line, and the sync
+    line of the proof's own landing, paired by the `proof` the run's marker gave it. It moves only from a computer
+    that runs the routines, which keeps the daily."""
     assert cloud.CHAINS == onboard.CLOUD_CHAINS   # the chains sync lands are the ones onboard reads
-    for chain in cloud.CHAINS:
-        cloud.trigger(computer, chain, timezone="Europe/Amsterdam")
+    render(computer)
     now = dt.datetime.now(dt.timezone.utc)
-    cloud.proof_line(computer, "sweep", guard=True, edit=True, tool=True, now=now - dt.timedelta(hours=1))
+    (computer / "_meta" / "state" / "runs.jsonl").unlink(missing_ok=True)
+    every = {refusal: True for refusal in REFUSALS}
+    # the shell's change of rules.md went through, and the proof's landing took it
+    cloud.proof_line(computer, "sweep", **{**every, "shell": False}, now=now - dt.timedelta(hours=3))
+    landed(computer, left_out=0)
+    assert onboard.cloud_proofs(computer, now) == set()
+    assert onboard.cloud_unrefused(computer) == {"sweep": ["landing"]}
+    cloud.proof_line(computer, "sweep", **{**every, "shell": False}, now=now - dt.timedelta(hours=2))
+    assert onboard.cloud_proofs(computer, now) == set()   # no landing line yet: it proves nothing either way
+    landed(computer, left_out=1, proof=False)   # a real run's landing, not the proof's: it pairs with no proof
+    assert onboard.cloud_proofs(computer, now) == set()
+    assert onboard.cloud_unrefused(computer) == {"sweep": ["landing"]}
+    landed(computer, left_out=1)   # the proof's own landing left the shell's change out
+    assert onboard.cloud_proofs(computer, now) == {"sweep"} and onboard.cloud_unrefused(computer) == {}
+    # a shell change refused at once reached no landing: that proof needs none, and a later landing changes nothing
+    cloud.proof_line(computer, "sweep", **every, now=now - dt.timedelta(hours=1))
     assert onboard.cloud_proofs(computer, now) == {"sweep"}
-    cloud.proof_line(computer, "daily", guard=True, edit=True, tool=True, send=True, now=now - dt.timedelta(hours=1))
-    assert onboard.cloud_proofs(computer, now) == {"sweep", "daily"} and onboard.cloud_unrefused(computer) == {}
-    assert all(onboard._rendered(chain) for chain in cloud.CHAINS)
+    landed(computer, left_out=0)
+    assert onboard.cloud_proofs(computer, now) == {"sweep"} and onboard.cloud_unrefused(computer) == {}
+    assert onboard._rendered("sweep")
+    # this computer does not run the routines: the daily would have no home, so the move is refused, writing nothing
+    assert not onboard.runs_here(computer)
+    assert onboard.routines_cloud(computer, TASKS, "Europe/Amsterdam", now) == (
+        False, onboard.CLOUD_STAY.format(why=onboard.CLOUD_NOT_HERE), [])
+    assert routine.host(computer) is None
+    routine.claim_host(computer, "os", now)   # it does now
     done, said, _ = onboard.routines_cloud(computer, TASKS, "Europe/Amsterdam", now)
     assert done, said
     record = routine.host(computer)
+    assert record["runner"] == "cloud" and record["computer"] == routine.this_machine()   # it keeps the daily
     assert record["roots"] == ["ada/ada-space", "ada/ada-brain"]   # the spaces begin may work in, no codebase
-    assert record["grant"] == GRANT
-    cloud.proof_line(computer, "daily", guard=True, edit=True, tool=True, send=False, now=now)
-    assert onboard.cloud_unrefused(computer) == {"daily": ["send"]}
+    assert record["grant"] == READ_ONLY and record["tasks"] == TASKS
+    assert onboard.runs_here(computer)
+    cloud.proof_line(computer, "sweep", **{**every, "tool": False}, now=now)
+    assert onboard.cloud_unrefused(computer) == {"sweep": ["tool"]}
+    cloud.proof_line(computer, "sweep", **{**every, "network": False}, now=now)
+    assert onboard.cloud_unrefused(computer) == {"sweep": ["tool", "network"]}

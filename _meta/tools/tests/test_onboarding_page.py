@@ -991,32 +991,31 @@ def test_a_record_of_where_the_routines_run_that_is_not_one_is_said_plainly(tmp_
 
 
 def in_the_cloud(ws, monkeypatch, here="m-laptop") -> None:
-    """The record says Ada's routines run in the cloud, as two scheduled tasks; this computer is `here`."""
-    routine.claim_cloud(ws, {"sweep": "trig_01AAAAAAAA", "daily": "trig_01BBBBBBBB"}, "Europe/Amsterdam", ["ada/ada"],
-                        {"read": [], "write": [], "send": []}, NOW - dt.timedelta(days=3))
+    """The record says Ada's sweep runs in the cloud, as a scheduled task; this computer is `here`."""
+    routine.claim_cloud(ws, {"sweep": "trig_01AAAAAAAA"}, "Europe/Amsterdam", ["ada/ada"],
+                        {"read": ["mcp__mail__get_message"], "write": [], "send": []}, NOW - dt.timedelta(days=3))
     monkeypatch.setattr(routine, "this_machine", lambda: here)
 
 
 def test_routines_in_the_cloud_are_no_other_computer_on_the_page(tmp_path, monkeypatch):
-    """The cloud is no computer: the page says the routines run there as two scheduled tasks, and that 'run my
-    routines here' brings them to this computer, never "on the cloud"."""
-    assert page.HOST_CLOUD == ("Your routines run in the cloud, as two scheduled tasks. Say 'run my routines here' to "
-                               "bring them to this computer.")
+    """The cloud is no computer: the page says the sweep runs there as a scheduled task and the daily on the computer
+    it moved from, and that 'run my routines here' brings the sweep to this computer, never "on the cloud"."""
+    assert page.HOST_CLOUD == ("Your sweep runs in the cloud, as a scheduled task, and your daily on the computer it "
+                               "moved from. Say 'run my routines here' to bring the sweep back to this computer.")
     quiet = [r["text"] for r in rows_of(tmp_path, "waiting", lambda ws, j: in_the_cloud(ws, monkeypatch))]
     assert quiet == [page.HOST_CLOUD]
 
     def missed(ws, journal):
         in_the_cloud(ws, monkeypatch)
-        stale(ws, "daily not started", since="2026-10-22T06:30:00+02:00")
         stale(ws, "sweep_chain not started", since="2026-10-23T07:00:00+02:00")
     texts = [r["text"] for r in rows_of(tmp_path / "missed", "waiting", missed)]
-    assert texts == ["Your routines haven't run in the cloud since 22 October; say 'run my routines here' to bring them "
+    assert texts == ["Your routines haven't run in the cloud since 23 October; say 'run my routines here' to bring them "
                      "to this computer."]
 
     def paused(ws, journal):
         in_the_cloud(ws, monkeypatch)
         routine.set_pause(ws, "2026-10-25T06:00:00+02:00")
-        stale(ws, "daily not started")
+        stale(ws, "sweep_chain not started")
     texts = [r["text"] for r in rows_of(tmp_path / "paused", "waiting", paused)]
     assert texts == ["Routines paused until tomorrow at 06:00. Say 'resume my routines' to start them sooner.",
                      page.HOST_CLOUD]
@@ -1026,26 +1025,49 @@ def test_routines_in_the_cloud_are_no_other_computer_on_the_page(tmp_path, monke
     assert not any("on the cloud" in t for t in quiet + texts + on_this_one)
 
 
-def proved(ws, chain, at, **seen) -> None:
-    """One proof line as a cloud run lands it (`cloud.py proof-line`): every refusal seen, unless `seen` says not."""
-    run_line(ws, "cloud-proof", at, **{"chain": chain, "guard": True, "edit": True, "tool": True,
-                                       **({"send": True} if chain == "daily" else {}), **seen})
+def test_a_daily_that_did_not_start_under_the_cloud_is_said_as_this_computers_own(tmp_path, monkeypatch):
+    """The daily stays on the computer the sweep moved from: there its miss is that computer's scheduler, never the
+    cloud's; on another computer every miss is the cloud's line."""
+    def missed(ws, journal):
+        monkeypatch.setattr(routine, "this_machine", lambda: "m-desk")   # the move runs here, and stays here
+        routine.claim_cloud(ws, {"sweep": "trig_01AAAAAAAA"}, "Europe/Amsterdam", ["ada/ada"],
+                            {"read": ["mcp__mail__get_message"], "write": [], "send": []}, NOW - dt.timedelta(days=3))
+        stale(ws, "daily not started", since="2026-10-22T06:30:00+02:00")
+        stale(ws, "sweep_chain not started", since="2026-10-23T07:00:00+02:00")
+    texts = [r["text"] for r in rows_of(tmp_path, "waiting", missed)]
+    assert texts[0].startswith("Your routines haven't run in the cloud since 23 October")
+    assert any("morning briefing has not started" in t and "Schedule my routines" in t for t in texts[1:])
+
+    def elsewhere(ws, journal):
+        missed(ws, journal)
+        monkeypatch.setattr(routine, "this_machine", lambda: "m-laptop")
+    texts = [r["text"] for r in rows_of(tmp_path / "other", "waiting", elsewhere)]
+    assert texts == ["Your routines haven't run in the cloud since 22 October; say 'run my routines here' to bring "
+                     "them to this computer."]
+
+
+def proved(ws, chain, at, left_out=1, **seen) -> None:
+    """One proof run as it lands: its proof line (`cloud.py proof-line`), every refusal its four tries owe seen unless
+    `seen` says not (the command's change not refused at once, `shell`, so it rides to the landing), then the cloud
+    sync line of the proof's own landing (`notes.proof`), which left `left_out` protected paths out."""
+    run_line(ws, "cloud-proof", at, **{"chain": chain, "edit": True, "tool": True, "network": True, "shell": False,
+                                       **seen})
+    run_line(ws, "sync", at, cloud=chain, notes={"left_out": left_out, "proof": True})
 
 
 def test_routines_the_cloud_stopped_are_said_stopped_and_offered_here(tmp_path, monkeypatch):
-    """The record says cloud, so this computer's own tasks step aside, and a proof showed a refusal missing, so the
-    cloud's two tasks stay off: the routines run nowhere. The page says so where it says where they run, with what
-    the cloud no longer refuses and 'run my routines here', and no line that they run in the cloud or missed a run.
-    Paused as well, the pause goes unsaid: resuming starts nothing while the cloud's tasks stay off."""
-    assert page.HOST_STOPPED == ("Your routines are stopped: the cloud no longer refuses {what}, so its two scheduled "
-                                 "tasks stay off. Say 'run my routines here' to run them on this computer.")
+    """The record says cloud, so every computer's own sweep steps aside, and a proof showed a refusal missing, so the
+    cloud's task stays off: the sweep runs nowhere. The page says so where it says where the routines run, with what
+    the cloud no longer refuses and 'run my routines here', and no line that it runs in the cloud or missed a run.
+    Paused as well, the pause goes unsaid: resuming starts nothing while the cloud's task stays off."""
+    assert page.HOST_STOPPED == ("Your sweep is stopped: the cloud no longer refuses {what}, so its scheduled task stays "
+                                 "off. Say 'run my routines here' to run it on this computer.")
     said = page.HOST_STOPPED.format(what="a change to a protected file")
 
     def stopped(ws, journal):
         in_the_cloud(ws, monkeypatch)
         proved(ws, "sweep", "2026-10-23T09:00:00+02:00", edit=False)
-        proved(ws, "daily", "2026-10-23T09:10:00+02:00")
-        stale(ws, "daily not started", since="2026-10-23T06:30:00+02:00")
+        stale(ws, "sweep_chain not started", since="2026-10-23T06:30:00+02:00")
     rows = rows_of(tmp_path, "waiting", stopped)
     assert [(r["label"], r["text"]) for r in rows] == [("Routines", said)]
 
@@ -1061,6 +1083,32 @@ def test_routines_the_cloud_stopped_are_said_stopped_and_offered_here(tmp_path, 
     assert [r["text"] for r in rows_of(tmp_path / "mended", "waiting", mended)] == [
         "Your routines haven't run in the cloud since 23 October; say 'run my routines here' to bring them to this "
         "computer."]
+
+    def let_through(ws, journal):   # a landing that left nothing out is a refusal missing too
+        in_the_cloud(ws, monkeypatch)
+        proved(ws, "sweep", "2026-10-23T09:00:00+02:00", left_out=0)
+    assert [r["text"] for r in rows_of(tmp_path / "landed", "waiting", let_through)] == [
+        page.HOST_STOPPED.format(what="a protected file changed with a command, on its way to main")]
+
+    def reached_out(ws, journal):   # a request past the network limit that went through is a refusal missing as well
+        in_the_cloud(ws, monkeypatch)
+        proved(ws, "sweep", "2026-10-23T09:00:00+02:00", network=False)
+    assert [r["text"] for r in rows_of(tmp_path / "network", "waiting", reached_out)] == [
+        page.HOST_STOPPED.format(what="a request to a host outside its network limit")]
+
+    def refused_at_once(ws, journal):   # the command's change refused in the run: nothing reached a landing to leave out
+        stopped(ws, journal)
+        proved(ws, "sweep", "2026-10-23T11:00:00+02:00", shell=True, left_out=0)
+    assert [r["text"] for r in rows_of(tmp_path / "shell", "waiting", refused_at_once)] == [
+        "Your routines haven't run in the cloud since 23 October; say 'run my routines here' to bring them to this "
+        "computer."]
+
+    def landed_as_a_sweep(ws, journal):   # a landing that is not the proof's own says nothing of the proof's change
+        stopped(ws, journal)
+        run_line(ws, "cloud-proof", "2026-10-23T11:00:00+02:00", chain="sweep", edit=True, tool=True, network=True,
+                 shell=False)
+        run_line(ws, "sync", "2026-10-23T11:00:00+02:00", cloud="sweep", notes={"left_out": 1, "proof": False})
+    assert [r["text"] for r in rows_of(tmp_path / "plain", "waiting", landed_as_a_sweep)] == [said]
 
     def made_new(ws, journal):   # tasks made new for a proof: the routines run where they ran
         hosted(ws, monkeypatch=monkeypatch, here="m-laptop")

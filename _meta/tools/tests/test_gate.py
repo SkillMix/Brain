@@ -56,6 +56,12 @@ template_only = pytest.mark.skipif(not (REPO / ".github" / "template-marker").ex
 NEW_IN_THE_MINIMUM = ("CLAUDE.md", "AGENTS.md", ".gitignore", ".gitattributes", ".gitmodules",
                       "_meta/templates/space-personal.yaml", "_meta/plugins/spaces-guard/guard.py",
                       ".claude-plugin/marketplace.json")
+# What instructs or runs code on the person's computer: a cloud run has their token and a shell, and a branch
+# name proves nothing, so these wait for the click from any branch.
+RUNS_ON_THE_COMPUTER = ("_meta/state/routines/sweep-chain.md", "_meta/state/onboard.yaml",
+                        "_meta/migrations/0007-move-pages.py", ".mcp.json", "CLAUDE.local.md", "conftest.py",
+                        "pytest.ini", "pyproject.toml", "setup.cfg", "tox.ini")
+NEW_IN_THE_MINIMUM += RUNS_ON_THE_COMPUTER
 
 
 def test_a_short_protected_list_still_guards_the_minimum(tmp_path):
@@ -113,12 +119,17 @@ def test_the_base_branchs_short_list_still_guards_the_minimum(tmp_path, monkeypa
 
 def test_a_new_space_is_written_with_the_minimum():
     assert spaceyaml.DEFAULTS["protected"] == list(gate.MINIMUM_PROTECTED)
+    # the widened minimum by name, so a new space never starts without what runs on the computer
+    for rel in RUNS_ON_THE_COMPUTER:
+        assert any(gate._under(rel, p) for p in spaceyaml.DEFAULTS["protected"]), rel
 
 
 @template_only
 def test_the_template_space_yaml_lists_the_minimum():
     own = yaml.safe_load((REPO / "space.yaml").read_text(encoding="utf-8"))["protected"]
     assert own == list(gate.MINIMUM_PROTECTED)
+    for rel in RUNS_ON_THE_COMPUTER:
+        assert any(gate._under(rel, p) for p in own), rel
 
 
 def test_template_repository_is_always_auto_mergeable(tmp_path):
@@ -126,6 +137,133 @@ def test_template_repository_is_always_auto_mergeable(tmp_path):
     cls, reasons = gate.classify(root, [".claude/skills/x.md", "rules.md", "_meta/tools/gate.py"])
     assert cls == "auto-mergeable"
     assert any("template" in r for r in reasons)
+    # the widened minimum changes nothing in the template: it is a code repository, not a space
+    cls, reasons = gate.classify(root, list(RUNS_ON_THE_COMPUTER))
+    assert cls == "auto-mergeable" and any("template" in r for r in reasons)
+
+
+# ----- what runs on the computer: protected by its path, whatever the branch ---------------------
+@pytest.mark.parametrize("rel", RUNS_ON_THE_COMPUTER)
+def test_what_runs_on_the_computer_is_protected_from_any_branch(tmp_path, monkeypatch, capsys, rel):
+    """A cloud run has the person's token and a shell, so it can push a branch of any name and open a pull request
+    of its own: the gate reads paths, never the branch. Each new entry of the minimum waits for the click from a
+    `cloud/` branch and an ordinary one alike, beside a page that alone would land."""
+    root = make_space(tmp_path / "ada")
+    cls, reasons = gate.classify(root, [rel, "knowledge/topics/a/one.md"])
+    assert cls == "protected"
+    assert any(r.startswith(f"{rel}: protected by `") for r in reasons), reasons
+    # a space whose own list leaves it out is still guarded
+    assert gate.classify(make_space(tmp_path / "ada-short", protected=[]), [rel])[0] == "protected"
+    empty = tmp_path / "gitconfig"
+    empty.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    _git(root, "init", "-q", "-b", "main")
+    base = _commit(root, "base")
+    _write(root, {rel: "# from a run\n", "knowledge/topics/a/one.md": "# one\n"})
+    _commit(root, "a run's change")
+    for branch in ("cloud/sweep", "sync/m-desktop", "feature/x", None):
+        if branch is None:
+            monkeypatch.delenv("GITHUB_HEAD_REF", raising=False)
+        else:
+            monkeypatch.setenv("GITHUB_HEAD_REF", branch)
+        assert gate.main([base, str(root)]) == 0
+        out = capsys.readouterr().out
+        assert "GATE: protected" in out and f"{rel}: protected by `" in out, (branch, out)
+
+
+def test_pages_alone_from_a_cloud_branch_stay_auto_mergeable(tmp_path, monkeypatch, capsys):
+    """The rule is about paths, not branches: a cloud run's landing of pages and state lands on green from
+    `cloud/sweep` as from any other branch."""
+    pages_only = ["knowledge/sources/2026/10/r1.md", "knowledge/topics/a/one.md", "_meta/state/runs.jsonl",
+                  "_meta/state/sweep-watermark.yaml", "_inbound/needs-you/sync-cloud.yaml"]
+    root = make_space(tmp_path / "ada")
+    assert gate.classify(root, pages_only)[0] == "auto-mergeable"
+    empty = tmp_path / "gitconfig"
+    empty.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    _git(root, "init", "-q", "-b", "main")
+    base = _commit(root, "base")
+    _write(root, {rel: "a: 1\n" for rel in pages_only})
+    _commit(root, "a cloud run's pages")
+    for branch in ("cloud/sweep", "sync/m-desktop"):
+        monkeypatch.setenv("GITHUB_HEAD_REF", branch)
+        assert gate.main([base, str(root)]) == 0
+        out = capsys.readouterr().out
+        assert "GATE: auto-mergeable" in out and "no protected paths touched" in out, (branch, out)
+
+
+# ----- the gate and what a routine may not edit: two lists that must not drift apart -------------
+# Of what a routine may not edit (`routine.PROTECTED_EDITS`), these are written on the computer by a tool and landed
+# by its own sync pull request on green, so the gate cannot hold them without holding every landing: a branch name
+# proves nothing, so a cloud run's pull request lands them on green too. Each is named here with its writer; a new
+# entry of PROTECTED_EDITS the gate does not hold fails the test below until it is held or named here.
+LANDED_BY_THE_COMPUTER = {
+    "_meta/state/backfill.yaml": "backfill.py, in the sweep chain",
+    "_meta/state/routine-host.yaml": "a session's move or pause, which a cloud run's `begin` reads from main",
+    "_meta/state/routine-limits.jsonl": "routine.py after each run, landed as housekeeping",
+    "_meta/tests/**": "the sync's own repair of a failing answer test (`set_aside_tests`, `hold_failed`)",
+}
+# Loaded wherever they sit, not only at the root: Claude Code reads CLAUDE.md and CLAUDE.local.md beside any file it
+# opens, and pytest a conftest.py in any folder it collects (gate.ANY_DEPTH holds these and more).
+ANY_DEPTH = ("CLAUDE.md", "CLAUDE.local.md", "conftest.py")
+
+
+def _git_ignores(rel: str) -> bool:
+    done = subprocess.run(["git", "check-ignore", "-q", "--no-index", rel], cwd=str(REPO),
+                          capture_output=True, text=True, encoding="utf-8")
+    assert done.returncode in (0, 1), done.stderr
+    return done.returncode == 0
+
+
+def test_every_tracked_path_a_routine_may_not_edit_is_held_by_the_gate_or_named_as_the_computers(tmp_path):
+    """What `sync.py --cloud` keeps out of a cloud run's landing (`routine.PROTECTED_EDITS` and
+    `routine.PROTECTED_IN_ROOT`) a cloud run can still push on a branch of its own: each such path git tracks waits
+    for the click in a space whose own list is empty, unless the computer's own sync lands it (named, with its writer).
+    Git's own folder and what git ignores never reach a pull request."""
+    import routine
+    root = make_space(tmp_path / "ada", protected=[])
+    open_to_a_run = set()
+    for entry in (*routine.PROTECTED_EDITS, *routine.PROTECTED_IN_ROOT):
+        if entry in (".git", ".git/**"):
+            continue
+        rel = entry[:-len("/**")] + "/example.md" if entry.endswith("/**") else entry
+        if _git_ignores(rel):
+            continue
+        cls, reasons = gate.classify(root, [rel])
+        if cls != "protected":
+            open_to_a_run.add(entry)
+        else:
+            assert any(r.startswith(f"{rel}: protected by `") for r in reasons), (entry, reasons)
+    assert open_to_a_run == set(LANDED_BY_THE_COMPUTER), (
+        "held by neither the gate nor a computer's landing: "
+        f"{sorted(open_to_a_run - set(LANDED_BY_THE_COMPUTER))}; "
+        f"named but now held or gone: {sorted(set(LANDED_BY_THE_COMPUTER) - open_to_a_run)}")
+    # the files loaded at any depth are among what a routine may not edit, so the nested check below covers the list
+    assert set(ANY_DEPTH) <= set(routine.PROTECTED_EDITS)
+
+
+@pytest.mark.parametrize("rel", ["work/clients/a/CLAUDE.local.md", "work/clients/a/CLAUDE.md",
+                                 "_meta/conftest.py", "knowledge/topics/a/conftest.py", "_meta/pytest.ini",
+                                 "work/clients/a/.claude/settings.json", "work/clients/a/.mcp.json",
+                                 "work/clients/a/Claude.md"])
+def test_an_instruction_file_below_the_root_is_protected_from_any_branch(tmp_path, rel):
+    """A cloud run that pushes a CLAUDE.md beside a subject's desk, or a conftest.py in a folder pytest collects,
+    instructs or runs code on the computer as surely as the root's: the gate holds it at any depth, in a space whose
+    own list is empty, beside a page that alone would land."""
+    assert any(n.casefold() in rel.casefold().split("/") for n in gate.ANY_DEPTH)
+    root = make_space(tmp_path / "ada", protected=[])
+    cls, reasons = gate.classify(root, [rel, "knowledge/topics/a/one.md"])
+    assert cls == "protected", reasons
+    assert any(r.startswith(f"{rel}: protected by `") for r in reasons), reasons
+
+
+def test_a_name_that_only_contains_an_instruction_files_name_stays_auto_mergeable(tmp_path):
+    """The gate holds a path segment that is the name, not a page whose name holds it."""
+    root = make_space(tmp_path / "ada", protected=[])
+    cls, reasons = gate.classify(root, ["knowledge/topics/a/claude.md-notes.md", "work/clients/a/my-conftest.py.md"])
+    assert cls == "auto-mergeable", reasons
 
 
 def test_check_signatures_fails_a_mismatch_and_passes_a_match(tmp_path):
@@ -268,6 +406,30 @@ def test_a_release_matched_sync_lands_on_green(tmp_path, monkeypatch):
     cls, reasons = _gate(space, base)
     assert cls == "auto-mergeable", reasons
     assert any("release v0.2.0 approved by Ada Okafor" in r for r in reasons)
+
+
+def test_a_release_never_carries_what_runs_on_the_computer(tmp_path, monkeypatch):
+    """An approved release lands only machinery the template installs: a rendered routine prompt, the task records,
+    an MCP config or a file pytest reads at its start, byte for byte the template's own, still waits for the click,
+    from whatever branch the pull request comes."""
+    outside = [rel for rel in RUNS_ON_THE_COMPUTER if not gate._machinery(rel)]
+    assert "_meta/migrations/0007-move-pages.py" not in outside   # migrations are machinery a release installs
+    assert len(outside) == len(RUNS_ON_THE_COMPUTER) - 1
+    extra = {rel: "# the template's own\n" for rel in outside}
+    _, space, base, _ = _released(tmp_path, monkeypatch, template_extra=extra)
+    for rel in outside:
+        _write(space, {rel: extra[rel]})
+        _commit(space, f"take {rel}")
+        for branch in ("cloud/sweep", "sync/m-desktop"):
+            monkeypatch.setenv("GITHUB_HEAD_REF", branch)
+            cls, reasons = _gate(space, base)
+            assert cls == "protected", (rel, branch, reasons)
+            assert any(r.startswith(f"{rel}: not machinery") for r in reasons), (rel, reasons)
+        (space / rel).unlink()
+        _commit(space, "back")
+    # without them, the same release still lands on green
+    cls, reasons = _gate(space, base)
+    assert cls == "auto-mergeable", reasons
 
 
 AGENTS_TPL = "_meta/templates/AGENTS.md.tpl"
