@@ -56,8 +56,8 @@ leg or chain clocks run there.
 
 While the routines run in the cloud (`_meta/state/routine-host.yaml` has `runner: "cloud"`), the
 computer's sync adds its leg right after the merge. Every computer runs `not_started`, which reads
-the cloud's run lines first. The computer the record names (`computer`; every computer when it
-names none) also runs:
+the cloud's run lines first, and those the cloud branches hold. The computer the record names
+(`computer`; every computer when it names none) also runs:
 - the transcripts scan, at most every six hours, and template sync, weekly;
 - `AGENTS.md` written again when it is not what the tools render (`agents_md.check`), since a
   cloud run puts back the one a tool regenerated, but only while this checkout renders it as main
@@ -65,8 +65,8 @@ names none) also runs:
   computer's protected pull request, and a render that fails is tried again a day later;
 - adopting a cloud pull request only when both hold: it is still open after 30 minutes, and it
   conflicts with main or its checks are red (`Run.stuck`, `Run.adopt`). Merged here, it rides this
-  computer's own pull request. A green one that is only slow is not adopted, because auto-merge
-  lands it;
+  computer's own pull request (a split push keeps its head as a parent of the plain part). A
+  green one that is only slow is not adopted, because auto-merge lands it;
 - one Needs-you item naming the spaces the cloud does not read.
 
 ## Judgment left to you

@@ -126,14 +126,19 @@ deny rules, plugin, prompt). Python cannot call `RemoteTrigger`; the agent passe
    the space clones in `/home/user` the person owns and initialises their mounts (attached
    repositories only, one at a time, each at its pin). It reads the routine host record: runner
    not `cloud`, or paused, and the run stops at once, writing and landing nothing (a run that
-   steps aside leaves no line, as on the computer). Otherwise it:
+   steps aside leaves no line, as on the computer). It also stops, writing nothing, while a proof
+   on `main` shows a refusal missing that no later proof showed again (4.6). Otherwise it:
    - **carries** the previous run of this chain into every clone (`sync.carry`). When
      `cloud/<chain>` still exists on `origin` and its head is not a pull request the person
      closed unmerged, it is merged in now, before anything is exported, deepening the shallow
      clone until the two share a commit. So the cursors and watermarks already hold what the
      earlier run read, and the new run never writes the same witness pages, queue items,
-     tracker issues or notices again. A carry that conflicts stops the run: it never works on
-     top of files it could not merge.
+     tracker issues or notices again. A carry that conflicts or fails stops the run: it never
+     works on top of files it could not merge. It writes nothing, not even a Needs-you item; the
+     run's log says why, and the person hears through the computer adopting the open pull request
+     (4.5) or through the other chain's silence item (4.11). A run whose carried head's pull
+     request is closed unmerged while it works pushes and opens nothing at landing; the next run
+     starts again from `main`, and may make that run's tracker issues and owner notices again.
    - writes the run's guard profile (4.7) outside the repositories, from the grant in the host
      record;
    - prints the roots and, for the sweep, the export cursor of every source.
@@ -183,11 +188,14 @@ space at the end. `--cloud <chain>` changes these things:
   costs one pull request per space, not four. A proof run's line is never quiet: its pull request
   is what the move reads.
 - The pull request opens through REST.
+- In a cloud run (`CLAUDE_CODE_REMOTE=true`) `sync.py` without `--cloud` refuses to run;
+  `--merge-latest`, which git runs during the merge, still runs.
 - After the push it waits for the merge, at most nine minutes per call. A conflict with `main`
   is merged again with the merge rules (4.5a) and pushed, at most three times. Checks that failed
   get the computer's repair once: answer tests the failed log names are set aside for CI and the
-  branch is pushed again. When it has not merged in time, it is left open. The next cloud run
-  carries it, and the computer adopts it (4.5).
+  branch is pushed again. When it has not merged in time, it is left open: it merges once green,
+  the next cloud run carries it, and the computer adopts it only if it is still in conflict or
+  red after 30 minutes (4.5).
 
 Everything else is the computer's code path: the same candidate rules (private zones,
 submodules and nested checkouts never staged; `_meta/state/feed/` joins the private zones), the
@@ -222,14 +230,15 @@ move records the computer it ran on), and a record without the key lets every co
 - **Template sync**, weekly, as the daily chain runs it today: its machinery changes need the
   person's click, and a cloud run never makes one.
 - **Not started**, after the merge rather than before, so a computer that slept reads the
-  cloud's run lines before it says a chain did not start.
+  cloud's run lines before it says a chain did not start. It also reads the run lines the
+  fetched `cloud/<chain>` branches hold, where a quiet run's lines wait without a pull request.
 - **Adopting.** A `cloud/<chain>` pull request still open after 30 minutes (since it was opened
   and since its head was made) and in conflict with main or red gets merged into the computer's
   checkout with the merge rules; one that is green and only slow is left to auto-merge. It then
   rides the computer's own sync pull request, which the computer repairs as it repairs its own.
-  When that lands, GitHub marks the cloud request merged (unless the computer's push was split
-  for protected paths; then the next cloud run replaces it). A conflict the rules cannot resolve
-  is aborted and becomes one Needs-you item.
+  When that lands, GitHub marks the cloud request merged, a split push included: the plain part,
+  built on main, keeps each adopted head as a parent until main holds it. A conflict the rules
+  cannot resolve is aborted and becomes one Needs-you item.
 - **Spaces not attached.** A space the person owns on this computer that the move did not attach
   is one Needs-you item ("say 'run my routines in the cloud' again to add it"). Its id,
   `cloud-roots-<8 hex>`, is a hash of the spaces it names, so a space made later is asked anew.
@@ -244,7 +253,9 @@ move records the computer it ran on), and a record without the key lets every co
 
 The record names one computer, so a computer that replaces it (a new laptop) takes the leg over by
 moving again from there: "run my routines in the cloud" proves the two tasks in place and records
-that computer (4.10).
+that computer (4.10). While the routines run in the cloud its build probes nothing, so a computer
+with no probe of its own is checked and moved on the grant the record kept, and `cloud.py trigger`
+renders with it; once the computer has a probe of its own, that probe decides.
 
 ### 4.5a Merges that never wedge
 
@@ -293,15 +304,18 @@ and the OS tasks come back. History that is not yet read refuses the move to the
 sentence, and while the routines run in the cloud a history read cannot start (`backfill.py`
 refuses on a computer that is not the host; its sentence says "run my routines here" first).
 
-**A proof run** happens before the claim, so `begin --proof` skips only the runner check. It
-exports nothing, runs no chain tool, creates no tracker issue and sends nothing, so it never
-overlaps the computer's own runs. Nothing records a grant before the move, so the proof's begin
+**A proof run** happens before the claim, so `begin --proof` skips only the runner check and the
+stop a missing refusal makes, which a re-proof must be able to clear. It exports nothing, runs
+no chain tool, creates no tracker issue and sends nothing, so it never overlaps the computer's
+own runs. Nothing records a grant before the move, so the proof's begin
 carries the task's: `begin --proof --grant <word>`, the word the deflated base64url of the task's
 grant, which the guard plugin lets through only after `--proof`. A proof's send to a stranger is
 therefore refused by the send guard, as a real run's is. It tries what the profile must refuse
 (4.7, section 6), writes what happened into its run line, and lands that line through
 `sync.py --cloud`. The move is refused unless both tasks' proof lines on `main` show every
 refusal. The task is created with a proof prompt and changed to the real one when it is enabled.
+The proof line is the run's own report of the refusals it saw: nothing checks that the guard
+plugin's hook actually ran, so the proof stays self-reported until the trial shows the hook firing.
 
 ### 4.7 The safety profile in the task
 
@@ -310,15 +324,22 @@ person. So the task carries the computer's routine profile, in four layers:
 
 1. **The guard plugin** (`spaces-guard`, in the template under `_meta/plugins/`, offered by the
    space's own marketplace file `.claude-plugin/marketplace.json`; the task enables it with
-   `enabled_plugins` and `extra_marketplaces`). Its hooks are the computer's: on Bash the
+   `enabled_plugins` and `extra_marketplaces`, which names the workspace's own repository, so the
+   guard is the copy the person's click landed). Its hooks are the computer's: on Bash the
    `bash_guard` allow list (one plain call of a routine tool, or a read-only `gh api` GET, nothing
-   else; `python3 -c`, other programs and compound commands are refused); on every connector tool
-   the grant by exact name, so a tool a vendor adds later is refused; on Task only the
-   general-purpose agent; on each send tool the `send_guard`, which refuses any address but the
-   person's. The hooks read the profile `begin` wrote (`routine.routine_settings`, the same
-   function the computer uses); before `begin` has written it, the only command they let through
-   is `cloud.py begin` itself. Outside a cloud run (`CLAUDE_CODE_REMOTE` not `true`) they let
-   everything through, so a session on the computer that enabled the plugin is unchanged.
+   else; `python3 -c`, other programs and compound commands are refused); `sync.py` only in exact
+   commands, never `--merge-latest`: in the cloud `--root <root> --cloud <chain>` for the task's
+   own chain, on a computer `--root <root>` alone or with `--release-leg`, each root as itself
+   (and `_meta/tools/sync.py --root .` from the workspace); on every connector tool the grant by
+   exact name, so a tool a vendor adds later is refused; on Task only the general-purpose agent;
+   on each send tool the `send_guard`, which refuses any address but the person's. The hooks read
+   the profile `begin` wrote (`routine.routine_settings`, the same function the computer uses);
+   before `begin` has written it, the only command they let
+   through is `cloud.py begin` itself, and only a clone's own `cloud.py` on that same clone. The
+   plugin cannot tell which clone is the workspace (a trigger takes no environment), so `begin`
+   refuses a workspace that is not its own script's clone, and layer 2 keeps the shell out of every
+   attached codebase. Outside a cloud run (`CLAUDE_CODE_REMOTE` not `true`) they let everything
+   through, so a session on the computer that enabled the plugin is unchanged.
 2. **`disallowed_tools`**, enforced by the platform:
    - `Edit` on every protected path (`routine.PROTECTED_EDITS` with a `//**/` prefix, and
      `identity/**` in each clone), which covers Write and NotebookEdit, and on anything under the
@@ -329,7 +350,13 @@ person. So the task carries the computer's routine profile, in four layers:
    - every tool of each attached connection that is not granted, by exact name;
    - the shell patterns the computer denies (`python -m`, `git --output`, the tool scripts a
      routine never runs) and, as text-only backstops, `git`, any `gh api` call but one endpoint
-     word, the rest of `gh`, and GraphQL.
+     word, the rest of `gh`; GraphQL by its endpoint (`routine.GRAPHQL`): the word `graphql`, any
+     endpoint starting with `/` or `.` (gh cleans `./graphql` to the word; every read starts
+     `repos/` or `search/`), a full URL (`://`), a `/../` climb and any percent escape, none of
+     which a read uses. Never by a word in a repository's name: a codebase whose name holds
+     "graphql" is read like any other. And `sync.py` as git's merge driver (`--merge-latest`,
+     `--mer`, or with a quote);
+   - any shell command naming the clone of a codebase the sweep attaches.
 3. **`auto_mode_soft_deny`**: the same limits in plain words (never push to `main`, never merge a
    pull request, never send mail to anyone but the person, never edit machinery, never change
    `.gitignore`), for the platform's own check.
@@ -350,7 +377,9 @@ read tools for read apps; the tracker's create and update tools; for mail, `send
 `get_message` only, and only while the send guard holds. The sweep's read-only mail connector
 serves its mail and attachments. Owner notices go out from whichever task runs first after they
 are queued; both tasks hold the send tool behind the same guard. `record-send` still refuses a
-read-back whose recipients are not the person, as a second check.
+read-back whose recipients are not the person, as a second check. Its `--to` keeps every
+recipient, whether they follow one `--to` or each has its own; the prompts use one `--to`. The
+computer's daily prompt reads the briefing back and records it with `--to` too.
 
 What is left, and said so: a merge of a green protected pull request through the REST API by
 code the guard let run. The guard's allow list leaves no such code, `enforce_admins` keeps the
@@ -385,18 +414,25 @@ reads it from the computer) and kept in the host record.
 ### 4.10 Moving to the cloud: the sentence
 
 "Run my routines in the cloud" (onboard skill):
-1. `onboard.py --routines-cloud --check`: the history is read, the apps' grant exists, every
+1. `onboard.py --routines-cloud --check`: the history is read, the apps' grant exists (on a
+   computer with no probe while the routines run in the cloud, the record's), every
    space and mount has a GitHub repository, and each has `enforce_admins` on (the agent turns it
    on when the person says yes; it is the person's repository setting).
-2. `cloud.py trigger --chain sweep|daily --proof` renders each body. The agent creates both
-   disabled, runs each once, and reads its run log, its proof line and the pull request it
-   opened. When the routines already run in the cloud (moving again, from a new computer), it
-   proves the two existing tasks in place instead, and step 3's move records this computer as
-   the record's `computer` (4.5, 4.6).
+2. `cloud.py trigger --chain sweep|daily --proof` renders each body. The printed text is the
+   body plus `roots` and `grant`, which this computer keeps for the move: the agent drops them,
+   and gives each `mcp_connections` entry (`{name, permitted_tools}`) the account connector's
+   `connector_uuid` and `url` before `RemoteTrigger` creates or updates the task. A render whose
+   grant has no app tool is refused in one sentence. The agent creates both disabled, runs each
+   once, and reads its run log, its proof line and the pull request it opened. When the routines
+   already run in the cloud (moving again, from a new computer), it proves the two existing tasks
+   in place instead, and step 3's move records this computer as the record's `computer` (4.5,
+   4.6). On a computer with no probe of its own while the routines
+   run in the cloud, `cloud.py trigger` renders with the grant the move recorded.
 3. On two green proofs it updates each task to the body `cloud.py trigger` renders without
    `--proof`, enables both, turns off the computer's chain tasks, and runs `onboard.py
    --routines-cloud --sweep <id> --daily <id> --timezone <zone>`, which reads the proof lines and
-   refuses without them.
+   refuses without them. It also refuses with `CLOUD_NO_GRANT` (exit 2, nothing written) when the
+   two renders together grant no app tool.
 4. One sentence names the two task links and how to pause.
 
 ### 4.11 A run that did nothing
@@ -406,8 +442,8 @@ sweep reads the daily's, the daily the sweep's). Older than twice the longest sc
 not paused, means one Needs-you item ("the cloud sweep has not run since …"). The daily `begin`
 also reads each mount's pin: one older than three days means the computer's sync has not run,
 and the brain the cloud reads has stopped moving; that is one Needs-you item too. The computer's
-`not_started` keeps working whenever the computer is on. A run's own proof is its run line on
-`main`, never the platform's "succeeded".
+`not_started` keeps working whenever the computer is on, reading main and the cloud branches. A
+run's own proof is its run line on `main`, never the platform's "succeeded".
 
 ## 5. Rules and decisions
 
@@ -431,6 +467,9 @@ A cloud chain counts as working only when all of these hold:
 - a connector tool outside the grant was refused (for the daily task, a mail tool such as
   `trash_message`);
 - for the daily task, a send to an address that is not the person's was refused.
+
+The refusals are what the run's own proof line reports it saw. Nothing checks that the guard
+plugin's hook actually ran, so the proof stays self-reported until the trial shows the hook firing.
 
 `onboard --check` reads the task ids from the host record and the last run lines from `main`.
 
