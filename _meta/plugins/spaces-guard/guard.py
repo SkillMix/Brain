@@ -20,8 +20,9 @@ that enabled the plugin is unchanged. In a cloud run it reads the state `cloud.p
   tool of a server whose name holds "send", is left to the connector check, which runs on it too.
 
 It keeps no state of its own and writes nothing. It runs as `python3 -I`, so it imports nothing but the standard
-library, and it fails closed: a request or a state it cannot read, a profile it cannot read, or a workspace guard
-that is missing, crashes or takes longer than DELEGATE_SECONDS, is a refusal. It says why on stderr, without
+library, and it fails closed: a request it cannot read (an event that is not a mapping, or names no tool), in
+every mode and before `begin` too, a state or a profile it cannot read, or a workspace guard that is missing,
+crashes or takes longer than DELEGATE_SECONDS, is a refusal. It says why on stderr, without
 repeating the command or the tool. It bounds its own time as the workspace guards do (LIMIT_SECONDS, then
 faulthandler), well inside the hook's timeout. Each hook command ends `|| test "$CLAUDE_CODE_REMOTE" != true ||
 exit 2`: in a cloud run a guard that cannot start or crashes blocks the call, and on a computer, where the guard
@@ -120,6 +121,9 @@ def check(mode: str, event, raw: bytes, env) -> str | None:
     or its profile cannot be read (the caller refuses)."""
     if not remote(env):
         return None
+    name = event.get("tool_name") if isinstance(event, dict) else None
+    if not (isinstance(name, str) and name):   # the hook always names the tool: a request it cannot read
+        return f"{WHY}: this request names no tool"
     path = state_path(env)
     if not path.exists():
         return None if mode == "bash" and begins(event) else BEFORE
@@ -127,8 +131,7 @@ def check(mode: str, event, raw: bytes, env) -> str | None:
     profile, tools = Path(state["profile"]), Path(state["workspace"]) / "_meta" / "tools"
     matchers = hooked(profile)
     if mode == "send":
-        name = event.get("tool_name") if isinstance(event, dict) else None
-        if not (isinstance(name, str) and name.startswith("mcp__") and name in matchers):
+        if not (name.startswith("mcp__") and name in matchers):
             return None   # not a send the profile guards: the connector check holds it to the grant
         person = state.get("person")
         if not (isinstance(person, str) and person):

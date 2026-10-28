@@ -188,6 +188,37 @@ def test_a_guard_that_crashes_denies(cloud):
     assert decide("send", {"to": ADA, "subject": "s", "body": "b"}, env) == "deny"
 
 
+def unreadable(tool_input: dict) -> list:
+    """Hook events the guard cannot read: not a mapping, or naming no tool by a string (the hook always names one)."""
+    return [[], [tool_input], "Bash", 7, None, {"tool_input": tool_input},
+            *({"tool_name": name, "tool_input": tool_input} for name in (7, None, "", ["Bash"], {"name": "Bash"}))]
+
+
+def test_a_request_that_names_no_tool_is_refused_in_every_mode(cloud, capsys):
+    """The guard refuses such a request itself, whatever the workspace's guard would say: here both let
+    everything through."""
+    guard, env, ws = load_guard(), cloud["env"], cloud["ws"]
+    for script in ("bash_guard.py", "send_guard.py"):
+        (ws / "_meta" / "tools" / script).write_text("import sys\nsys.exit(0)\n", encoding="utf-8")
+    inputs = {"bash": {"command": tool_command(ws)}, "task": {"description": "check", "prompt": "Check these."},
+              "connector": {}, "send": {"to": ADA, "subject": "Your morning", "body": "Three items wait for you."}}
+    for mode, tool_input in inputs.items():
+        assert guard.main([mode], json.dumps(payload(mode, tool_input)).encode(), env) == 0, mode
+        for event in unreadable(tool_input):
+            assert guard.main([mode], json.dumps(event).encode(), env) == 2, (mode, event)
+            assert guard.main([mode], json.dumps(event).encode(), {}) == 0, (mode, event)   # a computer: unchanged
+    err = capsys.readouterr().err
+    assert "names no tool" in err and ws.as_posix() not in err
+
+
+def test_before_begin_a_request_that_names_no_tool_is_refused(tmp_path):
+    guard = load_guard()
+    env = {"CLAUDE_CODE_REMOTE": "true", "HOME": str(tmp_path)}
+    assert guard.main(["bash"], json.dumps(payload("bash", {"command": BEGIN})).encode(), env) == 0
+    for event in unreadable({"command": BEGIN}):
+        assert guard.main(["bash"], json.dumps(event).encode(), env) == 2, event
+
+
 @pytest.mark.parametrize("text", ["{not json", "[]", '{"workspace": 7}', '{"profile": "x.json"}', ""])
 def test_a_state_it_cannot_read_denies(cloud, text):
     cloud["state"].write_text(text, encoding="utf-8")

@@ -84,7 +84,7 @@ jobs:
           tools=true
           case "$BASE" in ""|0000000000000000000000000000000000000000) BASE="" ;; esac
           if [ -n "$BASE" ] && [ ! -f .github/template-marker ] && changed=$(git diff --name-only "$BASE...HEAD" --); then
-            machinery='^(_meta/tools/|_meta/tests/|_meta/templates/|\.github/|\.claude/|space\.yaml$|_meta/state/template-version\.yaml$)'
+            machinery='^(_meta/tools/|_meta/tests/|_meta/templates/|_meta/plugins/|\.github/|\.claude/|\.claude-plugin/|space\.yaml$|_meta/state/template-version\.yaml$)'
             grep -qE "$machinery" <<< "$changed" || tools=false
           fi
           echo "tools=$tools" >> "$GITHUB_OUTPUT"
