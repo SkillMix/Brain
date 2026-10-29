@@ -190,7 +190,7 @@ def _walk_texts(space: spaceyaml.Space, reg: registry_mod.Registry, subject: str
     # the subject's home, mounted here (a crew member's workspace): its status page, its signed
     # pages and its candidates are the first answer, whatever this space has gathered so far
     home = reg.home_of(sid) if found else None
-    home_root = space.mount_root(home) if home and home != space.name else None
+    home_root = space.space_root(home) if home and home != space.name else None
     if home_root is not None:
         paths = [home_root / "live" / "subjects" / f"{sid}.md"]
         for kind in kinds:

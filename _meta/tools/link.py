@@ -348,22 +348,17 @@ def detect(root, repo: str, now=None, id_fn=None) -> dict:
 
 
 def _home(root: Path, space, name: str | None):
-    """(root, space) of the space named `name`: this one or a mount; (None, None) when unreadable."""
+    """(root, space) of the space named `name`: this one or a mount (`Space.space_root`); (None,
+    None) when unreadable."""
     if not name:
         return None, None
     if name == space.name:
         return root, space
-    for mount in space.mounts:
-        mount_root = space.mount_root(mount.get("name", ""))
-        if mount_root is None:
-            continue
-        try:
-            mounted = spaceyaml.load(mount_root)
-        except Exception:
-            continue
-        if name in (mounted.name, mount.get("name")):
-            return mount_root, mounted
-    return None, None
+    found = space.space_root(name)
+    try:
+        return (found, spaceyaml.load(found)) if found is not None else (None, None)
+    except Exception:
+        return None, None
 
 
 def _home_name(space, reg, subject) -> str | None:

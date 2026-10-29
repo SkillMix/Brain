@@ -795,6 +795,16 @@ def test_the_brain_is_found_by_its_name_though_mounted_as_brain(tmp_path):
         route.record(root, dict(whole, record="c-2"), now=NOW)
 
 
+def test_the_status_page_at_a_brain_named_otherwise_is_in_the_pack(tmp_path):
+    brain = make_space(tmp_path / "brain", profile="brain", name="lantern-works", subjects=[
+        {"id": "dune", "kind": "clients", "title": "Dune Bakery", "home": "lantern-works"}])
+    (brain / "live" / "subjects").mkdir(parents=True, exist_ok=True)
+    (brain / "live" / "subjects" / "dune.md").write_text("# Dune Bakery: status\n", encoding="utf-8")
+    root = make_space(tmp_path / "ada", name="ada", routing={})
+    mount_brain(root, brain)
+    assert route.pending(root, now=NOW)["status_pages"] == {"dune": "# Dune Bakery: status\n"}
+
+
 def test_an_unclassified_client_is_refused_as_unclassified_then_routes_once_classified(tmp_path, capsys):
     root, brain = _company_world(tmp_path)
     path = tmp_path / "decisions" / "c-1.yaml"

@@ -330,6 +330,8 @@ class Space:
 
     # ----- mounts ----------------------------------------------------------
     def mount_root(self, name: str) -> Path | None:
+        """The root of the mount called `name` in space.yaml, when it is on disk. A home names a
+        space, not a mount: look a home up with `space_root`."""
         for mount in self.mounts:
             if mount.get("name") != name:
                 continue
@@ -340,6 +342,26 @@ class Space:
             if (candidate / "space.yaml").exists():
                 return candidate
             return None
+        return None
+
+    def space_root(self, name: str | None) -> Path | None:
+        """The root of the space named `name`: this one, or a mount found by the mount's name or
+        by the mounted space's own. Homes, holders and destinations name the space, and the brain
+        is mounted as `brain` but named otherwise. None when no space here is named so."""
+        if not name:
+            return None
+        if name == self.name:
+            return self.root
+        found = self.mount_root(name)
+        if found is not None:
+            return found
+        for mount in self.mounts:
+            root = self.mount_root(mount.get("name", ""))
+            try:
+                if root is not None and load(root).name == name:
+                    return root
+            except Exception:
+                continue
         return None
 
     def brain_space(self) -> "Space | None":

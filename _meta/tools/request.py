@@ -221,18 +221,7 @@ def render(root: Path, request: dict, now: dt.datetime, at_once: bool = True) ->
 
 # ----- the asker ---------------------------------------------------------------------------
 def readable_here(space: spaceyaml.Space, home: str | None) -> bool:
-    if not home or home == space.name:
-        return True
-    for mount in space.mounts:
-        root = space.mount_root(str(mount.get("name", "")))
-        if root is None:
-            continue
-        try:
-            if spaceyaml.load(root).name == home or mount.get("name") == home:
-                return True
-        except Exception:
-            continue
-    return False
+    return not home or space.space_root(home) is not None
 
 
 def ask(root, subject: str, cls: str, question: str, narrowest: str = "", asked_by: str = "",

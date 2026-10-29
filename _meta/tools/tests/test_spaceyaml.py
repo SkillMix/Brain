@@ -1,5 +1,7 @@
 import datetime as dt
 
+import yaml
+
 import spaceyaml
 from conftest import make_space, mount_brain
 
@@ -32,6 +34,25 @@ def test_personal_space_inherits_kinds_from_brain_mount(tmp_path):
     assert space.kinds == ["clients", "projects", "people"]
     assert "decisions" in space.all_kinds and "sources" in space.all_kinds
     assert not space.errors()
+
+
+def test_a_space_is_found_by_its_mount_name_or_its_own(tmp_path):
+    # a home names the space; the brain is mounted as `brain` and named otherwise
+    brain = make_space(tmp_path / "brain", profile="brain", name="northwind")
+    ada = make_space(tmp_path / "ada", profile="personal", name="ada")
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    (broken / "space.yaml").write_text("name: [unclosed\n", encoding="utf-8")
+    data = yaml.safe_load((ada / "space.yaml").read_text(encoding="utf-8"))
+    data["mounts"] = [{"name": "crew", "path": str(broken)}]
+    (ada / "space.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    mount_brain(ada, brain)
+    space = spaceyaml.load(ada)
+    assert space.space_root("ada") == ada
+    assert space.space_root("brain") == brain == space.space_root("northwind")
+    assert space.mount_root("northwind") is None   # a mount by its own name only
+    assert space.space_root("crew") == broken   # named by its mount, though unreadable
+    assert space.space_root("elsewhere") is None and space.space_root(None) is None
 
 
 def test_floors_cannot_be_raised(tmp_path):

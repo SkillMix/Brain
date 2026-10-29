@@ -34,7 +34,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import distill  # noqa: E402
-import link  # noqa: E402
 import pages  # noqa: E402
 import registry as registry_mod  # noqa: E402
 import spaceyaml  # noqa: E402
@@ -195,13 +194,12 @@ def pack(root, subject: str, rebuild: bool = False) -> dict:
                          "kind": "note" if journal else _text(ev.fm.get("kind")),
                          "title": ev.title, "characters": len(ev.body), "why": reasons})
 
-    # signed pages and status pages, here and at each one's home through the mounts (by the
-    # mount's name or the space's own: the brain is mounted as `brain`, named otherwise)
+    # signed pages and status pages, here and at each one's home through the mounts
     signed, status = [], []
     for s in targets.values():
         places = [(space.name, root)]
         home = reg.home_of(s.id)
-        home_root = link._home(root, space, home)[0] if home and home != space.name else None
+        home_root = space.space_root(home) if home and home != space.name else None
         if home_root is not None:
             places.append((home, home_root))
         for name, base in places:

@@ -18,6 +18,12 @@ the shape and ships its migration. Each choice behind a change has a line in
   page. A draft that is still the stub takes up the page on its next refresh; one an agent wrote is
   kept. The brief pack (`brief.py pack`) looked the home up by the mount's name alone, so it missed
   the brain's signed pages and status page; it now lists them.
+- **One lookup finds a space by its mount's name or its own.** A home, a holder and a destination
+  name the space, but several tools looked them up by the mount's name, and the brain is mounted
+  as `brain` and named otherwise. `Space.space_root` now does it once, and route, classify,
+  request, release, link, brief, distill and the answer tests use it. The router's pack had no
+  status page for a subject homed in the brain, and the answer tests' walk read none of its pages
+  there; both do now.
 
 ## [0.3.1] - 2026-10-29
 

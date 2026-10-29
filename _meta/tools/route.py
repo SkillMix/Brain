@@ -342,7 +342,7 @@ def pending(root, subject: str | None = None, now: dt.datetime | None = None, li
     status_pages = {}
     for s in reg.everywhere():
         home = reg.home_of(s.id)
-        base = space.mount_root(home) if home and home != space.name else root
+        base = space.space_root(home) if home else root
         page = base / "live" / "subjects" / f"{s.id}.md" if base is not None else None
         if page is not None and page.exists():
             status_pages[s.id] = page.read_text(encoding="utf-8")
