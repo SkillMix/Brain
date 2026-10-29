@@ -7,6 +7,18 @@ the shape and ships its migration. Each choice behind a change has a line in
 
 ## [Unreleased]
 
+### Fixed
+
+- **A draft for a subject homed elsewhere starts from its page.** Distill looked for the existing
+  page only in its own space, so a subject whose page lives in the brain (or a crew's space) got a
+  title with nothing under it, then the `## New evidence` list. It now reads the page at the home
+  through its mount, found by the mount's name or the space's own (the brain is mounted as `brain`
+  and named otherwise), and falls back to the page here. The page's `evidence` comes along, so
+  its lines keep their sources and pass `verify`; the list names only the records not behind the
+  page. A draft that is still the stub takes up the page on its next refresh; one an agent wrote is
+  kept. The brief pack (`brief.py pack`) looked the home up by the mount's name alone, so it missed
+  the brain's signed pages and status page; it now lists them.
+
 ## [0.3.1] - 2026-10-29
 
 A cloud sweep's lines in the run log, the journal and the question log are no longer taken out

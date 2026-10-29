@@ -150,6 +150,77 @@ def test_existing_page_is_the_target_and_its_body_is_kept(tmp_path):
     assert "## New evidence" in body
 
 
+def company(home):
+    return {"class": "company", "state": "settled", "home": home, "reason": "company work",
+            "decided_by": "Ada Okafor", "at": "2026-10-01T09:00:00Z"}
+
+
+def test_the_page_at_the_subjects_home_is_the_target_and_its_body_is_kept(tmp_path):
+    # the brain is mounted as `brain` but named otherwise, as a company's brain is; a copy left
+    # here is older than the page at the home, where the candidate lands
+    brain = make_space(tmp_path / "brain", profile="brain", name="northwind", subjects=[
+        {"id": "tidewater", "kind": "clients", "title": "Tidewater", "classification": company("northwind")}])
+    write_page(brain, "knowledge/clients/tidewater/tidewater.md", type="entity", title="Tidewater Ports",
+               status="stable", evidence=["rec-0"], body="# Tidewater Ports\n\nTwo terminals. [src: rec-0]\n")
+    write_page(brain, "knowledge/clients/tidewater/index.md", title="Tidewater hub", body="# Tidewater\n")
+    root = make_space(tmp_path / "ada")
+    mount_brain(root, brain)
+    write_page(root, "knowledge/clients/tidewater/notes.md", title="Old notes", body="# Old notes\n")
+    witness(root, "rec-1", "tidewater", "The second terminal opens in May.\n", NOW - D)
+    distill.run(root, now=NOW)
+    path = candidates(root)[0]
+    fm, body = pages.read(path)
+    assert fm["destination"] == "northwind"
+    assert fm["target"] == "knowledge/clients/tidewater/tidewater.md"
+    assert fm["type"] == "entity" and fm["title"] == "Tidewater Ports"
+    assert body.startswith("# Tidewater Ports\n\nTwo terminals. [src: rec-0]\n")
+    # the page's lines keep their sources: its evidence comes along, and is not new to the signer
+    assert fm["evidence"] == ["rec-1", "rec-0"]
+    assert [line.split("(witness, ")[1] for line in evidence_lines(body)] == ["rec-1)"]
+    assert distill.verify(root, path) == []
+
+
+def test_the_pages_own_evidence_here_is_not_listed_as_new(tmp_path):
+    root = make_space(tmp_path / "ada", subjects=[
+        {"id": "harbor", "kind": "projects", "title": "Harbor"}])
+    witness(root, "rec-0", "harbor", "Two phases.\n", NOW - 2 * D)
+    write_page(root, "knowledge/projects/harbor/harbor.md", type="entity", title="Harbor", status="stable",
+               evidence=["rec-0"], body="# Harbor\n\nTwo phases. [src: rec-0]\n")
+    witness(root, "rec-1", "harbor", "Phase two slips a week.\n", NOW - D)
+    distill.run(root, now=NOW)
+    path = candidates(root)[0]
+    fm, body = pages.read(path)
+    assert fm["evidence"] == ["rec-0", "rec-1"]
+    assert [line.split("(witness, ")[1] for line in evidence_lines(body)] == ["rec-1)"]
+    assert distill.verify(root, path) == []
+
+
+def test_a_draft_begun_from_the_stub_takes_up_the_home_page_once_found(tmp_path):
+    brain = make_space(tmp_path / "brain", profile="brain", name="northwind", subjects=[
+        {"id": "tidewater", "kind": "clients", "title": "Tidewater", "classification": company("northwind")}])
+    root = make_space(tmp_path / "ada")
+    mount_brain(root, brain)
+    witness(root, "rec-1", "tidewater", "The second terminal opens in May.\n", NOW - D)
+    distill.run(root, now=NOW)   # no page at the home yet: the stub
+    fm1, body = pages.read(candidates(root)[0])
+    assert body.startswith("# Tidewater\n\n## New evidence")
+    write_page(brain, "knowledge/clients/tidewater/tidewater.md", type="entity", title="Tidewater Ports",
+               status="stable", evidence=["rec-0"], body="# Tidewater Ports\n\nTwo terminals. [src: rec-0]\n")
+    witness(root, "rec-2", "tidewater", "Cranes delivered.\n", NOW + H / 2)
+    assert distill.run(root, now=NOW + H).refreshed == 1
+    fm2, body = pages.read(candidates(root)[0])
+    assert fm2["id"] == fm1["id"] and fm2["title"] == "Tidewater Ports"
+    assert body.startswith("# Tidewater Ports\n\nTwo terminals. [src: rec-0]\n")
+    assert sorted(fm2["evidence"]) == ["rec-0", "rec-1", "rec-2"] and len(evidence_lines(body)) == 2
+    # a body the agent wrote is its own: the next refresh keeps it
+    pages.write(candidates(root)[0], fm2, "# Tidewater Ports\n\nThree terminals. [src: rec-2]\n")
+    witness(root, "rec-3", "tidewater", "Opening date set.\n", NOW + 3 * H / 2)
+    distill.run(root, now=NOW + 2 * H)
+    fm3, body = pages.read(candidates(root)[0])
+    assert body.startswith("# Tidewater Ports\n\nThree terminals. [src: rec-2]\n")
+    assert sorted(fm3["evidence"]) == ["rec-0", "rec-1", "rec-2", "rec-3"] and len(evidence_lines(body)) == 3
+
+
 def test_a_mention_alone_is_never_evidence(tmp_path):
     root = make_space(tmp_path / "ada", subjects=[
         {"id": "beacon", "kind": "projects", "title": "Beacon"}])

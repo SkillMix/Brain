@@ -152,6 +152,23 @@ def test_signed_pages_and_status_here_and_at_the_home(tmp_path):
     assert [s["space"] for s in home["status"]] == ["brain"]
 
 
+def test_a_brain_named_otherwise_than_its_mount_is_the_home(tmp_path):
+    # a subject is homed by the brain's name; the brain is mounted as `brain`
+    brain = make_space(tmp_path / "brain", profile="brain", name="northwind", subjects=[
+        {"id": "lighthouse", "kind": "projects", "title": "Lighthouse", "home": "northwind"}])
+    write_page(brain, "knowledge/projects/lighthouse/lighthouse.md", "# Lighthouse\n", type="entity",
+               title="Lighthouse", status="stable", signed_at="2026-10-01T09:00:00Z")
+    write_page(brain, "live/subjects/lighthouse.md", "# Lighthouse: status\n", type="snapshot",
+               title="Lighthouse: status")
+    root = ada(tmp_path)
+    mount_brain(root, brain)
+
+    home = brief.pack(root, "lighthouse")
+    assert [p["space"] for p in home["pages"]] == ["northwind"]
+    assert home["pages"][0]["path"].endswith("knowledge/projects/lighthouse/lighthouse.md")
+    assert [s["space"] for s in home["status"]] == ["northwind"]
+
+
 def test_the_cli_writes_the_pack_and_prints_the_brief_path(tmp_path, capsys):
     root = ada(tmp_path)
     assert brief.main([str(root), "pack", "tidewater"]) == 0

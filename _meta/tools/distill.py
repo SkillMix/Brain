@@ -5,8 +5,12 @@ run (`_meta/state/distill-watermark.yaml`) and that are active and either
 important, stateful or asked about (a line in `_meta/questions.log` naming the
 subject), and writes one candidate per subject at
 `_inbound/candidates/<subject>.md`: the subject's page body (or a stub) followed by
-a `## New evidence` list, one line per evidence page. While that candidate is an
-unsigned draft the next run rewrites it in place with the merged evidence list, so
+a `## New evidence` list, one line per evidence page. The page is the one at the subject's
+home when the home is elsewhere (through its mount, named as the mount or as the space: the
+brain is mounted as `brain`), else the one here; its `evidence` comes along so its lines keep
+their sources, and the list names only what is not behind it. While that candidate is an
+unsigned draft the next run rewrites it in place with the merged evidence list (a draft that
+is still the stub takes up the page once it is found), so
 the queue grows with subjects that moved, never with runs. A witness page whose
 text starts with `Decision:` becomes its own candidate under knowledge/decisions/.
 An evidence line names the record's `ref:` pointers into code after its title. A
@@ -309,15 +313,25 @@ def in_scope(subject: registry_mod.Subject, asked: set) -> bool:
     return bool(subject.important or subject.stateful or subject.id in asked)
 
 
-def target_for(root: Path, subject: registry_mod.Subject, reader: Reader):
-    """(target relpath, its frontmatter or None, its body or None)."""
-    folder = root / "knowledge" / subject.kind / subject.id
-    if folder.is_dir():
+def target_for(root: Path, subject: registry_mod.Subject, reader: Reader, home_root: Path | None = None):
+    """(target relpath, its frontmatter or None, its body or None). The page at the subject's
+    home (`home_root`, read through its mount) comes first, since the candidate lands there; then
+    the page here."""
+    for base in (home_root, root):
+        folder = base / "knowledge" / subject.kind / subject.id if base is not None else None
+        if folder is None or not folder.is_dir():
+            continue
         for path in sorted(folder.glob("*.md")):
             if pages.is_page_path(path):
                 fm, body = reader.read(path)
-                return path.relative_to(root).as_posix(), fm, body
+                return path.relative_to(base).as_posix(), fm, body
     return f"knowledge/{subject.kind}/{subject.id}/{subject.id}.md", None, None
+
+
+def stub_only(body: str) -> bool:
+    """A candidate body that is the stub alone: at most a title heading before its evidence list."""
+    lines = [line for line in body.split(EVIDENCE_HEADING, 1)[0].splitlines() if line.strip()]
+    return len(lines) <= 1 and all(line.startswith("# ") for line in lines)
 
 
 def evidence_line(ev: Evidence) -> str:
@@ -379,27 +393,35 @@ def write_candidate(root: Path, space, reg, subject, new: list, index: dict,
     if existing is None:
         return "skipped"
     old_fm, old_body = existing
-    target, page_fm, page_body = target_for(root, subject, reader)
+    home = reg.home_of(subject.id)
+    elsewhere = bool(home) and home != space.name
+    # the home by its mount or by its own name: the brain is mounted as `brain`, named otherwise
+    target, page_fm, page_body = target_for(root, subject, reader,
+                                            link._home(root, space, home)[0] if elsewhere else None)
     if page_fm is not None and not archives_on(space) and provenance.is_archive_derived(page_fm):
         page_body = None   # an archive draft lends no text with archives off
+    keep = bool(old_fm) and not rebuild
+    # the page's text, with the evidence its lines cite: for a new draft, and for a draft begun
+    # from the stub once the page is found
+    from_page = page_body is not None and (not keep or stub_only(old_body))
+    behind = [str(r) for r in (page_fm or {}).get("evidence") or []] if page_body is not None else []
     aside = [] if rebuild else set_aside_of(old_fm)
     out = set(ignored) | {str(item["id"]) for item in aside}
-    merged = [] if rebuild else [str(r) for r in (old_fm.get("evidence") or [])]
+    merged = list(behind) if from_page else []
+    merged += [str(r) for r in ([] if rebuild else old_fm.get("evidence") or []) if str(r) not in merged]
     merged += [ev.record for ev in new if ev.record not in merged]
     merged = [r for r in merged if r not in out]
     merged.sort(key=lambda r: (index[r].at if r in index else now, r))
-    keep = bool(old_fm) and not rebuild
-    base = old_body if keep else (page_body if page_body is not None
-                                  else f"# {subject.title or subject.id}\n")
-    body = _with_evidence(base, [evidence_line(index[r]) for r in merged if r in index])
+    base = page_body if from_page else (old_body if keep else f"# {subject.title or subject.id}\n")
+    # the list is what is new to the signer: the page's own evidence is behind it already
+    body = _with_evidence(base, [evidence_line(index[r]) for r in merged if r in index and r not in behind])
     prior = old_fm if keep else {}
     title = (page_fm or {}).get("title") or prior.get("title") or subject.title or subject.id
     fm = {"id": old_fm.get("id") or pages.new_id(),
           "type": (page_fm or {}).get("type") or prior.get("type") or "entity",
           "title": title, "status": "draft", "generated": pages.generated(ROUTINE, now),
           "subject": subject.id, "kind": subject.kind}
-    home = reg.home_of(subject.id)
-    if home and home != space.name:
+    if elsewhere:
         fm["destination"] = home
     fm["target"] = target
     fm["evidence"] = merged
