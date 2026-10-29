@@ -7,6 +7,11 @@ the shape and ships its migration. Each choice behind a change has a line in
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-29
+
+A cloud sweep's lines in the run log, the journal and the question log are no longer taken out
+again by the computer's next sync.
+
 ### Fixed
 
 - **A split push never undoes what main got.** When the computer's merge could not bring main in
