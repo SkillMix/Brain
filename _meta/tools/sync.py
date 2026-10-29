@@ -1090,12 +1090,7 @@ class Run:
         if not conflicts or not base:
             return False
         for path in conflicts:
-            theirs = git(self.root, "rev-parse", "-q", "--verify", f"MERGE_HEAD:{path}").stdout.strip()
-            held = git(self.root, "log", "--full-history", "--no-renames", "--raw", "--no-abbrev", "--format=",
-                       f"{base}..HEAD", "--", path).stdout
-            ours = git(self.root, "rev-parse", "-q", "--verify", f"HEAD:{path}").stdout.strip()
-            if not theirs or not ours or theirs not in {line.split()[3] for line in held.splitlines()
-                                                        if line.startswith(":")}:
+            if not self.held_here(path, base, "MERGE_HEAD"):
                 return False
         spec = "\0".join(f":(literal){rel}" for rel in conflicts)
         if git(self.root, "checkout", "HEAD", "--pathspec-from-file=-", "--pathspec-file-nul", input=spec).returncode \
@@ -1104,6 +1099,38 @@ class Run:
         self.notes["kept_ours"] = len(conflicts)
         print(f"merge: {len(conflicts)} path(s) where origin held an earlier copy of ours; kept ours")
         return True
+
+    def held_here(self, path: str, base: str, theirs_ref: str) -> bool:
+        """`theirs_ref`'s copy of `path` is one this checkout held since `base`, and HEAD still has the path:
+        theirs is only an earlier copy of ours, so ours loses nothing of theirs."""
+        theirs = git(self.root, "rev-parse", "-q", "--verify", f"{theirs_ref}:{path}").stdout.strip()
+        ours = git(self.root, "rev-parse", "-q", "--verify", f"HEAD:{path}").stdout.strip()
+        if not theirs or not ours:
+            return False
+        held = git(self.root, "log", "--full-history", "--no-renames", "--raw", "--no-abbrev", "--format=",
+                   f"{base}..HEAD", "--", path).stdout
+        return theirs in {line.split()[3] for line in held.splitlines() if line.startswith(":")}
+
+    def ours_changed(self) -> list:
+        """The paths a push from this checkout may carry: those HEAD changes against origin/main. When the merge
+        left origin/main out (refused over a file the scan left local, or aborted on a conflict), only those this
+        checkout itself changed since the two parted: a commit built on main's tip from HEAD's copy of a path
+        only main moved would undo main's change, a cloud run's lines in an append-only file among them. A path
+        both moved waits here for the merge, unless main holds only an earlier copy of ours (`held_here`); the
+        run line counts them (`waiting_merge`)."""
+        def names(*spec: str) -> list:
+            out = git(self.root, "diff", "--name-only", "--no-renames", "-z", *spec).stdout
+            return [p for p in out.split("\x00") if p]
+        changed = names("origin/main", "HEAD")
+        base = git(self.root, "merge-base", "origin/main", "HEAD").stdout.strip()
+        if not base or base == git(self.root, "rev-parse", "origin/main").stdout.strip():
+            return changed
+        ours, theirs = set(names(base, "HEAD")), set(names(base, "origin/main"))
+        both = [p for p in changed if p in ours and p in theirs and not self.held_here(p, base, "origin/main")]
+        if both:
+            self.notes["waiting_merge"] = len(both)
+            print(f"push: {len(both)} path(s) main also changed wait here for the merge")
+        return [p for p in changed if p in ours and p not in both]
 
     def split(self) -> tuple[list, list] | None:
         """The paths this checkout changes against origin/main, as (plain, protected); None
@@ -1118,8 +1145,7 @@ class Run:
         if gate.is_template(self.root):
             return None
         # --no-renames: a move lists its old path too, so the subset commit deletes it
-        out = git(self.root, "diff", "--name-only", "--no-renames", "-z", "origin/main", "HEAD").stdout
-        changed = [p for p in out.split("\x00") if p]
+        changed = self.ours_changed()
         prefixes, _ = gate.protected_prefixes(self.root)
         managed = self.template_managed()   # a template update lands as one unit, with its tools
         shown = git(self.root, "show", "origin/main:space.yaml")

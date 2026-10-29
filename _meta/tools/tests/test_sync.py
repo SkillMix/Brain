@@ -572,6 +572,74 @@ def test_a_waiting_pull_request_is_not_rebuilt_when_only_main_moves(repo, tmp_pa
     assert git(repo, "diff", "--name-only", f"origin/main...{protected}").stdout.split() == ["space.yaml"]
 
 
+def on_origin_main(tmp_path, files: dict, branch: str = "cloud/sweep") -> None:
+    """Lines another runner appends to files, landed on origin's main through its own pull request."""
+    cloud = tmp_path / "cloud"
+    if not cloud.exists():
+        git(tmp_path, "clone", "-q", str(tmp_path / "origin.git"), str(cloud))
+    git(cloud, "fetch", "-q", "origin")
+    git(cloud, "checkout", "-q", "-B", branch, "origin/main")
+    for rel, line in files.items():
+        path = cloud / rel
+        write(path, (path.read_text(encoding="utf-8") if path.exists() else "") + line)
+    git(cloud, "add", "-A")
+    git(cloud, "commit", "-q", "-m", "chore: sync")
+    git(cloud, "push", "-q", "--force", "origin", f"{branch}:refs/heads/{branch}")
+    platform_merges(tmp_path, branch)
+
+
+def test_a_split_push_while_the_merge_is_refused_never_undoes_what_main_got(repo, tmp_path, monkeypatch):
+    """A cloud run lands lines in runs.jsonl, the journal and the question log through its own pull request.
+    This checkout cannot merge them in: its runs.jsonl holds a line the scan leaves local, so the file stays
+    changed and git will not merge over it. A protected change waiting splits the push, and the plain part,
+    built on main's tip, must carry only what this checkout changed: never its older copy of a file main moved.
+    The journal lines wait first (BATCH_HOURS), then go out; after both pull requests merge, every cloud line
+    is still on main, and today's note, which both sides wrote, waits here for the merge instead of
+    overwriting main's."""
+    monkeypatch.setattr(sync.Run, "gh", lambda self, *args: None)
+    host = sync.hostname()
+    runs, log = "_meta/state/runs.jsonl", "_meta/questions.log"
+    today, yesterday = "journal/2026/10/2026-10-28.md", "journal/2026/10/2026-10-27.md"
+    first = json.dumps({"routine": "daily", "at": "2026-10-28T06:00:00Z"}) + "\n"
+    for rel, text in ((runs, first), (today, "# 2026-10-28\n\n## 06:00Z — start\n"), (log, "q0\n"),
+                      (yesterday, "# 2026-10-27\n")):
+        write(repo / rel, text)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "day")
+    git(repo, "push", "-q", "origin", "main")
+    proof = json.dumps({"routine": "cloud-proof", "chain": "sweep", "at": "2026-10-28T20:32:00Z"}) + "\n"
+    on_origin_main(tmp_path, {runs: proof, today: "\n## 20:32Z — cloud sweep\n", log: "q-cloud\n"})
+    # this checkout's own day: a protected change, journal entries, a run line the scan leaves local
+    write(repo / "space.yaml", (repo / "space.yaml").read_text(encoding="utf-8") + "x: 1\n", minutes_old=20)
+    for rel, entry in ((today, "\n## 20:30Z — here\n"), (yesterday, "\n## 23:50Z — late\n")):
+        write(repo / rel, (repo / rel).read_text(encoding="utf-8") + entry, minutes_old=20)
+    flagged = json.dumps({"routine": "sweep-chain", "at": "2026-10-28T20:00:00Z",
+                          "notes": {"gaps": "pass" + "word=" + "Tr0ub4dor3x"}}) + "\n"
+    write(repo / runs, first + flagged, minutes_old=20)
+    stamp = repo / ".git" / "sync-quiet-pushed"
+    stamp.write_text(str(time.time()), encoding="utf-8")   # pushed lately: journal lines and run logs wait
+    assert sync.main(["--root", str(repo)]) == 0
+    notes = run_lines(repo)[-1]["notes"]
+    assert notes.get("conflict") is True and notes.get("scan_hits")
+    assert notes.get("waiting") == "journal lines and run logs only"
+    assert branch_paths(repo, f"sync/{host}-protected") == ["space.yaml"]
+    assert branch_paths(repo, f"sync/{host}") == []
+    stamp.write_text(str(time.time() - (sync.BATCH_HOURS + 0.1) * 3600), encoding="utf-8")
+    assert sync.main(["--root", str(repo)]) == 0
+    assert run_lines(repo)[-1]["notes"].get("conflict") is True
+    assert branch_paths(repo, f"sync/{host}") == [yesterday]   # what only this checkout changed
+    for branch in (f"sync/{host}", f"sync/{host}-protected"):   # green, then the owner's click
+        platform_merges(tmp_path, branch)
+    git(repo, "fetch", "-q", "origin")
+    on_main = {rel: git(repo, "show", f"origin/main:{rel}").stdout for rel in (runs, today, log, yesterday)}
+    assert proof in on_main[runs]
+    assert "## 20:32Z — cloud sweep" in on_main[today]
+    assert "q-cloud" in on_main[log]
+    assert "## 23:50Z — late" in on_main[yesterday]
+    assert "x: 1" in git(repo, "show", "origin/main:space.yaml").stdout
+    assert "## 20:30Z — here" in (repo / today).read_text(encoding="utf-8")   # waits here, nothing lost
+
+
 def test_the_quiet_clock_moves_only_when_something_is_pushed(repo, monkeypatch):
     """A run that finds its branch already up to date pushes nothing, so the window that holds
     back run lines and journal lines keeps counting from the last real push."""

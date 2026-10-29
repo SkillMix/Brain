@@ -42,6 +42,11 @@ line. The platform merges the first on green; the protected one waits for the sp
 one click, and nothing else waits behind it. Every push costs a paid check, so journal lines
 and run logs alone wait up to an hour, run lines and mount pins alone up to six hours (the run
 line says `waiting`), and a waiting pull request is not pushed again when only main moved.
+When the merge could not bring main in (a conflict, or a file the scan left local that main also
+changed, which git will not merge over), the push carries only what this checkout changed since
+the two parted: a path main changed too waits here for the merge (the run line says
+`waiting_merge`), unless main holds only an earlier copy of ours, so a push never undoes what main
+got, such as a cloud run's lines in an append-only file.
 The merge rules, written into the space's own git, settle what GitHub's merge cannot: a
 watermark keeps the later mark, generated pages and state keep this checkout's side, and an
 item under `_inbound/` or `_outbound/` that one side deleted stays deleted.
@@ -76,7 +81,10 @@ with the reason when it did nothing. Translate for the person: a skip on a merge
 progress means another process is mid-merge, wait a run; a scan count above zero means a
 changed file holds something that looks like a secret, so name the files that changed and
 let the person look (never quote the match); a conflict is resolved by the person or the
-parent's owner, not by you.
+parent's owner, not by you. A `conflict` that comes back every run while the scan count stays
+above zero is often a file the scan left local that main keeps changing (`runs.jsonl` once a
+cloud run lands lines): main's changes to it reach this checkout only after the person has looked
+at the flagged line, and nothing of either side is lost meanwhile.
 
 A cloud run's line has `"cloud": "<chain>"`; its `notes` say how many paths it `staged`,
 whether it `carried` an earlier run that had not merged, the files `held` (too large, not text,
