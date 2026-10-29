@@ -5,6 +5,17 @@ versioning](https://semver.org); while the version starts with 0, a minor releas
 the shape and ships its migration. Each choice behind a change has a line in
 `docs/decisions.md`.
 
+## [Unreleased]
+
+### Fixed
+
+- **A split push never undoes what main got.** When the computer's merge could not bring main in
+  (a conflict, or a file the scan left local that main also changed) and a protected change split
+  the push, the plain part, built on main's tip, carried HEAD's older copy of every path main had
+  moved: a cloud run's lines in `runs.jsonl`, the journal or `_meta/questions.log` landed and were
+  then taken out again. The push now carries only what the checkout itself changed since the two
+  parted; a path both changed waits for the merge (`waiting_merge` on the run line).
+
 ## [0.3.0] - 2026-10-28
 
 Setup is one guided conversation, the sign sitting asks only what no record answers, and the sweep can run in
