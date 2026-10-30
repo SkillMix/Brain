@@ -7,6 +7,12 @@ the shape and ships its migration. Each choice behind a change has a line in
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-10-30
+
+A draft for a subject whose page lives in the brain starts from that page, not a bare title, and
+the router's context now holds that subject's status page. Setup turns on the app's archiving of
+idle sessions, so their copies of the space stop piling up.
+
 ### Added
 
 - **Setup turns on archiving of idle sessions.** Each session the desktop app starts may get a
