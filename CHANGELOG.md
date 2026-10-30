@@ -7,6 +7,15 @@ the shape and ships its migration. Each choice behind a change has a line in
 
 ## [Unreleased]
 
+### Added
+
+- **Setup turns on archiving of idle sessions.** Each session the desktop app starts may get a
+  worktree inside the space, a copy of the whole space, and the app keeps it until the session is
+  archived. With archiving off, the app's default, one space held 31 of them after a week, and a
+  search from the space's root read every copy. Setup now turns archiving on for sessions idle
+  for 7 days, through the app's own card and only when it is off; a session with unsaved work
+  keeps its worktree.
+
 ### Fixed
 
 - **A draft for a subject homed elsewhere starts from its page.** Distill looked for the existing

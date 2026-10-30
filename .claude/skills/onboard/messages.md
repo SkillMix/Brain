@@ -58,6 +58,18 @@ Outside the desktop app, where the mode can't be read or changed from here:
 > So I don't have to ask you for every step, press Shift+Tab until the mode reads "bypass
 > permissions". Switch back when setup is done. Otherwise I'll ask you before each step.
 
+## archive
+
+Shown only in the desktop app when archiving of idle sessions is off, right before the app
+shows its card (or, in a mode that shows no card, as the switch is made). Blanks: none.
+
+> And one tidy-up: sessions you leave alone for a week get archived, so old copies of your
+> workspace don't pile up and slow me down. A session with unsaved work keeps its copy.
+
+When the card is declined, or the switch didn't happen:
+
+> Fine: old sessions stay until you archive them yourself.
+
 ## signins
 
 Shown as soon as a sign-in is waiting, from the sign-ins answer: one line per item of `needs`,

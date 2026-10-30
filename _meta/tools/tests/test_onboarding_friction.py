@@ -111,6 +111,19 @@ def test_every_milestone_has_a_message_and_no_message_names_a_tool():
     assert not re.search(r"\.py\b|--[a-z]|mcp__|_meta/", msgs)
 
 
+def test_setup_turns_on_archiving_of_idle_sessions():
+    """Each app session may get a worktree inside the space, a copy of the whole space; with archiving off (the app's
+    default) 31 piled up in one space in a week, and a search from the space's root read them all. Setup turns
+    archiving on at 7 days through the app's own card, only when it is off."""
+    text = " ".join(skill("onboard").split())
+    assert "mcp__ccd_settings__get_settings" in text and "mcp__ccd_settings__set_setting" in text
+    assert '{"key": "auto_archive_inactive_days", "value": 7}' in text
+    assert "When it is `0` (never)" in text
+    msgs = (SKILLS / "onboard" / "messages.md").read_text(encoding="utf-8")
+    archive = msgs[msgs.index("## archive\n"):msgs.index("## signins\n")]
+    assert "unsaved" in archive and not re.search(r"\.py\b|--[a-z]|mcp__|_meta/", archive)
+
+
 def test_the_apps_message_shows_what_was_seen_and_not_read():
     msgs = (SKILLS / "onboard" / "messages.md").read_text(encoding="utf-8")
     apps = msgs[msgs.index("## apps\n"):msgs.index("## company\n")]
