@@ -103,6 +103,49 @@ def test_signing_an_edit_of_a_signed_page_keeps_its_id_contested_and_release_fie
     assert ids.scan(root)["p-00000101"] == "knowledge/projects/harbor/harbor.md"
 
 
+def flagged_page(root, **fm):
+    data = {"id": "p-00000101", "type": "entity", "title": "Harbor", "status": "stable",
+            "subject": "harbor", "kind": "projects", "evidence": ["m-0", "m-1", "m-2"],
+            "set_aside": [{"id": "m-9", "why": "about another client"}],
+            "high_stakes": "a commitment the company agrees to"}
+    data.update(fm)
+    return write_page(root, "knowledge/projects/harbor/harbor.md", body=BODY, **data)
+
+
+def test_resigning_a_short_draft_keeps_the_pages_records_set_aside_and_flag(tmp_path):
+    # a draft that names only its new records and no flag, as an older distill wrote it
+    root = make_space(tmp_path / "ada")
+    page = flagged_page(root)
+    candidate(root, id="p-00000102", evidence=["m-1", "m-3"], body="Harbor goes live on 9 November.\n")
+    report = sign.apply(root, {"p-00000102": ("yes", "")}, by="Ada Okafor", now=NOW)
+    assert report.signed == ["p-00000102"]
+    fm, body = pages.read(page)
+    assert body == "Harbor goes live on 9 November.\n" and fm["id"] == "p-00000101"
+    assert fm["evidence"] == ["m-1", "m-3", "m-0", "m-2"]   # the draft's, then what only the page had
+    assert fm["set_aside"] == [{"id": "m-9", "why": "about another client"}]
+    assert fm["high_stakes"] == "a commitment the company agrees to"
+    qfm, _ = pages.read(root / "_outbound/queue/p-00000101.md")
+    assert qfm["class"] == "window" and qfm["high_stakes"] == "a commitment the company agrees to"
+    assert pages.parse_iso(qfm["stage_after"]) == NOW + spaceyaml.load(root).window()
+    assert qfm["evidence"] == fm["evidence"]
+    assert clean(root) == []
+
+
+def test_a_draft_s_own_flag_and_set_aside_decide_on_resign(tmp_path):
+    root = make_space(tmp_path / "ada")
+    page = flagged_page(root, set_aside=[{"id": "m-8", "why": "a duplicate"},
+                                         {"id": "m-9", "why": "about another client"}])
+    aside = [{"id": "m-2", "why": "about the other Harbor"}]
+    candidate(root, id="p-00000102", dest=None, evidence=["m-1", "m-8"], set_aside=aside,
+              high_stakes="a price the company agrees to")
+    sign.apply(root, {"p-00000102": "yes"}, by="Ada Okafor", now=NOW)
+    fm, _ = pages.read(page)
+    # set aside by the draft: out of the page's evidence; taken up again by the draft: no longer aside
+    assert fm["evidence"] == ["m-1", "m-8", "m-0"]
+    assert fm["set_aside"] == aside + [{"id": "m-9", "why": "about another client"}]
+    assert fm["high_stakes"] == "a price the company agrees to"
+
+
 def test_apply_always_adds_the_standing_choice_once(tmp_path):
     root = make_space(tmp_path / "ada")
     candidate(root)

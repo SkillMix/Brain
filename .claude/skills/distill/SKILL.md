@@ -112,8 +112,10 @@ active, marked `important`, or asked about: one candidate `_inbound/candidates/<
 = the subject's current page (with `--rebuild`: a stub) followed by `## New evidence`, one line
 per witness page with its date. The current page is the one at the home, read through its mount,
 when the home is elsewhere; its `evidence` comes along, so its lines keep their sources and the
-list names only the records not behind it. A line of that page that fails `verify` failed it
-where the page was signed: fix it like any other. An open unsigned candidate is refreshed in
+list names only the records not behind it. The page's evidence and its `high_stakes` flag come
+along on every refresh, whatever the body, since signing the candidate keeps both: never take the
+page's records out of `evidence` (set one aside, with its why, when it is not about the subject).
+A line of that page that fails `verify` failed it where the page was signed: fix it like any other. An open unsigned candidate is refreshed in
 place (one still the stub takes up the page once it is found); set-aside ids stay out. A
 witness page that starts with `Decision:`, or a decision the router recorded, becomes its own
 candidate for `knowledge/decisions/`. Archive-derived pages are not evidence while

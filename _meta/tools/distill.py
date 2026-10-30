@@ -8,7 +8,10 @@ subject), and writes one candidate per subject at
 a `## New evidence` list, one line per evidence page. The page is the one at the subject's
 home when the home is elsewhere (through its mount, named as the mount or as the space: the
 brain is mounted as `brain`), else the one here; its `evidence` comes along so its lines keep
-their sources, and the list names only what is not behind it. While that candidate is an
+their sources, and the list names only what is not behind it. The page's evidence and its
+`high_stakes` flag come along on every refresh too, whatever the body (signing the candidate
+over the page keeps both): a body an agent wrote, or an older draft begun from the page with
+only its new records, gets them on its next refresh. While that candidate is an
 unsigned draft the next run rewrites it in place with the merged evidence list (a draft that
 is still the stub takes up the page once it is found), so
 the queue grows with subjects that moved, never with runs. A witness page whose
@@ -400,13 +403,14 @@ def write_candidate(root: Path, space, reg, subject, new: list, index: dict,
     if page_fm is not None and not archives_on(space) and provenance.is_archive_derived(page_fm):
         page_body = None   # an archive draft lends no text with archives off
     keep = bool(old_fm) and not rebuild
-    # the page's text, with the evidence its lines cite: for a new draft, and for a draft begun
-    # from the stub once the page is found
+    # the page's text: for a new draft, and for a draft begun from the stub once the page is found
     from_page = page_body is not None and (not keep or stub_only(old_body))
+    # the evidence the page's lines cite comes along whatever the body: a kept draft may be the
+    # page's text too, and signing a draft over the page keeps the page's records
     behind = [str(r) for r in (page_fm or {}).get("evidence") or []] if page_body is not None else []
     aside = [] if rebuild else set_aside_of(old_fm)
     out = set(ignored) | {str(item["id"]) for item in aside}
-    merged = list(behind) if from_page else []
+    merged = list(behind)
     merged += [str(r) for r in ([] if rebuild else old_fm.get("evidence") or []) if str(r) not in merged]
     merged += [ev.record for ev in new if ev.record not in merged]
     merged = [r for r in merged if r not in out]
@@ -426,8 +430,10 @@ def write_candidate(root: Path, space, reg, subject, new: list, index: dict,
     fm["evidence"] = merged
     if aside:
         fm["set_aside"] = aside
-    if prior.get("high_stakes"):   # the check's flag stays until a check removes it
-        fm["high_stakes"] = prior["high_stakes"]
+    # the check's flag stays; a draft over a flagged page carries the page's, which signing keeps
+    stakes = prior.get("high_stakes") or (page_fm or {}).get("high_stakes")
+    if stakes:
+        fm["high_stakes"] = stakes
     pages.write(path, fm, body)
     return "refreshed" if old_fm else "new"
 
