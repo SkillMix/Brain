@@ -38,7 +38,10 @@ note or under another verb, stops the whole run before anything is written.
 Per kind: a candidate lands at its `target` signed (yes), with the note or the body file
 as its body (edit), is discarded with a tombstone (no), gets a deadline one scaled day out
 (later), or lands and adds a standing choice for its destination (always); a signed candidate
-with a `destination` also queues an `at_once` release carrying the signature. A check
+with a `destination` also queues a release carrying the signature, `at_once`, or `window` when
+the page is flagged `high_stakes`. Signed over a page already at its target, the page keeps its
+id, every record in its `evidence` (unless the candidate sets it aside), its `set_aside` entries
+and its `high_stakes` flag (unless the candidate names its own). A check
 verdict goes to `_meta/state/check-verdicts.jsonl`. A leaving release ships tonight
 (yes), is pulled to `_outbound/held/` (no) or waits a scaled day (later). Every verdict
 appends one line to `log.md`: `- <ISO> <verb> <id> by <name>`.
@@ -318,6 +321,27 @@ def _own_repo(root: Path) -> str | None:
         return None
 
 
+def provenance_kept(old_fm: dict, fm: dict) -> dict:
+    """What a page already at the target keeps of its provenance when a draft is signed over it.
+    Every record in its `evidence` stays, after the draft's own, unless the draft sets that record
+    aside; its `set_aside` entries stay unless the draft cites the record again; its `high_stakes`
+    flag stays unless the draft names one of its own, so the release still waits the window."""
+    aside = distill.set_aside_of(fm)
+    out = {str(item["id"]) for item in aside}
+    evidence = list(dict.fromkeys(str(r) for r in fm.get("evidence") or []))
+    evidence += [r for r in dict.fromkeys(str(r) for r in old_fm.get("evidence") or [])
+                 if r not in evidence and r not in out]
+    aside += [item for item in distill.set_aside_of(old_fm)
+              if str(item["id"]) not in out and str(item["id"]) not in evidence]
+    kept = {"evidence": evidence} if evidence else {}
+    if aside:
+        kept["set_aside"] = aside
+    stakes = fm.get("high_stakes") or old_fm.get("high_stakes")
+    if stakes:
+        kept["high_stakes"] = stakes
+    return kept
+
+
 def _high_stakes(space: spaceyaml.Space, fm: dict, body: str) -> bool:
     """Flagged by the router or the person who released it; no word decides."""
     return bool(fm.get("high_stakes"))
@@ -370,6 +394,7 @@ def _candidate(root, space, entry: Found, item_id, verb, note, by, now, report: 
         old_fm, _ = pages.read(target)
         fm["id"] = old_fm.get("id") or fm.get("id")
         fm.update({k: old_fm[k] for k in KEPT_ON_RESIGN if k in old_fm and k not in fm})
+        fm.update(provenance_kept(old_fm, fm))
     signature = {"status": "stable", "signed_by": by, "signed_at": pages.iso(now),
                  "signed_in": space.name, "fingerprint": fingerprint}
     repo = _own_repo(root)

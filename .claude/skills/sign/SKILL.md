@@ -135,7 +135,10 @@ never holds the amount.
 `apply`: `yes` moved the candidate to `knowledge/<kind>/<subject>/` (or `decisions/`) with
 `status: stable`, `signed_by`, `signed_at`, `signed_in`, `fingerprint`, and queued its
 release when `destination` is set, both without the `## New evidence` list (it is for the
-review; the read-back already leaves it out); `edit` took the note, or the write-up its
+review; the read-back already leaves it out). Over a page already there, the page kept its id,
+every record in its `evidence` but those the candidate set aside, its `set_aside` entries and its
+`high_stakes` flag, so a flagged page's release still waits the window; `edit` took the note, or
+the write-up its
 `body_file` names, as the new body, then signed; `no`
 wrote a tombstone line to `log.md` and removed the candidate; `later` moved the deadline a
 day; `always` added `{destination, kind}` to `standing_choices` and applied `yes`; a check

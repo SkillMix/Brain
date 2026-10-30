@@ -9,6 +9,7 @@ import link
 import pages
 import sign
 import sign_questions
+import spaceyaml
 import sweep
 import yaml
 from conftest import NOW, make_space, mount_brain, write_page
@@ -219,6 +220,77 @@ def test_a_draft_begun_from_the_stub_takes_up_the_home_page_once_found(tmp_path)
     fm3, body = pages.read(candidates(root)[0])
     assert body.startswith("# Tidewater Ports\n\nThree terminals. [src: rec-2]\n")
     assert sorted(fm3["evidence"]) == ["rec-0", "rec-1", "rec-2", "rec-3"] and len(evidence_lines(body)) == 3
+
+
+STAKES = "records the offer the client accepted"
+
+
+def flagged_page(root, n=4, **subject):
+    """Harbor's signed page: one line per record behind it, `n` records, and the check's flag. The
+    watermark is past them, so the next run sees only what arrives after."""
+    ids = [f"rec-{i}" for i in range(n)]
+    for i, rid in enumerate(ids):
+        witness(root, rid, "harbor", f"Fact {i}.\n", NOW - (n + 1 - i) * D)
+    body = "# Harbor\n\n" + "".join(f"Fact {i}. [src: {rid}]\n\n" for i, rid in enumerate(ids))
+    write_page(root, "knowledge/projects/harbor/harbor.md", id="p-0000a001", type="entity", title="Harbor",
+               status="stable", evidence=ids, high_stakes=STAKES, body=body)
+    distill.write_watermark(root, distill.ROUTINE, {"at": pages.iso(NOW - D)})
+    return ids, body
+
+
+def test_a_draft_over_a_flagged_page_carries_its_evidence_and_its_flag(tmp_path):
+    root = make_space(tmp_path / "ada", subjects=[{"id": "harbor", "kind": "projects", "title": "Harbor"}])
+    ids, page_body = flagged_page(root)
+    witness(root, "rec-new", "harbor", "Phase two slips a week.\n", NOW - H)
+    distill.run(root, now=NOW)
+    path = candidates(root)[0]
+    fm, body = pages.read(path)
+    assert body.startswith(page_body)
+    assert fm["evidence"] == ids + ["rec-new"] and fm["high_stakes"] == STAKES
+    assert [line.split("(witness, ")[1] for line in evidence_lines(body)] == ["rec-new)"]
+    assert distill.verify(root, path) == []
+
+
+def test_a_kept_draft_over_the_page_takes_up_the_evidence_it_lacks(tmp_path):
+    # a draft an older distill began from the page: the page's body, only the record that was new
+    # then, no flag. The body is kept, and the page's records come along.
+    root = make_space(tmp_path / "ada", subjects=[{"id": "harbor", "kind": "projects", "title": "Harbor"}])
+    ids, page_body = flagged_page(root)
+    witness(root, "rec-new", "harbor", "Phase two slips a week.\n", NOW - 2 * H)
+    written = page_body + "Phase two slips a week. [src: rec-new]\n"
+    path = write_page(root, "_inbound/candidates/harbor.md", id="p-0000c001", type="entity", title="Harbor",
+                      subject="harbor", kind="projects", target="knowledge/projects/harbor/harbor.md",
+                      evidence=["rec-new"], body=written)
+    assert len(distill.verify(root, path)) == len(ids)   # every inherited line: not in evidence
+    witness(root, "rec-later", "harbor", "Cranes delivered.\n", NOW - H)
+    assert distill.run(root, now=NOW).refreshed == 1
+    fm, body = pages.read(path)
+    assert body.startswith(written)
+    assert fm["evidence"] == ids + ["rec-new", "rec-later"] and fm["high_stakes"] == STAKES
+    assert [line.split("(witness, ")[1] for line in evidence_lines(body)] == ["rec-new)", "rec-later)"]
+    assert distill.verify(root, path) == []
+
+
+def test_signing_a_refresh_of_a_flagged_page_keeps_its_records_and_its_window(tmp_path):
+    root = make_space(tmp_path / "ada", subjects=[
+        {"id": "harbor", "kind": "projects", "title": "Harbor", "home": "harbor",
+         "classification": walled("harbor", ["ada"])}])
+    ids, _ = flagged_page(root)
+    witness(root, "rec-new", "harbor", "Phase two slips a week.\n", NOW - H)
+    distill.run(root, now=NOW)
+    path = candidates(root)[0]
+    fm, body = pages.read(path)
+    assert fm["destination"] == "harbor" and distill.verify(root, path) == []
+    report = sign.apply(root, {fm["id"]: ("yes", "")}, by="Ada Okafor", now=NOW + H)
+    assert report.signed == [fm["id"]]
+    page_fm, _ = pages.read(root / "knowledge/projects/harbor/harbor.md")
+    assert page_fm["id"] == "p-0000a001" and page_fm["status"] == "stable"
+    assert page_fm["evidence"] == ids + ["rec-new"] and page_fm["high_stakes"] == STAKES
+    queued, = (root / "_outbound" / "queue").glob("*.md")
+    qfm, _ = pages.read(queued)
+    assert qfm["class"] == "window" and qfm["high_stakes"] == STAKES
+    assert pages.parse_iso(qfm["stage_after"]) == NOW + H + spaceyaml.load(root).window()
+    assert qfm["evidence"] == ids + ["rec-new"]
 
 
 def test_a_mention_alone_is_never_evidence(tmp_path):

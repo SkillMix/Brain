@@ -17,6 +17,19 @@ the shape and ships its migration. Each choice behind a change has a line in
   (which also read every session worktree) and never file by file: those two took about half of a
   five-minute answer.
 
+### Fixed
+
+- **A refreshed page keeps its records and its high-stakes flag.** A draft whose body is the
+  signed page's, written by an older distill or by an agent that started from the page, named
+  only the records that had just arrived: `verify` flagged every line it took over from the page
+  ("source ... is not in evidence", about 125 lines on one deal page), and signing it cut the
+  page's evidence from 74 records to 2 and dropped its `high_stakes` flag, so the release was
+  queued `at_once` and skipped the window. Distill now carries the page's evidence and flag into
+  every draft over it, whatever the body, and `sign` keeps the page's evidence (the draft's
+  records first, then the page's), its `set_aside` entries and its flag when a draft is signed
+  over it. A record the draft sets aside leaves the evidence; a flag the draft names replaces the
+  page's.
+
 ## [0.3.2] - 2026-10-30
 
 A draft for a subject whose page lives in the brain starts from that page, not a bare title, and
