@@ -7,6 +7,16 @@ the shape and ships its migration. Each choice behind a change has a line in
 
 ## [Unreleased]
 
+### Added
+
+- **Search shows the matching lines.** `search.py lines "<term>"` prints every matching line with
+  its line number and two lines of context, grouped by file, over the same layers and zones as
+  `query`. It runs on ripgrep when `rg` is installed and on plain Python otherwise, with the
+  same output; `--regex` takes alternatives, `-C` more context, `--for` the rings of a linked
+  subject. The query skill now searches with it only, never with `grep -r` from the space's root
+  (which also read every session worktree) and never file by file: those two took about half of a
+  five-minute answer.
+
 ## [0.3.2] - 2026-10-30
 
 A draft for a subject whose page lives in the brain starts from that page, not a bare title, and
