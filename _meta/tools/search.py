@@ -22,14 +22,24 @@ and `prune(root)`; when it is absent the plain search answers.
 docs/design/2026-10-22-codebase-link-design.md only. Ring 1 is the subject, its parents and its
 parts, read here and in their home; ring 2 is the brain. Every other hit is dropped.
 
+`lines` reads the same layers and zones and prints every matching line with its line number
+and `-C` lines of context (2 by default), grouped by file: what an agent reading the evidence
+needs, in one call. It runs on ripgrep when `rg` is installed, else on plain Python with the
+same output. The text is literal and case-insensitive; `--regex` makes it a pattern. At most
+`--max` files (30) and ten matches a file are shown, and what is left out is counted.
+
     python search.py [root] query [--for <subject>] <text>
+    python search.py [root] lines [--for <subject>] [-C <n>] [--max <n>] [--regex] <text>
     python search.py [root] build | prune | config
 """
 from __future__ import annotations
 
+import base64
 import importlib
 import json
 import re
+import shutil
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -164,6 +174,126 @@ def plain(root, text: str, limit: int = 50) -> list:
     return hits
 
 
+# ----- lines: the matching lines with their context ---------------------------------
+PER_FILE = 10       # matches shown a file; the rest are counted
+LINE_WIDTH = 300    # a longer line is cut
+
+
+@dataclass
+class Found:
+    layer: str      # "" for this space, else the mount's name
+    path: str       # relative to that layer's root
+    subject: str
+    lines: list     # (line number, text, is a match), in order, context merged
+    more: int = 0   # matches past the first PER_FILE
+
+
+def _ripgrep():
+    return shutil.which("rg")
+
+
+def _cut(line: str) -> str:
+    line = line.rstrip("\r\n").replace("\x00", "")   # a PDF extract's stray NUL byte
+    return line if len(line) <= LINE_WIDTH else line[:LINE_WIDTH] + "…"
+
+
+def _from_ripgrep(out: str) -> dict:
+    """ripgrep's `--json` stream as {path: [(number, text, is a match)]}; a path or a line that
+    is not UTF-8 comes base64-encoded and is decoded with replacement."""
+    def text(part: dict) -> str:
+        if "text" in part:
+            return part["text"]
+        return base64.b64decode(part.get("bytes", "")).decode("utf-8", errors="replace")
+    found = {}
+    for raw in out.split("\n"):        # not splitlines(): a line may hold U+2028 or U+0085
+        try:
+            event = json.loads(raw)
+        except ValueError:
+            continue
+        if event.get("type") not in ("match", "context"):
+            continue
+        data = event["data"]
+        found.setdefault(text(data["path"]), []).append(
+            (data["line_number"], _cut(text(data["lines"])), event["type"] == "match"))
+    return found
+
+
+def _with_ripgrep(rg: str, dirs: list, text: str, context: int, regex: bool) -> dict:
+    # Raw bytes like the Python scan: no BOM sniffing, `$` before "\r\n", a stray NUL is still text.
+    cmd = [rg, "--json", "--text", "--encoding", "none", "--crlf", "--no-ignore", "--hidden", "--ignore-case",
+           "--context", str(context),
+           "--glob", "*.md", "--glob", "!.git", "--glob", "!__pycache__", "--glob", "!.pytest_cache"]
+    if not regex:
+        cmd.append("--fixed-strings")
+    done = subprocess.run(cmd + ["--regexp", text, "--"] + [str(d) for d in dirs],
+                          capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if done.returncode == 2 and not done.stdout.strip():   # a pattern that does not parse: nothing searched
+        raise ValueError(" ".join(done.stderr.split()) or "ripgrep failed")
+    return _from_ripgrep(done.stdout)
+
+
+def _with_python(dirs: list, text: str, context: int, regex: bool) -> dict:
+    try:
+        hit = re.compile(text if regex else re.escape(text), re.IGNORECASE).search   # ripgrep's case folding
+    except re.error as exc:
+        raise ValueError(f"the pattern does not parse: {exc}") from None
+    found = {}
+    for path in (p for d in dirs for p in _files(d, ["."]) if p.name.endswith(".md")):   # not "x.MD", as rg
+        try:
+            body = path.read_bytes().decode("utf-8", errors="replace")
+        except OSError:
+            continue
+        rows = body.split("\n")
+        if rows and rows[-1] == "":
+            rows.pop()
+        marks = [i for i, row in enumerate(rows) if hit(row.rstrip("\r"))]
+        if not marks:
+            continue
+        keep = sorted({j for i in marks for j in range(max(0, i - context), min(len(rows), i + context + 1))})
+        marked = set(marks)
+        found[str(path)] = [(j + 1, _cut(rows[j]), j in marked) for j in keep]
+    return found
+
+
+def _cap(rows: list, context: int) -> tuple:
+    """The first PER_FILE matches with their context, and how many matches are left out; a later
+    match inside the last one's context shows as context."""
+    marks = [n for n, _, m in rows if m]
+    if len(marks) <= PER_FILE:
+        return rows, 0
+    cut = marks[PER_FILE - 1]
+    return [(n, t, m and n <= cut) for n, t, m in rows if n <= cut + context], len(marks) - PER_FILE
+
+
+def lines(root, text: str, context: int = 2, for_subject: str | None = None, regex: bool = False) -> list:
+    """Every file in the layers a search reads that holds `text`, with its matching lines and
+    their context: this space first, then each mount, paths in order. A pattern that does not
+    parse raises ValueError."""
+    root = Path(root)
+    zones = [(i, layer, base, base / name) for i, (layer, base, names) in enumerate(_layers(root))
+             for name in names if (base / name).is_dir()]
+    if not zones:
+        return []
+    context = max(0, int(context))
+    dirs = [zone for _, _, _, zone in zones]
+    rg = _ripgrep()
+    raw = _with_ripgrep(rg, dirs, text, context, regex) if rg else _with_python(dirs, text, context, regex)
+    out = []
+    for path, rows in raw.items():
+        path = Path(path)
+        for i, layer, base, zone in zones:
+            if path.is_relative_to(zone):
+                rel = path.relative_to(base).as_posix()
+                shown_rows, more = _cap(sorted(rows), context)
+                out.append((i, rel, Found(layer, rel, subject_of(rel), shown_rows, more)))
+                break
+    found = [f for _, _, f in sorted(out, key=lambda o: o[:2])]
+    if for_subject:
+        keep = _in_rings(root, for_subject)
+        found = [f for f in found if keep(f)]
+    return found
+
+
 # ----- the built-in index engine ---------------------------------------------------
 def _terms(text: str) -> set:
     return {w.lower() for w in WORD.findall(text)}
@@ -265,6 +395,12 @@ def _in_rings(root, sid: str):
             return hit.layer in kept
         if hit.subject in ring:
             return True
+        try:   # front matter that names no ring subject cannot route to it: no YAML to parse then
+            head = (root / hit.path).read_text(encoding="utf-8", errors="replace").split("\n---", 1)[0]
+        except OSError:
+            return False
+        if not any(r in head for r in ring):
+            return False
         try:
             fm, _ = pages.read(root / hit.path)
         except Exception:
@@ -315,9 +451,55 @@ def query(root, text: str, limit: int = 50, for_subject: str | None = None) -> l
     return hits[:limit]
 
 
+def _print_lines(root: Path, rest: list) -> int:
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure:   # UTF-8 to a pipe, as an agent reads it; a character that cannot go out prints its code
+        reconfigure(encoding="utf-8", errors="backslashreplace")
+    opts, words = {"--for": None, "-C": "2", "--max": "30", "--regex": False}, []
+    while rest:                                   # a flag may stand before or after the text
+        word = rest.pop(0)
+        if word == "--":                          # the rest is text, dashes and all
+            words += rest
+            break
+        if word == "--regex":
+            opts["--regex"] = True
+        elif word in ("--for", "-C", "--context", "--max"):
+            opts["-C" if word == "--context" else word] = rest.pop(0) if rest else ""
+        elif word.startswith("-") and len(word) > 1:
+            print(f"search: unknown option {word} (the text is literal and case-insensitive; "
+                  "-C <n>, --max <n>, --regex, --for <subject>)", file=sys.stderr)
+            return 2
+        else:
+            words.append(word)
+    text = " ".join(words)
+    try:
+        context, shown = int(opts["-C"]), max(1, int(opts["--max"]))
+        if not text.strip() or opts["--for"] == "":
+            raise ValueError("give the text to look for")
+        found = lines(root, text, context, opts["--for"], opts["--regex"])
+    except ValueError as exc:
+        print(f"search: {exc}", file=sys.stderr)
+        return 2
+    for f in found[:shown]:
+        print(f"{f.layer}:{f.path}" if f.layer else f.path, f"[{f.subject or '-'}]")
+        before = None
+        for number, text, match in f.lines:
+            if before is not None and number > before + 1:
+                print("  --")
+            print(f"  {number}{':' if match else '-'} {text}")
+            before = number
+        if f.more:
+            print(f"  (+{f.more} more matches in this file)")
+    if len(found) > shown:
+        left = len(found) - shown
+        print(f"{left} more file{'s' if left > 1 else ''} match{'' if left > 1 else 'es'}: "
+              "narrow the text, or pass --max")
+    return 0 if found else 1
+
+
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    verbs = ("query", "build", "prune", "config")
+    verbs = ("query", "lines", "build", "prune", "config")
     root = Path(".")
     if argv and argv[0] not in verbs:
         root = Path(argv.pop(0))
@@ -334,6 +516,8 @@ def main(argv=None) -> int:
     if verb == "prune":
         print(f"dropped {prune(root)}")
         return 0
+    if verb == "lines":
+        return _print_lines(root, rest)
     for_subject = None
     if rest[:1] == ["--for"] and len(rest) > 1:
         for_subject, rest = rest[1], rest[2:]
