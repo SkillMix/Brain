@@ -729,7 +729,7 @@ def _obligations(reg, sid) -> list:
 
 
 def reachable(space, home) -> bool:
-    return bool(home) and (home == space.name or space.mount_root(str(home)) is not None)
+    return bool(home) and space.space_root(str(home)) is not None
 
 
 def _needs_evidence(space, reg, sid, cls, evidence, home) -> bool:

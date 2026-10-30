@@ -395,9 +395,8 @@ def write_candidate(root: Path, space, reg, subject, new: list, index: dict,
     old_fm, old_body = existing
     home = reg.home_of(subject.id)
     elsewhere = bool(home) and home != space.name
-    # the home by its mount or by its own name: the brain is mounted as `brain`, named otherwise
     target, page_fm, page_body = target_for(root, subject, reader,
-                                            link._home(root, space, home)[0] if elsewhere else None)
+                                            space.space_root(home) if elsewhere else None)
     if page_fm is not None and not archives_on(space) and provenance.is_archive_derived(page_fm):
         page_body = None   # an archive draft lends no text with archives off
     keep = bool(old_fm) and not rebuild
