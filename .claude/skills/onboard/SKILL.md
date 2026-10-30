@@ -75,6 +75,15 @@ Phase 5. With no journal, start at Phase 0.
    other way. Any result but a confirmed switch is a decline: show `mode`'s declined line and go
    on in the current mode. Outside the desktop app (or an app without these tools), show
    `mode`'s line on how to switch, and go on.
+   Then the old sessions. Each session the app starts may get a worktree inside the space, a
+   copy of the whole space, and the app keeps it until the session is archived; with archiving
+   off they pile up (31 in one space in a week) and a search from the space's root reads them
+   all. In the desktop app, load `mcp__ccd_settings__get_settings` and call it with `{}`; keep
+   `auto_archive_inactive_days`. When it is `0` (never) and settable, show `archive` and call
+   `mcp__ccd_settings__set_setting` with `{"key": "auto_archive_inactive_days", "value": 7}`:
+   the app shows its own card, as for the mode. Never set `_consent`. A decline is the person's
+   choice: show `archive`'s declined line and go on. Any other value was chosen already: say
+   nothing. Outside the desktop app, skip this.
 3. **The template, without git or GitHub's tool.** The repository is the link in the sentence
    (else the `repo` in a workspace's `_meta/state/template-version.yaml`). A session that
    already runs in a fresh copy of the template (no `AGENTS.md`) uses that copy and skips this
