@@ -18,10 +18,14 @@ marker is there already. Then it:
 2. finds the clones under /home/user whose space the person owns, the workspace first, never a codebase the
    task attaches, whatever its space.yaml says (`roots`), and carries the sweep's earlier run that never merged
    into each (`sync.carry`), before anything is exported, so the cursors and watermarks already hold what that
-   run read. A carry that conflicts or fails stops the run, writing nothing, since the clone may not be safe to
-   work on: the run's log says why, and nothing the run wrote could land; a branch someone else pushed a
-   protected change to is not used, which is one security item, and the run goes on (its push replaces that
-   branch); a branch the person closed is left quietly;
+   run read. A carry that conflicts, and whose abort left the clone as main's, sets that branch aside: the run
+   starts fresh from main, which loses nothing, since what the set-aside run wrote comes again from main's
+   cursors, and its leased push replaces the branch. The fresh starts in a row are counted in the clone's FRESH
+   (read from the branch it replaces, which never merged), and at FRESH_ALERT the person hears of it, once; a
+   clean carry ends the count. A carry that fails, or whose conflict could not be taken back, stops the run,
+   writing nothing, since the clone may not be safe to work on: the run's log says why, and nothing the run wrote
+   could land; a branch someone else pushed a protected change to is not used, which is one security item, and
+   the run goes on (its push replaces that branch); a branch the person closed is left quietly;
 3. initialises each clone's mounts at their pins, one at a time; a mount whose repository the task did not
    attach is named, never an error;
 4. writes the run's marker outside every repository (`STATE`: workspace and chain);
@@ -65,6 +69,11 @@ WORDS = {"sweep": "sweep"}   # the chain as the person says it
 HOME = PurePosixPath("/home/user")   # where a cloud run's clones are; SPACES_CLOUD_HOME stands in for it in a test
 STATE = Path(".spaces") / "routines" / "cloud.json"   # under the home folder: the run has begun, where, and how
 ITEMS = Path("_inbound") / "needs-you" / "sync-cloud.yaml"
+# In each space clone: the fresh starts in a row, per chain (`{chain: {runs, since}}`). A run whose carry would not
+# merge sets the last run's branch aside and starts fresh from main; the count rides its push, and goes once a run
+# carries cleanly. At FRESH_ALERT in a row (a day of the sweep's three runs) the person hears of it.
+FRESH = Path("_meta") / "state" / "cloud-fresh.yaml"
+FRESH_ALERT = 3
 STOPPED = 3    # begin's exit when the run must not go on
 MOUNT_SECONDS = 120
 OFF_MINUTE = 7   # a schedule's top of the hour moves here: the platform starts top-of-hour runs late
@@ -213,6 +222,72 @@ def _short(head, now: dt.datetime) -> str:
     return str(head)[:8] if head else now.strftime("%Y%m%d")
 
 
+def _fresh_item(chain: str, name: str, runs: int, since: str) -> dict:
+    word = WORDS[chain]
+    return _item(f"cloud-fresh-{chain}-{name}", "request",
+                 f"Your cloud {word} has had to start fresh {runs} runs in a row since {since[:10]}: each time, the "
+                 f"last run's work could not be merged into main in {name}, so it was set aside and done again.",
+                 f"look at the open cloud/{chain} pull request in {name} for what keeps conflicting, or say 'run my "
+                 f"routines here' to run the {word} on this computer",
+                 f"the {word} keeps running and redoes the last run's work each time; nothing is lost")
+
+
+def _read_fresh(text) -> dict:
+    """The fresh-start counts a FRESH file's text holds, `{chain: {"runs": int, "since": iso}}`; what does not read
+    is no count."""
+    try:
+        data = yaml.safe_load(text) if text else None
+    except yaml.YAMLError:
+        return {}
+    out = {}
+    for chain, row in (data.items() if isinstance(data, dict) else ()):
+        runs = row.get("runs") if isinstance(row, dict) else None
+        since = row.get("since") if isinstance(row, dict) else None
+        if isinstance(runs, int) and not isinstance(runs, bool) and runs > 0 and _moment(since):
+            out[str(chain)] = {"runs": runs, "since": pages.iso(_moment(since))}
+    return out
+
+
+def _moment(value):
+    try:
+        return pages.parse_iso(value) if isinstance(value, (str, dt.date)) else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def fresh_start(root: Path, chain: str, now: dt.datetime) -> dict:
+    """This clone's run starts fresh from main: the count of fresh starts in a row, one more than the set-aside
+    branch held (`sync.held_text`), written to the clone's FRESH. `{"runs", "since"}`."""
+    before = _read_fresh(sync.held_text(root, chain, FRESH.as_posix())).get(chain)
+    row = {"runs": before["runs"] + 1, "since": before["since"]} if before else {"runs": 1, "since": pages.iso(now)}
+    path = Path(root) / FRESH
+    try:
+        data = _read_fresh(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, UnicodeDecodeError):
+        data = {}
+    data[chain] = row
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(data, sort_keys=True), encoding="utf-8", newline="\n")
+    return row
+
+
+def streak_ends(root: Path, chain: str) -> None:
+    """A run that did not have to start fresh: the chain's count goes from the clone's FRESH, the file with it once
+    it holds no other."""
+    path = Path(root) / FRESH
+    if not path.exists():
+        return
+    try:
+        data = _read_fresh(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        data = {}
+    data.pop(chain, None)
+    if data:
+        path.write_text(yaml.safe_dump(data, sort_keys=True), encoding="utf-8", newline="\n")
+    else:
+        path.unlink()
+
+
 def _pushed_item(chain: str, name: str, head, count: int, now: dt.datetime) -> dict:
     files = "1 protected file" if count == 1 else f"{count} protected files"
     return _item(f"cloud-branch-{chain}-{_short(head, now)}", "security",
@@ -312,13 +387,15 @@ def _linked(root: Path) -> list:
 
 def begin(workspace: Path, chain: str, proof: bool = False, now=None, gh=None) -> dict:
     """Start a cloud run (the module's steps 1 to 5): {"stopped": why} when the run must not go on, else {"roots",
-    "unreachable", "carried", "cursors", "items"}, with paths as POSIX text. A stop writes nothing at all.
+    "unreachable", "carried", "set_aside", "cursors", "items"}, with paths as POSIX text. A stop writes nothing at
+    all: every clone's carry is known to go on before anything is written.
 
-    A stop is said in the run's log alone: nothing a stopped run writes could land, `sync.py --cloud` included. The
-    person hears of a carry that stopped a run through the computer's sync adopting the open pull request of the
-    branch that would not carry, and of a sweep that stopped running through `onboard.py --routines-cloud --check`,
-    which says when it last wrote a run line. The stop a proof's missing refusal makes is the one the person's own
-    surfaces say already (`onboard.cloud_stopped`).
+    A conflict the carry took back is no stop: that clone starts fresh from main (`set_aside`), so a branch that
+    will not merge never stops the sweep for good. A stop is said in the run's log alone: nothing a stopped run
+    writes could land, `sync.py --cloud` included. The person hears of fresh starts that keep coming through one
+    item (`cloud-fresh-<chain>-<space>`), and of a sweep that stopped running through `onboard.py --routines-cloud
+    --check`, which says when it last wrote a run line, and the sync's `not started` line. The stop a proof's
+    missing refusal makes is the one the person's own surfaces say already (`onboard.cloud_stopped`).
 
     In the cloud's home, a begin runs on the clone its own script is in (`own_clone`): one that names another clone
     as the workspace is refused, so that clone's person never becomes the run's. ValueError, writing nothing, when
@@ -341,13 +418,24 @@ def begin(workspace: Path, chain: str, proof: bool = False, now=None, gh=None) -
         if missing:
             return {"stopped": onboard.unrefused_sentence(workspace, missing)}
     found = roots(workspace, record)
-    add, carried = [], []
+    outcomes = []
     for root in found:
         done = sync.carry(root, chain, gh)
         name = spaceyaml.load(root).name
-        if done.get("conflict") or done.get("error"):
-            return {"stopped": f"the last cloud run's branch conflicts with main in {name}" if done.get("conflict")
-                    else f"the last cloud run's branch could not be brought into {name}: {done['error']}"}
+        fresh = bool(done.get("conflict") and done.get("undone"))
+        if not fresh and (done.get("conflict") or done.get("error")):
+            return {"stopped": f"the last cloud run's branch could not be brought into {name}: {done['error']}"
+                    if done.get("error") else f"the last cloud run's branch conflicts with main in {name}"}
+        outcomes.append((root, name, done, fresh))
+    add, carried, set_aside = [], [], []
+    for root, name, done, fresh in outcomes:   # nothing is written before every carry is known to go on
+        if fresh:
+            row = fresh_start(root, chain, now)
+            set_aside.append(root.as_posix())
+            if row["runs"] >= FRESH_ALERT:
+                add.append(_fresh_item(chain, name, row["runs"], row["since"]))
+            continue
+        streak_ends(root, chain)
         if done.get("skipped") == "protected":
             add.append(_pushed_item(chain, name, done.get("head"), int(done.get("protected") or 0), now))
         elif done.get("carried"):
@@ -359,9 +447,11 @@ def begin(workspace: Path, chain: str, proof: bool = False, now=None, gh=None) -
     state_path().write_text(json.dumps({"workspace": workspace.as_posix(), "chain": chain}, indent=2) + "\n",
                             encoding="utf-8", newline="\n")
     result = {"roots": [r.as_posix() for r in found], "unreachable": unreachable, "carried": carried,
-              "cursors": {root.as_posix(): cursors(root, now, proof) for root in found}}
-    # the items an earlier shape of the cloud runs wrote (a silent chain, a stale pin) are let go
-    result["items"] = write_items(workspace, add, () if proof else ("cloud-silent-", "cloud-stale-pin-"))
+              "set_aside": set_aside, "cursors": {root.as_posix(): cursors(root, now, proof) for root in found}}
+    # the items an earlier shape of the cloud runs wrote (a silent chain, a stale pin) are let go, and a fresh-start
+    # item once its streak has ended
+    result["items"] = write_items(workspace, add,
+                                  ("cloud-fresh-",) if proof else ("cloud-silent-", "cloud-stale-pin-", "cloud-fresh-"))
     return result
 
 

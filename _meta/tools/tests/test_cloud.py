@@ -247,15 +247,83 @@ def stub_carry(monkeypatch, **said):
     return seen
 
 
-def test_a_carry_that_conflicts_stops_the_run_and_writes_nothing(ada, monkeypatch):
-    """A stopped run writes no marker, so nothing it wrote could land: it writes nothing at all, and says why in its
-    log alone."""
+def held(monkeypatch, text=None):
+    """What the last run's unmerged branch held at cloud.FRESH (`sync.held_text`)."""
+    monkeypatch.setattr(sync, "held_text", lambda root, chain, rel: text if rel == cloud.FRESH.as_posix() else None)
+
+
+def fresh_of(ws: Path) -> dict:
+    path = ws / cloud.FRESH
+    return (yaml.safe_load(path.read_text(encoding="utf-8")) or {}) if path.exists() else {}
+
+
+def test_a_carry_that_conflicts_is_set_aside_and_the_run_starts_fresh_from_main(ada, monkeypatch):
+    """The last run's branch will not merge, and the carry took the clone back to main's: everything that run wrote
+    comes again from main's cursors, so the run goes on from main, and its push replaces the branch. One such run is
+    the sweep healing itself, not something to ask the person about."""
     in_the_cloud(ada)
-    stub_carry(monkeypatch, conflict=True)
+    stub_carry(monkeypatch, conflict=True, undone=True)
+    held(monkeypatch)
     result = cloud.begin(ada, "sweep", now=NOW)
-    assert result == {"stopped": "the last cloud run's branch conflicts with main in ada-space"}
-    assert items_of(ada) == []
+    assert "stopped" not in result
+    assert result["set_aside"] == [ada.as_posix()] and result["carried"] == []
+    assert fresh_of(ada) == {"sweep": {"runs": 1, "since": pages.iso(NOW)}}
+    assert items_of(ada) == [] and marker()["chain"] == "sweep"
+    assert set(result["cursors"][ada.as_posix()]) == {"mail", "calls"}
+
+
+def test_a_carry_that_conflicts_and_was_not_taken_back_still_stops_and_writes_nothing(ada, monkeypatch):
+    """A clone the abort did not restore is not safe to work on: the run stops, writing nothing, as before."""
+    in_the_cloud(ada)
+    stub_carry(monkeypatch, conflict=True, error="a carry that conflicted could not be taken back")
+    held(monkeypatch)
+    result = cloud.begin(ada, "sweep", now=NOW)
+    assert result == {"stopped": "the last cloud run's branch could not be brought into ada-space: a carry that "
+                                 "conflicted could not be taken back"}
+    assert items_of(ada) == [] and fresh_of(ada) == {}
     assert not (Path.home() / ".spaces" / "routines").exists()   # no marker: the next begin is free
+
+
+def test_fresh_starts_in_a_row_are_counted_from_the_branch_they_replace(ada, monkeypatch):
+    """A fresh run's branch, which held the count, never merges when the next run must start fresh too: the count is
+    read from that branch. At FRESH_ALERT runs in a row the person hears of it, once, in plain words."""
+    in_the_cloud(ada)
+    stub_carry(monkeypatch, conflict=True, undone=True)
+    since = pages.iso(NOW - dt.timedelta(hours=12))
+    held(monkeypatch, yaml.safe_dump({"sweep": {"runs": cloud.FRESH_ALERT - 2, "since": since}}))
+    assert cloud.begin(ada, "sweep", now=NOW)["items"] == []
+    assert fresh_of(ada) == {"sweep": {"runs": cloud.FRESH_ALERT - 1, "since": since}}
+    next_run()
+    held(monkeypatch, (ada / cloud.FRESH).read_text(encoding="utf-8"))
+    result = cloud.begin(ada, "sweep", now=NOW)
+    [item] = items_of(ada)
+    assert result["items"] == [item["id"]] == ["cloud-fresh-sweep-ada-space"]
+    assert item["kind"] == "request"
+    assert f"{cloud.FRESH_ALERT} runs in a row" in item["text"] and "ada-space" in item["text"]
+    assert "set aside" in item["text"] and "run my routines here" in item["recommendation"]
+    assert "nothing is lost" in item["default"]
+    assert fresh_of(ada)["sweep"] == {"runs": cloud.FRESH_ALERT, "since": since}
+
+
+def test_a_clean_carry_ends_the_streak_and_its_item(ada, monkeypatch):
+    in_the_cloud(ada)
+    stub_carry(monkeypatch, conflict=True, undone=True)
+    held(monkeypatch, yaml.safe_dump({"sweep": {"runs": cloud.FRESH_ALERT, "since": pages.iso(NOW)}}))
+    cloud.begin(ada, "sweep", now=NOW)
+    assert [i["id"] for i in items_of(ada)] == ["cloud-fresh-sweep-ada-space"]
+    next_run()
+    stub_carry(monkeypatch, carried=True)
+    result = cloud.begin(ada, "sweep", now=NOW)
+    assert result["set_aside"] == [] and items_of(ada) == []
+    assert not (ada / cloud.FRESH).exists()
+
+
+def test_a_count_that_does_not_read_starts_again_at_one(ada, monkeypatch):
+    in_the_cloud(ada)
+    stub_carry(monkeypatch, conflict=True, undone=True)
+    held(monkeypatch, "sweep: [not, a, count\n")
+    cloud.begin(ada, "sweep", now=NOW)
+    assert fresh_of(ada) == {"sweep": {"runs": 1, "since": pages.iso(NOW)}}
 
 
 def test_a_carry_that_fails_stops_the_run_too(ada, monkeypatch):
@@ -287,7 +355,7 @@ def test_a_branch_the_person_closed_is_left_quietly(ada, monkeypatch):
 
 def test_a_clean_carry_after_a_stop_goes_on(ada, monkeypatch):
     in_the_cloud(ada)
-    stub_carry(monkeypatch, conflict=True)
+    stub_carry(monkeypatch, error="the branch could not be fetched")
     cloud.begin(ada, "sweep", now=NOW)
     stub_carry(monkeypatch)
     assert cloud.begin(ada, "sweep", now=NOW)["items"] == [] and items_of(ada) == []

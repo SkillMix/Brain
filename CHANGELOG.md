@@ -19,6 +19,15 @@ the shape and ships its migration. Each choice behind a change has a line in
 
 ### Fixed
 
+- **A cloud sweep no longer stops for good on a branch that will not merge.** When the last
+  cloud run's branch conflicted with main (two candidate pages rewritten on both sides was
+  enough), every later run stopped at its first step and the computer's sync would not adopt
+  it either, so nothing was swept until someone merged it by hand; the Needs-you item it left
+  said the cloud runs "keep adding to it". Now the run sets that branch aside and starts fresh
+  from main, which loses nothing (what it wrote comes again from main's cursors), and its push
+  replaces the branch. Three fresh starts in a row become one plain item on Needs you; a clean
+  run ends it. The computer no longer asks about a cloud pull request it cannot adopt, and its
+  old `cloud-adopt-<n>` items go.
 - **A refreshed page keeps its records and its high-stakes flag.** A draft whose body is the
   signed page's, written by an older distill or by an agent that started from the page, named
   only the records that had just arrived: `verify` flagged every line it took over from the page
