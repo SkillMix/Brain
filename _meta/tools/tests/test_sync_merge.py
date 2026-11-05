@@ -478,7 +478,7 @@ def test_what_kept_a_carry_from_settling_is_said(repo, tmp_path, monkeypatch):
         raise RuntimeError("no")
     monkeypatch.setattr(sync.Run, "resolve", broken)
     assert sync.carry(clone, "sweep", gh=ClosedPulls()) == {"carried": False, "head": head, "conflict": True,
-                                                            "error": "merge not settled: RuntimeError"}
+                                                            "undone": True, "error": "merge not settled: RuntimeError"}
     assert not (clone / ".git" / "MERGE_HEAD").exists()
 
 
@@ -489,11 +489,57 @@ def test_a_carry_that_conflicts_is_aborted_and_said(repo, tmp_path):
     on_main(tmp_path, {"knowledge/x.md": "# X\n\nmain's\n"})
     clone = clone_of(tmp_path, "cloud-run")
     before = git(clone, "rev-parse", "HEAD").stdout.strip()
-    assert sync.carry(clone, "sweep", gh=ClosedPulls()) == {"carried": False, "head": head, "conflict": True}
+    assert sync.carry(clone, "sweep", gh=ClosedPulls()) == {"carried": False, "head": head, "conflict": True,
+                                                            "undone": True}
     assert not (clone / ".git" / "MERGE_HEAD").exists()
     assert git(clone, "rev-parse", "HEAD").stdout.strip() == before
     assert (clone / "knowledge" / "x.md").read_text(encoding="utf-8") == "# X\n\nmain's\n"
     assert lease(clone) == head
+
+
+def test_candidate_pages_both_sides_rewrote_conflict_and_leave_the_clone_as_main(repo, tmp_path):
+    """What wedged a cloud sweep for days: main and the cloud's unmerged run both refreshed the same candidate
+    page, which no merge rule settles. The carry aborts and says the clone is main's again (`undone`), so the run
+    can start fresh on it, and leases its push to the old head, which that push then replaces."""
+    page = "_inbound/candidates/harbor.md"
+    commit(repo, "base", {page: "---\nid: p-1\nevidence: [a]\n---\n# Harbor\n"})
+    git(repo, "push", "-q", "origin", "main")
+    head = cloud_branch(tmp_path, {page: "---\nid: p-1\nevidence: [a, mail-b]\n---\n# Harbor\n"})
+    on_main(tmp_path, {page: "---\nid: p-1\nevidence: [a, journal-c]\n---\n# Harbor\n"})
+    clone = clone_of(tmp_path, "cloud-run")
+    before = git(clone, "rev-parse", "HEAD").stdout.strip()
+    result = sync.carry(clone, "sweep", gh=ClosedPulls())
+    assert result["conflict"] is True and result["undone"] is True and result["head"] == head
+    assert git(clone, "rev-parse", "HEAD").stdout.strip() == before and merged_cleanly(clone)
+    assert "journal-c" in (clone / page).read_text(encoding="utf-8")
+    assert lease(clone) == head
+
+
+def test_a_carry_whose_abort_leaves_the_clone_changed_is_no_fresh_start(repo, tmp_path, monkeypatch):
+    """A clone the abort did not take back to main's is not safe to work on: no `undone`, and the run stops."""
+    commit(repo, "base", {"knowledge/x.md": "# X\n\nbase\n"})
+    git(repo, "push", "-q", "origin", "main")
+    cloud_branch(tmp_path, {"knowledge/x.md": "# X\n\nthe cloud's\n"})
+    on_main(tmp_path, {"knowledge/x.md": "# X\n\nmain's\n"})
+    clone = clone_of(tmp_path, "cloud-run")
+    real = sync.git
+
+    def abort_fails(root, *args, **kw):
+        if args[:2] == ("merge", "--abort"):
+            return subprocess.CompletedProcess(["git", *args], 128, "", "fatal: could not abort")
+        return real(root, *args, **kw)
+    monkeypatch.setattr(sync, "git", abort_fails)
+    result = sync.carry(clone, "sweep", gh=ClosedPulls())
+    assert result["conflict"] is True and "undone" not in result
+    assert "could not be taken back" in result["error"]
+
+
+def test_a_file_the_last_cloud_run_held_is_read_from_its_branch(repo, tmp_path):
+    head = cloud_branch(tmp_path, {"_meta/state/cloud-fresh.yaml": "sweep: {runs: 2}\n"})
+    clone = clone_of(tmp_path, "cloud-run")
+    assert sync.carry(clone, "sweep", gh=ClosedPulls())["head"] == head
+    assert sync.held_text(clone, "sweep", "_meta/state/cloud-fresh.yaml") == "sweep: {runs: 2}\n"
+    assert sync.held_text(clone, "sweep", "_meta/state/nothing.yaml") is None
 
 
 def test_no_branch_to_carry_is_quiet_and_leases_on_absence(repo, tmp_path, capsys):
