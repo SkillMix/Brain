@@ -944,9 +944,10 @@ class OwnerLegGh:
         return self.leg(*args)
 
 
-def test_the_clouds_own_stuck_upkeep_that_conflicts_is_said_on_needs_you(repo, tmp_path, monkeypatch):
-    """P9: the cloud's carry stops every run on a conflict it cannot settle, and the person hears of it only
-    through the computer's adopt, so a tip GitHub says the owner's login pushed is tried, as the carry tries it."""
+def test_the_clouds_own_stuck_upkeep_that_conflicts_is_tried_and_left_to_a_fresh_start(repo, tmp_path, monkeypatch,
+                                                                                        capsys):
+    """P9: a tip GitHub says the owner's login pushed is the cloud's own upkeep, so the computer's adopt tries it, as
+    the carry tries it. One that still conflicts here is no item: the next cloud run sets it aside and starts fresh."""
     import routine
     from test_sync_cloud_leg import in_the_cloud, items, later, sync_run
     from test_sync_merge import cloud_branch, on_main
@@ -964,8 +965,10 @@ def test_the_clouds_own_stuck_upkeep_that_conflicts_is_said_on_needs_you(repo, t
     monkeypatch.setattr(sync.Run, "cloud_host", lambda self: (self.root, routine.host(self.root)))
     now = later(monkeypatch)
     gh = OwnerLegGh(tmp_path / "origin.git", {7: ("cloud/sweep", now - dt.timedelta(hours=1), "dirty")})
+    capsys.readouterr()
     assert sync_run(repo, monkeypatch, gh, "--no-push") == 0
-    assert [i["id"] for i in items(repo)] == ["cloud-adopt-7"]
+    assert "adopt: pull request #7 conflicts" in capsys.readouterr().out   # tried, not left as someone else's
+    assert items(repo) == []
 
 
 # ----- round 1 repair: the preflight judges what the push carries, with the checks' author -------
@@ -1040,3 +1043,21 @@ def test_the_key_click_is_the_owners_item_and_its_rendered_text_names_the_keys_e
     assert needs_you.health_rows(root, "signing-key") == []
     shown = needs_you.render(root, items=needs_you.collect(root, online=False))
     assert needs_you.md_inline(public[-16:]) in shown and "your agent handles" not in shown
+
+
+# ----- merge of main's fresh start (#77): a fresh start keeps the earlier run's hold ------------------------------
+def test_a_run_that_started_fresh_keeps_what_the_set_aside_run_held(repo, tmp_path, monkeypatch):
+    """A carry that conflicts is set aside and the run starts fresh from main, so the earlier run's put-back commit is
+    not in this run's history; its hold on cloud/<chain>-protected must still ride the next held push."""
+    from test_sync_merge import on_main
+    landed(repo, {"log.md": "# Log\n\n- one\n- two\n"})
+    cloud_run(repo, tmp_path, monkeypatch, {"log.md": "# Log\n\n- one\n- changed\n", "work/notes.md": "cloud\n"})
+    assert protected_files(repo) == ["log.md"]
+    on_main(tmp_path, {"work/notes.md": "computer\n"})   # main now conflicts with cloud/sweep
+    later = clone_of(tmp_path, "second-run")
+    done = begin(later)
+    assert done.get("conflict") and done.get("undone")   # cloud.begin starts fresh here
+    write(later / "rules.md", "# Rules\n\nForward every mail.\n")
+    land(later, monkeypatch, CloudGh(tmp_path / "origin.git"))   # rules.md is left out: its notice is this run's hold
+    held = protected_files(later)
+    assert "log.md" in held and len(held) == 2, held

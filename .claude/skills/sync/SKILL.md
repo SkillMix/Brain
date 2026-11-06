@@ -130,7 +130,8 @@ the cloud's run lines first, and those the cloud branches hold. The computer the
   computer's own pull request (a split push keeps its head as a parent of the plain part). A
   green one that is only slow is not adopted, because auto-merge lands it. Its registry or ledger
   upkeep counts as the cloud's own when GitHub names this computer's login as the tip's last pusher,
-  as in the carry; one whose merge conflicts is a `cloud-adopt-<n>` item on Needs you;
+  as in the carry; one whose merge conflicts is left to the next cloud run, which sets its branch
+  aside and starts fresh from main;
 - one Needs-you item naming the spaces the cloud does not read.
 
 ## Judgment left to you

@@ -163,6 +163,15 @@ def items(clone: Path) -> list:
     return (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("items") or [] if path.exists() else []
 
 
+def put_items(clone: Path, rows: list) -> None:
+    """The leg's items file holding `rows`, committed, as an earlier run left it."""
+    path = clone / ITEMS
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump({"items": rows}, sort_keys=False), encoding="utf-8", newline="\n")
+    git(clone, "add", "--", ITEMS.as_posix())
+    git(clone, "commit", "-q", "-m", "items")
+
+
 # ----- the order: a computer runner keeps today's -------------------------------------------------------
 @pytest.mark.parametrize("runner", [None, "os", "cloud"])
 def test_not_started_runs_after_the_merge_only_while_the_routines_run_in_the_cloud(repo, tmp_path, monkeypatch,
@@ -510,29 +519,25 @@ def test_a_cloud_branch_its_run_pushed_minutes_ago_is_left_to_it(repo, tmp_path,
     assert run_lines(repo)[-1]["notes"]["adopted"] == [7] and (repo / SOURCE).exists()
 
 
-def test_a_cloud_pull_request_that_cannot_be_merged_here_is_one_item(repo, tmp_path, monkeypatch):
+def test_a_cloud_pull_request_that_cannot_be_merged_here_is_left_to_the_next_cloud_run(repo, tmp_path, monkeypatch,
+                                                                                      capsys):
+    """The next cloud run sets that branch aside and starts fresh from main (`cloud.begin`), so it is nothing the
+    person must answer: the merge is aborted and said in the sync's output alone. The item an earlier template asked
+    (`cloud-adopt-<n>`, whose default wrongly said the cloud runs keep adding to it) goes."""
     in_the_cloud(repo)
+    put_items(repo, [{"id": "cloud-adopt-3", "kind": "request", "text": "old", "recommendation": "r",
+                      "default": "d", "depends": 1}])
     cloud_branch(tmp_path, {"work/notes.md": "# Notes\n\nthe cloud's line\n"})
     on_main(tmp_path, {"work/notes.md": "# Notes\n\nmain's line\n"})
     now = later(monkeypatch)
     gh = LegGh(tmp_path / "origin.git", {7: ("cloud/sweep", now - dt.timedelta(hours=1), "dirty")})
     assert sync_run(repo, monkeypatch, gh, "--no-push") == 0
-    assert items(repo) == [{
-        "id": "cloud-adopt-7", "kind": "request",
-        "text": "A cloud run's pull request #7 conflicts with your files in a way the sync cannot settle.",
-        "recommendation": "open it and keep the side you want, or close it: the next cloud run starts again from main",
-        "default": "it stays open and the cloud runs keep adding to it", "depends": 1}]
+    assert items(repo) == []
+    assert "pull request #7 conflicts" in capsys.readouterr().out
     assert not (repo / ".git" / "MERGE_HEAD").exists() and not git(repo, "diff", "--name-only",
                                                                     "--diff-filter=U").stdout.strip()
     assert (repo / "work" / "notes.md").read_text(encoding="utf-8") == "# Notes\n\nmain's line\n"
     assert "adopted" not in run_lines(repo)[-1]["notes"]
-    at(now + dt.timedelta(minutes=15), monkeypatch)
-    assert sync_run(repo, monkeypatch, gh, "--no-push") == 0
-    assert [i["id"] for i in items(repo)] == ["cloud-adopt-7"]   # once
-    del gh.pulls[7]   # the person closed it
-    at(now + dt.timedelta(minutes=30), monkeypatch)
-    assert sync_run(repo, monkeypatch, gh, "--no-push") == 0
-    assert items(repo) == []
 
 
 def test_a_cloud_branch_with_a_protected_change_is_never_adopted(repo, tmp_path, monkeypatch):

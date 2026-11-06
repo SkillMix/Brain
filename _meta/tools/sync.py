@@ -105,7 +105,8 @@ clock kept outside the repository (`~/.spaces/sync-leg-<space>.json`); a
 `cloud/<chain>` pull request open for ADOPT_MINUTES, in conflict with main or red, whose head is as
 old, is merged here with the merge rules and rides this computer's own pull request (a push split
 for a protected path keeps its head as a parent of the plain part), and one that still conflicts is
-one item on Needs you; and the workspace names on Needs you a space of the
+left to the next cloud run, which sets it aside and starts fresh from main; and the workspace names on
+Needs you a space of the
 person's that the move did not attach. All but `not_started` run only on the computer the record
 names (`keeps_leg`); a record that names none lets each computer run them, and the merge rules keep
 what two computers both write from stopping a merge. The scan waits while the routines are paused.
@@ -637,15 +638,6 @@ def items_out(path: Path, items: list, before: list) -> bool:
     path.write_text(yaml.safe_dump({"items": items}, sort_keys=False, allow_unicode=True, width=100),
                     encoding="utf-8", newline="\n")
     return True
-
-
-def _adopt_item(number: int) -> dict:
-    """The item for a cloud pull request the computer's sync could not merge here (`Run.adopt_cloud`)."""
-    return {"id": f"cloud-adopt-{number}", "kind": "request",
-            "text": f"A cloud run's pull request #{number} conflicts with your files in a way the sync cannot settle.",
-            "recommendation": "open it and keep the side you want, or close it: the next cloud run starts again "
-                              "from main",
-            "default": "it stays open and the cloud runs keep adding to it", "depends": 1}
 
 
 class Run:
@@ -2201,38 +2193,31 @@ class Run:
         as a parent until main holds it (`adopted_heads`, `riders`), so the next cloud run never carries it again.
         One is adopted when it was opened ADOPT_MINUTES ago or more and conflicts with main or has a failed check
         (`stuck`), and its head is as old (`adopt`): a cloud run waits for its own for less. One whose merge here
-        still conflicts is aborted and becomes one item on Needs you (`cloud-adopt-<n>`), which goes once it is
-        adopted or no longer open. A fork's pull request is never one. The numbers adopted."""
+        still conflicts is aborted and said in the output alone: the next cloud run sets that branch aside and
+        starts fresh from main, so the person has nothing to answer. A fork's pull request is never one. The
+        numbers adopted."""
         if self.slug is None or not self.has_origin_main():
             return []
-        listed, complete = [], True
+        listed = []
         for chain_name in CLOUD_CHAINS:
             branch = f"cloud/{chain_name}"
             pulls = ghrest.open_pulls(self.gh, self.slug, head=branch)
             if pulls is None:
-                complete = False   # what could not be read says nothing about what is gone
-                continue
+                continue   # not read: the next run asks again
             listed += [(chain_name, pull) for pull in pulls if pull["head_ref"] == branch and not pull["cross_repo"]]
-        adopted, conflicts, committed = [], [], False
+        adopted, committed = [], False
         for chain_name, pull in listed:
             if not self.stuck(pull, now):
                 continue
             if not committed:   # a merge stops at a local change in its way: what the leg wrote so far lands first
                 self.stage_and_commit()
                 committed = True
-            outcome = self.adopt(chain_name, pull["number"], now)
-            if outcome == "adopted":
+            if self.adopt(chain_name, pull["number"], now) == "adopted":
                 adopted.append(pull["number"])
-            elif outcome == "conflict":
-                conflicts.append(pull["number"])
-        open_now = {pull["number"] for _, pull in listed}
-
-        def settled(item_id: str) -> bool:   # an item goes once its pull request was adopted or is no longer open
-            number = item_id.removeprefix("cloud-adopt-")
-            if not (item_id.startswith("cloud-adopt-") and number.isdigit()):
-                return False
-            return int(number) in adopted or (complete and int(number) not in open_now)
-        self.leg_items([_adopt_item(n) for n in conflicts], settled)
+        # one that still conflicts here is no item: the next cloud run sets its branch aside and starts fresh from
+        # main (`cloud.begin`), and says so on Needs you itself once that keeps happening. The item an earlier
+        # template wrote for it goes.
+        self.leg_items([], lambda item_id: item_id.startswith("cloud-adopt-"))
         return adopted
 
     def stuck(self, pull: dict, now: dt.datetime) -> bool:
@@ -2262,7 +2247,8 @@ class Run:
         branch was pushed by someone else, and merged here its tools would run on this computer before the
         person's click. A path the gate trusts only by its author counts as for no login, unless GitHub names this
         checkout's login as the last pusher of the tip (`pushed_by_me`), as the carry: then it is the cloud's own
-        upkeep, and a merge of it that conflicts is the `cloud-adopt-<n>` item, since the carry stops on it too."""
+        upkeep, and a merge of it that conflicts is left, as any other, to the next cloud run, which sets its branch
+        aside and starts fresh from main."""
         branch, tracking = f"cloud/{chain}", f"refs/remotes/origin/cloud/{chain}"
 
         def why(guarded) -> str:   # what `_protected_moves` said kept it out
@@ -2623,8 +2609,13 @@ class Run:
 
     def held_commits(self, name: str) -> list:
         """The commits of this run's history that put what they held for `name` back to main's copy (HELD_FOR),
-        newest first; each one's parent holds the change as a run's tools wrote it. shortcut: the last 20."""
-        log = git(self.root, "log", "--format=%H", "-F", f"--grep={HELD_FOR.format(name)}", "-n", "20", "HEAD")
+        newest first; each one's parent holds the change as a run's tools wrote it. A run that started fresh from
+        main (`cloud.begin`'s set-aside) does not hold the branch it replaces, so that branch's history is read too;
+        `held_before` keeps only what the cloud's own protected tip still holds. shortcut: the last 20."""
+        aside = f"refs/remotes/origin/cloud/{self.cloud}" if self.cloud else ""
+        tips = ["HEAD"] + ([aside] if aside and git(self.root, "rev-parse", "-q", "--verify", aside).returncode == 0
+                           else [])
+        log = git(self.root, "log", "--format=%H", "-F", f"--grep={HELD_FOR.format(name)}", "-n", "20", *tips)
         return log.stdout.split()
 
     def foreign_held(self, name: str, earlier: str) -> list:
@@ -3216,6 +3207,28 @@ def tracked_links(root: Path) -> set:
     return out
 
 
+def _as_it_was(root: Path, before: str) -> bool:
+    """Whether an aborted merge left the clone as it was at `before`: HEAD there, no merge in progress, and
+    nothing tracked changed (untracked files are not the merge's; a mount's own state is not looked into)."""
+    if git(root, "rev-parse", "HEAD").stdout.strip() != before:
+        return False
+    if git(root, "rev-parse", "-q", "--verify", "MERGE_HEAD").returncode == 0:
+        return False
+    done = git(root, "status", "--porcelain=v1", "--untracked-files=no", "--ignore-submodules=all")
+    return done.returncode == 0 and not done.stdout.strip()
+
+
+@monitor_off()
+def held_text(root: Path, chain: str, rel: str) -> str | None:
+    """The text of `rel` on the earlier cloud run's branch as the carry fetched it (`refs/remotes/origin/cloud/
+    <chain>`), or None when there is no such branch or file. What a fresh start counts from: a branch that is set
+    aside never merges, so what it held is read there."""
+    if chain not in CLOUD_CHAINS:
+        raise ValueError(f"no cloud chain {chain!r}: {', '.join(CLOUD_CHAINS)}")
+    done = git(Path(root), "show", f"refs/remotes/origin/cloud/{chain}:{Path(rel).as_posix()}")
+    return done.stdout if done.returncode == 0 else None
+
+
 @monitor_off()
 def carry(root: Path, chain: str, gh=None) -> dict:
     """Merge the earlier cloud run's `cloud/<chain>` branch that never merged into this clone, at the
@@ -3241,13 +3254,17 @@ def carry(root: Path, chain: str, gh=None) -> dict:
     the branch.
     The merge runs with the merge rules (`resolve`, `keep_ours`, as `merge_in`); one that still
     conflicts is aborted (`"conflict": True`, with what kept it from settling in `"error"`), and the
-    run must not work on top of it. A branch main already holds is not carried again.
-    `{"carried": True, "head": <sha>}` when it merged.
+    run must not work on top of it. When the abort left the clone as it was before the merge (`HEAD`
+    unmoved, nothing tracked changed, no merge in progress) that is `"undone": True`: the clone is
+    main's again, so the run sets the branch aside and starts fresh from main (`cloud.begin`), which
+    loses nothing, since what that run wrote comes again from main's cursors, and its leased push
+    replaces the branch. An abort that left anything is `"error"` too. A branch main already holds is
+    not carried again. `{"carried": True, "head": <sha>}` when it merged.
 
     `"error"` says what could not be done (origin not reached, space.yaml not read, or a merge that
     changed a protected path and that `reset --keep` could not take back, which leaves that merge in
-    the clone). In every case with `"error"` or `"conflict"` the run stops: it never works on top of
-    what the carry left. A chain that is not one of `CLOUD_CHAINS` is a ValueError. Whatever
+    the clone). In every case with `"error"`, or `"conflict"` without `"undone"`, the run stops: it
+    never works on top of what the carry left. A chain that is not one of `CLOUD_CHAINS` is a ValueError. Whatever
     happened, the head the fetch saw (empty when there was none) is written to `LEASE` in the git
     dir: the cloud push is leased to it, so a run that pushed in between is never overwritten. Every
     git it starts runs with a mount's file monitor off (`monitor_off`)."""
@@ -3318,6 +3335,11 @@ def carry(root: Path, chain: str, gh=None) -> dict:
             result["conflict"] = True
             if run.notes.get("errors"):
                 result["error"] = "; ".join(run.notes["errors"])
+            if _as_it_was(root, before):
+                result["undone"] = True   # the clone is main's again: a run may start fresh on it
+            else:
+                result["error"] = "; ".join(filter(None, [result.get("error"),
+                                                          "a carry that conflicted could not be taken back"]))
             return result
         # what the merge did, file by file: git follows a file main moved, so a change the branch made to a plain
         # file can land under a protected path its own paths never named. The lists were read before the merge

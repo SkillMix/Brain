@@ -182,7 +182,8 @@ def test_pages_alone_from_a_cloud_branch_stay_auto_mergeable(tmp_path, monkeypat
     """The rule is about paths, not branches: a cloud run's landing of pages and state lands on green from
     `cloud/sweep` as from any other branch."""
     pages_only = ["knowledge/sources/2026/10/r1.md", "knowledge/topics/a/one.md", "_meta/state/runs.jsonl",
-                  "_meta/state/sweep-watermark.yaml", "_inbound/needs-you/sync-cloud.yaml"]
+                  "_meta/state/sweep-watermark.yaml", "_inbound/needs-you/sync-cloud.yaml",
+                  "_meta/state/cloud-fresh.yaml"]   # a fresh start's count rides its push
     root = make_space(tmp_path / "ada")
     assert gate.classify(root, pages_only)[0] == "auto-mergeable"
     empty = tmp_path / "gitconfig"
