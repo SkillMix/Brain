@@ -71,9 +71,17 @@ def test_a_broken_line_in_the_store_is_skipped(tmp_path):
     assert [r["id"] for r in unsure.waiting(root)] == ["m-77"]
 
 
-def test_a_code_is_short_and_stable():
-    code = unsure.code_of(REC)
-    assert code == unsure.code_of(dict(REC)) and len(code) == 5 and unsure.key_of(REC).startswith(code)
+def test_a_code_is_short_stable_and_never_derived_from_the_id(tmp_path):
+    """The code is drawn at random once and kept in the private store: anyone can read a parked
+    record's id in the tracked ids file, and must not be able to work out its code from it."""
+    root = make_space(tmp_path / "ada")
+    store(root, REC)
+    [first] = unsure.waiting(root)
+    code = unsure.code_of(first)
+    assert len(code) == 8 and int(code, 16) >= 0
+    assert [unsure.code_of(r) for r in unsure.waiting(root)] == [code], "stable across lists"
+    assert not unsure.key_of(REC).startswith(code[:5]) or code != unsure.key_of(REC)[:8]
+    assert unsure.code_of(REC) == "", "a record without a drawn code has none"
 
 
 # ----- the ids a cloud run keeps ------------------------------------------------------------------

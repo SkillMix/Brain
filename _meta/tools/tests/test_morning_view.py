@@ -4,6 +4,7 @@ from pathlib import Path
 
 import morning_view
 import pages
+import status
 import validate
 from conftest import NOW, make_space, write_page
 
@@ -248,6 +249,7 @@ def test_a_second_wrong_recipient_is_asked_again_after_the_first_was_answered(tm
     morning_view.record_send(space, "m6", to=["x@else.test"], now=NOW)
     [first] = recipient_items(space)
     (space / "log.md").write_text(f"# Log\n\n- {pages.iso(NOW)} yes {first['id']} by Ada Okafor\n", encoding="utf-8")
+    status.record_verdict(space, first["id"], "Ada Okafor", verb="yes", at=NOW)   # the answer itself
     morning_view.record_send(space, "m7", to=["y@else.test"], now=NOW + dt.timedelta(days=1))
     asked = [i for i in needs_you.collect(space, now=NOW + dt.timedelta(days=1)) if i.kind == "security"]
     assert [i.text.split(")")[0] for i in asked] == ["Your morning briefing (message m7"]

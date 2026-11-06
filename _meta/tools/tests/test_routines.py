@@ -1386,6 +1386,9 @@ def granted(tmp_path, verdicts=(GMAIL, OUTLOOK, LINEAR), tools=TOOLS, servers=SE
     (ws / "_meta" / "tools").mkdir(parents=True, exist_ok=True)
     for guard in (routine.SEND_GUARD, routine.BASH_GUARD):
         shutil.copy(guard, ws / "_meta" / "tools" / guard.name)
+    for tool in routine.SEND_GUARD.parent.glob("*.py"):   # routine.py's own guards need the modules it imports
+        if not (ws / "_meta" / "tools" / tool.name).exists():
+            shutil.copy(tool, ws / "_meta" / "tools" / tool.name)
     onboard.write_yaml(ws / "_meta" / "state" / "private" / "apps.yaml", {"apps": [dict(v) for v in verdicts]})
     routine.write_probe({"tools": list(tools), "mcp_servers": [dict(s) for s in servers], "stamp": time.time(),
                          "hook_shell": proven_shell() if shell is PROVEN else shell})
@@ -1441,14 +1444,14 @@ def test_every_other_connector_tool_the_probe_knows_is_denied(tmp_path):
     assert set(GMAIL_OTHER + [MS_READ, MS_SEND, LINEAR_READ, LINEAR_DELETE]) <= set(deny)
     assert not {*GMAIL_READ, GMAIL_SEND, LINEAR_WRITE} & set(deny) and {*GMAIL_READ, GMAIL_SEND, LINEAR_WRITE} <= set(allow)
     assert "Read" not in allow and "Bash" not in deny   # built-in tools keep the rules they had
-    assert [h["matcher"] for h in s["hooks"]["PreToolUse"]] == ["Bash", GMAIL_SEND, routine.TASK_MATCHER, routine.CONNECTOR_MATCHER]
+    assert [h["matcher"] for h in s["hooks"]["PreToolUse"]] == ["Bash", GMAIL_SEND, routine.TASK_MATCHER, routine.CONNECTOR_MATCHER, routine.EDIT_MATCHER]
 
 
 @pytest.mark.parametrize("person", ["", "ada", "ada$HOME@lanternworks.example", f"{ADA}, ben@lanternworks.example"])
 def test_without_one_guardable_address_no_send_tool_is_allowed(tmp_path, person):
     s = routine.routine_settings(tmp_path, "", [tmp_path], person, GMAIL_READ, [], [GMAIL_SEND], known_tools=TOOLS)
     assert GMAIL_SEND not in s["permissions"]["allow"] and GMAIL_SEND in s["permissions"]["deny"]
-    assert [h["matcher"] for h in s["hooks"]["PreToolUse"]] == ["Bash", routine.TASK_MATCHER, routine.CONNECTOR_MATCHER]
+    assert [h["matcher"] for h in s["hooks"]["PreToolUse"]] == ["Bash", routine.TASK_MATCHER, routine.CONNECTOR_MATCHER, routine.EDIT_MATCHER]
     assert set(GMAIL_READ) <= set(s["permissions"]["allow"])
 
 
@@ -1457,7 +1460,7 @@ def test_a_tool_that_is_not_a_read_is_never_allowed_as_one(tmp_path):
                                  [GMAIL_OTHER[0]], [GMAIL_OTHER[1]], known_tools=TOOLS)
     allow = s["permissions"]["allow"]
     assert not {GMAIL_OTHER[0], GMAIL_OTHER[1], GMAIL_OTHER[2], "mcp__*", "Bash"} & set(allow)
-    assert [h["matcher"] for h in s["hooks"]["PreToolUse"]] == ["Bash", routine.TASK_MATCHER, routine.CONNECTOR_MATCHER]   # forward is no send tool
+    assert [h["matcher"] for h in s["hooks"]["PreToolUse"]] == ["Bash", routine.TASK_MATCHER, routine.CONNECTOR_MATCHER, routine.EDIT_MATCHER]   # forward is no send tool
     assert GMAIL_OTHER[1] in s["permissions"]["deny"]
 
 
@@ -1487,7 +1490,7 @@ def test_a_routine_never_runs_in_bypass_and_never_inherits_an_api_key(tmp_path, 
     assert seen["timeout"] == 3600 and Path(seen["cwd"]) == ws.resolve() and not seen["input"].startswith("---")
     profile = json.loads(Path(seen["argv"][seen["argv"].index("--settings") + 1]).read_text(encoding="utf-8"))
     assert set(GMAIL_READ + [LINEAR_READ, LINEAR_WRITE, GMAIL_SEND]) <= set(profile["permissions"]["allow"])
-    assert [h["matcher"] for h in profile["hooks"]["PreToolUse"]] == ["Bash", GMAIL_SEND, routine.TASK_MATCHER, routine.CONNECTOR_MATCHER]
+    assert [h["matcher"] for h in profile["hooks"]["PreToolUse"]] == ["Bash", GMAIL_SEND, routine.TASK_MATCHER, routine.CONNECTOR_MATCHER, routine.EDIT_MATCHER]
 
 
 # ----- one run at a time per workspace ---------------------------------------------------------------
@@ -1978,8 +1981,10 @@ def test_the_probe_writes_what_it_saw_and_its_three_checks(tmp_path, monkeypatch
     seen = json.loads(routine.probe_path().read_text(encoding="utf-8"))
     assert seen["tools"] == TOOLS and seen["ok"] is True and seen["stamp"] >= before and seen["workspace"] == str(ws.resolve())
     names = [c["name"] for c in seen["checks"]]
-    assert names == ["reads Gmail", "reads Linear", "folder ada", "mail only to you", routine.GITHUB_CHECK], names
-    assert all(c["ok"] for c in seen["checks"]) and seen["notes"] == []
+    assert names == ["reads Gmail", "reads Linear", "folder ada", "mail only to you", routine.GUARDS_CHECK,
+                     routine.GITHUB_CHECK], names
+    assert all(c["ok"] for c in seen["checks"])
+    assert seen["notes"] == ["Linear: the tracker step writes with create_issue."]   # round 3: what a tracker may write
 
 
 def test_the_send_check_proves_the_guard_refuses_a_stranger_and_lets_the_person_through(tmp_path, monkeypatch):
@@ -2008,7 +2013,8 @@ def test_without_a_mailbox_to_send_from_the_send_check_passes_and_says_why(tmp_p
     assert routine.main(["--probe", str(ws)], run=probe_run()) == 0
     seen = json.loads(routine.probe_path().read_text(encoding="utf-8"))
     check = next(c for c in seen["checks"] if c["name"] == "mail only to you")
-    assert check["ok"] and len(seen["notes"]) == 1 and seen["notes"][0] in check["why"]
+    assert check["ok"] and seen["notes"][0] in check["why"]
+    assert seen["notes"][1:] == ["Linear: the tracker step writes with create_issue."]   # the tracker's line after it
 
 
 def test_a_routine_settings_file_without_the_guard_fails_the_send_check(tmp_path, monkeypatch):
@@ -2292,7 +2298,7 @@ def test_without_a_shell_to_run_the_guard_in_no_send_tool_is_allowed(tmp_path, m
     assert got["send"] == [] and got["notes"] == [routine.NO_SHELL] and "mcp__" not in got["notes"][0]
     s = routine.routine_settings(ws, "", [ws], ADA, GMAIL_READ, [], [GMAIL_SEND], known_tools=TOOLS)
     assert GMAIL_SEND in s["permissions"]["deny"] and GMAIL_SEND not in s["permissions"]["allow"]
-    assert [h["matcher"] for h in s["hooks"]["PreToolUse"]] == ["Bash", routine.TASK_MATCHER, routine.CONNECTOR_MATCHER]
+    assert [h["matcher"] for h in s["hooks"]["PreToolUse"]] == ["Bash", routine.TASK_MATCHER, routine.CONNECTOR_MATCHER, routine.EDIT_MATCHER]
 
 
 def test_a_run_lets_go_only_of_its_own_lock(tmp_path, monkeypatch):
@@ -2428,10 +2434,12 @@ def test_the_probe_writes_the_shell_it_proved_the_guard_in_and_a_run_pins_it(tmp
 
 def test_routine_env_pins_the_proven_bash_on_windows_only():
     env = {"PATH": "/bin", "Claude_Code_Git_Bash_Path": "C:/Other/bash.exe", "ANTHROPIC_API_KEY": "k"}
-    assert routine.routine_env(env, "C:/Git/bin/bash.exe", windows=True) == {"PATH": "/bin",
+    utf8 = {"PYTHONUTF8": "1"}   # every routine's Python prints any character a record carried
+    assert routine.routine_env(env, "C:/Git/bin/bash.exe", windows=True) == {"PATH": "/bin", **utf8,
                                                                          "CLAUDE_CODE_GIT_BASH_PATH": "C:/Git/bin/bash.exe"}
-    assert routine.routine_env(env, "/bin/sh", windows=False) == {"PATH": "/bin", "Claude_Code_Git_Bash_Path": "C:/Other/bash.exe"}
-    assert routine.routine_env(env, "", windows=True) == {"PATH": "/bin", "Claude_Code_Git_Bash_Path": "C:/Other/bash.exe"}
+    assert routine.routine_env(env, "/bin/sh", windows=False) == {"PATH": "/bin", **utf8,
+                                                                  "Claude_Code_Git_Bash_Path": "C:/Other/bash.exe"}
+    assert routine.routine_env(env, "", windows=True) == {"PATH": "/bin", **utf8, "Claude_Code_Git_Bash_Path": "C:/Other/bash.exe"}
 
 
 def test_without_a_proven_shell_there_is_no_send_and_one_plain_line_says_why(tmp_path, monkeypatch):
@@ -2443,7 +2451,7 @@ def test_without_a_proven_shell_there_is_no_send_and_one_plain_line_says_why(tmp
     ws = granted(tmp_path / "c", shell=None)
     profile = json.loads(routine.write_allowlist(ws)[0].read_text(encoding="utf-8"))
     assert GMAIL_SEND in profile["permissions"]["deny"] and [h["matcher"] for h in profile["hooks"]["PreToolUse"]] == [
-        "Bash", routine.TASK_MATCHER, routine.CONNECTOR_MATCHER]
+        "Bash", routine.TASK_MATCHER, routine.CONNECTOR_MATCHER, routine.EDIT_MATCHER]
 
 
 def test_a_routine_has_only_the_built_in_tools_it_needs(tmp_path):
@@ -3048,7 +3056,7 @@ def test_every_guard_hook_has_its_own_time_limit_well_above_the_guards(tmp_path)
     assert paths
     for path in paths:
         entries = json.loads(path.read_text(encoding="utf-8"))["hooks"]["PreToolUse"]
-        assert [e["matcher"] for e in entries] == ["Bash", GMAIL_SEND, routine.TASK_MATCHER, routine.CONNECTOR_MATCHER]
+        assert [e["matcher"] for e in entries] == ["Bash", GMAIL_SEND, routine.TASK_MATCHER, routine.CONNECTOR_MATCHER, routine.EDIT_MATCHER]
         assert all(h["timeout"] == routine.GUARD_TIMEOUT for e in entries for h in e["hooks"])
     assert routine.GUARD_TIMEOUT == 30
 

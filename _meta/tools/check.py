@@ -11,6 +11,17 @@ recommendation in words and a route (signer, subject owner, domain owner, space
 owner). The checker never edits a page. Labels compare by their last word. A verdict
 holds for the value it answered: evidence that later gives another value is a new hit.
 
+Newer evidence against a signed page another space owns becomes a conflict note to that
+space. A note quotes a record, so it follows that record's release rule: queued to leave
+after the window only when every record it quotes may reach that space (it came from
+there, it is the person's journal, the router routed it there, or a queue item or a release
+already carries it there); otherwise, a record held for a yes or kept private among them,
+the note goes as facts only (`facts_only_note`): the page id, the field's label, the date of
+the evidence and the sending space, never a value, a quote, a record or a title of this space.
+That carries nothing the release rule protects, so it leaves after the window like any note.
+It moves the question rather than removing it: the holder's weekly batch line says no value
+travelled, and its person keeps the page or asks the sending space for the detail.
+
 Verdicts in `_meta/state/check-verdicts.jsonl` (`no` means noise) give `hit_rate`;
 under 0.3 over 30 scaled days with ten or more verdicts the run drops `past_window`
 and `named_number` and records that in its run line.
@@ -421,12 +432,17 @@ def batch_lines(root: Path, space, reg, store: "Pages", reader, now) -> list:
         if page.subject and (subject is None or subject.state != "active"):
             continue
         reason = None
+        facts_only = []   # the spaces whose notes carry no value: there is none to take
         if page.fm.get("contested"):
             notes = []
             for note_id in page.fm.get("contested") or []:
                 note = root / CONFLICTS_IN / f"{note_id}.md"
                 if note.exists():
-                    notes.append(" ".join(pages.read(note)[1].split())[:200])
+                    nfm, nbody = pages.read(note)
+                    notes.append(" ".join(nbody.split())[:200])
+                    if nfm.get("facts_only"):
+                        facts_only.append(" ".join(str(nfm.get("released_from") or nfm.get("from_space")
+                                                       or "the other space").split())[:40])
             reason = "contested: " + ("; ".join(notes) or "a conflict note arrived")
         elif page.signed and is_past_window(page, space, now):
             age = pages.age_days(page.fm, now)
@@ -437,7 +453,10 @@ def batch_lines(root: Path, space, reg, store: "Pages", reader, now) -> list:
                           "signed": page.signed, "reason": reason,
                           "evidence": _evidence_since(root, reader, page.subject, page.stamp),
                           "recommendation": "yes, still true" if not page.fm.get("contested")
-                          else "edit: take the newer value, or yes to keep the page"})
+                          else "edit: take the newer value, or yes to keep the page"
+                          if len(facts_only) < len(page.fm.get("contested") or []) else
+                          f"yes to keep the page; later to ask {', '.join(sorted(set(facts_only)))} for the "
+                          "detail first (its note carries no value)"})
     for path in sorted((root / CANDIDATES_DIR).glob("*.md")):
         if path.name.startswith("review-"):
             continue
@@ -499,6 +518,8 @@ def write_batch(root: Path, space, reg, store: "Pages", reader, now) -> int:
 # ----- conflict notes (vision section 13) -----------------------------------------------
 CONFLICT_LOG = Path("_meta") / "state" / "conflict-notes.jsonl"
 QUEUE_DIR = Path("_outbound") / "queue"
+HELD_DIR = Path("_outbound") / "held"
+RELEASED_LOG = Path("_meta") / "state" / "released.jsonl"
 
 
 def _mounted_pages(space, sid: str) -> list:
@@ -520,8 +541,73 @@ def _mounted_pages(space, sid: str) -> list:
     return out
 
 
+def _release_state(root: Path) -> dict:
+    """What the release rule already decided about records, by record id: `held` (a record
+    waiting in `_outbound/held/`, for a yes or for good), and `cleared`, the (record,
+    destination) pairs a queue item or a shipped release carries."""
+    held, cleared = set(), set()
+    for folder, into in ((HELD_DIR, "held"), (QUEUE_DIR, "cleared")):
+        for path in sorted((root / folder).glob("*.md")) if (root / folder).is_dir() else []:
+            try:
+                fm, _ = pages.read(path)
+            except Exception:
+                continue
+            if fm.get("conflict_note"):   # a note's evidence is a page path, not a record
+                continue
+            for record in [str(e) for e in fm.get("evidence") or []]:
+                if into == "held":
+                    held.add(record)
+                else:
+                    cleared.add((record, str(fm.get("destination"))))
+    for row in registry_mod._jsonl(root / RELEASED_LOG):
+        if row.get("class") != "retraction":
+            cleared |= {(str(e), str(row.get("destination"))) for e in row.get("evidence") or []}
+    return {"held": held, "cleared": cleared}
+
+
+def cleared_for(ev, owner_space: str, sid: str, state: dict) -> bool:
+    """A record the release rule lets reach `owner_space`, so a note quoting it may go there
+    after the window: it came from that space, it is the person's own journal, the router
+    routed it to that subject there, or a queue item or a release carries it there. A record
+    held for a yes (or kept home), or one the router kept private, never is."""
+    routing = ev.fm.get("routing") if isinstance(ev.fm.get("routing"), dict) else {}
+    if ev.record in state["held"] or routing.get("decision") == "private":
+        return False
+    if ev.landed and ev.fm.get("released_from") == owner_space:
+        return True
+    if ev.fm.get("source") == "journal":
+        return True
+    if f"{owner_space}/{sid}" in [str(r) for r in routing.get("routes") or []]:
+        return True
+    return (ev.record, owner_space) in state["cleared"]
+
+
+def facts_only_note(space, owner_space: str, sid: str, page, hit, quoted: list, now) -> tuple:
+    """A conflict note that quotes nothing: the contested page's id, the label of its field, the
+    date of the newest evidence and this space's name. No value, no wording, no record id or path
+    of this space, not even the page's title, and an id of its own drawn at random (the full
+    note's id is a digest of the value, which a short value could be guessed back from). It
+    leaves after the window as a full note does; the holder asks through a request for more."""
+    dated = [ev.at for ev in quoted if getattr(ev, "at", None) is not None]
+    day = f"{max(dated):%Y-%m-%d}" if dated else f"{now:%Y-%m-%d}"
+    label = " ".join(str(hit.label or "a field").split())[:60]
+    pid = str(page.fm.get("id") or "")
+    body = (f"Conflict note for [{pid}](id:{pid}): evidence of {day} in {space.name} gives another value "
+            f"for {label}. Only these facts travel; ask {space.name} through a request for the detail.\n")
+    fm = {"id": pages.new_id(), "type": "source", "title": f"Conflict note: {pid}", "status": "draft",
+          "generated": pages.generated(ROUTINE, now), "class": "window", "destination": owner_space,
+          "subject": sid, "stage_after": pages.iso(now + space.window()), "listed": False, "evidence": [],
+          "from_space": space.name, "kind": "document", "conflict_note": True, "facts_only": True,
+          "page": pid}
+    return fm, body
+
+
 def conflict_notes(root: Path, space, reg, moved: dict, now) -> int:
-    """Newer evidence against a page another space owns: a short note queued to that space."""
+    """Newer evidence against a page another space owns: a short note to that space, queued to
+    leave after the window. It follows the release rule of the records it quotes: the whole note
+    when every one of them may reach that space (`cleared_for`), else facts only
+    (`facts_only_note`)."""
+    state = _release_state(root)
     done = {str(r.get("id")) for r in read_verdicts(root)}  # never shadow a verdict id
     sent = set()
     log = root / CONFLICT_LOG
@@ -555,10 +641,16 @@ def conflict_notes(root: Path, space, reg, moved: dict, now) -> int:
                       "stage_after": pages.iso(now + space.window()), "listed": False,
                       "evidence": [str(e) for e in hit.evidence], "from_space": space.name,
                       "kind": "document", "conflict_note": True, "page": page.fm.get("id")}
-                pages.write(root / QUEUE_DIR / f"{note_id}.md", fm, body)
-                with log.open("a", encoding="utf-8", newline="\n") as handle:
-                    handle.write(json.dumps({"hit": hid, "id": note_id, "at": pages.iso(now),
-                                             "destination": owner_space, "page": page.fm.get("id")}) + "\n")
+                quoted = [ev for ev in evidence if ev.rel in hit.evidence]
+                facts = not (quoted and all(cleared_for(ev, owner_space, sid, state) for ev in quoted))
+                if facts:
+                    fm, body = facts_only_note(space, owner_space, sid, page, hit, quoted, now)
+                    note_id = fm["id"]
+                pages.write(root / QUEUE_DIR / f"{note_id}.md", fm, body, root=root)
+                pages.append_text(log, json.dumps({"hit": hid, "id": note_id, "at": pages.iso(now),
+                                                   "destination": owner_space, "page": page.fm.get("id"),
+                                                   **({"facts_only": True} if facts else {})}) + "\n",
+                                  root=root)
                 sent.add(hid)
                 count += 1
     return count

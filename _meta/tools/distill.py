@@ -15,7 +15,15 @@ only its new records, gets them on its next refresh. While that candidate is an
 unsigned draft the next run rewrites it in place with the merged evidence list (a draft that
 is still the stub takes up the page once it is found), so
 the queue grows with subjects that moved, never with runs. A witness page whose
-text starts with `Decision:` becomes its own candidate under knowledge/decisions/.
+text starts with `Decision:` becomes its own candidate under knowledge/decisions/. Anyone can
+send a mail that starts that way, so the candidate says where it came from (`origin: {from,
+source, inside}`): inside is the person's own note, or a record whose From address is exactly
+the space's owner or a person registered here or in the brain (never one a project or
+channel mount registers, and never a From cut short). A decision from anyone else carries the
+recommendation to read it first and say no, and the run's output names every decision
+candidate it wrote, so the distill skill's second agent checks it like the others. A record's
+title reaches an evidence line as one line with its links and images made inert
+(`needs_you.md_inline`), since the candidate is what a person signs.
 An evidence line names the record's `ref:` pointers into code after its title. A
 `lesson: <point>` line in a daily-note entry becomes a candidate for the brain,
 `lesson-<slug>.md` (target knowledge/topics/lessons/), merged by slug and carrying the
@@ -67,6 +75,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import classify as gating  # noqa: E402
 import link  # noqa: E402
+import needs_you  # noqa: E402
 import pages  # noqa: E402
 import provenance  # noqa: E402
 import registry as registry_mod  # noqa: E402
@@ -115,9 +124,7 @@ def read_watermark(root, routine: str) -> dict:
 
 def write_watermark(root, routine: str, data: dict) -> Path:
     path = Path(root) / STATE / f"{routine}-watermark.yaml"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8", newline="\n")
-    return path
+    return pages.write_text(path, yaml.safe_dump(data, sort_keys=False), root=root)
 
 
 def stamp_of(value) -> dt.datetime | None:
@@ -131,12 +138,9 @@ def stamp_of(value) -> dt.datetime | None:
 
 def append_run(root, routine: str, space: spaceyaml.Space, now: dt.datetime,
                cost_tokens: int, notes: dict) -> None:
-    path = Path(root) / RUNS
-    path.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps({"routine": routine, "at": pages.iso(now), "space": space.name,
                        "cost_tokens": int(cost_tokens), "notes": notes}, default=str)
-    with path.open("a", encoding="utf-8", newline="\n") as handle:
-        handle.write(line + "\n")
+    pages.append_text(Path(root) / RUNS, line + "\n", root=root)
 
 
 @dataclass
@@ -287,6 +291,7 @@ class DistillReport:
     skipped: int = 0              # subjects or files left alone, with the reason counted
     unclassified: int = 0         # candidates not written: their home waits for a classification
     subjects: list = field(default_factory=list)
+    decisions: list = field(default_factory=list)   # the decision candidates written, by file name
     cost_tokens: int = 0
 
 
@@ -341,7 +346,7 @@ def evidence_line(ev: Evidence) -> str:
     # The title only, never the body: a candidate may travel to another space, and a record's
     # text can hold what that space's left-out list forbids. A record without a title is
     # named by its id; the signer opens it where it lives.
-    text = " ".join(ev.title.split()) or f"record {ev.record}"
+    text = needs_you.md_inline(ev.title) or f"record {ev.record}"
     # a pointer is a location, not content, so it may travel; the release scrub still reads it.
     # Only the pointer forms count: a mail's `Ref: <number>` line is body text.
     refs = [r for r in dict.fromkeys(link.refs_in(ev.body)) if link.ref_repo(r)]
@@ -452,9 +457,52 @@ def slugify(text: str, limit: int = 60) -> str:
     return slug[:limit].rstrip("-") or "decision"
 
 
+OUTSIDE_DECISION = "read it first: written by {who}, an address outside the company; no"
+
+
+def _addresses(value) -> list:
+    """Every entry of an address field, lower case: "" for an entry that holds no address, so a
+    field with one address and anything else beside it never reads as that address alone."""
+    from email.utils import getaddresses
+    return [addr.strip().lower() if "@" in addr else "" for _, addr in getaddresses([str(value or "")])]
+
+
+# The registries whose people count as inside: this space's own and the company brain's. Any
+# other mounted space (a project, a channel) is written by whoever can push to it, and a person
+# it registers must not turn a stranger's address into a colleague's.
+INSIDE_REGISTRIES = ("", "brain")
+
+
+def decision_origin(space, reg, ev: Evidence) -> dict:
+    """Where a decision came from: the record's sender and source, and `inside` when it is the
+    person's own note (the journal feed) or its From is exactly one address, the space owner's
+    or a person's registered here or in the brain (`email` or an alias that is an address). A
+    display name, a domain, the text itself, or a From the page kept cut short (it ends in
+    `...`, so what followed is unknown) never makes a record inside."""
+    sender = str(ev.fm.get("from") or "")
+    source = str(ev.fm.get("source") or "")
+    origin = {"from": needs_you.untrusted_line(sender, 120), "source": needs_you.untrusted_line(source, 40)}
+    if source == "journal":
+        return dict(origin, inside=True)
+    found = _addresses(sender)
+    known = set(_addresses(space.owner_email))
+    for person in reg.everywhere() if reg is not None else []:
+        if person.kind == "people" and person.state != "archived" and person.space in INSIDE_REGISTRIES:
+            for value in [person.extra.get("email"), *person.aliases]:
+                known.update(_addresses(value))
+    known.discard("")
+    whole = not sender.rstrip().endswith("...")
+    return dict(origin, inside=whole and len(found) == 1 and found[0] in known)
+
+
+def decision_name(ev: Evidence) -> str:
+    """The candidate's file stem: the record's day and the decision's words as a slug."""
+    return f"{ev.at:%Y-%m-%d}-{slugify(needs_you.untrusted_line(decision_title(ev.body) or '', 200))}"
+
+
 def write_decision(root: Path, space, reg, ev: Evidence, now: dt.datetime, reader: Reader) -> str:
-    title = decision_title(ev.body) or ""
-    name = f"{ev.at:%Y-%m-%d}-{slugify(title)}"
+    title = needs_you.untrusted_line(decision_title(ev.body) or "", 200)
+    name = decision_name(ev)
     path = root / CANDIDATES / f"{name}.md"
     existing = _draft_or_none(path, reader)
     if existing is None:
@@ -470,7 +518,10 @@ def write_decision(root: Path, space, reg, ev: Evidence, now: dt.datetime, reade
         fm["destination"] = home
     fm["target"] = f"knowledge/decisions/{name}.md"
     fm["evidence"] = [ev.record]
-    pages.write(path, fm, ev.body)
+    fm["origin"] = decision_origin(space, reg, ev)
+    if not fm["origin"]["inside"]:
+        fm["recommendation"] = OUTSIDE_DECISION.format(who=fm["origin"]["from"] or "an unknown sender")
+    pages.write(path, fm, ev.body, root=root)
     return "refreshed" if old_fm else "new"
 
 
@@ -496,10 +547,8 @@ def write_lesson(root: Path, space, ev: Evidence, lesson: str, source: str | Non
         fm["destination"] = brain.name
     fm["evidence"] = [str(r) for r in old_fm.get("evidence") or []] + [ev.record]
     pages.write(path, fm, old_body or f"{lesson}\n")
-    proposed = root / LESSONS_PROPOSED
-    proposed.parent.mkdir(parents=True, exist_ok=True)
-    with proposed.open("a", encoding="utf-8", newline="\n") as handle:
-        handle.write(json.dumps({"slug": slug, "from": source, "candidate": fm["id"], "at": pages.iso(now)}) + "\n")
+    pages.append_text(root / LESSONS_PROPOSED, json.dumps({"slug": slug, "from": source, "candidate": fm["id"],
+                                                           "at": pages.iso(now)}) + "\n", root=root)
     return "refreshed" if old_fm else "new"
 
 
@@ -546,6 +595,8 @@ def run(root, now: dt.datetime | None = None, rebuild: bool = False,
     def notes() -> dict:
         out = {"candidates_written": report.candidates_written, "refreshed": report.refreshed,
                "skipped": report.skipped, "subjects": report.subjects, "unclassified": report.unclassified}
+        if report.decisions:
+            out["decisions"] = report.decisions
         if rebuild or subject_id:
             out["rebuild"] = subject_id or True
         return out
@@ -582,14 +633,19 @@ def run(root, now: dt.datetime | None = None, rebuild: bool = False,
         chosen = everything.get(sid, items) if rebuild else items
         count(write_candidate(root, space, reg, subject, chosen, index, now, reader,
                               rebuild=rebuild, ignored=ignored), sid)
+    def decided(ev: Evidence) -> None:
+        outcome = write_decision(root, space, reg, ev, now, reader)
+        if outcome in ("new", "refreshed"):
+            report.decisions.append(decision_name(ev) + ".md")
+        count(outcome, None)
+
     for ev in new:
         if not ev.landed and decision_title(ev.body) and not held(ev.subject):
-            count(write_decision(root, space, reg, ev, now, reader), None)
+            decided(ev)
         for item in ev.fm.get("informs") or []:   # a decision the router saw in the record
             if isinstance(item, dict) and item.get("kind") == "decision" and str(item.get("text") or "").strip() \
                     and not held(ev.subject):
-                said = dataclasses.replace(ev, body=f"Decision: {str(item['text']).strip()}\n\n{ev.body}")
-                count(write_decision(root, space, reg, said, now, reader), None)
+                decided(dataclasses.replace(ev, body=f"Decision: {str(item['text']).strip()}\n\n{ev.body}"))
     # lessons are read from the daily note itself: a swept copy of an entry has lost its `from:` line
     for ev in new_since(journal_evidence(root), since):
         source = next((s for s in link.FROM_LINE.findall(ev.body) if s), None)
@@ -747,6 +803,7 @@ def to_prepare(root) -> list:
 
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    needs_you.utf8_stdio()
     flags: dict = {}
     positional = []
     while argv:
@@ -796,7 +853,8 @@ def main(argv=None) -> int:
         return 1
     print(f"distill: {report.candidates_written} candidates written, {report.refreshed} refreshed, "
           f"{report.skipped} skipped, {report.cost_tokens} tokens; subjects: "
-          f"{', '.join(report.subjects) or 'none'}")
+          f"{', '.join(report.subjects) or 'none'}"
+          + (f"; decisions: {', '.join(report.decisions)}" if report.decisions else ""))
     return 0
 
 

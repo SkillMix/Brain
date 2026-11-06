@@ -43,6 +43,9 @@ def profile() -> dict:
 
 # The sweep skill has a session check the lock with `routine.py --locked`; a routine holds it and never runs it.
 NOT_FOR_ROUTINES["routine.py"] = "a session checks the lock; a routine holds it"
+# The sweep skill names link.py only as the writer of a journal record's subject, which no routine is: a session links a
+# codebase on the person's word, and the daily chain keeps the links inside chain.py.
+NOT_FOR_ROUTINES["link.py"] = "a session links a codebase on the person's word; the sweep skill only names it"
 
 
 def named_tools(*paths) -> set:

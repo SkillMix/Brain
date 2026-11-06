@@ -13,6 +13,13 @@ else: no content, no subject, no sender. The morning view counts them and a sess
 computer can fetch each by its id. A record the export wrote to the store itself is noted the
 next time the sweep runs. That file is the only tracked file this tool writes.
 
+The owner answers with a record's code (`3fa2c09b yes`). A code is random, eight hex digits
+drawn once and kept with the record in the private store (`waiting` draws one for a record that
+has none), so no one can work it out from the record's id, which the tracked ids file holds.
+The label the email shows is the subject made plain: no link, dash, long code, markup sign
+(`*`, a backtick) or control character, so an outsider's subject cannot style or spoof the
+person's own briefing.
+
     python unsure.py [root]            how many records wait
 """
 from __future__ import annotations
@@ -21,6 +28,7 @@ import datetime as dt
 import hashlib
 import json
 import re
+import secrets
 import sys
 from pathlib import Path
 
@@ -32,10 +40,14 @@ STORE = spaceyaml.PRIVATE_STATE / "unsure.jsonl"
 IDS = Path("_meta") / "state" / "unsure-ids.jsonl"   # tracked: ids, sources and times only
 FEED = Path("_meta") / "state" / "feed"
 EXPIRE_DAYS = 14
-LOCAL = ("key", "feed", "first_listed")
+LOCAL = ("key", "feed", "first_listed", "code")
+CODE_RE = re.compile(r"^[0-9a-f]{8}\Z")
 URL = re.compile(r"https?://\S+|www\.\S+", re.I)
 DASHES = re.compile("[—–]")
 LONG_TOKEN = re.compile(r"\S{32,}")
+# Markup the email would honour (`**bold**`, a backtick), control characters, line and paragraph
+# separators, zero-width and bidirectional marks.
+MARKUP = re.compile("[*`\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]")
 
 
 def key_of(record: dict) -> str:
@@ -43,8 +55,11 @@ def key_of(record: dict) -> str:
 
 
 def code_of(record: dict) -> str:
-    """The five characters the owner answers with ("3fa2c yes"): stable across days and lists."""
-    return key_of(record)[:5]
+    """The eight hex digits the owner answers with ("3fa2c09b yes"), drawn at random when the
+    record was first listed (`waiting`) and kept in the private store: stable across days and
+    lists, never derived from the id. A record without one has none ("")."""
+    code = str(record.get("code") or "")
+    return code if CODE_RE.match(code) else ""
 
 
 def _read(root: Path) -> list:
@@ -64,10 +79,9 @@ def _read(root: Path) -> list:
 
 def _write(root: Path, records: list) -> None:
     path = Path(root) / STORE
-    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records), encoding="utf-8",
-                   newline="\n")
+    pages.write_text(tmp, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records), root=root)
+    pages.check_no_links(path, root=root)
     tmp.replace(path)
 
 
@@ -112,13 +126,10 @@ def note_ids(root, now: dt.datetime | None = None) -> int:
     if not new:
         return 0
     at = pages.iso(now or spaceyaml.load(root).now())
-    path = root / IDS
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8", newline="\n") as handle:
-        for record in new:
-            source = str(record.get("feed") or record.get("source") or "mail")
-            handle.write(json.dumps({"id": str(record["id"]), "source": source, "at": at},
-                                    ensure_ascii=False) + "\n")
+    lines = "".join(json.dumps({"id": str(record["id"]), "source": str(record.get("feed") or record.get("source")
+                                                                          or "mail"), "at": at},
+                               ensure_ascii=False) + "\n" for record in new)
+    pages.append_text(root / IDS, lines, root=root)
     return len(new)
 
 
@@ -137,8 +148,23 @@ def kept_since(root, since: dt.datetime | None, now: dt.datetime, besides=()) ->
 
 
 def waiting(root) -> list:
-    """Every record waiting for the owner's word, oldest first, each with its `key`."""
-    out = [dict(r, key=key_of(r)) for r in _read(root)]
+    """Every record waiting for the owner's word, oldest first, each with its `key` and its
+    `code`. A record that has no code yet (the export wrote it to the store itself) gets one
+    now, drawn at random and kept, never two records the same."""
+    records = _read(root)
+    taken = {code_of(r) for r in records} - {""}
+    drawn = False
+    for record in records:
+        if not code_of(record):
+            code = secrets.token_hex(4)
+            while code in taken:
+                code = secrets.token_hex(4)
+            record["code"] = code
+            taken.add(code)
+            drawn = True
+    if drawn:
+        _write(Path(root), records)
+    out = [dict(r, key=key_of(r)) for r in records]
     return sorted(out, key=lambda r: str(r.get("at") or ""))
 
 
@@ -160,13 +186,16 @@ def _take(root, key: str):
 
 
 def admit(root, key: str) -> bool:
-    """`yes`: the record goes to its feed (once) as a company record."""
+    """`yes`: the record goes to its feed (once) as a company record. A `feed` that is no plain
+    name raises UnsafePath and the record stays where it is."""
     root = Path(root)
+    hit = next((r for r in _read(root) if key_of(r) == key), None)
+    if hit is None:
+        return False
+    feed = root / FEED / f"{pages.check_name(str(hit.get('feed') or 'mail'), 'feed name')}.jsonl"
     record = _take(root, key)
     if record is None:
         return False
-    feed = root / FEED / f"{record.get('feed') or 'mail'}.jsonl"
-    feed.parent.mkdir(parents=True, exist_ok=True)
     present = set()
     if feed.exists():
         for line in feed.read_text(encoding="utf-8").split("\n"):
@@ -176,8 +205,7 @@ def admit(root, key: str) -> bool:
                 continue
     if str(record["id"]) not in present:
         clean = dict({k: v for k, v in record.items() if k not in LOCAL}, admitted=True)   # swept however old
-        with feed.open("a", encoding="utf-8", newline="\n") as handle:
-            handle.write(json.dumps(clean, ensure_ascii=False) + "\n")
+        pages.append_text(feed, json.dumps(clean, ensure_ascii=False) + "\n", root=root)
     return True
 
 
@@ -205,9 +233,10 @@ def expire(root, now: dt.datetime, days: int = EXPIRE_DAYS) -> int:
 
 
 def line_for(record: dict, width: int = 60) -> str:
-    """A plain one-line label for the owner's email: the subject without links, dashes or long
-    codes, cut on a word, then the source and the day."""
-    text = URL.sub("", str(record.get("subject") or record.get("title") or "untitled"))
+    """A plain one-line label for the owner's email: the subject without links, dashes, long
+    codes, markup or control characters, cut on a word, then the source and the day."""
+    text = MARKUP.sub(" ", str(record.get("subject") or record.get("title") or "untitled"))
+    text = URL.sub("", text)
     text = LONG_TOKEN.sub("", DASHES.sub(",", text))
     text = " ".join(text.replace(" ,", ",").split()).strip(" ,") or "untitled"
     if len(text) > width:
@@ -216,11 +245,14 @@ def line_for(record: dict, width: int = 60) -> str:
         day = f"{pages.parse_iso(record.get('at')):%d %b}"
     except (TypeError, ValueError):
         day = "undated"
-    return f"{text} ({record.get('feed') or record.get('kind') or 'record'}, {day})"
+    source = MARKUP.sub("", str(record.get("feed") or record.get("kind") or "record"))[:20] or "record"
+    return f"{text} ({source}, {day})"
 
 
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    import needs_you   # here and not at the top: its helpers are the CLI's alone
+    needs_you.utf8_stdio()
     print(f"{len(waiting(Path(argv[0]) if argv else Path('.')))} record(s) wait for the owner's word")
     return 0
 

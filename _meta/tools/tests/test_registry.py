@@ -219,7 +219,8 @@ def test_identifiers_subject_matches_only_its_subject(tmp_path):
     root = make_space(tmp_path / "ada", subjects=[{"id": "harbor-voice-agent", "kind": "projects"},
                                                    {"id": "voice", "kind": "topics", "match": {"keywords": ["voice"]}}])
     reg = registry.Registry(root)
-    record = {"kind": "event", "subject": "voice notes", "identifiers": {"subject": "harbor-voice-agent"}}
+    record = {"kind": "event", "source": "journal", "subject": "voice notes",
+              "identifiers": {"subject": "harbor-voice-agent"}}
     hits = reg.match(record)
     assert [s.id for s in hits] == ["harbor-voice-agent"]
     assert reg.matched_by(hits[0], record) == {"subject"}

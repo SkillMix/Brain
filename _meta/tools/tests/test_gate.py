@@ -132,13 +132,19 @@ def test_the_template_space_yaml_lists_the_minimum():
         assert any(gate._under(rel, p) for p in own), rel
 
 
-def test_template_repository_is_always_auto_mergeable(tmp_path):
+def test_template_repository_lands_its_machinery_on_green(tmp_path):
+    """Agents build the template on their own: its machinery lands on green when the checks pass, and the release
+    tag, which only a maintainer creates, is the one human gate on what reaches the spaces."""
     root = make_space(tmp_path / "t", profile="template")
     cls, reasons = gate.classify(root, [".claude/skills/x.md", "rules.md", "_meta/tools/gate.py"])
-    assert cls == "auto-mergeable"
-    assert any("template" in r for r in reasons)
-    # the widened minimum changes nothing in the template: it is a code repository, not a space
-    cls, reasons = gate.classify(root, list(RUNS_ON_THE_COMPUTER))
+    assert cls == "auto-mergeable" and any("release tag is the human gate" in r for r in reasons)
+    # a module at the root (`conftest.py` there) is no change the template needs: it still waits
+    shaped = [rel for rel in RUNS_ON_THE_COMPUTER if gate.shape_reason(rel)]
+    assert shaped == ["conftest.py"]
+    cls, reasons = gate.classify(root, [rel for rel in RUNS_ON_THE_COMPUTER if rel not in shaped])
+    assert cls == "auto-mergeable", reasons
+    assert gate.classify(root, shaped)[0] == "protected"
+    cls, reasons = gate.classify(root, ["docs/decisions.md", "CHANGELOG.md"])
     assert cls == "auto-mergeable" and any("template" in r for r in reasons)
 
 
@@ -299,7 +305,12 @@ def test_unsigned_stable_page_deleted_pages_and_other_zones(tmp_path):
     assert gate.check_signatures(root, ["knowledge/topics/a/gone.md"]) == []
     (root / "work").mkdir(exist_ok=True)
     (root / "work" / "note.md").write_text("---\nstatus: stable\n---\nDesk note.\n", encoding="utf-8")
-    assert gate.check_signatures(root, ["work/note.md"]) == []
+    assert gate.check_signatures(root, ["work/note.md"]) == []   # a stale stamp on the desk: validate warns
+    # elsewhere a stable page where no tool reads a signature can only mislead
+    (root / "docs").mkdir(exist_ok=True)
+    (root / "docs" / "note.md").write_text("---\nstatus: stable\n---\nA note.\n", encoding="utf-8")
+    assert gate.check_signatures(root, ["docs/note.md"]) == [
+        "docs/note.md: a stable page outside knowledge/ and identity/ is never signed"]
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -689,7 +700,8 @@ def test_a_release_files_id_under_another_mode_needs_the_click(tmp_path, monkeyp
     _git(space, "update-index", "--add", "--cacheinfo", f"160000,{sha},{rel}")
     _git(space, "commit", "-q", "-m", "a submodule entry with the file's id")
     cls, reasons = _gate(space, base)
-    assert cls == "protected" and any(r.startswith(f"{rel}: not byte-identical") for r in reasons)
+    # a submodule entry at a path .gitmodules does not name is held before any release match
+    assert cls == "protected" and any(r.startswith(f"{rel}: a symbolic link (or unlisted submodule)") for r in reasons)
 
 
 def test_a_moved_or_renamed_protected_path_needs_the_click(tmp_path, monkeypatch):
@@ -741,21 +753,25 @@ def _step(job: str, name: str) -> dict:
 
 
 def test_checks_runs_the_gate_from_the_base_branch():
-    for job, name, tree in (("arm", "Gate (protected paths and signatures)", '"$RUNNER_TEMP/pr"'),
-                            ("checks", "Gate (signatures)", ".")):
+    # the deciding gate is the default branch's; the one in `checks` (signatures only) the base branch's
+    for job, name, var, value, tree in (
+            ("gate", "Gate (protected paths and signatures)", "DEFAULT_BRANCH",
+             "${{ github.event.repository.default_branch }}", '"$RUNNER_TEMP/pr"'),
+            ("checks", "Gate (signatures)", "BASE_REF", "${{ github.base_ref }}", ".")):
         step = _step(job, name)
-        assert step["env"]["BASE_REF"] == "${{ github.base_ref }}"
-        assert 'git archive "origin/${BASE_REF}" _meta/tools | tar -x -C "$RUNNER_TEMP/base"' in step["run"]
-        assert f'python "$RUNNER_TEMP/base/_meta/tools/gate.py" "origin/${{BASE_REF}}" {tree}' in step["run"]
-    # only the arming job, which runs no code of the pull request, holds the template token
-    token = _step("arm", "Gate (protected paths and signatures)")["env"]["TEMPLATE_TOKEN"]
-    assert "secrets.TEMPLATE_READ_TOKEN || secrets.BRAIN_READ_TOKEN || secrets.MOUNT_READ_TOKEN" in token
+        assert step["env"][var] == value
+        assert f'git archive "origin/${{{var}}}" _meta/tools | tar -x -C "$RUNNER_TEMP/base"' in step["run"]
+        assert f'python -I "$RUNNER_TEMP/base/_meta/tools/gate.py" "origin/${{{var}}}" {tree}' in step["run"]
+    # only the gate job, which runs no code of the pull request, holds the template token, the
+    # repository's own token before an organization-wide one
+    token = _step("gate", "Gate (protected paths and signatures)")["env"]["TEMPLATE_TOKEN"]
+    assert "secrets.TEMPLATE_READ_TOKEN || secrets.MOUNT_READ_TOKEN || secrets.BRAIN_READ_TOKEN" in token
     assert "TEMPLATE_TOKEN" not in _step("checks", "Gate (signatures)").get("env", {})
 
 
 def test_the_gate_step_fails_on_the_gates_exit_code():
     # gate.py exits 1 on a signature error; piped into tee, only pipefail lets that fail the job.
-    for job, name in (("arm", "Gate (protected paths and signatures)"), ("checks", "Gate (signatures)")):
+    for job, name in (("gate", "Gate (protected paths and signatures)"), ("checks", "Gate (signatures)")):
         lines = [line.strip() for line in _step(job, name)["run"].splitlines()]
         tee = next(i for i, line in enumerate(lines) if "gate.py" in line and '| tee "$RUNNER_TEMP/gate.txt"' in line)
         assert "set -o pipefail" in lines[:tee]
@@ -767,18 +783,22 @@ def test_the_pull_requests_code_never_runs_with_the_write_token():
     assert all(not str(v).endswith("write") for v in (jobs["checks"].get("permissions") or {}).values())
     checkout = next(s for s in jobs["checks"]["steps"] if str(s.get("uses", "")).startswith("actions/checkout@"))
     assert checkout["with"]["persist-credentials"] is False
-    arm = jobs["arm"]
-    assert arm["needs"] == "checks"
-    assert "github.event.pull_request.head.repo.full_name == github.repository" in arm["if"]
-    first = arm["steps"][0]
+    judge, arm = jobs["gate"], jobs["arm"]
+    assert judge["needs"] == "checks" and arm["needs"] == "gate"
+    assert judge["permissions"] == {"contents": "read"}
+    for job in (judge, arm):
+        assert "github.event.pull_request.head.repo.full_name == github.repository" in job["if"]
+        assert "github.base_ref == github.event.repository.default_branch" in job["if"]
+    first = judge["steps"][0]
     assert first["uses"].startswith("actions/checkout@")
-    assert first["with"]["ref"] == "${{ github.base_ref }}" and first["with"]["persist-credentials"] is False
-    # the arming job runs the base branch's tools only: no step runs a file from the checkout
-    runs = "\n".join(s.get("run", "") for s in arm["steps"])
+    assert first["with"]["ref"] == "${{ github.event.repository.default_branch }}"
+    assert first["with"]["persist-credentials"] is False
+    # the gate job runs the default branch's tools only: no step runs a file from the checkout
+    runs = "\n".join(s.get("run", "") for s in judge["steps"])
     assert "python _meta/" not in runs and "python -m pytest" not in runs
-    gate_index = next(i for i, s in enumerate(arm["steps"]) if s.get("name") == "Gate (protected paths and signatures)")
-    arming = next(i for i, s in enumerate(arm["steps"]) if s.get("name") == "Arm auto-merge, or leave it for the owner")
-    assert gate_index < arming
+    # the write token is in a job with one step, which runs gh and nothing else
+    assert [s.get("name") for s in arm["steps"]] == ["Arm auto-merge, or leave it for the owner"]
+    assert "uses" not in arm["steps"][0] and "python" not in arm["steps"][0]["run"]
 
 
 def test_no_token_is_written_to_a_config_file_and_no_expression_runs_in_a_shell():
@@ -826,10 +846,10 @@ def _arm(tmp_path, gate_line, allows, methods, refusals=0):
     (bin_dir / "gh").write_bytes(FAKE_GH.encode())
     for f in bin_dir.iterdir():
         f.chmod(0o755)
-    (tmp_path / "gate.txt").write_text(gate_line + "\n", encoding="utf-8")
     log = tmp_path / "log.txt"
     env = dict(os.environ, PATH=str(bin_dir) + os.pathsep + os.environ["PATH"], RUNNER_TEMP=str(tmp_path),
                GITHUB_REPOSITORY="owner/space", PR_URL="https://github.com/owner/space/pull/7",
+               VERDICT=gate_line, HEAD_SHA="abc123",
                FAKE_LOG=str(log), FAKE_COUNT=str(tmp_path / "count"), FAKE_ALLOWS=allows,
                FAKE_METHODS=methods, FAKE_REFUSALS=str(refusals))
     script = _step("arm", "Arm auto-merge, or leave it for the owner")["run"]
@@ -845,9 +865,9 @@ def _arm(tmp_path, gate_line, allows, methods, refusals=0):
 def test_arming_retries_a_moving_base_with_a_method_the_repository_allows(tmp_path):
     # Seen live: five pull requests went green at once, the direct merge of one was refused because
     # the base had just moved, and the fallbacks used methods the repository does not allow.
-    done, merges, sleeps = _arm(tmp_path, "GATE: auto-mergeable", "true false false", "merge", refusals=2)
+    done, merges, sleeps = _arm(tmp_path, "auto-mergeable", "true false false", "merge", refusals=2)
     assert done.returncode == 0, done.stderr
-    assert merges == ["pr merge --auto --merge https://github.com/owner/space/pull/7"] * 3
+    assert merges == ["pr merge --auto --match-head-commit abc123 --merge https://github.com/owner/space/pull/7"] * 3
     assert len(sleeps) >= 2 and any(s != "sleep 0" for s in sleeps)
 
 
@@ -858,19 +878,19 @@ def test_arming_retries_a_moving_base_with_a_method_the_repository_allows(tmp_pa
     ("fail", "rebase", ["--merge", "--squash", "--rebase"]),
 ])
 def test_arming_asks_the_repository_which_method_to_use(tmp_path, allows, methods, used):
-    done, merges, _ = _arm(tmp_path, "GATE: auto-mergeable", allows, methods)
+    done, merges, _ = _arm(tmp_path, "auto-mergeable", allows, methods)
     assert done.returncode == 0, done.stderr
-    assert [m.split()[3] for m in merges] == used
+    assert [m.split()[5] for m in merges] == used
 
 
 def test_arming_gives_up_after_a_few_tries_and_says_so(tmp_path):
-    done, merges, sleeps = _arm(tmp_path, "GATE: auto-mergeable", "true false false", "merge", refusals=99)
+    done, merges, sleeps = _arm(tmp_path, "auto-mergeable", "true false false", "merge", refusals=99)
     assert done.returncode != 0
     assert 2 <= len(merges) <= 6 and all("--merge" in m for m in merges)
     assert "::error::" in done.stdout
 
 
 def test_a_protected_pull_request_is_never_merged(tmp_path):
-    done, merges, _ = _arm(tmp_path, "GATE: needs the owner", "true true true", "merge squash rebase")
+    done, merges, _ = _arm(tmp_path, "protected", "true true true", "merge squash rebase")
     assert done.returncode == 0, done.stderr
     assert merges == ["pr merge --disable-auto https://github.com/owner/space/pull/7"]

@@ -356,14 +356,14 @@ def test_a_missing_yaml_under_pep_668_moves_start_into_a_venv(tmp_path, capsys):
 
     def run(argv, **kw):
         calls.append([str(a) for a in argv])
-        refused = argv[1:4] == ["-m", "pip", "install"] and "--user" in argv
+        refused = argv[1:5] == ["-I", "-m", "pip", "install"] and "--user" in argv
         return subprocess.CompletedProcess(argv, 1 if refused else 0, "", "")
     venv = tmp_path / "venv"
     code = start.ensure_yaml(["--offline"], venv=venv, run=run, have=lambda: False, windows=False)   # PEP 668: not Windows
     py = str(start.venv_python(venv))
     assert code == 0
-    assert calls[1] == [sys.executable, "-m", "venv", str(venv)]
-    assert calls[2] == [py, "-m", "pip", "install", "--quiet", "pyyaml"]
+    assert calls[1] == [sys.executable, "-I", "-m", "venv", str(venv)]
+    assert calls[2] == [py, "-I", "-m", "pip", "install", "--quiet", "pyyaml"]
     assert calls[3] == [py, str(Path(start.__file__).resolve()), "--offline"]
 
 

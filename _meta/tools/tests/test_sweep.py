@@ -849,8 +849,10 @@ def test_an_unread_attachment_is_listed_until_read(tmp_path, capsys):
     id and name, and every later run lists it again until a page for it exists."""
     _, _, ada = build(tmp_path, routing={})
     write_feed(ada, [record(attachments=["brief.pdf"])])
-    assert sweep.main([str(ada), "--attachment-unread", "m-0001", "brief.pdf"]) == 0
-    assert sweep.main([str(ada), "--attachment-unread", "m-0001", "brief.pdf"]) == 0
+    handle = sweep.attachment_handle("m-0001", "brief.pdf")   # the one value the command takes
+    assert sweep.main([str(ada), "--attachment-unread", handle]) == 0
+    assert sweep.main([str(ada), "--attachment-unread", handle]) == 0
+    assert sweep.main([str(ada), "--attachment-unread", "m-0001", "brief.pdf"]) == 2, "a record id is no handle"
     assert sweep.UNREAD.as_posix() == "_meta/state/attachments-unread.jsonl"
     [line] = unread_lines(ada)
     assert set(line) == {"id", "name", "at"} and (line["id"], line["name"]) == ("m-0001", "brief.pdf")
@@ -858,7 +860,8 @@ def test_an_unread_attachment_is_listed_until_read(tmp_path, capsys):
     (ada / sweep.FEED / "mail.jsonl").unlink()   # the next run's fresh clone
     assert sweep.attachments(ada) == [("m-0001", "", "brief.pdf")]
     assert sweep.main([str(ada), "--attachments"]) == 0
-    assert capsys.readouterr().out == "m-0001\t\tbrief.pdf\n"
+    # a fourth column, the handle, names the attachment in a command with nothing to quote
+    assert capsys.readouterr().out == f"m-0001\t\tbrief.pdf\t{sweep.attachment_handle('m-0001', 'brief.pdf')}\n"
     write_feed(ada, [record("m-0001/brief.pdf", kind="document", subject="brief.pdf", text="The brief.")])
     assert sweep.attachments(ada) == [], "the document record at hand settles it"
     sweep.run(ada, now=NOW)
@@ -901,7 +904,7 @@ def test_a_file_with_no_text_is_marked_read_so_a_fresh_clone_never_lists_it_agai
     _, _, ada = build(tmp_path, routing={})
     sweep.note_unread(ada, "m-0001", "logo.png", now=NOW)
     sweep.note_unread(ada, "m-0002", "scan.png", now=NOW)
-    assert sweep.main([str(ada), "--attachment-read", "m-0002", "scan.png"]) == 0
+    assert sweep.main([str(ada), "--attachment-read", sweep.attachment_handle("m-0002", "scan.png")]) == 0
     write_feed(ada, [record("m-0001/logo.png", kind="document", subject="logo.png", text="")])
     sweep.run(ada, now=NOW)   # no page for an empty file, so the run says it was read
     (ada / sweep.FEED / "mail.jsonl").unlink()

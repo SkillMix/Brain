@@ -54,14 +54,21 @@ each new file. While you work, run the test file of the tool you changed
 
 ## Cutting a release
 
-Spaces follow the template's releases, not its `main`. A maintainer (a person, not an
-agent) cuts one:
+Spaces follow the template's releases, not its `main`. Pull requests to the template land on
+green, its machinery included, so agents build and fix it on their own; the release tag is the
+one human gate. A maintainer (a person, not an agent) cuts one:
 
-1. Add a `## [X.Y.Z] - <date>` section at the top of `CHANGELOG.md`. Its first paragraph is
+1. Read the diff since the last release (`git diff <last tag>..main`): it is
+   what every space runs once its owner says yes.
+2. Add a `## [X.Y.Z] - <date>` section at the top of `CHANGELOG.md`. Its first paragraph is
    the summary each space's owner reads in the question "Update to vX.Y.Z?", so make it one or
    two plain sentences.
-2. Once that is merged, tag the merge commit on `main`: `git tag -a vX.Y.Z -m vX.Y.Z` and
+3. Once that is merged, tag the merge commit on `main`: `git tag -a vX.Y.Z -m vX.Y.Z` and
    `git push origin vX.Y.Z`. A GitHub release with the same notes is optional.
+
+The release workflow checks the `v*` tag ruleset first (`python _meta/tools/template_archive.py
+ruleset <owner/name>`) and publishes nothing while there is none, or while apps or GitHub
+Actions can bypass it (SECURITY.md, "Tag protection for `v*`").
 
 Never move a published tag. A space's approval names the tag's commit, so a moved tag stops
 every update that was approved for it until its owner answers again.

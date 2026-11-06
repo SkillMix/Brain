@@ -2,11 +2,15 @@
 
 A subject is anything people ask about by name. Hierarchy lives here (`part_of`),
 never in paths; owners live on subjects and parts inherit their umbrella's owner;
-`home` names the space where the subject's shared conclusions live; `match` holds
+`home` names the space where the subject's shared conclusions live (a space name, one
+lowercase slug: any other value is no home, and `check` reports it); `match` holds
 the fixed identifiers (tracker, repo, channel, label, thread, calendar, github) by which a
 sweep attaches evidence, plus two inferred ones: `domain`, a mail domain on any address of the
 record (from, to, cc, participants), and `keywords`, whole words in the title of a call or a
-calendar event. Ids are shared up the ladder: a space reuses an ancestor's
+calendar event. `repo_owner` attaches nothing and grants nothing: it names a GitHub account (a
+client's organisation) as a note for whoever links its repositories; link.py trusts an owner
+only by `match.github`, whose change waits for the owner's click. A `match.repo` is also where a release clones the subject's home from, so only
+a GitHub repository counts there (`clone_url`). Ids are shared up the ladder: a space reuses an ancestor's
 id (read through its mount) and mints a new one only when no space above has one. The one
 exception is a subject's home: it may hold the id too, to add the names the subject is known by
 there (`aliases`, `match`) that its parent keeps out, and a space that mounts the home reads them
@@ -25,6 +29,7 @@ fields say what an engagement was (the brain's projects page shows them): `perio
 """
 from __future__ import annotations
 
+import copy
 import datetime as dt
 import json
 import re
@@ -44,7 +49,12 @@ STATES = ("active", "dormant", "archived",
 # states that still move: distill proposes for them and status keeps their pages
 LIVE_STATES = ("active", "open")
 MATCH_KEYS = ("tracker", "repo", "channel", "label", "thread", "calendar", "github",
-              "domain", "keywords")
+              "domain", "keywords", "repo_owner")
+# Keys that attach no record: `repo_owner`, a GitHub account named as a client's organisation. It
+# points no trust root anywhere and is no gated field, so nothing trusts it: link.py trusts an
+# owner only by `match.github`, a trust field.
+NO_ATTACH_KEYS = ("repo_owner",)
+LOGIN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}\Z")
 INFERRED_KEYS = ("domain", "keywords")   # attach by inference: never released at once
 TITLED_KINDS = ("call", "event")
 # The classification gate (docs/design/2026-10-16-classification-gate-design.md):
@@ -55,7 +65,14 @@ CLASS_STATES = ("asking", "settled", "open")         # only settled opens the ga
 OBLIGATION_KINDS = {"confidentiality": "confidentiality agreement", "named_people": "named people only",
                     "data_processor": "data processing agreement", "other": "other obligation"}
 OBLIGATION_KEYS = ("kind", "date", "seen_in", "at", "evidence")   # kind and date only: never wording
-SLUG = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+# Anchored with \Z: `$` also matches before a final newline, and a space name with a line
+# break after it would pass.
+SLUG = re.compile(r"^[a-z0-9][a-z0-9-]*\Z")
+MAX_SPACE_NAME = 100
+# The one repository shape a release clone is made from: GitHub, as `owner/name`,
+# `github.com/owner/name`, `https://github.com/owner/name(.git)` or `git@github.com:owner/name.git`.
+CLONE_RE = re.compile(r"^(?:git@github\.com:|(?:https://)?github\.com/)?([A-Za-z0-9][A-Za-z0-9-]*)/"
+                      r"([A-Za-z0-9_][A-Za-z0-9_.-]*?)(?:\.git)?/?\Z", re.ASCII)
 LINKED_BY = ("onboard", "mint", "detect", "person")   # who linked a codebase to a subject
 READERS = ("inside", "wider")                        # a codebase's readers against the subject's audience
 # The notes a space sent to the registry that holds a subject (classify.py), and the log in which
@@ -121,6 +138,12 @@ def _gate_errors(sid: str, subject: "Subject") -> list:
     workspace = subject.extra.get("workspace")
     if workspace is not None and not SLUG.match(str(workspace)):
         errs.append(f"registry: `{sid}` workspace `{workspace}` is not a space name")
+    workspace_repo = subject.extra.get("workspace_repo")
+    if workspace_repo is not None:   # release.trust_repo ignores such a value; this makes it visible
+        if clone_url(workspace_repo) is None:
+            errs.append(f"registry: `{sid}` workspace_repo is not a GitHub repository")
+        if workspace is None:
+            errs.append(f"registry: `{sid}` workspace_repo is set without workspace")
     return errs
 
 
@@ -226,6 +249,58 @@ def repo_url(value) -> str | None:
     return f"https://github.com/{short.group(1)}" if short else text
 
 
+def clone_url(value) -> str | None:
+    """A repository a release may clone, as `https://github.com/<owner>/<name>`, or None. Only the
+    GitHub spellings `repo_url` knows are accepted (no `http://`); a local path, a share, another
+    host, `file://`, `ext::` or a value git would read as an option (a leading `-`) is None, so a
+    registry entry can never make git run a command or reach another server."""
+    if not isinstance(value, str):
+        return None
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):   # before strip: a line break is no repository
+        return None
+    text = value.strip()
+    if not text or text.startswith("-"):
+        return None
+    found = CLONE_RE.match(text)
+    return f"https://github.com/{found.group(1)}/{found.group(2)}" if found else None
+
+
+def _is_slug(value) -> bool:
+    """A lowercase slug of at most `pages.MAX_SLUG` characters, anchored at the very end (`\\Z`),
+    so `harbor\\n` is none."""
+    import pages
+    return pages.is_slug(value)
+
+
+def _named_subject(record: dict) -> str:
+    """The subject a record names (`identifiers.subject`), honoured only on the journal feed,
+    which link.journal_records writes: any other record that names one names nothing."""
+    if str(record.get("source") or "") != "journal":
+        return ""
+    ident = record.get("identifiers")
+    return str(ident.get("subject") or "") if isinstance(ident, dict) else ""
+
+
+def space_name(value) -> str | None:
+    """`value` as a space name (one lowercase slug), or None: a `home` reaches paths and git."""
+    text = str(value) if isinstance(value, (str, int)) and not isinstance(value, bool) else ""
+    return text if text and len(text) <= MAX_SPACE_NAME and SLUG.match(text) else None
+
+
+def _repo_problem(value) -> str | None:
+    """Why a `match.repo` value is refused outright: one git would read as an option or a
+    transport, or one with a control character. Another host or a local path is not an error
+    here; such a value is simply never cloned (`clone_url`)."""
+    text = str(value)
+    if text.strip().startswith("-"):
+        return "starts with `-`, which git reads as an option"
+    if "::" in text or re.match(r"^\s*(?:file|ext|fd):", text, re.I):
+        return "names a git transport, not a repository"
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in text):
+        return "holds a control character"
+    return None
+
+
 def same_repo(a, b) -> bool:
     """Two repository references name the same repository (case, `.git` and `/` aside)."""
     def key(value):
@@ -292,6 +367,7 @@ class Registry:
         self.ancestors: dict = {}
         self.ancestor_ids: set = set()  # every id any ancestor holds, shadowed or not
         self.ancestor_homes: dict = {}  # the home the first ancestor holding an id names for it
+        self._brain_names: dict = {}  # a brain subject's aliases and match as the brain wrote them
         self._load()
 
     # ----- loading ---------------------------------------------------------
@@ -314,16 +390,22 @@ class Registry:
                 self.space = None
         if self.space is not None:
             later = []   # (space name, entry): a second holder of an id, read once all are loaded
+            read = {}
             for mount in self.space.mounts:
                 name = mount.get("name", "")
                 mount_root = self.space.mount_root(name)
-                if mount_root is None:
+                if mount_root is not None:
+                    read[name] = self._read(mount_root / REGISTRY_PATH)
+            # Subjects come from the brain and from a mount this registry or the brain's vouches for
+            # (a subject homed there, a person's workspace), never from a corridor: its other side
+            # writes its subjects.yaml and would steer where this space's records are released.
+            known = [e for e in list(read.get("brain") or []) + self._read(self.path) if isinstance(e, dict)]
+            vouched = {str((e.get("workspace") if e.get("kind") == "people" else e.get("home")) or "")
+                       for e in known} - {""}
+            for name in read:
+                if name != "brain" and (self.space.is_corridor(name) or name not in vouched):
                     continue
-                try:
-                    space_name = spaceyaml.load(mount_root).name
-                except Exception:
-                    space_name = name
-                for entry in self._read(mount_root / REGISTRY_PATH):
+                for entry in read[name]:
                     if isinstance(entry, dict) and entry.get("id"):
                         sid = str(entry["id"])
                         if sid not in self.ancestor_ids:
@@ -331,13 +413,17 @@ class Registry:
                         self.ancestor_ids.add(sid)
                         if sid not in self.subjects and sid not in self.ancestors:
                             self.ancestors[sid] = Subject.from_dict(entry, space=name)
-                        else:
-                            later.append((space_name, entry))
+                        elif not self.space.is_corridor(name):   # both sides write a corridor
+                            later.append((name, entry))
             # a subject's home may hold its id too, with the names it is known by there (aliases,
-            # match identifiers) that its parent keeps out; a space that mounts the home reads them
-            for space_name, entry in later:
+            # match identifiers) that its parent keeps out; a space that mounts the home reads them,
+            # keyed on the name this space mounted it under, never on what the mount's space.yaml
+            # calls itself. A trust decision never reads them (`trusted_view`).
+            for mount_name, entry in later:
                 base = self.ancestors.get(str(entry["id"]))
-                if base is not None and base.home and base.home == space_name:
+                if base is not None and base.home and base.home == mount_name:
+                    if base.space == "brain" and base.id not in self._brain_names:
+                        self._brain_names[base.id] = (list(base.aliases), copy.deepcopy(base.match))
                     _add_names(base, entry)
             self._travelling()
 
@@ -359,13 +445,20 @@ class Registry:
                 logs[subject.space] = {str(r.get("id")) for r in _jsonl(holder / NOTES_LOG)} if holder else set()
             return str(row.get("signal")) in logs[subject.space]
 
+        import classify   # lazily: classify imports this module
         for sid, row in sent.items():
             subject = self.ancestors.get(sid)
             if subject is None or arrived(subject, row):
                 continue   # the holder applied or refused it: its own entry says what holds
-            subject.extra["classification"] = dict(row["classification"], travelling=str(row.get("signal")))
-            if row["classification"].get("home"):
-                subject.home = str(row["classification"]["home"])
+            found = classify.travelling(self.space, subject, row)
+            if found is None:
+                continue   # no signal of this space's on its way, or one the holder refuses
+            home = found.get("home")
+            if home and space_name(home) is None:
+                continue   # a home that is not a space name governs nothing
+            subject.extra["classification"] = dict(found, travelling=str(row.get("signal")))
+            if home:
+                subject.home = str(home)
         for sid, row in states.items():
             subject = self.ancestors.get(sid)
             if subject is not None and not arrived(subject, row):
@@ -389,6 +482,25 @@ class Registry:
     def everywhere(self) -> list:
         return list(self.subjects.values()) + list(self.ancestors.values())
 
+    def trusted_view(self) -> "Registry":
+        """This registry as a trust decision reads it: its own entries and the brain's (the mount
+        called `brain`), whose changes wait for their owner's click. A channel's or a project
+        mount's registry is left out: both sides of a corridor write its files, unchecked."""
+        view = copy.copy(self)
+        view.ancestors = {k: v for k, v in self.ancestors.items() if v.space == "brain"}
+        for sid, (aliases, match) in self._brain_names.items():   # never the names a home added
+            if sid in view.ancestors:
+                view.ancestors[sid] = copy.copy(view.ancestors[sid])
+                view.ancestors[sid].aliases, view.ancestors[sid].match = list(aliases), copy.deepcopy(match)
+        return view
+
+    def vouched(self, name: str) -> bool:
+        """The space called `name` is one this registry, as a trust decision reads it, knows: a
+        subject homed there, or a person's registered workspace. A mount it does not know (a
+        corridor under a custom name, whatever its own space.yaml says) vouches for no one."""
+        return any((s.kind == "people" and str(s.extra.get("workspace") or "") == name)
+                   or (s.kind != "people" and s.home == name) for s in self.trusted_view().everywhere())
+
     def get(self, sid: str) -> Subject | None:
         return self.subjects.get(sid) or self.ancestors.get(sid)
 
@@ -409,7 +521,7 @@ class Registry:
         linked to the subject, the mail domain of one of its addresses, a keyword in the title of
         a call or event. A record that names its subject (`identifiers.subject`) belongs to it alone;
         one from a linked repository to the subject it is linked to (another's `match.repo` aside)."""
-        named = self.get(str((record.get("identifiers") or {}).get("subject") or ""))
+        named = self.get(_named_subject(record))
         if named is not None and named.state != "archived":
             return [named]
         hits = [(s, self.matched_by(s, record)) for s in self.everywhere()]
@@ -421,7 +533,7 @@ class Registry:
         `subject` when the record names it and `repos` when its repository is linked to it."""
         identifiers = record.get("identifiers") or {}
         keys = set()
-        if str(identifiers.get("subject") or "") == subject.id and subject.state != "archived":
+        if _named_subject(record) == subject.id and subject.state != "archived":
             keys.add("subject")
         repos = subject.extra.get("repos")
         have = identifiers.get("repo")
@@ -430,6 +542,8 @@ class Registry:
                 for link in repos for value in (have if isinstance(have, list) else [have])):
             keys.add("repos")
         for key, wanted in (subject.match or {}).items():
+            if key in NO_ATTACH_KEYS:
+                continue
             wanted_values = [str(w).strip().lower() for w in (wanted if isinstance(wanted, list) else [wanted])]
             if key == "domain":
                 if any(d == w or d.endswith("." + w) for d in record_domains(record) for w in wanted_values):
@@ -500,17 +614,20 @@ class Registry:
         return best[1] if best else None
 
     def home_of(self, sid: str) -> str | None:
+        """The space where the subject's shared conclusions live, or None. A home that is not a
+        space name (`../spaces/x`, a path) is no home at all: None, so nothing is addressed to it
+        and the classification gate holds what is about the subject."""
         subject = self.get(sid)
         if subject is None:
             return None
         governing = self.classification(sid)   # a company or walled class names the home of all it covers
         if governing and governing.get("class") != "owner" and governing.get("home"):
-            return str(governing["home"])
+            return space_name(governing["home"])
         if subject.home:
-            return subject.home
+            return space_name(subject.home)
         for parent in self.ancestors_of(sid):
             if parent.home:
-                return parent.home
+                return space_name(parent.home)
         return None
 
     def domain_of(self, sid: str) -> Subject | None:
@@ -537,7 +654,7 @@ class Registry:
         errs = []
         kinds = self.space.all_kinds if self.space else None
         for sid, subject in self.subjects.items():
-            if not re.match(r"^[a-z0-9][a-z0-9-]*$", sid):
+            if not _is_slug(sid):
                 errs.append(f"registry: id `{sid}` is not a lowercase slug")
             if kinds is not None and subject.kind not in kinds:
                 errs.append(f"registry: `{sid}` has unknown kind `{subject.kind}`")
@@ -548,6 +665,20 @@ class Registry:
             for key in subject.match:
                 if key not in MATCH_KEYS:
                     errs.append(f"registry: `{sid}` match key `{key}` is not one of {', '.join(MATCH_KEYS)}")
+            owners = subject.match.get("repo_owner")
+            for value in (owners if isinstance(owners, list) else [] if owners is None else [owners]):
+                if not isinstance(value, str) or not LOGIN_RE.match(value.strip()):
+                    errs.append(f"registry: `{sid}` match.repo_owner {ascii(value)[:60]} is not a GitHub account name")
+            if subject.home and space_name(subject.home) is None:
+                errs.append(f"registry: `{sid}` home {ascii(subject.home)} is not a space name")
+            c = subject.extra.get("classification")
+            if isinstance(c, dict) and c.get("home") and space_name(c.get("home")) is None:
+                errs.append(f"registry: `{sid}` classification home {ascii(c.get('home'))} is not a space name")
+            repos = subject.match.get("repo")
+            for value in (repos if isinstance(repos, list) else [] if repos is None else [repos]):
+                problem = _repo_problem(value)
+                if problem:
+                    errs.append(f"registry: `{sid}` match.repo {ascii(value)[:80]} {problem}")
             if sid in self.ancestor_ids and not self.homed_here(sid):
                 errs.append(f"registry: `{sid}` re-mints an id an ancestor already has")
             errs += _gate_errors(sid, subject)

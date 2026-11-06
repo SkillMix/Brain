@@ -68,6 +68,7 @@ def test_resolve_linked(tmp_path, capsys):
 def test_resolve_detects_once_then_resolves(tmp_path, now):
     # ws registry: harbor (client northwind) and harbor-voice-agent (part_of harbor, client northwind), no links
     ws = make_space(tmp_path / "ada", subjects=PEOPLE + HARBOR)
+    make_codebase(ws, "https://github.com/northwind/ada.git")   # the space's own organisation: a trusted owner
     code = make_codebase(tmp_path / "code")
     out = link.resolve(ws, code, now=now)
     assert out["subject"] == "harbor-voice-agent" and out["parent"] == "harbor"
@@ -115,6 +116,7 @@ def test_detect_never_links_on_one_shared_word(tmp_path, now):
     ws = make_space(tmp_path / "ada", subjects=PEOPLE + [{"id": "app", "kind": "topics", "title": "App"},
                                                           {"id": "lumen", "kind": "clients", "title": "Lumen"},
                                                           {"id": "harbor-site", "kind": "projects", "client": "northwind"}])
+    make_codebase(ws, "https://github.com/northwind/ada.git")   # the space's own organisation: a trusted owner
     assert link.detect(ws, "lumen/app", now=now)["outcome"] == "none"
     assert link.detect(ws, "ada-okafor/personal-site", now=now)["outcome"] == "none"
     assert link.detect(ws, "northwind/site", now=now)["outcome"] == "linked"   # a name word and the client
@@ -195,6 +197,7 @@ def test_resolve_non_github_remote(tmp_path):              # Review Focus 2
 def test_resolve_drops_user_info_and_ssh_form(tmp_path, now):
     # ws registry: harbor and harbor-voice-agent, no links; a remote carrying a made-up token, then an ssh:// clone
     ws = make_space(tmp_path / "ada", subjects=PEOPLE + HARBOR)
+    make_codebase(ws, "https://github.com/northwind/ada.git")   # the space's own organisation: a trusted owner
     token = "ghp_MadeUpToken123"
     out = link.resolve(ws, make_codebase(tmp_path / "code", f"https://{token}@github.com/northwind/harbor-voice.git"),
                        now=now)
@@ -224,7 +227,8 @@ def test_resolve_in_a_space_checkout_is_none(tmp_path, now):
 def test_resolve_two_registries_older_wins(tmp_path, brain_day, harbor_day, winner):     # Review Focus 3
     # brain holds beacon-app, a mounted project holds harbor-voice-agent, same repo; the older link wins
     brain = make_space(tmp_path / "lantern", profile="brain", name="lantern", subjects=PEOPLE + [
-        {"id": "beacon-app", "kind": "projects", "repos": [{"repo": "northwind/harbor-voice", "linked": brain_day}]}])
+        {"id": "beacon-app", "kind": "projects", "repos": [{"repo": "northwind/harbor-voice", "linked": brain_day}]},
+        {"id": "harbor", "kind": "projects", "home": "harbor"}])   # the brain vouches for the harbor mount
     harbor = make_space(tmp_path / "harbor", profile="project", name="harbor", subjects=[
         {"id": "harbor-voice-agent", "kind": "projects", "repos": [{"repo": "northwind/harbor-voice", "linked": harbor_day}]}])
     ws = make_space(tmp_path / "ada")
@@ -239,6 +243,7 @@ def test_resolve_pending_until_the_holder_applies(tmp_path, now):
     # brain holds harbor-voice-agent (home harbor, crew ["ada"]); resolve in ws sends the link note
     brain = make_space(tmp_path / "lantern", profile="brain", name="lantern", subjects=PEOPLE + [
         {"id": "harbor-voice-agent", "kind": "projects", "home": "harbor", "crew": ["ada"], "client": "northwind"}])
+    make_codebase(brain, "https://github.com/northwind/lantern.git")   # the brain's organisation
     ws = make_space(tmp_path / "ada")
     mount_brain(ws, brain)
     code = make_codebase(tmp_path / "code")
@@ -282,6 +287,7 @@ def test_resolve_reads_home_audience_and_status_page(tmp_path):
 
 def test_resolve_is_offline_and_fast(tmp_path, monkeypatch, now):
     ws = make_space(tmp_path / "ada", subjects=PEOPLE + HARBOR)
+    make_codebase(ws, "https://github.com/northwind/ada.git")   # the space's own organisation: a trusted owner
     code = make_codebase(tmp_path / "code")
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("network"))
     started = time.perf_counter()
@@ -301,7 +307,7 @@ def test_person_links_and_unlinks(tmp_path, now):
     assert [json.loads(l)["outcome"] for l in (ws / link.SEEN).read_text(encoding="utf-8").splitlines()] == \
         ["linked", "unlinked"]
     # a pasted remote URL is stored as owner/name, and its token is written nowhere
-    assert link.main([str(ws), "link", "https://x-access-token:FAKE_TOKEN_123@github.com/Lumen/App.git", "product"]) == 0
+    assert link.main([str(ws), "link", "https://x-access-token:" + "FAKE_TOKEN_123" + "@github.com/Lumen/App.git", "product"]) == 0
     assert link.link_for(ws, "lumen/app").subject == "product"
     assert not [p for p in ws.rglob("*") if p.is_file() and b"FAKE_TOKEN_123" in p.read_bytes()]
 
@@ -360,6 +366,7 @@ def test_scan_leaves_out_space_repositories(tmp_path, now):
 def test_a_repo_that_matched_nothing_is_placed_once_its_subject_is_registered(tmp_path, now):
     # onboarding's scan meets two northwind repositories before their subject is registered
     ws = make_space(tmp_path / "ada", subjects=PEOPLE)
+    make_codebase(ws, "https://github.com/northwind/ada.git")   # the space's own organisation: a trusted owner
     listed = ["northwind/harbor-voice", "northwind/harbor-voice-agent"]
     assert link.scan(ws, now=now, list_fn=lambda owner: listed, id_fn=lambda r: None)["linked"] == 0
     code = make_codebase(tmp_path / "code")

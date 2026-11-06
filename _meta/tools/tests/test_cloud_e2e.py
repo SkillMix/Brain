@@ -136,6 +136,11 @@ class Platform:
             out = json.dumps({"check_runs": [{"name": "checks", "conclusion": "failure" if red else "success",
                                               "details_url": f"https://github.com/{slug}/actions/runs/{run}/job/"
                                                              f"{run * 10 + self.attempts.get(run, 0)}"}]})
+        elif m := re.fullmatch(r"repos/[^/]+/[^/]+/activity\?ref=refs/heads/(.+)&per_page=1", route):
+            sha = self.head(slug, m[1])   # every push in this world is Ada's own
+            out = json.dumps([{"after": sha, "activity_type": "push", "actor": {"login": "ada-gh"}}] if sha else [])
+        elif args[:3] == ("api", "user", "--jq"):
+            out = "ada-gh\n"
         elif args[:2] == ("run", "rerun"):
             self.attempts[int(args[2])] = self.attempts.get(int(args[2]), 0) + 1
         elif args[:2] != ("run", "view") and args != ("--version",):
@@ -436,8 +441,15 @@ def proof_run(world, name: str, capsys, edit_went_through: bool) -> tuple:
 
 
 def protected_items(world) -> list:
-    held = yaml.safe_load(shown(world, SPACE, "main", "_inbound/needs-you/sync-cloud.yaml") or "{}") or {}
-    return [item for item in held.get("items") or [] if item["id"].startswith("cloud-protected-sweep-")]
+    """The cloud's security items: a held change and its item ride cloud/sweep-protected, and reach main only on the
+    person's click, so they are read from there (and from main, once clicked)."""
+    found = {}
+    for ref in ("main", "cloud/sweep-protected"):
+        held = yaml.safe_load(shown(world, SPACE, ref, "_inbound/needs-you/sync-cloud.yaml") or "{}") or {}
+        for item in held.get("items") or []:
+            if item["id"].startswith("cloud-protected-sweep-"):
+                found.setdefault(item["id"], item)
+    return list(found.values())
 
 
 def test_a_proof_runs_landing_leaves_a_protected_change_out_and_asks_about_it_as_any_runs_does(world, capsys):

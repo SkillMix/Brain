@@ -9,6 +9,32 @@ every space reads through the brain. A space changes that registry with small no
 `land_notes` (every ship and every landing). This tool decides nothing: the agent judges, the
 tool checks who may say what and enforces the gate at every exit.
 
+A note says who it is by (`by`) and which space sent it (`from`); neither is proof, so the
+holder binds them (`_bound`). A note from a person's registered workspace is by that person; a
+person with a registered workspace speaks only from it or from the subject's own home; a
+workspace never moves by note, and one space is never two people's workspace. On top of that,
+a note that would let someone take or open a walled subject they are not part of is refused:
+on a subject the governing walled classification covers, only its crew or the company owner
+names an owner, opens it to a looser class, or, while it has no owner, classifies it at all.
+A note's `approved_by` is its sender's own, and a note names every person exactly: a name
+that only slugs to a registered person (`Ben.` for Ben Liu) is refused. The transport
+(release.py) and the gate (gate.py) have to bind the sender to the account that pushed it;
+this tool cannot see that account. A classification this space sent governs here while it
+travels only when its signal is one this space wrote and the holder's rules still accept it
+(`travelling`).
+
+A `workspace` note names the workspace's own repository (`repo`). The holder records it as the
+person's `workspace_repo`, the repository whose log.md vouches for their signatures elsewhere,
+only once, never over a value it has, and only after the host confirms it
+(`verify_workspace_repo`): one of the person's registered GitHub logins has admin on it, it
+sits under one of those logins or nobody else may push to it, and its space.yaml on the
+default branch names that workspace and that person. The notes log row says what was filled
+and how it was checked (`filled`). When the host cannot be asked, the notes log row keeps the
+repository the note named (`waiting`) and it is tried again on every landing; the agent's
+health rows (`_meta/state/health/classify.yaml`) only show the wait, and nothing is read back
+from them. When the host answers no, nothing is tried again: the brain's owner gets one
+Needs-you item ("is it their workspace?"), and only their yes sets it.
+
     python classify.py <root> pending                 what this space decides, asks or checks
     python classify.py <root> ask <subject>           ask the other workspaces for obligations
     python classify.py <root> decide <subject> --class C --reason R [--evidence ID ...]
@@ -310,16 +336,19 @@ def requeue(root, space=None, reg=None, now=None) -> dict:
 
 
 # ----- registry notes: how a space changes the registry that holds a subject -----------------------
-NOTE_KINDS = ("owner", "workspace", "ask", "classification", "obligation", "checked", "state", "link")
+NOTE_KINDS = ("owner", "workspace", "ask", "classification", "obligation", "checked", "state", "link", "key")
 NOTES_LOG = registry_mod.NOTES_LOG
 SIGNALS_OUT = Path("_outbound") / "signals"
 SIGNALS_IN = Path("_inbound") / "signals"
 
 
+BREAKS = re.compile(r"[\r\n\x0b\x0c\x1c-\x1e\x85\u2028\u2029]+")
+
+
 def _append(path: Path, line: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8", newline="\n") as handle:
-        handle.write(line.rstrip("\n") + "\n")
+    """One line to a log: a line break inside a value another space sent (a subject, a sender)
+    never starts a line of its own. A JSON row has none: json.dumps escapes them."""
+    pages.append_text(path, BREAKS.sub(" ", str(line)).strip() + "\n")
 
 
 def _holder_name(space, subject) -> str | None:
@@ -389,9 +418,16 @@ def note(root, sid, kind, data, now=None, sent=None) -> Path | None:
 
 
 def _record(root: Path, signal: dict, outcome: str, why: str, now) -> None:
-    _append(root / NOTES_LOG, json.dumps({"id": signal.get("id"), "at": pages.iso(now), "note": signal.get("note"),
-                                          "subject": signal.get("subject"), "from": signal.get("from"),
-                                          "by": signal.get("by"), "outcome": outcome, "why": why}, default=str))
+    row = {"id": signal.get("id"), "at": pages.iso(now), "note": signal.get("note"),
+           "subject": signal.get("subject"), "from": signal.get("from"),
+           "by": signal.get("by"), "outcome": outcome, "why": why}
+    if isinstance(signal.get("filled"), dict):   # a field set once, and how it was checked
+        row["filled"] = signal["filled"]
+    if isinstance(signal.get("waiting"), dict):   # what a landed note named that the host has not confirmed yet
+        row["waiting"] = signal["waiting"]
+    if isinstance(signal.get("asked"), dict):   # the host refused it: the owner is asked, the wait ends
+        row["asked"] = signal["asked"]
+    _append(root / NOTES_LOG, json.dumps(row, default=str))
     _append(root / "log.md", f"- {pages.iso(now)} registry note {signal.get('note')} for {signal.get('subject')} "
                              f"from {signal.get('from')}: {outcome}" + (f" ({why})" if why else ""))
 
@@ -483,6 +519,96 @@ def _mark_checked(reg, c: dict | None, by, sender) -> None:
         c["checked_with"] = _ids(c.get("checked_with")) + [sender]
 
 
+def _person_named(reg, name):
+    """The people subject titled (or with the id) `name`, any registry this space reads."""
+    return next((s for s in reg.everywhere() if s.kind == "people" and s.state != "archived"
+                 and (_same(s.title, name) or _same(s.id, name))), None)
+
+
+def _key(name) -> str:
+    """A name as `person_id` slugs it when no person has it exactly."""
+    return re.sub(r"[^a-z0-9]+", "-", str(name or "").lower()).strip("-")
+
+
+def _lookalike(reg, name):
+    """The registered person a name is not, but slugs to (`Ben.`, `ben-liu`, `Ben​Liu` for Ben
+    Liu, whose id is `ben`), or None. `person_id` reads such a name as that person's id, so a
+    crew check would pass it while every check by name missed it: a note never names a person
+    that way."""
+    if not str(name or "").strip() or _person_named(reg, name) is not None:
+        return None
+    key = _key(name)
+    return next((s for s in reg.everywhere() if s.kind == "people" and key
+                 and key in (s.id, _key(s.title))), None) if key else None
+
+
+def _workspace_person(reg, sender):
+    """The person whose registered workspace is the space `sender`, or None."""
+    return next((s for s in reg.everywhere() if s.kind == "people" and s.state != "archived"
+                 and str(s.extra.get("workspace") or "") == str(sender or "")), None) if sender else None
+
+
+def _own_slugs(root, person) -> set:
+    """The names a person's workspace may take: their row id, or the slug their invitation names."""
+    import yaml
+    out = {person.id}
+    path = Path(root) / "_meta" / "state" / "invitations" / f"{person.id}.yaml"
+    try:
+        slug = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("slug") if path.is_file() else None
+    except (OSError, UnicodeDecodeError, yaml.YAMLError, AttributeError):
+        slug = None
+    if pages.is_slug(slug):
+        out.add(str(slug))
+    return out
+
+
+def _bound(space, reg, kind, sid, by, sender, data=None) -> str:
+    """Why a note's `by` does not belong to the space it came from, or "". A note from this
+    space is by its owner. A note from a person's registered workspace is by that person. A
+    person with a registered workspace speaks only from it, except through a subject's own home
+    (a project space speaks for its subject). The sending space itself is not authenticated
+    here: release.py stamps `from` and gate.py binds it to the account that pushed it. A name
+    that only slugs to a registered person (`_lookalike`), as `by` or as the person a note names
+    owner, is refused: it would pass for them on the crew and nowhere else."""
+    data = data or {}
+    for field_, value in (("by", by), ("owner", data.get("owner")), ("person", data.get("person"))):
+        alike = _lookalike(reg, value)
+        if alike is not None:
+            return (f"a note's {field_} {str(value)[:60]!r} is not how {alike.title} is registered: "
+                    "a note names a person exactly")
+    if sender == space.name:
+        return "" if _same(by, space.owner) else f"a note from {sender} is by its owner, not {by}"
+    sending = _workspace_person(reg, sender)
+    if sending is not None:
+        return "" if (_same(by, sending.title) or _same(by, sending.id)) else \
+            f"a note from {sender} is by {sending.title}, not {by}"
+    named = _person_named(reg, by)
+    if named is not None and named.extra.get("workspace") and str(named.extra["workspace"]) != sender:
+        if sid and reg.get(sid) is not None and reg.home_of(sid) == sender:
+            return ""   # the subject's own home (a project space) speaks for it
+        return f"{by} speaks from their workspace {named.extra['workspace']}, not from {sender}"
+    return ""
+
+
+def _crew_of(reg, sid) -> set:
+    """Every person id on the crew of the subject, its umbrellas, or the walled classification
+    that governs it."""
+    subject = reg.get(str(sid))
+    if subject is None:
+        return set()
+    c = reg.classification(subject.id) or {}
+    return ({p for s in [subject, *reg.ancestors_of(subject.id)] for p in _ids(s.crew)}
+            | (set(_ids(c.get("crew"))) if c.get("class") == "walled" else set()))
+
+
+def _inside(space, reg, sid, by) -> bool:
+    """`by` is the company owner, or on the crew of `sid` (an umbrella's or the walled
+    classification's too)."""
+    if _same(by, company_owner(space) or (space.owner if space.profile == "brain" else "")):
+        return True
+    return person_id(reg, by) in _crew_of(reg, sid)
+
+
 def _propose_crew(reg, c: dict | None, by) -> None:
     pid = person_id(reg, by)
     if c and c.get("class") == "walled" and pid not in _ids(c.get("crew")) and pid not in _ids(c.get("crew_proposed")):
@@ -501,8 +627,252 @@ def apply_note(root, space, reg, signal: dict, now) -> tuple:
         person = next((s for s in reg.subjects.values() if s.kind == "people" and _same(s.title, by)), None)
         if person is None or not registry_mod.SLUG.match(sender):
             return "refused", f"no registered person named {by}"
+        had = str(person.extra.get("workspace") or "")
+        if not had and sender not in _own_slugs(root, person):   # as gate._own_fill binds it
+            return "refused", f"{sender} is not {person.title}'s own slug"
+        if had and had != sender:
+            return "refused", f"{person.title}'s workspace is {had}; a workspace never moves by note"
+        other = _workspace_person(reg, sender)
+        if other is not None and other.id != person.id:
+            return "refused", f"{sender} is {other.title}'s workspace already"
         person.extra["workspace"] = sender
-        return "applied", ""
+        return "applied", _workspace_repo(root, space, person, sender, data.get("repo"), signal, now)
+    if kind == "key":   # a workspace asks the brain's agent for a read-only deploy key on a mount
+        if space.profile != "brain":
+            return "refused", "a mount key is attached by the brain's agent"
+        import onboard   # here: onboard imports much more than a note needs
+        # the in-memory registry, so a key note in the same batch as the workspace's own note sees it
+        return onboard.queue_mount_key(root, signal, reg=reg)
+    return _apply_other(root, space, reg, signal, now, kind, sid, by, sender, at, data)
+
+
+# ----- a workspace's repository: verified with the host, then set once --------------------------
+HEALTH_WRITER = "classify"   # the rows this tool reports to the agent (needs_you.set_health)
+
+
+def _gh(*args) -> tuple:
+    """(exit code, stdout, stderr) of one `gh` call; OSError when it cannot run. Tests inject their own."""
+    import subprocess
+    try:
+        done = subprocess.run(["gh", *args], capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise OSError("gh cannot run here") from exc
+    return done.returncode, done.stdout or "", done.stderr or ""
+
+
+def _logins(person) -> list:
+    got = person.match.get("github") if isinstance(person.match, dict) else None
+    return [str(v).strip() for v in (got if isinstance(got, list) else [got]) if isinstance(v, str) and v.strip()]
+
+
+def verify_workspace_repo(slug: str, logins: list, workspace: str, person_title: str, gh=None,
+                          owner_logins: list | tuple = ()) -> tuple:
+    """Whether the repository `slug` (owner/name) is the person's workspace, asked of the host:
+    ("verified", how), ("refused", why) or ("unknown", why) when the host cannot be asked (no
+    `gh`, signed out, a run with no access). It is, when the person alone controls who writes
+    its log.md: one of their registered GitHub logins (`match.github`, which only the owner's
+    click changes) has admin on it, and either it sits under one of those logins or every
+    account that may push to it is one of them or one of the company owner's registered logins
+    (`owner_logins`: the brain owner, trusted with the whole brain already, owns the company
+    organisation where `onboard.py --invite` makes a workspace, and made it; any other
+    organisation owner or member who may push refuses it); and its space.yaml on the default
+    branch says `name: <workspace>` and `owner: <the person>`."""
+    import yaml
+    import ghrest
+    gh = gh or _gh
+    if not logins:
+        return "unknown", f"no GitHub login is registered for {person_title} yet"
+
+    def ask(*args):
+        try:
+            code, out, err = gh(*args)
+        except OSError as exc:
+            return None, str(exc)
+        if code != 0:
+            text = f"{err}\n{out}"
+            # a rate limit is a 403 too, but no answer: asked again on a later landing
+            if ghrest.NOT_ENABLED.search(text) or not re.search(r"HTTP 40[34]", text) \
+                    or re.search(r"rate limit|abuse|HTTP 429", text, re.I):
+                return None, "the host could not be asked"
+            return False, "the host says no"
+        return out, ""
+    admin = None
+    for login in logins:
+        out, why = ask("api", f"repos/{slug}/collaborators/{login}/permission", "--jq", ".permission")
+        if out is None:
+            return "unknown", why
+        if out and out.strip() == "admin":
+            admin = login
+            break
+    if admin is None:
+        return "refused", f"no registered login of {person_title} has admin on it"
+    mine = {login.casefold() for login in logins}
+    if slug.split("/", 1)[0].casefold() not in mine:   # not under the person's own login: who else writes?
+        out, why = ask("api", "--paginate", f"repos/{slug}/collaborators?affiliation=all&per_page=100",
+                       "--jq", ".[] | select(.permissions.push) | .login")
+        if out is None:
+            return "unknown", why
+        pushers = {line.strip().casefold() for line in (out or "").splitlines() if line.strip()}
+        allowed = mine | {login.casefold() for login in owner_logins}
+        if out is False or not pushers or pushers - allowed:
+            return "refused", f"accounts that are not {person_title}'s can write to it"
+    out, why = ask("api", f"repos/{slug}/contents/space.yaml", "-H", "Accept: application/vnd.github.raw")
+    if out is None:
+        return "unknown", why
+    try:
+        data = yaml.safe_load(out) if out else None
+    except yaml.YAMLError:
+        data = None
+    if not isinstance(data, dict) or str(data.get("name") or "") != workspace \
+            or not _same(data.get("owner"), person_title):
+        return "refused", f"its space.yaml is not {workspace}'s, owned by {person_title}"
+    return "verified", f"{admin} has admin on it and its space.yaml names {workspace}, owned by {person_title}"
+
+
+def _owner_logins(root, space) -> list:
+    """The registered GitHub logins (`match.github`, a trust field) of this space's owner's own
+    people row, read from this space's registry alone: in the brain, the company owner."""
+    reg = registry_mod.Registry(root, space)
+    return [login for s in reg.subjects.values() if s.kind == "people" and _same(s.title, space.owner)
+            for login in _logins(s)]
+
+
+def _workspace_repo(root, space, person, workspace: str, repo, signal: dict | None, now) -> str:
+    """Set the person's `workspace_repo` once, from the repository their workspace's note names,
+    when the host confirms it (`verify_workspace_repo`). Never changes a value it has: a second
+    repository is refused. When the host cannot be asked it waits in the agent's health rows and
+    is tried again on every landing (`retry_workspace_repos`). When the host refuses it, it is
+    never tried again: the owner gets one Needs-you item, whose yes sets it (`apply_verdicts`).
+    Returns what the notes log says about it ("" when the note named none)."""
+    if not repo:
+        return ""
+    slug = registry_mod.repo_url(registry_mod.clone_url(repo) or "") if isinstance(repo, str) else None
+    slug = slug.split("github.com/", 1)[1] if slug and "github.com/" in slug else None
+    had = person.extra.get("workspace_repo")
+    if had:
+        if slug and registry_mod.same_repo(had, slug):
+            _health_drop(root, person.id)
+            return ""
+        return "its workspace repository is set already; a note never changes it"
+    if slug is None:
+        return "the repository it names is not a GitHub repository"
+    if space.mode == "fixture":
+        outcome, how = "unknown", "this space runs offline"
+    else:
+        outcome, how = verify_workspace_repo(slug, _logins(person), workspace, person.title,
+                                             owner_logins=_owner_logins(root, space))
+    if outcome == "verified":
+        person.extra["workspace_repo"] = slug
+        if signal is not None:   # the notes log row says what was filled and how (gate.py reads it)
+            signal["filled"] = {"workspace_repo": slug, "person": person.id, "checked": how}
+        _health_drop(root, person.id)
+        _append(Path(root) / "log.md", f"- {pages.iso(now)} workspace_repo of {person.id} set to {slug}: {how}")
+        return f"workspace_repo set to {slug}"
+    if outcome == "refused":   # the host said no: asking again changes nothing, the owner decides
+        _health_drop(root, person.id)
+        if signal is not None:
+            signal["asked"] = {"workspace_repo": slug, "person": person.id}
+        item_id = f"classify-workspace-repo-{person.id}-{pages.fingerprint(slug)[-8:]}"
+        if _put_item(Path(root), {"id": item_id, "kind": "question",   # once: never again after an answer
+                                  "text": f"Is {slug} {person.title}'s workspace repository? Yes sets it as "
+                                          f"their workspace_repo. The host refused it: {how}.",
+                                  "recommendation": "no", "default": f"{person.title}'s releases keep waiting",
+                                  "deadline": None, "depends": 0,
+                                  "payload": (PROPOSALS / f"{item_id}.yaml").as_posix(), "fingerprint": ""}):
+            _propose(Path(root), item_id, {"verb": "workspace_repo", "person": person.id,
+                                           "workspace": workspace, "workspace_repo": slug})
+        return f"workspace_repo not set: {how}; the owner is asked"
+    if signal is not None:   # the notes log keeps what to try again (`retry_workspace_repos`)
+        signal["waiting"] = {"workspace_repo": slug, "person": person.id, "workspace": workspace}
+    # the health row only shows the wait: nothing is ever read back from it
+    _health_put(root, {"id": f"workspace-repo-{person.id}", "person": person.id, "outcome": outcome,
+                       "text": f"{person.title}'s workspace repository is not verified yet ({how})",
+                       "agent": "tried again on every landing until the host answers"})
+    return f"workspace_repo not set: {how}"
+
+
+def _confirm_workspace_repo(root, plan: dict, by, now) -> None:
+    """The owner's yes to a repository the host refused: set it once, on the row that was asked."""
+    reg = registry_mod.Registry(root, spaceyaml.load(root))
+    person = reg.subjects.get(str(plan.get("person") or ""))
+    slug = str(plan.get("workspace_repo") or "")
+    if person is None or person.kind != "people" or not slug or person.extra.get("workspace_repo")             or str(person.extra.get("workspace") or "") != str(plan.get("workspace") or ""):
+        raise ClassifyError(f"{plan.get('person')}'s row changed since it was asked")
+    person.extra["workspace_repo"] = slug
+    reg.save()
+    _append(Path(root) / "log.md", f"- {pages.iso(now)} workspace_repo of {person.id} set to {slug}: {by} said yes")
+
+
+def _health_put(root, row: dict) -> None:
+    import needs_you
+    rows = [r for r in needs_you.health_rows(root, HEALTH_WRITER) if r.get("id") != row["id"]]
+    needs_you.set_health(root, HEALTH_WRITER, [{k: v for k, v in r.items() if k != "writer"} for r in rows] + [row])
+
+
+def _health_drop(root, person_id: str) -> None:
+    import needs_you
+    rows = needs_you.health_rows(root, HEALTH_WRITER)
+    kept = [{k: v for k, v in r.items() if k != "writer"} for r in rows
+            if r.get("id") != f"workspace-repo-{person_id}"]
+    if len(kept) != len(rows):
+        needs_you.set_health(root, HEALTH_WRITER, kept)
+
+
+def waiting_workspace_repos(root) -> dict:
+    """person id -> {workspace_repo, person, workspace}: the repository the latest landed workspace
+    note of each person named that the host has not confirmed yet, read from the notes log
+    (`_record` writes it, from a note this registry applied), never from the health rows, which
+    only show the wait. A later fill ends the wait."""
+    out: dict = {}
+    for row in registry_mod._jsonl(Path(root) / NOTES_LOG):
+        filled = row.get("filled") if isinstance(row.get("filled"), dict) else {}
+        waiting = row.get("waiting") if isinstance(row.get("waiting"), dict) else {}
+        if row.get("outcome") != "applied" or row.get("note") != "workspace":
+            continue
+        asked = row.get("asked") if isinstance(row.get("asked"), dict) else {}
+        if filled.get("workspace_repo"):
+            out.pop(str(filled.get("person") or ""), None)
+        if asked.get("person"):   # the host refused it: the owner's item holds it now
+            out.pop(str(asked["person"]), None)
+        if waiting.get("person"):
+            out[str(waiting["person"])] = waiting
+    return out
+
+
+def retry_workspace_repos(root, space, reg, now) -> int:
+    """Try again every workspace repository a landed note named that the host could not confirm
+    before (`waiting_workspace_repos`): the same check, set once when it passes. A health row with
+    no such note behind it is dropped. Returns how many were set."""
+    import needs_you
+    done = 0
+    waiting = waiting_workspace_repos(root)
+    for row in needs_you.health_rows(root, HEALTH_WRITER):
+        pid = str(row.get("person") or "")
+        if str(row.get("id", "")).startswith("workspace-repo-") and pid not in waiting:
+            _health_drop(root, pid)
+    for pid, wait in waiting.items():
+        person = reg.subjects.get(pid)
+        if person is None or person.kind != "people" or person.extra.get("workspace_repo") \
+                or str(person.extra.get("workspace") or "") != str(wait.get("workspace") or ""):
+            _health_drop(root, pid)
+            continue
+        signal = {"id": None, "note": "workspace", "subject": person.id, "from": wait.get("workspace"),
+                  "by": person.title}
+        why = _workspace_repo(root, space, person, str(wait["workspace"]), wait.get("workspace_repo"), signal, now)
+        if signal.get("filled") or signal.get("asked"):
+            signal.pop("waiting", None)
+            _record(Path(root), signal, "applied", why, now)
+            done += bool(signal.get("filled"))
+    return done
+
+
+def _apply_other(root, space, reg, signal: dict, now, kind, sid, by, sender, at, data) -> tuple:
+    """Every note but `workspace` (`apply_note`)."""
+    if kind != "state":   # a state note is the home's alone, judged by its sender below
+        why = _bound(space, reg, kind, sid, by, sender, data)
+        if why:
+            return "refused", why
     subject = reg.subjects.get(sid)
     if subject is None:
         return "refused", f"{sid} is not held in this registry"
@@ -560,11 +930,17 @@ def apply_note(root, space, reg, signal: dict, now) -> tuple:
             subject.extra.pop("repos", None)
         return "applied", ""
     c = classification_of(subject)
+    governing = reg.classification(sid) or {}
+    walled = governing.get("class") == "walled"
     if kind == "owner":
         if subject_owner(reg, sid):
             return "refused", f"{sid} already has an owner: {subject_owner(reg, sid)}"
         if not str(data.get("person") or "").strip() or not _ids(data.get("evidence")):
             return "refused", "an owner note names the person and the evidence"
+        if walled and not (_inside(space, reg, sid, by)
+                           and person_id(reg, str(data["person"]).strip()) in _crew_of(reg, sid) | {
+                               person_id(reg, company_owner(space))}):
+            return "refused", f"{sid} is walled: only its crew names its owner, from its crew"
         subject.owner = str(data["person"]).strip()
         return "applied", ""
     owner, named = subject_owner(reg, sid), str(data.get("owner") or "").strip()
@@ -575,6 +951,11 @@ def apply_note(root, space, reg, signal: dict, now) -> tuple:
         if not owner and not (kind == "classification" and data.get("approved_by")
                               and may_decide_for(space, reg, named, by)):
             return "refused", f"{sid} has no owner yet"
+        if not owner and walled and not _inside(space, reg, sid, by):
+            return "refused", (f"{sid} is walled and has no owner yet: only its crew or the company owner "
+                               "classifies it and names its owner")
+        if data.get("approved_by") and not _same(data.get("approved_by"), by):
+            return "refused", "a note's approval is by the person who sent it"
     if kind == "ask":
         if c and c.get("state") == "settled":
             return "refused", f"{sid} is classified already"
@@ -591,8 +972,12 @@ def apply_note(root, space, reg, signal: dict, now) -> tuple:
             return "refused", f"class must be one of {', '.join(CLASSES)}"
         if needs_person(space, c, cls) and not data.get("approved_by"):
             return "refused", f"{cls} for {sid} needs its owner's yes"
+        if walled and STRICT[cls] < STRICT["walled"] and not _inside(space, reg, sid, by):
+            return "refused", f"{sid} is walled: only its crew or the company owner opens it"
         if cls == "walled" and (not data.get("home") or not _ids(data.get("crew"))):
             return "refused", "a walled classification names its home and crew"
+        if cls == "walled" and registry_mod.space_name(data.get("home")) is None:
+            return "refused", "a walled home is a space name"
         if not owner:
             subject.owner = named
         new = {"class": cls, "state": "settled", "reason": str(data.get("reason") or ""),
@@ -661,6 +1046,8 @@ def land_notes(root, space=None, now=None) -> dict:
             notes.append((_when(signal.get("at")), str(signal.get("id") or path.stem), path, signal))
     for _, _, path, signal in sorted(notes, key=lambda n: n[:2]):   # in the order they were made
         reg = reg or registry_mod.Registry(root, space)
+        signal.pop("filled", None)   # only `_workspace_repo` says what was filled or waits: never the note
+        signal.pop("waiting", None)
         try:
             outcome, why = apply_note(root, space, reg, signal, now)
         except Exception as exc:   # one bad note is refused alone
@@ -668,6 +1055,10 @@ def land_notes(root, space=None, now=None) -> dict:
         out[outcome] += 1
         _record(root, signal, outcome, why, now)
         path.unlink()
+    import needs_you
+    if needs_you.health_rows(root, HEALTH_WRITER):   # what the host could not confirm before
+        reg = reg or registry_mod.Registry(root, space)
+        out["applied"] += retry_workspace_repos(root, space, reg, now)
     if out["applied"]:
         reg.save()
     return out
@@ -686,9 +1077,49 @@ def _load(root, now=None):
     return root, space, registry_mod.Registry(root, space), now or space.now()
 
 
+def travelling(space, subject, row: dict) -> dict | None:
+    """The classification a row of this space's sent log (`classify.jsonl`) may make govern
+    here while its note travels, or None. Only a row whose signal is on its way (waiting in this
+    space's `_outbound/signals/<id>.yaml`, or arrived in the holder's `_inbound/signals/` and not
+    landed yet) as a registry classification note for the same subject from this space, and
+    that the holder's rules still accept as this space's (`_as_holder`, which also binds the
+    note to this space's owner), governs; the classification is the one those rules write,
+    never the row's own. A row with no such signal, a row the holder refuses, and a holder that
+    cannot be read govern nothing (registry.py asks this)."""
+    import yaml
+    sig = str((row or {}).get("signal") or "")
+    if not pages.is_page_id(sig) or space is None or subject is None:
+        return None
+    holder = space.mount_root(subject.space) if subject.space else None
+    signal = None
+    for folder in [Path(space.root) / SIGNALS_OUT] + ([Path(holder) / SIGNALS_IN] if holder else []):
+        path = folder / f"{sig}.yaml"
+        try:
+            if pages.is_link(path) or not path.is_file():
+                continue
+            signal = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, yaml.YAMLError):
+            continue
+        break
+    if not (isinstance(signal, dict) and signal.get("kind") == "registry" and signal.get("note") == "classification"
+            and str(signal.get("subject")) == subject.id == str(row.get("subject"))
+            and signal.get("from") == space.name and _same(signal.get("by"), space.owner)
+            and str(signal.get("id")) == sig):
+        return None
+    try:
+        outcome, _, result = _as_holder(space, subject, signal, space.now())
+    except Exception:
+        return None
+    if outcome != "applied" or not result:
+        return None
+    return {k: v for k, v in result.items() if k in ("class", "state", "home", "crew", "at", "decided_by", "for")}
+
+
 def _send(root: Path, sid, kind, data, now) -> Path | None:
     sent: dict = {}
     path = note(root, sid, kind, data, now, sent=sent)
+    if kind == "workspace" and (data or {}).get("repo"):
+        sent["repo"] = str(data["repo"])
     _append(root / SENT_LOG, json.dumps({"at": pages.iso(now), "note": kind, "subject": str(sid),
                                          "signal": path.stem if path else None, **sent}))
     return path
@@ -743,13 +1174,28 @@ def _needs_evidence(space, reg, sid, cls, evidence, home) -> bool:
 
 def announce(root, now=None) -> Path | None:
     """Tell the brain this space is its person's workspace, once: a `workspace` note when the
-    person's registry entry does not name this space yet and no such note is waiting to leave."""
+    person's registry entry does not name this space yet and no such note is waiting to leave.
+    The note names this workspace's own repository (its origin remote), which the brain checks
+    with the host before it records it as the person's `workspace_repo` (`_workspace_repo`); a
+    workspace the brain knows sends it once more, once per repository, while none is recorded."""
     root, space, reg, now = _load(root, now)
     if space.profile != "personal":
         return None
     person = reg.get(_mine(space, reg))
-    if person is None or person.kind != "people" or str(person.extra.get("workspace") or "") == space.name:
+    if person is None or person.kind != "people":
         return None
+    try:
+        import onboard
+        remote = onboard.git_remote(root)
+    except Exception:
+        remote = None
+    remote = remote if remote and registry_mod.clone_url(remote) else None
+    if str(person.extra.get("workspace") or "") == space.name:
+        # known as this workspace: its repository once more, only while the brain has none and
+        # only once for each repository (the brain tries again itself while the host cannot answer)
+        sent = {str(r.get("repo") or "") for r in _jsonl(root / SENT_LOG) if r.get("note") == "workspace"}
+        if person.extra.get("workspace_repo") or not remote or remote in sent:
+            return None
     import yaml
     folder = root / SIGNALS_OUT
     for path in sorted(folder.glob("*.yaml")) if folder.is_dir() else []:
@@ -759,7 +1205,7 @@ def announce(root, now=None) -> Path | None:
             continue
         if isinstance(waiting, dict) and waiting.get("kind") == "registry" and waiting.get("note") == "workspace":
             return None
-    return _send(root, person.id, "workspace", {}, now)
+    return _send(root, person.id, "workspace", {"repo": remote} if remote else {}, now)
 
 
 def ask(root, sid, now=None) -> dict:
@@ -810,6 +1256,8 @@ def decide(root, sid, cls, reason, evidence=(), crew=(), home=None, by=None, own
     evidence, crew = _ids(list(evidence or [])), _ids(list(crew or []))
     if cls == "walled" and (not crew or not home):
         raise ClassifyError("a walled classification names its home and its crew")
+    if home and registry_mod.space_name(home) is None:
+        raise ClassifyError("a walled home is a space name (a lowercase slug)")
     if _needs_evidence(space, reg, sid, cls, evidence, home):
         raise ClassifyError(f"the company default is open: {cls} needs evidence or a recorded obligation")
     c = classification_of(reg.get(str(sid)))
@@ -1236,6 +1684,10 @@ def apply_verdicts(root, now=None) -> dict:
                 out["dropped"] += 1
             elif iid.startswith("classify-backlog"):
                 _apply_backlog(root, plan, verb, said, by, now, out)
+            elif iid.startswith("classify-workspace-repo-"):
+                if verb in ("yes", "always"):
+                    _confirm_workspace_repo(root, plan, by, now)
+                    out["applied"] += 1
             elif iid.startswith("classify-owner-"):
                 person = said if verb == "edit" and said else plan.get("person")
                 set_owner(root, sid, person, plan.get("evidence") or [iid], now=now)

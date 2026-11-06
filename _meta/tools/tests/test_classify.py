@@ -287,10 +287,10 @@ def items(root):
 
 
 def answer(root, item_id, verb, by="Ada Okafor", note=None):
-    with (root / "log.md").open("a", encoding="utf-8") as handle:
-        handle.write(f"- 2026-10-12T10:00:00Z {verb} {item_id} by {by}\n")
-        if note:
-            handle.write(f"- 2026-10-12T10:00:00Z note {item_id} by {by}: {note}\n")
+    """The person's answer as sign.py records it: a row in the verdict store, never a log line."""
+    status.record_verdict(root, item_id, by, verb=verb, at="2026-10-12T10:00:00Z")
+    if note:
+        status.record_verdict(root, item_id, by, note=note, at="2026-10-12T10:00:00Z")
 
 
 def test_ask_names_every_workspace_but_mine_and_a_deadline(tmp_path):

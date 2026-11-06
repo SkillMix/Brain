@@ -11,11 +11,18 @@ is `owner_email` in the space's `space.yaml`; `--to` overrides it.
 
 `render` prints (or writes) the send arguments {"to": [...], "subject": ..., "htmlBody":
 ..., "body": ...}. Exit code 2 means the notice failed the check; the errors say what
-to rewrite.
+to rewrite. `--out` and `--preview` write only inside the space's
+`_meta/state/notices/preview/` folder (a bare file name lands there), a `.json` and an `.html`
+file, never through a link: a command line from a routine can never make them overwrite a
+skill, a tool or a file outside the space. `record` moves only a `.json` file of
+`_meta/state/notices/pending/`.
 
 A notice: {"kind": security|action|fyi|briefing, "sender": <routine>, "title", "summary",
 "steps": [...], "stats": [{"count", "label", "hint"}], "link": {"label", "url"},
-"reassure", "also": [{"title", "text"}], "allow_terms": [...]}.
+"reassure", "also": [{"title", "text"}], "allow_terms": [...], "reference"}. No reader-facing
+text holds a line break or a control character, so the subject stays one header line. An `also`
+text may quote a record (the morning view's unsure list), so it is escaped and never bold. A
+`reference` (the morning view's reply reference) is shown in the footer.
 
 Queued security notices join one pending digest, and `pending` holds it back while a
 security email went out in the last 24 hours: at most one a day, however many findings.
@@ -31,6 +38,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import pages  # noqa: E402
 import spaceyaml  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
@@ -81,6 +89,9 @@ PATH_RE = re.compile(r"(?:\b(?:_inbound|_outbound|_meta|_scratch|knowledge|live|
 URL_RE = re.compile(r"https?://|www\.", re.I)
 SECRET_RE = re.compile(r"\b(?:sk|pk|rk|ghp|gho|xox[abpr])[-_][A-Za-z0-9_-]{8,}|[A-Za-z0-9+/_=-]{32,}")
 DASH_RE = re.compile("[—–]")
+# Line breaks and control characters, the line and paragraph separators, zero-width and
+# bidirectional marks: none belongs in a notice, and in the subject a line break starts a header.
+CONTROL_RE = re.compile("[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]")
 
 
 class NoticeError(ValueError):
@@ -138,12 +149,16 @@ def check(notice: dict) -> list:
     link = notice.get("link")
     if link and not re.match(r"https://", link.get("url", "")):
         problems.append("link.url must be an https:// address")
+    if link and CONTROL_RE.search(str(link.get("url", ""))):
+        problems.append("link.url: no line breaks or control characters")
 
     allowed = {t.lower() for t in notice.get("allow_terms", [])}
     words = 0
     for label, text in _texts(notice):
         text = str(text)
         words += len(text.split())
+        if CONTROL_RE.search(text):
+            problems.append(f"{label}: no line breaks or control characters; keep it on one line")
         if DASH_RE.search(text):
             problems.append(f"{label}: no em or en dashes; use a comma or a full stop")
         if URL_RE.search(text):
@@ -168,6 +183,12 @@ def _inline(text: str) -> str:
 
 def _plain(text: str) -> str:
     return str(text).replace("**", "")
+
+
+def _escaped(text: str) -> str:
+    """Escaped and nothing else: for an `also` text, which may quote what someone outside wrote
+    (a mail subject), so its `**` never turns into the notice's own emphasis."""
+    return html.escape(str(text))
 
 
 def _section(heading: str, inner: str) -> str:
@@ -207,14 +228,21 @@ def _blocks(notice: dict, accent: str) -> str:
                      f'{_inline(notice["reassure"])}</div></td></tr>')
     if notice.get("also"):
         inner = "".join(f'<p style="margin:0 0 10px;font-size:14px;line-height:1.5;color:#374151;">'
-                        f'<strong>{_inline(a["title"])}</strong> {_inline(a["text"])}</p>' for a in notice["also"])
+                        f'<strong>{_inline(a["title"])}</strong> {_escaped(a["text"])}</p>' for a in notice["also"])
         parts.append(_section("Also worth knowing", inner))
     return "".join(parts)
 
 
+REFERENCE_RE = re.compile(r"^[a-z2-7]{8,32}\Z")
+
+
 def _footer(notice: dict, today: str) -> str:
     who = SENDERS.get(notice.get("sender", ""), "space assistant")
-    return f"Sent automatically by your space's assistant ({who}) on {today}. You don't need to reply."
+    text = f"Sent automatically by your space's assistant ({who}) on {today}. You don't need to reply."
+    reference = str(notice.get("reference") or "")
+    if REFERENCE_RE.match(reference):   # what a reply quotes so its answers are read
+        text += f" If you answer by reply, keep this line: reference {reference}."
+    return text
 
 
 def render(notice: dict, to: list, today: str | None = None) -> dict:
@@ -224,7 +252,8 @@ def render(notice: dict, to: list, today: str | None = None) -> dict:
         raise NoticeError(problems)
     today = today or dt.date.today().isoformat()
     badge, accent, badge_bg = KINDS[notice["kind"]]
-    subject = f"{badge}: {_plain(notice['title'])}"
+    # one header line whatever happened before: check() already refuses a line break
+    subject = " ".join(CONTROL_RE.sub(" ", f"{badge}: {_plain(notice['title'])}").split())
     fills = {
         "subject": html.escape(subject), "preheader": html.escape(_plain(notice["summary"])),
         # Stops the inbox preview line from running on into the badge and title.
@@ -335,7 +364,7 @@ def _security_file(path: Path, notices: list, to: str, today: str, queued_at: st
     combined = notices[0] if len(notices) == 1 else _security_digest(notices)
     data = {"key": notices[0].get("key"), "keys": [n["key"] for n in notices if n.get("key")], "kind": "security",
             "queued_at": queued_at, "notices": notices, "notice": combined, "payload": render(combined, to, today)}
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
+    pages.write_text(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
 
 def _new_file(folder: Path, stem: str) -> Path:
@@ -406,9 +435,10 @@ def queue(root, notice: dict, today: str | None = None) -> Path | None:
     folder = root / NOTICES / "pending"
     folder.mkdir(parents=True, exist_ok=True)
     path = _new_file(folder, f"{space.now():%Y%m%dT%H%M%S}-{notice.get('kind')}")
-    path.write_text(json.dumps({"key": key, "kind": notice.get("kind"), "queued_at": f"{space.now():%Y-%m-%dT%H:%M:%SZ}",
-                                "notice": notice, "payload": payload}, ensure_ascii=False, indent=2) + "\n",
-                    encoding="utf-8", newline="\n")
+    pages.write_text(path, json.dumps({"key": key, "kind": notice.get("kind"),
+                                       "queued_at": f"{space.now():%Y-%m-%dT%H:%M:%SZ}",
+                                       "notice": notice, "payload": payload}, ensure_ascii=False, indent=2) + "\n",
+                     root=root)
     return path
 
 
@@ -425,23 +455,66 @@ def pending(root, now: dt.datetime | None = None) -> list:
     return paths
 
 
+def pending_file(root, path) -> Path:
+    """`path` when it is a `.json` file directly in this space's pending notices, a regular file
+    and no link; else UnsafePath. `record` reads, rewrites and removes only such a file."""
+    if root is None:
+        raise pages.UnsafePath("no space.yaml found: pass --root")
+    folder = Path(root) / NOTICES / "pending"
+    path = Path(path)
+    if path.suffix != ".json" or pages.name_problem(path.name):
+        raise pages.UnsafePath(f"{pages._shown(str(path))} is not a pending notice file")
+    pages.check_no_links(path, root=root)
+    try:
+        inside = path.resolve().parent == folder.resolve()
+    except OSError:
+        inside = False
+    if not inside or path.is_symlink() or not path.is_file():
+        raise pages.UnsafePath(f"{pages._shown(str(path))} is not a file in {NOTICES.as_posix()}/pending")
+    return path
+
+
 def record(root, path, message_id: str | None = None, failed: str | None = None,
            now: dt.datetime | None = None) -> Path:
     """After the send: move the notice to sent/ with its message id, or note the failure and
-    leave it pending for the next chain."""
-    path = Path(path)
+    leave it pending for the next chain. Only a pending notice file (`pending_file`)."""
+    path = pending_file(root, path)
     data = json.loads(path.read_text(encoding="utf-8"))
     if failed:
         data["failed"] = list(data.get("failed") or []) + [failed]
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
+        pages.write_text(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n", root=root)
         return path
     data["message_id"] = message_id
     data["sent_at"] = f"{now or spaceyaml.load(root).now():%Y-%m-%dT%H:%M:%SZ}"
     target = Path(root) / NOTICES / "sent" / path.name
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
+    pages.write_text(target, json.dumps(data, ensure_ascii=False, indent=2) + "\n", root=root)
     path.unlink()
     return target
+
+
+PREVIEW = NOTICES / "preview"
+
+
+def output_path(root, value, suffix: str) -> Path:
+    """Where `--out` (`.json`) or `--preview` (`.html`) may write: inside this space's preview
+    folder only (a bare file name lands there), with that suffix, never through a link; else
+    UnsafePath. A command line, a routine's included, cannot point them anywhere else."""
+    if root is None:
+        raise pages.UnsafePath("no space.yaml found: pass --root")
+    folder = Path(root) / PREVIEW
+    path = Path(str(value))
+    if len(path.parts) == 1:
+        path = folder / path
+    if path.suffix.lower() != suffix or pages.name_problem(path.name):
+        raise pages.UnsafePath(f"{pages._shown(str(value))} must be a {suffix} file name")
+    try:
+        inside = folder.resolve() in path.resolve().parents
+    except OSError:
+        inside = False
+    if not inside:
+        raise pages.UnsafePath(f"{pages._shown(str(value))} is outside {PREVIEW.as_posix()}/")
+    pages.check_no_links(path, root=root)
+    return path
 
 
 def main(argv=None) -> int:
@@ -457,6 +530,8 @@ def main(argv=None) -> int:
     ap.add_argument("--preview", help="also write the HTML page here to look at")
     ap.add_argument("--date", help="footer date (default: today)")
     args = ap.parse_args(argv)
+    import needs_you   # here and not at the top: needs_you's helpers are the CLI's alone
+    needs_you.utf8_stdio()
     if args.command == "pending":
         root = find_root(args.root)
         for path in pending(root) if root else []:
@@ -464,7 +539,11 @@ def main(argv=None) -> int:
         return 0
     if args.command == "record":
         root = find_root(args.root)
-        print(record(root, args.notice, message_id=args.message_id, failed=args.failed))
+        try:
+            print(record(root, args.notice, message_id=args.message_id, failed=args.failed))
+        except pages.UnsafePath as exc:
+            print(f"refused: {exc}", file=sys.stderr)
+            return 2
         return 0
 
     raw = sys.stdin.read() if args.notice == "-" else Path(args.notice).read_text(encoding="utf-8")
@@ -490,12 +569,19 @@ def main(argv=None) -> int:
         for p in e.problems:
             print(f"- {p}", file=sys.stderr)
         return 2
-    if args.preview:
-        Path(args.preview).write_text(payload["htmlBody"], encoding="utf-8", newline="\n")
+    try:   # both checked before either is written: a refused one writes nothing at all
+        space_root = find_root(args.root) if (args.preview or args.out) else None
+        preview = output_path(space_root, args.preview, ".html") if args.preview else None
+        target = output_path(space_root, args.out, ".json") if args.out else None
+    except pages.UnsafePath as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 2
+    if preview is not None:
+        pages.write_text(preview, payload["htmlBody"], root=space_root)
     out = json.dumps(payload, ensure_ascii=False)
-    if args.out:
-        Path(args.out).write_text(out, encoding="utf-8", newline="\n")
-        print(f"wrote {args.out}: {payload['subject']}")
+    if target is not None:
+        pages.write_text(target, out, root=space_root)
+        print(f"wrote {target}: {payload['subject']}")
     else:
         print(out)
     return 0

@@ -109,13 +109,39 @@ leaving (or the owner of the parent space after they left):
 - removes the sync task and the user-level instruction from their machine;
 - archives the workspace repository on the host, read-only;
 - marks the subjects that live in the workspace archived in its registry;
+- lists what only a person can undo, as rows that stay open: the brain side below, the
+  personal access tokens they made for these spaces, and a sweep that runs as a scheduled task
+  on their claude.ai account;
 - deletes no file.
+
+Then the brain's owner says, once, that the person left, and their agent runs the brain side,
+`python _meta/tools/offboard.py <brain> --person <slug> --online --remove` (never inside a
+routine; without `--remove` it only lists):
+
+- archives the person's `people` subject in the brain's registry, so the daily access check
+  counts them out of every audience, a listed one included, and names any access they keep;
+- removes, through GitHub's API, their collaborator access to every repository they can still
+  read (the brain, and each space whose audience names them), their team and organisation
+  memberships, outside-collaborator access, organisation-approved tokens where the API allows,
+  and the deploy keys of their workspace (on every repository the brain's key record lists),
+  then reads each back; a row that does not read back stays in
+  `_inbound/needs-you/offboard-<slug>.yaml` with the exact command, and so do the leaver's
+  claude.ai cloud task and a token they made by hand, which no API revokes;
+- asks the owner of each walled subject whose crew still names them to take them off.
 
 Their raw records (feed files and witness pages) are removed only with
 `offboard.py --forget-records`, the person's own command, and git history still keeps them.
 What they released to the brain or a project stays there with its signature. Removing their
 access to the brain and the projects is a step on the Git host that a person with admin
-rights takes; agents never change access.
+rights takes, from the commands the brain side lists; agents never change access.
+
+## Tokens and secrets
+
+Anyone who can push to a repository can read every Actions secret that repository sees, and so
+can an agent session that opens a pull request editing a workflow: the gate holds the merge,
+not the run. The checks' mount token is therefore a repository secret of each repository, a
+fine-grained token that reads the brain alone, never an organisation secret. `SECURITY.md`
+("Secrets a repository can see") gives the settings.
 
 ## Removing a client
 

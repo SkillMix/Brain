@@ -6,6 +6,7 @@ command:
 - '{root}'
 - --from
 - '{root}/_scratch/tpl'
+- --local
 setup:
   files:
     space.yaml:

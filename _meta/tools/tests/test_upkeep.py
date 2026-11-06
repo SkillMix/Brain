@@ -76,7 +76,13 @@ def test_conflict_note_travels_and_marks_the_page_contested(tmp_path):
            id="p-0000f001", at=NOW - 3 * D)
     ada = make_space(tmp_path / "ada", name="ada", subjects=[])
     mount_brain(ada, brain)
-    witness(ada, "rec-9", "harbor", "Moved again: go-live: 2026-11-10\n", NOW - D)
+    rec = witness(ada, "rec-9", "harbor", "Moved again: go-live: 2026-11-10\n", NOW - D)
+    # the router sent this record to harbor at the brain, so a note quoting it may follow it there;
+    # a record no release decision lets reach the brain holds its note for a yes instead
+    rfm, rbody = pages.read(rec)
+    pages.write(rec, dict(rfm, routing={"decided_at": pages.iso(NOW - D), "decision": "route",
+                                        "confidence": "high", "routes": ["brain/harbor"], "items": [],
+                                        "by": "router"}), rbody)
     report = check.run(ada, now=NOW)
     assert report.conflict_notes == 1
     (item,) = sorted((ada / "_outbound" / "queue").glob("*.md"))

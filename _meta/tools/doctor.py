@@ -3,12 +3,16 @@
 What can be fixed without a password is fixed: the GitHub CLI, Claude Code's command line (and
 on Windows a minimal Git) from their official releases, pinned and checked against their SHA-256
 before anything is unpacked or made executable, into `~/.spaces/tools/` (no admin rights); git's
-identity and its credential helper from the person's GitHub account; long paths on Windows; a
-pending organization invitation (the person's sentence asked to join). Homebrew or apt are used
-only when already there and no password is needed. Everything else is one plain sentence for the
-person with the exact command (`! <command>` in Claude Code) and the check that proves it: the
-GitHub sign-in in the browser, a password, a dialog, an access grant only an owner can give. The
-agent never types a password.
+identity and its credential helper from the person's GitHub account; long paths on Windows.
+Homebrew or apt are used only when already there and no password is needed. Everything else is
+one plain sentence for the person with the exact command (`! <command>` in Claude Code) and the
+check that proves it: the GitHub sign-in in the browser, a password, a dialog, an access grant
+only an owner can give. A pending organization invitation is accepted only from the organization
+that owns the brain the person said yes to by name (`accept_orgs`, given by start.py once the brain
+is confirmed): anyone can invite any GitHub login to an organization they made, and an invitation
+sentence alone proves nothing about who sent it, so the yes to the brain is what covers its
+organization; any other pending invitation stays the person's own click on GitHub's page. The agent
+never types a password.
 
 Standard library only: start.py runs it before PyYAML exists.
 
@@ -136,7 +140,7 @@ class Machine:
     run: Callable = run_cmd   # (argv, cwd=None, input=None); a caller that needs an env passes env= as well
     system: str = field(default_factory=platform.system)
     arch: str = field(default_factory=platform.machine)
-    home: Path = field(default_factory=Path.home)
+    home: Path = field(default_factory=lambda: Path.home())   # looked up per Machine, so a test's home holds
     download: Callable = download
     reach: Callable = reachable
     root: bool = field(default_factory=lambda: hasattr(os, "geteuid") and os.geteuid() == 0)
@@ -472,19 +476,26 @@ def _scheduler(m: Machine) -> Row:
         "(Fedora: `! sudo dnf install cronie`), then say the sentence again"))
 
 
-def _organization(m: Machine, org: str, fix: bool) -> Row | None:
+def _organization(m: Machine, org: str, fix: bool, accept: bool = False) -> Row | None:
+    """The person's membership of the organization that owns the brain. A pending invitation is accepted
+    (with `fix`) only when `accept` says the person confirmed a brain of this organization by name, since
+    accepting gives the organization's owners a say over what the person creates there; read back as
+    `active`. Otherwise it is theirs to accept on GitHub's own page."""
     if m.out("gh", "api", f"users/{org}", "-q", ".type") != "Organization":
         return None   # a person's own account has no membership to accept
     check = f"gh api user/memberships/orgs/{org} -q .state"
     state = m.out("gh", "api", f"user/memberships/orgs/{org}", "-q", ".state")
     if state == "active":
         return Row(f"organization {org}", True, "member", check)
-    if state == "pending" and fix and m.ok("gh", "api", "--method", "PATCH", f"user/memberships/orgs/{org}",
-                                           "-f", "state=active"):
+    if state == "pending" and fix and accept and m.ok("gh", "api", "--method", "PATCH", f"user/memberships/orgs/{org}",
+                                                      "-f", "state=active")             and m.out("gh", "api", f"user/memberships/orgs/{org}", "-q", ".state") == "active":
         return Row(f"organization {org}", True, "member", check,
-                   fixed=f"accepted the invitation to {org}, as your sentence asked")
+                   fixed=f"accepted the invitation to {org}, the organization of the brain you confirmed")
     return Row(f"organization {org}", False, state or "not a member", check, yours=(
-        f"accept the invitation to {org} at https://github.com/orgs/{org}/invitation" if state == "pending"
+        f"check that {org} is your company's organization on GitHub, then accept its invitation yourself at "
+        f"https://github.com/orgs/{org}/invitation (setup accepts it only once you said yes to its brain by "
+        "name), and say the sentence again"
+        if state == "pending"
         else f"ask an owner of {org} to invite you to the organization on GitHub"))
 
 
@@ -527,9 +538,10 @@ def tool_row(name: str, m: Machine | None = None, fix: bool = True) -> Row:
 
 
 def diagnose(m: Machine | None = None, fix: bool = True, orgs=(), repos=(), offline: bool = False,
-             spaces=None) -> list:
+             spaces=None, accept_orgs=()) -> list:
     """Every prerequisite as a Row, in order; with `fix`, what needs no password is fixed on the
-    way. A row that blocks the ones after it (no network, no GitHub sign-in) ends the walk."""
+    way. A row that blocks the ones after it (no network, no GitHub sign-in) ends the walk. A pending
+    invitation of an organization in `accept_orgs` (the confirmed brain's) is accepted with `fix`."""
     m = m or Machine()
     use_tools(m.home)
     rows = [Row("python", sys.version_info >= (3, 10), platform.python_version(), "python --version",
@@ -565,7 +577,9 @@ def diagnose(m: Machine | None = None, fix: bool = True, orgs=(), repos=(), offl
         return rows
     if git.ok:
         rows += [_identity(m, fix), _credentials(m, fix)]
-    rows += [r for r in (_organization(m, org, fix) for org in dict.fromkeys(orgs)) if r]
+    accepted = {str(o).lower() for o in accept_orgs or ()}
+    rows += [r for r in (_organization(m, org, fix, accept=str(org).lower() in accepted)
+                         for org in dict.fromkeys(orgs)) if r]
     rows += [_access(m, repo) for repo in dict.fromkeys(repos)]
     limit = _rate_limit(m)
     if limit:

@@ -7,8 +7,11 @@ at least ten minutes before any content is copied (`starts_after`).
 
 `group` sorts what the probe saw (`routine.probe_tools`) into apps. The one classifier of what a
 tool may do is `reader.is_read_tool` (a read word, no acting word), so the read lists here are the
-ones a reader accepts. Writing exists only for the tracker kind (create, update, save: the tracker
-skill needs it). Sending is a mail tool whose name says send; reply and forward, and everything
+ones a reader accepts. Writing exists only for the tracker kind, and only for what the tracker
+skill writes: a tool whose name creates, updates or saves an issue, a ticket, a task or a comment,
+or moves or edits an issue (Jira's `transitionJiraIssue`, Linear's `update_issue_state`), and says
+nothing else but the app's own name (`tracker_write`; never a document, a project, a customer, a
+status update or a diff). Sending is a mail tool whose name says send; reply and forward, and everything
 else, are in no list and are refused like any tool that is not allowed.
 
 A connector whose name holds no known word is not dropped: `unknown` lists them, and `sort` asks
@@ -87,8 +90,61 @@ TOOL_WORDS = {
                   "folder", "folders", "page", "pages", "wiki", "confluence"),
     "tracker": ("issue", "issues", "ticket", "tickets", "jira", "sprint", "sprints"),
 }
-WRITE_WORDS = ("create", "update", "save")   # a tracker tool containing one writes
+WRITE_WORDS = ("create", "update", "save")   # a tracker tool writes with one of these words ...
+# ... and only what the tracker step writes (the tracker skill): an issue (a ticket, a task, Jira's own name for one)
+# and a comment. A tool that also names a document, a customer, a project, a label, an attachment or a diff
+# (save_document, create_attachment, update_diff) is no write the routines are granted (finding 29).
+ISSUE_OBJECTS = ("issue", "issues", "ticket", "tickets", "task", "tasks", "jira")
+TRACKER_OBJECTS = (*ISSUE_OBJECTS, "comment", "comments")
+# The tracker step moves an issue to Done (the tracker skill's `update`): Jira does it with `transitionJiraIssue`
+# and `editJiraIssue`, Linear with `update_issue_state`. For an issue, and only for one, these verbs write too, and
+# a state word and the connector's own app name say nothing more (`linear_update_issue`). A project, a document, a
+# status update or a review stays no write the routines are granted (`save_status_update`, `save_project`).
+ISSUE_VERBS = ("transition", "edit")
+STATE_WORDS = ("state", "status", "transition")
+APP_NAME_WORDS = ("linear", "jira", "github", "gitlab", "asana")
+# The tracker skill's `update` also adds its evidence as a comment: Jira's `addCommentToJiraIssue`, GitHub's
+# `add_issue_comment`, and GitHub writes an issue with `issue_write`. These verbs write an issue or a comment too, and
+# the little words of such a name say nothing more; a worklog, label or sub-issue is still a word left over.
+ADD_VERBS = ("add", "write")
+FILLER_WORDS = ("to", "on")
 SEND_WORD = "send"                           # a mail tool containing it sends
+
+
+def tracker_write(part: str) -> bool:
+    """Whether a tracker tool, by its tool part (`save_issue`, `createJiraIssue`, `update_issue_state`), writes what
+    the tracker step writes and nothing else, by its whole words (`reader.name_words`): one of TRACKER_OBJECTS; one
+    of WRITE_WORDS or ADD_VERBS, or for an issue (ISSUE_OBJECTS) one of ISSUE_VERBS; and no other word, once the
+    connector's own app name (APP_NAME_WORDS), the little words (FILLER_WORDS) and, for an issue, a state word
+    (STATE_WORDS) are left out."""
+    words = set(reader.name_words(part)) if isinstance(part, str) else set()
+    issue = bool(words & set(ISSUE_OBJECTS))
+    verbs = set(WRITE_WORDS) | set(ADD_VERBS) | (set(ISSUE_VERBS) if issue else set())
+    rest = (words - verbs - set(TRACKER_OBJECTS) - set(APP_NAME_WORDS) - set(FILLER_WORDS)
+            - (set(STATE_WORDS) if issue else set()))
+    return bool(words & verbs) and bool(words & set(TRACKER_OBJECTS)) and not rest
+
+
+def _write_like(part: str) -> bool:
+    """A tool part whose name says it writes, by a whole word: a write word, an add or an issue's own verb."""
+    return bool(set(reader.name_words(part)) & {*WRITE_WORDS, *ADD_VERBS, *ISSUE_VERBS})
+
+
+def tracker_tools(tools: list, servers: list | None = None, granted=()) -> list:
+    """(app, the tool parts `granted` holds, the tool parts that look like a write and are not granted) for each
+    tracker app among the probe's tools that has a tool `granted` holds or one that looks like a write: what the
+    probe's notes say, so a write the rule refused is seen (`routine.tracker_notes`)."""
+    granted, out = set(granted or ()), []
+    for app, items in _connectors(tools, servers).items():
+        by_name, suite = _name_kinds(app)
+        kinds_of = {tool: by_name or (_tool_kinds(part) if suite else set()) for tool, part in items}
+        tracked = [(tool, part) for tool, part in items if "tracker" in kinds_of[tool]]
+        given = [part for tool, part in tracked if tool in granted]
+        refused = [part for tool, part in tracked if tool not in granted and _write_like(part)
+                   and not reader.is_read_tool(tool)]
+        if given or refused:
+            out.append((app, given, refused))
+    return out
 
 # `reader.read` checks an answer against this (its schema subset): the account the app is signed
 # in as, the verdict, items per month for the last 12 months (keys YYYY-MM), and one sentence.
@@ -177,7 +233,8 @@ def group(tools: list, servers: list | None = None, sorted_kinds: dict | None = 
     a tool that reads are apps. `servers` are the probe's `mcp_servers`: they give the app its
     name. An app no name word and no suite word knows has the kinds `sorted_kinds` ({app: [kind]},
     from `sort`) gives it, those of KINDS only: it only reads, so its `write` and `send` are empty
-    whatever its tools are called. An app known by its name ignores `sorted_kinds`."""
+    whatever its tools are called. An app known by its name ignores `sorted_kinds`. A tracker's
+    `write` holds only the tools `tracker_write` accepts."""
     result = []
     for app, items in _connectors(tools, servers).items():
         by_name, suite = _name_kinds(app)
@@ -189,7 +246,7 @@ def group(tools: list, servers: list | None = None, sorted_kinds: dict | None = 
         if not read or not kinds:
             continue
         result.append({"app": app, "kinds": [k for k in KINDS if k in kinds], "read": read,
-                       "write": [] if sorted_app else [t for t, part in items if "tracker" in kinds_of[t] and any(w in part.lower() for w in WRITE_WORDS)],
+                       "write": [] if sorted_app else [t for t, part in items if "tracker" in kinds_of[t] and tracker_write(part)],
                        "send": [] if sorted_app else [t for t, part in items if "mail" in kinds_of[t] and SEND_WORD in part.lower()]})
     return result
 

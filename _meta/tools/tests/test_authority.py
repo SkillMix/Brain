@@ -50,11 +50,11 @@ def test_an_agent_row_only_lowers_and_must_say_whom_it_acts_for(tmp_path):
 
 
 def test_release_at_propose_waits_for_a_persons_yes(tmp_path):
-    root = make_space(tmp_path / "ada")
+    root = make_space(tmp_path / "ada", subjects=[{"id": "pricing", "kind": "topics", "title": "Pricing"}])
     set_yaml(root, authority={"release": "propose"})
     space = spaceyaml.load(root)
     for pid, approved in (("p-0000e001", None), ("p-0000e002", "Ada Okafor")):
-        write_page(root, f"_outbound/queue/{pid}.md", id=pid, type="source", title="A mail",
+        write_page(root, f"_outbound/queue/{pid}.md", id=pid, type="source", title="A mail", subject="pricing",
                    destination="harbor", stage_after="2026-10-11T00:00:00Z", listed=True,
                    **({"class": "window"}), **({"approved_by": approved} if approved else {}))
     ready = release._ready_items(root, NOW, release.ShipReport(), space)

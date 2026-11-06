@@ -7,7 +7,18 @@ dormant after eight scaled weeks without evidence (nothing moves; new evidence w
 and a subject the brain holds changes there by a note from its home), write `live/health.md`
 and `live/now.md`, append one run line, and rebuild `_meta/state/ids.yaml` last so every
 id link resolves. It writes generated files only; it never signs and never touches a
-hand-written page.
+hand-written page. Every write goes through `pages` and never through a link: an output a
+link stands in the way of is not written and is named on the health page instead. A title on a
+generated line is one line with its links, images and HTML inert (`needs_you.md_inline`).
+
+It also keeps the person's verdicts (`_meta/state/verdicts.jsonl`): sign.py records each
+answer there (`record_verdict`), and `verdicts` is what every tool acting on an answer reads.
+A line in log.md is narrative. The verdict and note lines it held when the store began still
+count, pinned by fingerprint in the store's first row (`pin_cutover`, which a run writes when
+there is no store yet); a line written after that never does, nor any while there is no store.
+Such a later line from a named person, which a computer still on older tools writes, is not
+dropped silently: it becomes one Needs-you item asking whether that person gave the answer
+(`late_items`), and their yes makes that exact line count (`verdicts`).
 
     python status.py [root]            run the librarian
     python status.py [root] --check    list the generated files that would change (exit 1 if any)
@@ -15,7 +26,9 @@ hand-written page.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -34,7 +47,6 @@ CLOSED_HOURS = 14 * 24
 TIMELINE_LINES = 10
 MOVED_LINES = 5
 DATE_RE = re.compile(r"(?<!\d)(\d{4}-\d{2}-\d{2})(?!\d)")
-SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 SUBJECTS_MARKERS = ("<!-- subjects -->", "<!-- /subjects -->")
 KINDS_MARKERS = ("<!-- kinds -->", "<!-- /kinds -->")
 DEFAULT_INDEX = ("---\ntitle: Index\n---\n# Index\n\nEvery walk starts here: a kind, then a "
@@ -74,7 +86,7 @@ class Evidence:
         # an open item shows its page id, so "item 2 is done" can name exactly that thread; one of
         # several from one record adds its place, so a later route can replace that one alone
         ref = f", {self.id}{f'.{self.item}' if self.item else ''}" if self.section == "open" and self.id else ""
-        return f"- {self.title} ({self.tier}, {self.scope}, {self.at:%Y-%m-%d}{ref})"
+        return f"- {_inline(self.title)} ({self.tier}, {self.scope}, {self.at:%Y-%m-%d}{ref})"
 
 
 @dataclass
@@ -85,6 +97,7 @@ class StatusReport:
     dormant: list = field(default_factory=list)
     woken: list = field(default_factory=list)
     health_lines: list = field(default_factory=list)
+    unwritten: list = field(default_factory=list)   # outputs refused because a link is in the way
     see_also: dict = field(default_factory=dict)
     changed: list = field(default_factory=list)
     skipped: list = field(default_factory=list)
@@ -125,9 +138,11 @@ def _jsonl(path: Path) -> list:
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if path.is_file() else []:
         if line.strip() and not line.lstrip().startswith("#"):
             try:
-                out.append(json.loads(line))
+                row = json.loads(line)
             except ValueError:
                 continue
+            if isinstance(row, dict):   # a non-object line (a mount's, say) never stops the run
+                out.append(row)
     return out
 
 
@@ -155,7 +170,31 @@ def _count_md(folder: Path) -> int:
 
 
 def _current(path: Path) -> str | None:
-    return path.read_text(encoding="utf-8").replace("\r\n", "\n") if path.is_file() else None
+    """The file's text, or None when it is missing or a link (never read through one)."""
+    if pages.is_link(path) or not path.is_file():
+        return None
+    return path.read_text(encoding="utf-8").replace("\r\n", "\n")
+
+
+def _link_in_way(root: Path, rel: str) -> bool:
+    """True when a link stands at `rel` or at a folder on the way to it: the page is not written."""
+    try:
+        pages.check_no_links(root / rel, root=root)
+        return False
+    except pages.UnsafePath:
+        return True
+
+
+def _flat(value) -> str:
+    """A title as one line: line breaks and runs of space collapse."""
+    return " ".join(str(value or "").split())
+
+
+def _inline(value, limit: int = 200) -> str:
+    """A title someone else chose, for one line of a generated page: one line, its links, images
+    and HTML inert (`needs_you.md_inline`), so it can start no line of its own and forge no item."""
+    import needs_you
+    return needs_you.md_inline(value, limit)
 
 
 def _without_stamp(text: str) -> str:
@@ -189,7 +228,7 @@ def _register_desk(root: Path, space, reg, now) -> tuple[list, list]:
         for folder in sorted(p for p in kind_dir.iterdir() if p.is_dir()):
             if reg.get(folder.name) is not None:
                 continue
-            if not SLUG_RE.match(folder.name):
+            if not pages.is_slug(folder.name):
                 skipped.append(f"work/{kind_dir.name}/{folder.name}/: not a lowercase slug")
                 continue
             reg.add({"id": folder.name, "kind": kind_dir.name, "title": _slug_title(folder.name)},
@@ -331,8 +370,13 @@ def close(root, subject: str, page_id: str, as_: str = "done", by: str | None = 
           now: dt.datetime | None = None) -> str:
     """Close the thread a status item stands for, on the person's word ("item 2 is done", "not
     related", "drop it"). The status page is generated; this is the one way to change what it
-    lists. Returns the thread; ValueError when no evidence page has that id."""
+    lists. Returns the thread; ValueError when no evidence page has that id, and, before anything
+    is read or written, when this process runs inside a routine or a cloud run
+    (`routine.in_routine`): closing a thread is the person's word, whatever command reached it."""
     root = Path(root)
+    running = _routine_running()
+    if running:
+        raise ValueError(f"refused: {running}; a routine never closes a thread for the person (rules.md section 1)")
     if as_ not in CLOSE_AS:
         raise ValueError(f"as is one of {', '.join(CLOSE_AS)}")
     space = spaceyaml.load(root)
@@ -451,13 +495,13 @@ def _render_status(space, subject, evs: list, now, template: str) -> str:
             except ValueError:
                 continue
             if day > today:
-                coming.setdefault((day, e.title), f"- {day}: {e.title} ({e.tier}, {e.scope}, {e.at:%Y-%m-%d})")
+                coming.setdefault((day, e.title), f"- {day}: {_inline(e.title)} ({e.tier}, {e.scope}, {e.at:%Y-%m-%d})")
     ahead = [e for e in evs if e.section == "timeline" and e.at > now]   # a calendar event not yet held
     for e in ahead:
         day = f"{e.at:%Y-%m-%d}"
-        coming.setdefault((day, e.title), f"- {day}: {e.title} ({e.tier}, {e.scope}, {day})")
+        coming.setdefault((day, e.title), f"- {day}: {_inline(e.title)} ({e.tier}, {e.scope}, {day})")
     text = template.format(
-        title=f"{subject.title}: status", subject=subject.id,
+        title=f"{_inline(subject.title)}: status", subject=subject.id,
         open=_open_text(evs),
         closed=_lines(_newest(e for e in evs if e.section == "closed" and e.at >= cut)),
         timeline=_lines(_newest(e for e in evs if e.section == "timeline" and e not in ahead)[:TIMELINE_LINES]),
@@ -485,31 +529,31 @@ def _see_link(page: str, fresh: dict) -> str:
     if path is None:
         return f"`{page}`"
     try:
-        return f"[{pages.read(path)[0].get('title') or page}](id:{page})"
+        return f"[{_inline(pages.read(path)[0].get('title') or page)}](id:{page})"
     except Exception:
         return f"[{page}](id:{page})"
 
 
 def _render_hub(reg, subject, evs: list, status_id, see_also: list, fresh: dict) -> str:
     folder = f"knowledge/{subject.kind}/{subject.id}/"
-    items = [f"- [{e.title}](id:{e.id}) ({e.status}, {e.ptype})"
+    items = [f"- [{_inline(e.title)}](id:{e.id}) ({e.status}, {e.ptype})"
              for e in sorted((e for e in evs if e.path.startswith(folder) and e.id),
                              key=lambda e: (e.status != "stable", e.title.lower()))]
     if status_id:
         items.append(f"- Status: [status](id:{status_id})")
     for e in _newest(e for e in evs if e.section == "open"):
-        label = f"[{e.title}](id:{e.id})" if e.id else e.title
+        label = f"[{_inline(e.title)}](id:{e.id})" if e.id else _inline(e.title)
         items.append(f"- Pending: {label} ({e.tier}, {e.scope}, {e.at:%Y-%m-%d})")
-    items += [f"- Part of: {u.title}" for u in reg.ancestors_of(subject.id)]
+    items += [f"- Part of: {_inline(u.title)}" for u in reg.ancestors_of(subject.id)]
     if see_also:
         items.append("- See also: " + ", ".join(_see_link(p, fresh) for p in see_also))
-    body = (f"# {subject.title}\n\nHub for subject `{subject.id}` ({subject.kind}, {subject.state}). "
+    body = (f"# {_inline(subject.title)}\n\nHub for subject `{subject.id}` ({subject.kind}, {subject.state}). "
             f"Links only. {NOTE}\n\n" + "\n".join(items or ["- No pages yet."]) + "\n")
-    return pages.render({"title": subject.title}, body)
+    return pages.render({"title": _flat(subject.title)}, body)
 
 
 def _inherited(s, status_ids: dict) -> str:
-    return f"{s.title} (inherited from {s.space}): [status](id:{status_ids[s.id]})"
+    return f"{_inline(s.title)} (inherited from {_inline(s.space)}): [status](id:{status_ids[s.id]})"
 
 
 def _by_title(subjects):
@@ -517,7 +561,7 @@ def _by_title(subjects):
 
 
 def _render_kind_index(kind: str, own: list, inherited: list, status_ids: dict) -> str:
-    lines = [f"- [{s.title}]({s.id}/index.md) ({s.state})" for s in _by_title(own)]
+    lines = [f"- [{_inline(s.title)}]({s.id}/index.md) ({s.state})" for s in _by_title(own)]
     lines += [f"- {_inherited(s, status_ids)}" for s in _by_title(inherited)]
     body = (f"# {_slug_title(kind)}\n\nOne line per subject of this kind. {NOTE}\n\n"
             + "\n".join(lines or ["- No subjects yet."]) + "\n")
@@ -529,7 +573,7 @@ def _subjects_block(by_kind: dict, status_ids: dict) -> list:
     for kind in sorted(by_kind):
         own, inherited = by_kind[kind]
         lines.append(f"- {kind} ([index](knowledge/{kind}/index.md))")
-        lines += [f"  - [{s.title}](knowledge/{kind}/{s.id}/index.md) ({s.state})" for s in _by_title(own)]
+        lines += [f"  - [{_inline(s.title)}](knowledge/{kind}/{s.id}/index.md) ({s.state})" for s in _by_title(own)]
         lines += [f"  - {_inherited(s, status_ids)}" for s in _by_title(inherited)]
     return lines + (["- No subjects yet."] if not by_kind else []) + [SUBJECTS_MARKERS[1]]
 
@@ -629,6 +673,36 @@ def _index_cell(root) -> str:
     return f"index {engine}"
 
 
+def _read_yaml(path: Path):
+    """A state file parsed ({} when empty), or None when it cannot be read: one bad file, here or
+    in a mount another space commits, never stops the status pass."""
+    import yaml
+    try:
+        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return None
+
+
+def _librarian_cell(root) -> list:
+    """The changes the librarian refused and still cannot make, and the ones the tests reverted
+    (librarian.py `_refused`), each with its reason; an overwrite clears once one copy is renamed,
+    and the next scan proposes it again; a revert clears once it applies or the finder stops making it."""
+    import librarian
+    held = {"refused": [], "reverted": []}
+    unreadable = 0
+    for path in sorted((Path(root) / librarian.STATE).glob("lib-*.yaml")):
+        data = _read_yaml(path)
+        if data is None:
+            unreadable += 1
+        elif isinstance(data, dict) and data.get("status") in held:
+            change = data.get("change") if isinstance(data.get("change"), dict) else {}
+            hint = "; rename one copy" if "would overwrite" in str(data.get("reason")) else ""
+            held[data["status"]].append(librarian._one_line(f"{path.stem} {change.get('kind')} "
+                                                            f"{change.get('summary')}: {data.get('reason')}{hint}"))
+    return ([f"librarian {status} {len(lines)}: " + "; ".join(lines) for status, lines in held.items() if lines]
+            + ([f"librarian unreadable {unreadable}"] if unreadable else []))
+
+
 def _health_line(space, name: str, root, now) -> str:
     if root is None:
         return f"- {name}: not mounted here"
@@ -642,12 +716,18 @@ def _health_line(space, name: str, root, now) -> str:
         extras.append(f"capture rate {rate[0]:.2f} ({rate[1]} sessions)" if rate else "capture rate n/a")
     import link  # the codebases linked to subjects homed here, from the last daily check
     extras += [_requests_cell(root, space, now), _index_cell(root), link.health_cell(root)]
+    if Path(root).resolve() == Path(space.root).resolve():   # what this computer's sync keeps back; a mount's is its own
+        import sync   # here: the sync imports much more than the health page needs
+        if sync.read_left_local(Path(root)):
+            extras.append(sync.left_local_cell(Path(root)))
     stale_path = root / "_meta" / "state" / "stale.yaml"
     if stale_path.exists():
-        import yaml
-        stale = yaml.safe_load(stale_path.read_text(encoding="utf-8")) or {}
-        if stale:
-            extras.append("stale: " + ", ".join(f"{k} since {str(v)[:10]}" for k, v in sorted(stale.items())))
+        stale = _read_yaml(stale_path)
+        if not isinstance(stale, dict):
+            extras.append("stale.yaml unreadable")
+        elif stale:
+            extras.append("stale: " + ", ".join(f"{k} since {str(v)[:10]}" for k, v in sorted(stale.items(), key=lambda kv: str(kv[0]))))
+    extras += _librarian_cell(root)
     runs, cost = 0, 0
     for run in _jsonl(root / "_meta" / "state" / "runs.jsonl"):
         try:
@@ -678,7 +758,7 @@ def _render_now(root: Path, space, reg, evidence: dict, status_ids: dict, now) -
              f"subjects, {_count_md(root / '_inbound' / 'candidates')} candidates waiting, {leaving} items "
              f"leaving within a day.\n\n## Recently moved\n"]
     for at, s in moved:
-        label = f"[{s.title}](id:{status_ids[s.id]})" if s.id in status_ids else s.title
+        label = f"[{_inline(s.title)}](id:{status_ids[s.id]})" if s.id in status_ids else _inline(s.title)
         lines.append(f"- {label} ({at:%Y-%m-%d})")
     return "\n".join(lines + ([] if moved else ["- nothing yet"])) + "\n"
 
@@ -691,26 +771,339 @@ def _run_line(root: Path, space, now, notes: str) -> None:
         fh.write(json.dumps(line) + "\n")
 
 
-# ----- the librarian's own Needs-you items -------------------------------------------
-NOTE_LINE = re.compile(r"^- (\S+) note (\S+) by ([^:]+): (.*)$")
-VERDICT_LINE = re.compile(r"^- (\S+) (yes|edit|no|always|later) (\S+) by (.+)$")
+# ----- the person's verdicts, and the librarian's own Needs-you items --------------------
+# A person's answers are authority: request.py ships an answer and writes a standing choice on
+# one, classify.py classifies on one, link.py links on one. So they are read from a store of
+# their own that sign.py alone writes (`record_verdict`), never from what log.md says now: log.md
+# is a narrative many tools append to, a routine may append to it, and a value with a line break
+# in it (a page id another space sent) could start a line that reads like a verdict. A row of the
+# store is one JSON object: {"at", "id", "by", "verb"} or {"at", "id", "by", "note"}.
+#
+# The cut-over. Before the store, sign.py's lines in log.md were the answers, and a space that
+# upgrades keeps them: the store's first row (`pin_cutover`) holds a fingerprint of every verdict
+# and note line log.md held when the store began: {"at", "cutover": "log.md", "fingerprints"}.
+# Those lines, and only those, still count, each once at its first place in the log, below every
+# row of the store. A line written after the cut-over is narrative whatever it reads like, also
+# one that copies an earlier line word for word. Until the store begins no line counts: no store
+# is no answer. The lines log.md holds when it begins are those the tools before the store already
+# read as answers, so the pin adds none, and a routine on the computer may write it: the
+# librarian's run (the daily chain runs it right after template sync), needs_you's list, the
+# person's first answer through sign.py and the migration (`_meta/migrations/verdicts_cutover.py`,
+# which template sync runs in a subprocess right after it lands new machinery) each pin it when
+# there is no store yet, so it is pinned as soon after the upgrade as anything runs. A new space
+# begins its store with an empty pin as soon as onboarding or mint writes its log.md
+# (`onboard.begin_verdicts`). A cloud run never pins: its clone lands no store, and lines its own run wrote would join.
+VERDICTS = Path("_meta") / "state" / "verdicts.jsonl"
+VERDICT_VERBS = ("yes", "edit", "no", "always", "later")
+LEGACY_NOTE_LINE = re.compile(r"^- (\S+) note (\S+) by ([^:]+): (.*)$")
+LEGACY_VERDICT_LINE = re.compile(r"^- (\S+) (yes|edit|no|always|later) (\S+) by (.+)$")
+CUTOVER = "log.md"
+
+
+def _person(by) -> str:
+    """The person a verdict is by, or "" when it names none: a routine never answers."""
+    name = " ".join(str(by or "").split())
+    return "" if not name or name.lower() == "routine" or name.lower().startswith("routine:") else name
+
+
+def _routine_running() -> str | None:
+    """Why this process runs inside a routine (`routine.in_routine`), or None. When that cannot
+    be asked, the routine marker in the environment alone decides."""
+    try:
+        import routine
+        return routine.in_routine()
+    except Exception:   # noqa: BLE001 - fall back to the marker every routine command sees
+        return "a routine runs this command" if os.environ.get("SPACES_ROUTINE") else None
+
+
+def _in_cloud() -> bool:
+    """A cloud run's marker is there (`cloud.state_path`, written by `cloud.py begin`), or the
+    remote environment says so. When the marker cannot be looked for, the environment decides."""
+    if os.environ.get("CLAUDE_CODE_REMOTE", "").lower() == "true":
+        return True
+    try:
+        import cloud
+        return cloud.state_path().exists()
+    except Exception:   # noqa: BLE001 - a marker that cannot be looked for is no marker
+        return False
+
+
+def _fingerprint(line: str) -> str:
+    return hashlib.sha256(line.encode("utf-8")).hexdigest()[:32]
+
+
+def legacy_lines(root) -> list:
+    """The verdict and note lines of log.md in the form sign.py wrote them before the store, in
+    log order: (fingerprint, item id, {"verb" or "note", "by"}). A line naming no person (or a
+    routine), or an id that is no record id, is none. Nothing is read through a link."""
+    return _legacy_lines(root) or []
+
+
+def _legacy_lines(root) -> list | None:
+    """`legacy_lines`, or None when log.md is there but cannot be read safely (a link at it or at
+    a folder above it, or a read that fails): then no pin is written, for a pin of nothing would
+    drop every earlier answer for good. No log.md at all is no line."""
+    lines = _log_lines(root)
+    return None if lines is None else [(fp, item, value) for fp, _at, item, value in lines]
+
+
+def _log_lines(root) -> list | None:
+    """`_legacy_lines` with each line's time: (fingerprint, the time the line names, item id, value)."""
+    log = Path(root) / "log.md"
+    try:
+        pages.check_no_links(log, root=Path(root))
+        if pages.is_link(log):
+            return None
+        if not os.path.lexists(log):
+            return []
+        if not log.is_file():
+            return None
+        text = log.read_text(encoding="utf-8", errors="replace")
+    except (OSError, pages.UnsafePath):
+        return None
+    out = []
+    for line in text.splitlines():
+        line = line.strip()
+        found = LEGACY_NOTE_LINE.match(line)
+        if found:
+            item, value = found.group(2), {"note": found.group(4).strip(), "by": _person(found.group(3))}
+        else:
+            found = LEGACY_VERDICT_LINE.match(line)
+            if not found:
+                continue
+            item, value = found.group(3), {"verb": found.group(2), "by": _person(found.group(4))}
+        if value["by"] and pages.is_record_id(item):
+            out.append((_fingerprint(line), found.group(1), item, value))
+    return out
+
+
+def _store(root) -> tuple:
+    """(rows, state) of the verdict store: state is "absent", "unsafe" (reached through a link, or
+    unreadable) or "present"; rows are the JSON objects it holds, in order."""
+    path = Path(root) / VERDICTS
+    try:   # never through a link, at the store or at a folder above it
+        pages.check_no_links(path, root=Path(root))
+        if pages.is_link(path):
+            return [], "unsafe"
+        if not os.path.lexists(path):
+            return [], "absent"
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except (OSError, pages.UnsafePath):
+        return [], "unsafe"
+    rows = []
+    for line in text.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows, "present"
+
+
+def _pinned(rows: list) -> set:
+    """The fingerprints of the log lines that still count: those any cut-over row names (two
+    computers that each began the store before a merge give two rows, each pinning what that
+    computer's log held)."""
+    out: set = set()
+    for row in rows:
+        if row.get("cutover") == CUTOVER and isinstance(row.get("fingerprints"), list):
+            out |= {f for f in row["fingerprints"] if isinstance(f, str)}
+    return out
+
+
+def pin_cutover(root, at=None) -> bool:
+    """Begin the verdict store with its cut-over row when there is no store yet: the fingerprints
+    of the verdict and note lines log.md holds now, which keep counting (see the note above). True
+    when it wrote the row. A store already there, or a link in the way, is left as it is: the
+    cut-over is pinned once and never moves, so a line written later never joins it. Nor is it
+    pinned while log.md cannot be read safely (`_legacy_lines`): a pin of nothing would be for good. Safe in a
+    routine on the computer: it records which earlier lines count and adds no answer. Never in a
+    cloud run (`_in_cloud`): lines that run wrote itself would join the pin."""
+    root = Path(root)
+    path = root / VERDICTS
+    if _in_cloud() or _store(root)[1] != "absent":
+        return False
+    lines = _legacy_lines(root)
+    if lines is None:   # log.md through a link, or unreadable: a later run pins once it reads
+        return False
+    when = at if isinstance(at, dt.datetime) else dt.datetime.now(dt.timezone.utc)
+    row = {"at": pages.iso(when), "cutover": CUTOVER,
+           "fingerprints": sorted({fp for fp, _item, _value in lines})}
+    try:
+        pages.check_no_links(path, root=root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+                     | getattr(os, "O_BINARY", 0), 0o666)
+    except FileExistsError:   # another process began it a moment ago: its row stands
+        return False
+    except (OSError, pages.UnsafePath):
+        return False
+    with open(fd, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return True
+
+
+def cutover_state(root) -> dict:
+    """Where this space stands with the cut-over: {"pinned": whether the store has begun, "kept":
+    how many verdict or note lines of log.md count as answers (with no store yet: how many a pin
+    now would keep), "after": how many log.md holds that do not}."""
+    rows, state = _store(root)
+    lines = legacy_lines(root)
+    if state != "present":
+        absent = state == "absent"
+        return {"pinned": False, "kept": len({fp for fp, _i, _v in lines}) if absent else 0,
+                "after": 0 if absent else len(lines)}
+    pinned, seen = _pinned(rows), set()
+    for fp, _item, _value in lines:
+        if fp in pinned:
+            seen.add(fp)
+    kept = len(seen)
+    return {"pinned": True, "kept": kept, "after": len(lines) - kept}
+
+
+def record_verdict(root, item_id, by, verb=None, note=None, at=None) -> None:
+    """Record one of a person's answers in the verdict store: a verb (`yes`, `edit`, `no`,
+    `always`, `later`), a note, or both. sign.py calls it beside each verdict and note line it
+    writes to log.md; no routine verb reaches it. Refused (ValueError): no person, a routine as
+    `by`, a call made inside a routine (`routine.in_routine`: a routine never answers for the
+    person, whichever tool it reached this through), an id that is empty or holds a control
+    character, an unknown verb. The first answer into a space with no store pins the cut-over
+    first (`pin_cutover`), so the answers given before the store keep counting."""
+    person = _person(by)
+    if not person:
+        raise ValueError("a verdict is a named person's; routines never answer (rules.md section 1)")
+    running = _routine_running()
+    if running:
+        raise ValueError(f"a verdict is a named person's, and {running}; routines never answer (rules.md section 1)")
+    pages.check_record_id(item_id, what="item id")
+    if verb is not None and verb not in VERDICT_VERBS:
+        raise ValueError(f"a verdict is one of {', '.join(VERDICT_VERBS)} (got {verb!r})")
+    if verb is None and note is None:
+        raise ValueError("a verdict row carries a verb or a note")
+    pin_cutover(root, at=at)
+    row = {"at": pages.iso(at) if isinstance(at, dt.datetime) else str(at or ""), "id": item_id, "by": person}
+    if verb is not None:
+        row["verb"] = verb
+    if note is not None:
+        row["note"] = " ".join(str(note).split())   # one line, as the log's note line had it
+    pages.append_text(Path(root) / VERDICTS, json.dumps(row, ensure_ascii=False) + "\n", root=Path(root))
+
+
+def _apply(out: dict, item, value: dict) -> None:
+    verb, note, person = value.get("verb"), value.get("note"), value.get("by")
+    if verb is not None:
+        out.setdefault(item, {}).update(verb=verb, by=person)
+    if isinstance(note, str):
+        out.setdefault(item, {}).update(note=note.strip(), by=person)
 
 
 def verdicts(root) -> dict:
-    """item id -> {"verb", "note", "by"} from the verdict and note lines sign.py writes."""
-    log = Path(root) / "log.md"
+    """item id -> {"verb", "note", "by"}: the log.md lines the cut-over keeps (each once, in log
+    order), then the rows of the verdict store sign.py writes (`record_verdict`), a later one over
+    an earlier one. A row that is not an object, names no person (or a routine), has an id that is
+    not a record id or a verb that is not one, is skipped. A store reached through a link gives no
+    verdicts at all, and so does no store: until the cut-over is pinned (`pin_cutover`) a line in
+    log.md answers nothing. A late line (`late_lines`) counts only once the person it names
+    confirmed it: a `yes` or `always` row for `late-<its fingerprint>`, applied where that row stands."""
+    rows, state = _store(root)
     out: dict = {}
-    if not log.exists():
+    if state != "present":
         return out
-    for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = line.strip()
-        note = NOTE_LINE.match(line)
-        if note:
-            out.setdefault(note.group(2), {}).update(note=note.group(4).strip(), by=note.group(3).strip())
+    pinned, seen, late = _pinned(rows), set(), None
+    for fp, item, value in legacy_lines(root) if pinned else ():
+        if fp in pinned and fp not in seen:   # a copy written after the cut-over is no second answer
+            seen.add(fp)
+            _apply(out, item, value)
+    for row in rows:
+        item, person, verb, note = row.get("id"), _person(row.get("by")), row.get("verb"), row.get("note")
+        if not pages.is_record_id(item) or not person:
             continue
-        verdict = VERDICT_LINE.match(line)
-        if verdict:
-            out.setdefault(verdict.group(3), {}).update(verb=verdict.group(2), by=verdict.group(4).strip())
+        if verb is not None and verb not in VERDICT_VERBS:
+            continue
+        _apply(out, item, {"verb": verb, "note": note, "by": person})
+        if str(item).startswith(LATE) and verb in CONFIRMS:   # the person confirmed a late line: it counts now
+            late = late_lines(root, rows) if late is None else late
+            found = late.get(str(item)[len(LATE):])
+            if found and found[2]["by"].casefold() == person.casefold() and _late_shown(found[2]):
+                _apply(out, found[1], found[2])
+    return out
+
+
+# ----- a late answer: a log.md line older tools wrote after the cut-over -------------------------
+# A second computer still on the tools from before the store writes its answers to log.md only. Once
+# the cut-over is pinned such a line never counts by itself (a line in log.md is narrative, and any
+# tool's line could read like one), but it is not dropped either: each becomes one Needs-you item
+# (`late_items`, on the librarian's file), "late-" and the line's fingerprint, asking whether the
+# person it names gave that answer. Their yes, recorded in the store by sign.py like any answer, makes
+# that exact line count (`verdicts`), bound by its fingerprint, and only when the one confirming is
+# the person the line names; a no, or any other answer, closes the item and the line stays narrative.
+LATE = "late-"
+CONFIRMS = ("yes", "always")
+LATE_NOTE_MAX = 500   # the longest late note shown whole on Needs you; a longer one is never confirmed here
+
+
+def _late_shown(value: dict) -> bool:
+    """Whether a late line's answer can be shown whole, exactly as it would count: a verb always; a note only when
+    it is short enough (LATE_NOTE_MAX) and holds nothing the page would hide or change (`needs_you.untrusted_line`
+    leaves it as it is). A yes then confirms what the person read and nothing past it."""
+    import needs_you
+    note = value.get("note")
+    return note is None or (len(note) <= LATE_NOTE_MAX and needs_you.untrusted_line(note, None) == note)
+
+
+def late_lines(root, rows=None) -> dict:
+    """fingerprint -> (the time the line names, item id, value) of each verdict or note line of
+    log.md, from a named person, that the cut-over did not pin and the store does not already hold:
+    no row for that item of the same kind (a verb, a note), which is how sign.py's own narrative line
+    beside each answer is told from an older tool's. Empty while the store has not begun (no answer
+    counts then at all), and for an item that is itself a late one."""
+    if rows is None:
+        rows, state = _store(root)
+        if state != "present":
+            return {}
+    if not any(row.get("cutover") == CUTOVER for row in rows):
+        return {}
+    pinned = _pinned(rows)
+    held = {(str(row.get("id")), kind) for row in rows for kind in ("verb", "note")
+            if row.get("id") and row.get(kind) is not None}
+    out = {}
+    for fp, at, item, value in _log_lines(root) or []:
+        kind = "verb" if "verb" in value else "note"
+        if fp in pinned or str(item).startswith(LATE) or (str(item), kind) in held:
+            continue
+        out.setdefault(fp, (at, item, value))
+    return out
+
+
+def late_items(root, given: dict) -> list:
+    """One Needs-you item per late line (`late_lines`) not answered yet: whether the person it names
+    gave that answer, naming the item answered by its text when an item of that id is on Needs you. A note is shown
+    whole (`_late_shown`); one that cannot be is never confirmed here, and the item says to answer the first item
+    again. Asked once: an answer of any kind but `later` closes it for good."""
+    import needs_you
+    out, asked = [], None
+    for fp, (at, item, value) in late_lines(root).items():
+        item_id = LATE + fp
+        if item_id in given:
+            continue
+        if asked is None:
+            asked = {i.id: i.text for i in needs_you.routine_items(Path(root))}
+        who, shown = _inline(value["by"], 80), _late_shown(value)
+        what = _inline(item, 120) + (f" (\"{_inline(asked[item], 160)}\")" if asked.get(item) else "")
+        said = (f"answered {value['verb']}" if "verb" in value
+                else f"added the note \"{_inline(value['note'], None)}\"" if shown
+                else "added a note too long, or with characters, this page cannot show whole")
+        ask = (f"Did {who} give this answer?" if shown
+               else f"It cannot be confirmed here: if {who} gave it, {who} answers {_inline(item, 120)} again.")
+        out.append({"id": item_id, "kind": "question",
+                    "text": (f"log.md says {who} {said} to {what} ({_inline(at, 40)}). Older tools on "
+                             f"another computer wrote it after this space began keeping answers in its verdict "
+                             f"store, so it does not count yet. {ask}"),
+                    "recommendation": (f"yes, if {who} gave it; no if nobody here did" if shown
+                                       else f"no; {who} answers the item again"),
+                    "default": "it does not count", "depends": 0, "for": value["by"],
+                    "payload": json.dumps({"fingerprint": fp, "item": item, **value}, ensure_ascii=False)})
     return out
 
 
@@ -753,8 +1146,7 @@ def _apply_index(root: Path, verdict: dict) -> bool:
     data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else None
     data = data if isinstance(data, dict) else {}
     data["engine"] = "index"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8", newline="\n")
+    pages.write_text(path, yaml.safe_dump(data, sort_keys=False), root=root)
     search.build(root)
     return True
 
@@ -828,8 +1220,7 @@ def _apply_probe(root: Path, item: dict, verdict: dict) -> dict | None:
     doc = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else None
     doc = doc if isinstance(doc, dict) else {}
     doc.setdefault("questions", []).append(question)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(doc, sort_keys=False, allow_unicode=True), encoding="utf-8", newline="\n")
+    pages.write_text(path, yaml.safe_dump(doc, sort_keys=False, allow_unicode=True), root=root)
     return None
 
 
@@ -860,8 +1251,9 @@ def _apply_transcripts(root: Path, space, verdict: dict) -> bool:
 
 
 def librarian_items(root: Path, space, reg, now, check: bool = False) -> tuple[str, list]:
-    """The librarian's Needs-you file: apply verdicts on earlier items, then list what is new.
-    Returns (the file's text, the applied item ids)."""
+    """The librarian's Needs-you file: apply verdicts on earlier items, then list what is new,
+    a late answer to confirm among them (`late_items`). Returns (the file's text, the applied item
+    ids)."""
     import yaml
     path = root / LIBRARIAN_ITEMS
     given = verdicts(root)
@@ -895,7 +1287,7 @@ def librarian_items(root: Path, space, reg, now, check: bool = False) -> tuple[s
     have = {str(i.get("id")) for i in items}
     import landing
     fresh = ([_index_item(root, space, given), _transcripts_item(root, space, now, given)]
-             + asked_again + _probe_items(root, given) + _reconnect_items(root, given))
+             + asked_again + _probe_items(root, given) + _reconnect_items(root, given) + late_items(root, given))
     if not any(str(i.get("id")).startswith("sample-") for i in items):
         fresh.append(landing.sample_item(root, space, reg, now, given))
     for new in fresh:
@@ -1018,9 +1410,7 @@ def mint_signals(root: Path, space, reg, now) -> list:
                           "default": "it stays on your desk"})
             known.add(gid)
     if len(items) != len(asked.get("items") or []):
-        (root / MINT_SIGNALS).parent.mkdir(parents=True, exist_ok=True)
-        (root / MINT_SIGNALS).write_text(yaml.safe_dump({"items": items}, sort_keys=False), encoding="utf-8",
-                                         newline="\n")
+        pages.write_text(root / MINT_SIGNALS, yaml.safe_dump({"items": items}, sort_keys=False), root=root)
     return items
 
 
@@ -1082,7 +1472,7 @@ def _projects_page(root: Path, space, reg, moved: dict, now) -> str:
                 bits.append(f"last signal {moved[s.id][0]:%Y-%m-%d} from {moved[s.id][1]}")
             if s.id in landed:
                 bits.append(f"last landing {landed[s.id]:%Y-%m-%d}")
-            lines.append(f"- {s.title} (`{s.id}`): " + "; ".join(bits))
+            lines.append(f"- {_inline(s.title)} (`{s.id}`): " + "; ".join(bits))
         if lines:
             sections.append(f"## {heading}\n\n" + "\n".join(lines) + "\n")
     fm = _snapshot_fm(root, "live/projects.md", "Projects", now)
@@ -1157,7 +1547,7 @@ def spec_states(root: Path, now) -> list:
             if not issue or issue not in newest or fm.get("state") == newest[issue][1]:
                 continue
             fm["state"] = newest[issue][1]
-            pages.write(path, fm, body)
+            pages.write(path, fm, body, root=root)
             changed.append(path.relative_to(root).as_posix())
     return changed
 
@@ -1187,6 +1577,8 @@ def run(root, now=None, check: bool = False) -> StatusReport:
     space = spaceyaml.load(root)
     now = now or space.now()
     report = StatusReport()
+    if not check:   # the verdict cut-over, first: from here on a new line in log.md is no answer
+        pin_cutover(root, at=now)
     if space.profile == "channel":   # no knowledge, no live: nothing to reconcile
         if not check:
             _run_line(root, space, now, "channel: nothing to reconcile")
@@ -1289,9 +1681,15 @@ def run(root, now=None, check: bool = False) -> StatusReport:
     if not check:   # before the health line, so a --check right after a run agrees with it
         _run_line(root, space, now, f"registered {len(report.registered)}, status pages "
                   f"{len(report.status_pages)}, hubs {len(report.hubs)}, dormant {len(report.dormant)}")
-    report.health_lines = [_health_line(space, space.name, root, now)] + [
-        _health_line(space, str(m.get("name")), space.mount_root(str(m.get("name", ""))), now)
-        for m in space.mounts]
+    def mount_line(m: dict) -> str:
+        # another space commits a mount's state: a file it broke never stops this space's health page
+        try:
+            return _health_line(space, str(m.get("name")), space.mount_root(str(m.get("name", ""))), now)
+        except Exception as exc:
+            return f"- {m.get('name')}: state unreadable ({type(exc).__name__})"
+    report.health_lines = [_health_line(space, space.name, root, now)] + [mount_line(m) for m in space.mounts]
+    report.health_lines += [f"- {rel} is a link; not written"
+                            for rel in [*outputs, "live/health.md", "live/now.md"] if _link_in_way(root, rel)]
     outputs["live/health.md"] = pages.render(
         _snapshot_fm(root, "live/health.md", "Health", now),
         "# Health\n\nOne line per space: this one, then each mount.\n\n" + "\n".join(report.health_lines) + "\n")
@@ -1304,8 +1702,10 @@ def run(root, now=None, check: bool = False) -> StatusReport:
         if current is None or _without_stamp(current) != _without_stamp(text):
             report.changed.append(rel)
         if not check and current != text:
-            (root / rel).parent.mkdir(parents=True, exist_ok=True)
-            (root / rel).write_text(text, encoding="utf-8", newline="\n")
+            try:
+                pages.write_text(root / rel, text, root=root)
+            except pages.UnsafePath:   # a link where the page goes: named, never written through
+                report.unwritten.append(f"{rel} is a link; not written")
     if report.registered or held_changed:
         if check:
             report.changed.append(registry_mod.REGISTRY_PATH.as_posix())
@@ -1335,10 +1735,16 @@ def _refresh_agents_md(root: Path, report) -> None:
 
 
 def main(argv=None) -> int:
+    import needs_you
+    needs_you.utf8_stdio()   # a page title in any script prints, never raises on a cp1252 pipe
     argv = sys.argv[1:] if argv is None else argv
     if len(argv) >= 4 and argv[1] == "close":   # status.py <root> close <subject> <page id> [--as X] [--by NAME]
         opts = dict(zip(argv[4::2], argv[5::2]))
-        thread = close(Path(argv[0]), argv[2], argv[3], as_=opts.get("--as", "done"), by=opts.get("--by"))
+        try:
+            thread = close(Path(argv[0]), argv[2], argv[3], as_=opts.get("--as", "done"), by=opts.get("--by"))
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
         print(f"closed {argv[3]} on {argv[2]} ({opts.get('--as', 'done')}); thread {thread}")
         return 0
     check = "--check" in argv
@@ -1353,6 +1759,8 @@ def main(argv=None) -> int:
           f"hubs {len(report.hubs)}, dormant {len(report.dormant)}, changed {len(report.changed)}")
     for note in report.skipped:
         print(f"skipped: {note}")
+    for note in report.unwritten:
+        print(f"not written: {note}")
     return 0
 
 

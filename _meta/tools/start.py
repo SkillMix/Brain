@@ -5,10 +5,15 @@ the invitation when they have one. The agent clones the template anywhere and ru
 which does every step itself and asks nothing that has a default:
 
 - reads who the person is from git and the host, and their invitation from the brain
-  (named, or found by their name);
-- a person: creates their workspace repository from the template, clones it, and runs
-  onboard there (the brain and every crew project mounted, the personal instruction at user
-  level, the sync task, the host's merge settings, the first status and the tests);
+  (named, or found by their name), once the person said yes to that brain by its exact name
+  (`--confirm-brain`, asked in the signins phase): an invitation sentence is text anyone can send.
+  The invitation may name the person and offer crew projects, nothing more
+  (`invitation_answers`); its address counts only when it is one the person is known by;
+- a person: creates their workspace repository from the template (the brain's organisation when
+  they are an active member of it, else their own account; the doctor accepts a pending invitation
+  only from the organisation of the brain they confirmed), clones it, and runs onboard there (the brain and every crew
+  project mounted, the personal instruction at user level, the sync task, the host's merge
+  settings, the first status and the tests);
 - a company (no brain given): creates the brain `<company>-brain` from the template, in the
   account `--org` names, else the one the signins phase recorded, else the organisation that
   matches the company or the mail domain, else the person's own (an account that is not clear
@@ -19,6 +24,14 @@ which does every step itself and asks nothing that has a default:
 - prints what only the person can do (sign-ins), each with the check that proves it;
 - keeps the onboarding page `~/.spaces/onboarding.html` (`onboarding_page.py`), rewritten after
   every step: what is done, what runs now, what is next, what only the person can do.
+
+The template is the one the person named (`--template`), else where this copy came from, else the
+official `SkillMix/Brain` (`OFFICIAL_TEMPLATE`); joining a brain that records another template uses
+the brain's, with a row that says so (`brain_template`). It is passed to every space onboard creates (`onboard.create_space`),
+and a space made from a template other than the official one records it in
+`_meta/state/template-origin.yaml` (`onboard.record_template_origin`), so its template sync keeps
+following that template. Every pip and venv command runs isolated (`python -I`) in the
+machine's temporary folder, so nothing planted where the session started runs (`ensure_yaml`).
 
 Defaults the person may want to change (the domains, the never-leaves list, the schedule)
 are taken and kept in the setup journal's `settings`, which the progress page shows; they are not
@@ -42,7 +55,11 @@ sign-in started; the rest of the doctor's walk is the build's. Each is a need; w
 stays until both read back. Once GitHub does, it
 works out where the company's repositories go (`pick_namespace`): when that is not clear it is
 one more need, the `namespace`, which `build` refuses to start before, and `build --org <name>`
-answers. Setup never stops at it.
+answers. Setup never stops at it. A colleague joining a brain on the host gets one question
+instead (the answer's `brain`): is this repository, owned by this account since this date, their
+company's brain? `signins --confirm-brain <owner/name>` records the yes; the build stops at any
+other brain. The question is asked of a member of the brain's organisation too: anyone who owns, or
+may create repositories in, an organisation the person belongs to can make a look-alike brain there.
 
 `apps` asks Claude's command line which apps it reaches (`apps.py`), then runs one read-only
 reader per app that decides whose account it is, whether it holds work for this company and how
@@ -84,7 +101,8 @@ second must pass; the task is removed after.
     python start.py [signins|apps|research|build|history|resume] [--wait] [--json] [--probe]
                     [--invitation <brain repo>:<slug> | --brain <brain repo>] [--company NAME]
                     [--domain DOMAIN] [--name NAME] [--email EMAIL] [--feeds mail,calendar,chat,calls,tracker]
-                    [--org ORG] [--home DIR] [--template REPO] [--offline] [--dry-run]
+                    [--org ORG] [--home DIR] [--template REPO] [--confirm-brain OWNER/NAME]
+                    [--offline] [--dry-run]
                     [--reading five_hour=<pct>,week=<pct>,five_hour_resets=<iso>,week_resets=<iso>,extra=<0|1>]
                     [--wait-part p1] [--workspace DIR]
 """
@@ -110,18 +128,37 @@ def venv_python(venv: Path) -> Path:
     return Path(venv) / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
-def _pip(run, cmd) -> bool:
+_NEUTRAL = None
+
+
+def neutral_dir() -> str:
+    """The folder every setup command runs in: an empty folder of this process's own, made inside the
+    machine's temporary folder (private to the person: `mkdtemp`), never the folder the session was
+    started in nor the shared temporary folder itself. `python -m` puts its working folder first on the
+    module path and uv reads `uv.toml` from it and the folders above, so a `pip/`, a `venv.py` or a
+    `uv.toml` planted in a repository, or by another account in a shared `/tmp`, would otherwise run
+    (or steer the install) as the person, before any guard exists."""
+    global _NEUTRAL
+    if _NEUTRAL is None or not Path(_NEUTRAL).is_dir():
+        _NEUTRAL = tempfile.mkdtemp(prefix="spaces-setup-")
+    return _NEUTRAL
+
+
+def _pip(run, cmd, cwd=None, env=None) -> bool:
     """One pip install. A certificate failure (a company proxy that re-signs traffic, a Python
     without the machine's root certificates) is retried once with the system's own certificate
-    store: verification stays on."""
-    res = run(cmd, capture_output=True, text=True)
+    store: verification stays on. Both tries run in `cwd` (`neutral_dir` when not given), with `env`
+    when one is given (uv's, which turns its configuration files off)."""
+    cwd = cwd or neutral_dir()
+    more = {"env": env} if env is not None else {}
+    res = run(cmd, capture_output=True, text=True, cwd=cwd, **more)
     if res.returncode == 0:
         return True
     said = f"{res.stdout or ''}{res.stderr or ''}".upper()
     if "CERTIFICATE" not in said and "SSL" not in said:
         return False
     flag = "--native-tls" if Path(str(cmd[0])).stem.lower() == "uv" else "--use-feature=truststore"
-    return run([*cmd, flag], capture_output=True, text=True).returncode == 0
+    return run([*cmd, flag], capture_output=True, text=True, cwd=cwd, **more).returncode == 0
 
 
 def _in_appdata(path, env) -> bool:
@@ -144,6 +181,15 @@ def _venv_home(venv: Path) -> str:
                  if line.split("=", 1)[0].strip() == "home" and "=" in line), "")
 
 
+def _imports_isolated(run=subprocess.run) -> bool:
+    """Whether this Python imports PyYAML under `-I`, as `routine.routine_guard_command` runs the guards."""
+    try:
+        return run([sys.executable, "-I", "-c", "import yaml"], capture_output=True, text=True,
+                   cwd=neutral_dir()).returncode == 0
+    except OSError:
+        return False
+
+
 def ensure_yaml(argv, venv=VENV, run=subprocess.run, have=None, install=None, windows=None, env=None) -> int | None:
     """None when PyYAML imports here. Else the agent installs it: `pip --user` first; where the
     system Python refuses that (PEP 668: Homebrew on macOS, Debian and Ubuntu), a venv at
@@ -152,13 +198,20 @@ def ensure_yaml(argv, venv=VENV, run=subprocess.run, have=None, install=None, wi
     pinned and checksummed, with no password. On Windows there is no `--user` install, and a venv
     made from a Python under %APPDATA% is made again from this one: from Claude's desktop app both
     land where the scheduled tasks never look. Returns that run's exit code, or 1 with the one
-    fix only the person can make."""
-    have = have or (lambda: importlib.util.find_spec("yaml") is not None)
+    fix only the person can make. Every interpreter it starts for pip or venv runs isolated (`-I`: no
+    working folder or script folder on the module path, no PYTHON* variables), and every install
+    command runs in `neutral_dir` (uv with UV_NO_CONFIG too), so a module or a uv setting planted
+    where the session started is never what runs."""
+    # PyYAML as the routines' guards import it: under `-I`, which leaves the user's own site-packages out, so a
+    # `pip --user` install that only this process sees sends setup on to the venv the profiles then name
+    have = have or (lambda: _imports_isolated(run))
     windows = os.name == "nt" if windows is None else windows
     env = os.environ if env is None else env
     if have():
         return None
-    if not windows and _pip(run, [sys.executable, "-m", "pip", "install", "--quiet", "--user", "pyyaml"]):
+    neutral = neutral_dir()
+    if not windows and _pip(run, [sys.executable, "-I", "-m", "pip", "install", "--quiet", "--user", "pyyaml"],
+                            cwd=neutral):
         import site
         sys.path.append(site.getusersitepackages())
         importlib.invalidate_caches()
@@ -169,20 +222,23 @@ def ensure_yaml(argv, venv=VENV, run=subprocess.run, have=None, install=None, wi
         import shutil
         shutil.rmtree(venv, ignore_errors=True)
     py = venv_python(venv)
-    pip = [str(py), "-m", "pip", "install", "--quiet", "pyyaml"]
-    if not py.exists() and run([sys.executable, "-m", "venv", str(venv)]).returncode != 0:
+    pip, pip_env = [str(py), "-I", "-m", "pip", "install", "--quiet", "pyyaml"], None
+    # UV_NO_CONFIG: uv reads no uv.toml or pyproject.toml, in its folder or any folder above it (a shared /tmp)
+    uv_env = {**os.environ, "UV_NO_CONFIG": "1"}
+    if not py.exists() and run([sys.executable, "-I", "-m", "venv", str(venv)], cwd=neutral).returncode != 0:
         if install is None:
             sys.path.insert(0, str(Path(__file__).resolve().parent))
             import doctor
             install = lambda tool: doctor.install(tool, doctor.Machine())  # noqa: E731
         folder, _ = install("uv")
         uv = str(Path(folder) / ("uv.exe" if os.name == "nt" else "uv")) if folder else None
-        if uv is None or run([uv, "venv", "--python", sys.executable, str(venv)]).returncode != 0:
+        if uv is None or run([uv, "venv", "--python", sys.executable, str(venv)], cwd=neutral,
+                             env=uv_env).returncode != 0:
             print("start: this Python cannot make a virtual environment; install that part once with "
                   "`sudo apt install python3-venv` (Debian, Ubuntu), then say the sentence again")
             return 1
-        pip = [uv, "pip", "install", "--python", str(py), "--quiet", "pyyaml"]
-    if not _pip(run, pip):
+        pip, pip_env = [uv, "pip", "install", "--python", str(py), "--quiet", "pyyaml"], uv_env
+    if not _pip(run, pip, cwd=neutral, env=pip_env):
         print(f"start: PyYAML did not install into {venv}; check the network, then say the sentence again")
         return 1
     return run([str(py), str(Path(__file__).resolve()), *argv]).returncode
@@ -201,6 +257,7 @@ import doctor  # noqa: E402
 import offboard  # noqa: E402
 import onboard  # noqa: E402
 import onboarding_page  # noqa: E402
+import pages  # noqa: E402
 import reader  # noqa: E402
 import research  # noqa: E402
 import routine  # noqa: E402
@@ -278,8 +335,19 @@ def normalize(brain: str) -> str:
     return brain[:-4] if brain.endswith(".git") else brain
 
 
+def is_network_path(text) -> bool:
+    """Whether a text names a folder on another machine: a Windows share (`\\\\host\\share`, `//host/share`,
+    `\\\\?\\UNC\\...`, a WebDAV `\\\\host@SSL\\...`), or any path that starts with two separators. It is
+    decided from the text alone, so the share is never contacted (Windows would offer the person's
+    sign-in to it)."""
+    text = str(text or "").strip()
+    return len(text) >= 2 and text[0] in "/\\" and text[1] in "/\\"
+
+
 def is_local(brain: str) -> bool:
-    return Path(brain).exists()
+    """Whether the brain is a folder on this machine: one that exists, and never a network share, since
+    a local brain needs no yes (`brain_confirmed`) and the sentence that names it is anyone's to write."""
+    return not is_network_path(brain) and Path(brain).exists()
 
 
 def brain_url(brain: str) -> str:
@@ -302,16 +370,28 @@ def list_dir(brain: str, rel: str) -> list:
     return sorted(n for n in raw.splitlines() if n.endswith(".yaml"))
 
 
+def _invitation_yaml(text) -> dict:
+    """An invitation file's mapping; {} for one that is not YAML or not a mapping."""
+    try:
+        data = yaml.safe_load(text or "")
+    except yaml.YAMLError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def find_invitation(brain: str, slug: str | None, who: dict) -> tuple[dict | None, str]:
-    """The invitation by its slug, else the one whose name, host login or email is this person's."""
+    """The invitation by its slug, else the one whose name, host login or email is this person's.
+    What it holds is untrusted: `invitation_answers` decides what of it setup takes."""
     if slug:
-        text = read_file(brain, f"{INVITATIONS}/{slug}.yaml")
+        text = read_file(brain, f"{INVITATIONS}/{pages.check_slug(slug, 'invitation')}.yaml")
         if not text:
             return None, f"no invitation {slug} in {brain}"
-        return yaml.safe_load(text) or {}, f"invitation {slug} from {brain}"
+        return _invitation_yaml(text), f"invitation {slug} from {brain}"
     found = []
     for name in list_dir(brain, INVITATIONS):
-        data = yaml.safe_load(read_file(brain, f"{INVITATIONS}/{name}") or "") or {}
+        if not pages.is_safe_name(name):
+            continue
+        data = _invitation_yaml(read_file(brain, f"{INVITATIONS}/{name}"))
         keys = {str(data.get(k) or "").strip().lower() for k in ("name", "github", "login", "email")} - {""}
         mine = {str(who.get(k) or "").strip().lower() for k in ("name", "login", "email")} - {""}
         if keys & mine:
@@ -321,6 +401,205 @@ def find_invitation(brain: str, slug: str | None, who: dict) -> tuple[dict | Non
     if len(found) > 1:
         return None, f"{len(found)} invitations match {who.get('name')}: name the slug"
     return None, "no invitation found: set up with the brain's defaults"
+
+
+# The template's own repository: where a new space is created from unless the person names another
+# (`--template`). A link in an invitation sentence never chooses it: anyone can write that sentence.
+OFFICIAL_TEMPLATE = "SkillMix/Brain"
+REPO_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}")   # owner/name as GitHub allows them
+LOGIN_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})")
+DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+# What an invitation file may set. It sits in the brain, where a colleague with push access or a misled
+# routine can change it before the invited person reads it, so it may only say who they are and which
+# crew projects to offer; where the workspace goes, the briefing address, the never-leaves list and the
+# feeds' audiences are the person's own (`invitation_answers`).
+INVITATION_KEYS = ("name", "slug", "email", "parent", "login", "crew_projects", "feeds", "schedule")
+INVITATION_IGNORED = ("brain", "say", "org", "workspace_org", "github")   # written by `onboard --invite`, read elsewhere or not at all
+
+
+def is_repo_name(text) -> bool:
+    """Whether a text is a plain `owner/name` GitHub accepts: no URL, no path, no option."""
+    text = str(text or "")
+    return bool(REPO_RE.fullmatch(text)) and text.split("/")[1] not in (".", "..")
+
+
+def same_repo(a, b) -> bool:
+    """Two repository names are the same one: GitHub ignores case, and a URL or `.git` is the same name."""
+    return bool(a) and bool(b) and normalize(a).lower() == normalize(b).lower()
+
+
+def template_source(template, here) -> str:
+    """The template a new space is created from: the one the person named (`--template`), else where
+    this copy came from (the origin it recorded, or, while the copy is still the template's own, its
+    origin remote), else the official template."""
+    return template or onboard.template_repo(Path(here).resolve(), offline=True) or OFFICIAL_TEMPLATE
+
+
+def brain_facts(brain: str) -> dict:
+    """What GitHub says about the brain's repository, for the person to check before setup joins it:
+    its full name, its owner and whether that is an organisation or a person, when it was created, and
+    whether the signed-in account is an active member of the owner (`member`: active, pending or none).
+    Only values of a known shape are kept (a login, a date, a state word), since the person reads them
+    as they are. Empty when the repository cannot be read."""
+    if not is_repo_name(brain):
+        return {}
+    raw = _out(["gh", "api", f"repos/{brain}"])
+    try:
+        data = json.loads(raw) if raw else {}
+    except ValueError:
+        data = {}
+    if not isinstance(data, dict) or not isinstance(data.get("owner"), dict):
+        return {}
+    owner = str(data["owner"].get("login") or "")
+    full = str(data.get("full_name") or "")
+    if not LOGIN_RE.fullmatch(owner) or not is_repo_name(full):
+        return {}
+    kind = "Organization" if data["owner"].get("type") == "Organization" else "User"
+    created = str(data.get("created_at") or "")[:10]
+    facts = {"repo": full, "owner": owner, "owner_type": kind,
+             "created": created if DATE_RE.fullmatch(created) else ""}
+    if kind == "Organization":
+        state = _out(["gh", "api", f"user/memberships/orgs/{owner}", "-q", ".state"])
+        facts["member"] = state if state in ("active", "pending") else "none"
+    return facts
+
+
+def workspace_account(facts: dict, login: str) -> str:
+    """Where the person's workspace goes: the brain's organisation when they are already an active member
+    of it (decision 2026-10-24), else their own account. Never what an invitation file says."""
+    if facts.get("owner_type") == "Organization" and facts.get("member") == "active" and facts.get("owner"):
+        return facts["owner"]
+    return login
+
+
+def brain_question(brain: str, facts: dict, login: str) -> str:
+    """The one question the person answers before setup joins a brain, in plain words: whose
+    repository it is, since when, whether they are a member, and where their workspace would go."""
+    repo = facts.get("repo") or brain
+    if not facts:
+        return (f"Your invitation names the brain {repo}, which this GitHub account cannot read yet. Is {repo} "
+                "your company's brain? Check the name with the colleague who invited you, directly.")
+    owner = facts["owner"]
+    kind = "an organisation" if facts["owner_type"] == "Organization" else "a personal account"
+    since = f", on GitHub since {facts['created']}" if facts.get("created") else ""
+    member = {"active": f" You are a member of {owner}.",
+              "pending": f" {owner} has invited you to join it; a yes here accepts that invitation too.",
+              "none": f" You are not a member of {owner}."}.get(facts.get("member"), "")
+    if facts["owner_type"] == "Organization":
+        where = f" Your workspace, which holds a copy of your mail, chat and calls, goes in {owner}, whose owners can read it"
+        where += ("." if facts.get("member") in ("active", "pending")
+                  else f", once you are a member; until then in your own account {login}.")
+    else:
+        where = f" Your workspace, which holds a copy of your mail, chat and calls, goes in your own account {login}."
+    return f"Your invitation names the brain {repo}, owned by {owner} ({kind}{since}).{member}{where} Is {repo} your company's brain?"
+
+
+def brain_template(report, brain: str, tpl) -> str:
+    """The template this setup creates the workspace from: the one the confirmed brain records it was
+    made from (`repo` in its `_meta/state/template-version.yaml`, which template sync keeps and whose
+    name the gate holds for the owner's click), when it records one; else `tpl`. A brain that records
+    another template than the sentence's link is followed, with a row that says so, rather than stopping
+    the setup: an invitation sentence can swap the link for a look-alike, and the brain the person
+    confirmed is the company's own word on its template."""
+    try:
+        data = yaml.safe_load(read_file(brain, "_meta/state/template-version.yaml") or "") or {}
+    except yaml.YAMLError:
+        data = {}
+    recorded = normalize(str(data.get("repo") or "")) if isinstance(data, dict) else ""
+    if not is_repo_name(recorded) or (tpl and same_repo(recorded, tpl)):
+        return tpl
+    report.add("invitation template", True, f"gh api repos/{brain}/contents/_meta/state/template-version.yaml",
+               f"your workspace is made from {recorded}, the template your brain {brain} was made from"
+               + (f", not {normalize(tpl)}" if tpl else ""))
+    return recorded
+
+
+def template_matches(report, brain: str, tpl) -> bool:
+    """Whether the template this setup creates the workspace from is the one the brain records it was
+    made from (`repo` in its `_meta/state/template-version.yaml`, which template sync keeps). A brain
+    that records none, or one this account cannot read, passes. A mismatch is a row that stops setup:
+    an invitation sentence can swap the template link for a look-alike while naming the real brain."""
+    try:
+        data = yaml.safe_load(read_file(brain, "_meta/state/template-version.yaml") or "") or {}
+    except yaml.YAMLError:
+        data = {}
+    recorded = normalize(str(data.get("repo") or "")) if isinstance(data, dict) else ""
+    if not is_repo_name(recorded) or not tpl or same_repo(recorded, tpl):
+        return True
+    report.add("invitation template", False, f"gh api repos/{brain}/contents/_meta/state/template-version.yaml",
+               f"the brain {brain} was made from the template {recorded}, but this setup would use {normalize(tpl)}: "
+               f"say the sentence again with https://github.com/{recorded}, once you have checked it is your "
+               "company's template", needs_owner=True)
+    return False
+
+
+def brain_confirmed(brain: str, confirmed) -> bool:
+    """Whether the person confirmed this brain: a local folder is their own; a repository on the host
+    needs their yes to its exact name (`--confirm-brain`, kept by the signins phase)."""
+    return is_local(brain) or (is_repo_name(normalize(brain)) and same_repo(brain, confirmed))
+
+
+def known_addresses(who: dict, offline: bool) -> set:
+    """The addresses the person is known by here: the one this run uses, git's, and the GitHub
+    account's, in lower case. An invitation's address counts only when it is one of these."""
+    found = [who.get("email"), _out(["git", "config", "--global", "user.email"]), _out(["git", "config", "user.email"])]
+    if not offline:
+        raw = _out(["gh", "api", "user"])
+        try:
+            data = json.loads(raw) if raw else {}
+        except ValueError:
+            data = {}
+        found.append(data.get("email") if isinstance(data, dict) else "")
+    return {a for a in (address_in(x) for x in found) if a and "noreply" not in a}
+
+
+def _one_line(value, limit=200) -> str:
+    """A text from a file anyone may have written, kept only when it is one plain line."""
+    text = value.strip() if isinstance(value, str) else ""
+    return text if text and len(text) <= limit and text.isprintable() else ""
+
+
+def invitation_answers(report, inv: dict, who: dict, offline: bool) -> dict:
+    """The invitation's answers that setup takes (INVITATION_KEYS), each checked; every other key is
+    dropped, with a row naming what was. The name only as one plain line; the slug and the parent only
+    as ids; the host login only in GitHub's shape; the feeds only as `none` (each feed's audience is the
+    person's choice); the schedule only as minutes from 5 to 1440; the crew projects as a list, which
+    onboard checks one by one (`onboard.crew_mount`). The address only when it is one the person is
+    known by (`known_addresses`): an invitation that names another keeps the person's own, with a row
+    that says so, so a briefing or an owner's notice is never sent to an address an inviter chose."""
+    inv = inv if isinstance(inv, dict) else {}
+    answers = {}
+    name = _one_line(inv.get("name"))
+    if name:
+        answers["name"] = name
+    for key in ("slug", "parent"):
+        if pages.is_slug(inv.get(key)):
+            answers[key] = inv[key]
+    if isinstance(inv.get("login"), str) and LOGIN_RE.fullmatch(inv["login"]):
+        answers["login"] = inv["login"]
+    if str(inv.get("feeds") or "").strip().lower() == "none":
+        answers["feeds"] = "none"
+    schedule = inv.get("schedule")
+    if isinstance(schedule, int) and not isinstance(schedule, bool) and 5 <= schedule <= 1440:
+        answers["schedule"] = schedule
+    if isinstance(inv.get("crew_projects"), list):
+        answers["crew_projects"] = [p for p in inv["crew_projects"] if isinstance(p, dict)]
+    dropped = sorted({str(k) for k in inv if k not in INVITATION_KEYS + INVITATION_IGNORED}
+                     | {k for k in ("feeds", "schedule") if k in inv and k not in answers})
+    if dropped:
+        report.add("invitation settings", True, f"cat {INVITATIONS}/<slug>.yaml",
+                   f"not taken from the invitation, yours to set: {', '.join(_one_line(k, 40) or '?' for k in dropped)}"[:300])
+    invited = address_in(inv.get("email"))
+    report.invited = ""
+    if invited and invited in known_addresses(who, offline):
+        # the address that matched, as it was typed, never the text around it (`a@own.example@evil.example`)
+        answers["email"] = next(a for a in ADDRESS.findall(str(inv.get("email"))) if a.lower() == invited)
+        report.invited = invited   # the journal says an address came from the invitation
+    elif invited:
+        report.add("invitation address", True, "grep owner_email space.yaml",
+                   f"the invitation names {invited}, which is not an address of yours here: your briefing goes "
+                   f"to {who.get('email') or 'the address you give'} (say --email to change it)")
+    return answers
 
 
 def _brain_yaml(text) -> dict:
@@ -483,14 +762,21 @@ def _hold_lock() -> tuple:
     return lock, lock is not None
 
 
-def checkup(report: onboard.Report, brain, tpl, offline: bool, fix: bool, spaces) -> bool:
+def checkup(report: onboard.Report, brain, tpl, offline: bool, fix: bool, spaces, confirmed=None) -> bool:
     """The doctor, before anything is created: every prerequisite of this machine, fixed where
-    no password is needed; what is the person's becomes a row with its check, and start stops."""
+    no password is needed; what is the person's becomes a row with its check, and start stops.
+    The membership of the brain's organisation is looked at only once the person confirmed that
+    brain (`brain_confirmed`): before that, no row asks them to join an organisation. Once they did, a
+    pending invitation from that organisation, and from no other, is accepted (`accept_orgs`): their yes
+    to the brain by name is their yes to its organisation."""
     brain = normalize(brain) if brain and not is_local(brain) else None
-    repos = [r for r in (brain, tpl) if r and "/" in r and not is_local(r)]
+    brain = brain if is_repo_name(brain) else None   # nothing of another shape reaches `gh api`
+    repos = [r for r in (brain, tpl) if r and is_repo_name(normalize(r)) and not is_local(r)]
     # membership only in the company's own organization; the template needs read access alone
-    rows = doctor.diagnose(fix=fix, orgs=[brain.split("/")[0]] if brain else [], repos=repos,
-                           offline=offline, spaces=spaces)
+    orgs = [brain.split("/")[0]] if brain and brain_confirmed(brain, confirmed) else []
+    # the yes to the brain covers its organisation: a pending invitation from that one organisation is accepted
+    rows = doctor.diagnose(fix=fix, orgs=orgs, repos=repos, offline=offline, spaces=spaces,
+                           accept_orgs=orgs if fix else ())
     for r in rows:
         report.add(f"doctor: {r.name}", r.ok, r.check, (r.fixed or r.found) if r.ok else r.yours,
                    needs_owner=not r.ok)
@@ -510,8 +796,10 @@ def plan(report: onboard.Report, dst, full, tpl, case) -> onboard.Report:
 
 def start(here=HERE, invitation=None, brain=None, company=None, name=None, email=None, feeds=None,
           org=None, home=None, template=None, offline=False, dry_run=False,
-          user_instructions=None, connected=()) -> onboard.Report:
-    """`connected` are the feeds the apps phase has read already: no row asks the person to connect them."""
+          user_instructions=None, connected=(), confirmed_brain=None) -> onboard.Report:
+    """`connected` are the feeds the apps phase has read already: no row asks the person to connect them.
+    `confirmed_brain` is the brain repository the person said yes to (`brain_question`): online, a
+    brain on the host that is not that one stops setup before anything is created or joined."""
     report = onboard.Report(case="start")
     lock, own = _hold_lock()   # a build `run_phase` runs holds it already, until its state is written
     if lock is None:
@@ -521,12 +809,17 @@ def start(here=HERE, invitation=None, brain=None, company=None, name=None, email
     if not dry_run:
         report.progress = onboarding_page.Live()
     try:
-        tpl = template or onboard.git_remote(Path(here).resolve())
+        tpl = template_source(template, here)
         target = parse_invitation(invitation)[0] if invitation else brain
         spaces = Path(home) if home else Path.home() / "spaces"
-        if checkup(report, target, tpl, offline, not dry_run, spaces):
+        if target and not is_local(target) and not is_repo_name(normalize(target)):
+            report.add("invitation brain", False, "gh api repos/<owner>/<name> -q .full_name",
+                       f"{_one_line(str(target), 120) or 'the brain'} is not a GitHub repository name "
+                       "(owner/name): check the sentence", needs_owner=True)
+            report.stopped = True
+        elif checkup(report, target, tpl, offline, not dry_run, spaces, confirmed_brain):
             setup(report, here, invitation, brain, company, name, email, feeds, org, home, template, offline,
-                  dry_run, user_instructions, connected)
+                  dry_run, user_instructions, connected, confirmed_brain)
         else:
             report.stopped = True   # nothing was created: the person's rows come first
     finally:
@@ -538,25 +831,40 @@ def start(here=HERE, invitation=None, brain=None, company=None, name=None, email
 
 
 def setup(report, here, invitation, brain, company, name, email, feeds, org, home, template, offline, dry_run,
-          user_instructions, connected=()) -> onboard.Report:
+          user_instructions, connected=(), confirmed_brain=None) -> onboard.Report:
+    """A person joining a brain, or a company starting one. Joining reads the invitation through
+    `invitation_answers` (it may name the person and offer crew projects, nothing more); online, a
+    brain on the host must be the one the person confirmed (`brain_confirmed`),
+    the workspace goes in the brain's organisation only when they are an active member of it, else in
+    their own account (`workspace_account`), and it is made from the template the brain was made from
+    (`brain_template`). Each refusal is a row that stops setup before anything is created."""
     here = Path(here).resolve()
     who = identity(name, email, offline)
     given = Path(home) if home else None
     home = given or Path.home() / "spaces"
     space_home = given if offline else home   # offline: beside this copy unless a home is given
-    tpl = template or onboard.git_remote(here)
+    tpl = template_source(template, here)
     slug = None
     if invitation:
         brain, slug = parse_invitation(invitation)
     feeds_text = ", ".join(f.strip() for f in str(feeds).split(",") if f.strip()) if feeds else None
     if brain:
         brain = normalize(brain)
+        if slug is not None and not pages.is_slug(slug):
+            report.add("invitation", False, f"{INVITATIONS}/<slug>.yaml",
+                       f"{_one_line(slug, 60) or 'the slug'} is not an invitation's name: check the sentence")
+            return report
+        if not offline and not brain_confirmed(brain, confirmed_brain):
+            login = who["login"] or "your own account"
+            report.add("invitation brain", False, f"python _meta/tools/start.py signins --confirm-brain {brain} --json",
+                       brain_question(brain, brain_facts(brain), login), needs_owner=True)
+            report.stopped = True   # nothing read from it, joined or created until the person says yes
+            return report
         inv, how = find_invitation(brain, slug, who)
         report.add("invitation", inv is not None or not slug, f"{INVITATIONS}/{slug or '<name>'}.yaml", how)
         if slug and inv is None:
             return report
-        answers = dict(inv or {})
-        report.invited = address_in(answers.get("email"))   # the journal says an address came from the invitation
+        answers = invitation_answers(report, inv, who, offline)
         answers["name"] = answers.get("name") or who["name"]
         answers["email"] = answers.get("email") or who["email"]
         answers["slug"] = onboard.slugify(answers.get("slug") or answers["name"])
@@ -564,7 +872,19 @@ def setup(report, here, invitation, brain, company, name, email, feeds, org, hom
         answers.setdefault("parent", "brain")
         if feeds_text:
             answers["feeds"] = feeds_text
-        space_org = org or answers.get("workspace_org") or answers.get("org") or who["login"]
+        if offline or is_local(brain):
+            space_org = org or who["login"] or None
+        else:   # the brain's organisation only when the person already belongs to it; never the invitation's word
+            facts = brain_facts(brain)
+            space_org = org or workspace_account(facts, who["login"]) or None
+            asked = next((str(inv.get(k)) for k in ("workspace_org", "org") if isinstance(inv, dict) and inv.get(k)), "")
+            if asked and space_org and asked.lower() != str(space_org).lower():
+                report.add("invitation account", True, f"gh api user/memberships/orgs/{_one_line(asked, 40)} -q .state",
+                           f"the invitation asked for {_one_line(asked, 40) or 'another account'}; your workspace goes "
+                           f"in {space_org}, " + ("the account you named" if org else
+                                                  "the brain's organisation you are a member of"
+                                                  if space_org == facts.get("owner") else "your own account"))
+            tpl = brain_template(report, brain, tpl)
         repo_name = f"{answers['slug']}-workspace"
         dst, full = onboard.create_space(report, here, answers["slug"], repo_name, offline, space_org,
                                          space_home, tpl, dry_run)
@@ -591,6 +911,8 @@ def setup(report, here, invitation, brain, company, name, email, feeds, org, hom
                                        email_domain(who["email"]))[0] or own
         answers = {"company": company or org_title(space_org, offline), "owner": who["name"],
                    "owner_email": who["email"], "org": space_org}
+        if LOGIN_RE.fullmatch(who.get("login") or ""):   # the owner's row gets match.github with the first fill
+            answers["owner_login"] = who["login"]
         if feeds_text:
             answers["feeds"] = feeds_text
         repo_name = brain_name(onboard.slugify(answers["company"]), space_org, space_home, offline)
@@ -770,6 +1092,34 @@ def _settle_namespace(args, login, who, record, facts) -> tuple:
     return namespace, choices
 
 
+def _settle_brain(args, login, record, facts) -> dict:
+    """The brain a colleague's sentence names, once GitHub reads back. An invitation sentence is text
+    anyone can send, and anyone can invite a GitHub login to an organisation they made, so the person
+    says yes to the brain by its exact name before setup reads it, joins it or creates anything in its
+    account: `--confirm-brain <owner/name>` records the yes in the journal (`brain_confirmed`), and the
+    build refuses any other brain. Until then the answer carries the one question (`brain_question`)
+    with what GitHub says about the repository. A local folder needs no yes. Returns {} for a local
+    folder, else {"repo", "confirmed"} and, while there is no yes, "question", "check" and the facts."""
+    target = parse_invitation(args.invitation)[0] if args.invitation else args.brain
+    if not target or is_local(target):
+        return {}
+    brain = normalize(target)
+    if not is_repo_name(brain):
+        return {"repo": _one_line(brain, 120), "confirmed": False, "check": "",
+                "question": f"{_one_line(brain, 120) or 'The brain'} is not a GitHub repository name (owner/name). "
+                            "Which repository is your company's brain?"}
+    given = getattr(args, "confirm_brain", None)
+    if given and same_repo(given, brain):
+        facts["brain_confirmed"] = brain
+    if brain_confirmed(brain, facts.get("brain_confirmed") or record.get("brain_confirmed")):
+        return {"repo": brain, "confirmed": True}
+    found = brain_facts(brain)
+    sentence = f"--invitation {args.invitation}" if args.invitation else f"--brain {args.brain}"
+    return {"repo": brain, "confirmed": False, **{k: found.get(k, "") for k in ("owner", "owner_type", "created", "member")},
+            "question": brain_question(brain, found, login),
+            "check": f"python _meta/tools/start.py signins {sentence} --confirm-brain {brain} --json"}
+
+
 def phase_signins(args) -> dict:
     """Both sign-ins at once, in the first minute: gh is made sure of and GitHub's device flow
     started at once, then claude is made sure of (installed when it is missing: the long part)
@@ -777,12 +1127,15 @@ def phase_signins(args) -> dict:
     still going); each is a need with the check that proves it. The rest of the doctor's walk is
     the build's. With `--wait` it stays until both read back. Once GitHub does, where a new
     company's repositories go is worked out; when that is not clear it is a `namespace` need too
-    (a colleague joining by invitation is not asked). State: `waiting` while a sign-in or the
-    namespace is open, `done` when both read back and the namespace is known, `failed` when a
+    (a colleague joining by invitation is not asked). A colleague joining a brain on the host is
+    asked instead whether it is their company's brain (`_settle_brain`): the answer's `brain` holds
+    the question until `--confirm-brain <owner/name>` says yes. State: `waiting` while a sign-in, the
+    namespace or the brain is open, `done` when both read back and the namespace (or the brain) is
+    settled, `failed` when a
     tool is missing or a sign-in would not start. The journal's `signins` record keeps what later
     phases read: `github` (the account), `claude` (its state), `claude_email` and `claude_org`
     (whose Claude account the command line is: the desktop app can be another one), `namespace`,
-    and the running flows' ids. Why it failed is said in plain words (NETWORK_WHY and the others); the tools' own
+    `brain_confirmed` (the brain the person said yes to), and the running flows' ids. Why it failed is said in plain words (NETWORK_WHY and the others); the tools' own
     words are its `detail`, which the journal keeps and the person is not shown (R45, Minor 3). A dry run only
     reads."""
     if args.offline:
@@ -813,7 +1166,7 @@ def phase_signins(args) -> dict:
         got = signin.wait(m)
         github, claude = got["github"], got["claude"]
     new_company = not (args.invitation or args.brain)
-    namespace, choices = None, []
+    namespace, choices, joining = None, [], None
     if github:
         setup_journal.clear_need("github-code")
         who = identity(args.name, args.email)
@@ -821,6 +1174,8 @@ def phase_signins(args) -> dict:
         facts.update(github=login, github_pid=None, github_started=None)
         if new_company:
             namespace, choices = _settle_namespace(args, login, who, record, facts)
+        else:
+            joining = _settle_brain(args, login, record, facts)
     facts["claude"] = claude
     if claude == "account":
         setup_journal.clear_need("claude-signin")
@@ -828,12 +1183,14 @@ def phase_signins(args) -> dict:
         facts.update(claude_email=account.get("email"), claude_org=account.get("org"),
                      claude_pid=None, claude_started=None)
     setup_journal.set_phase("signins", "running", **facts)
-    state = ("failed" if plain else "done" if github and claude == "account" and (namespace or not new_company)
-             else "waiting")
+    settled = namespace if new_company else not (joining or {}).get("question")
+    state = "failed" if plain else "done" if github and claude == "account" and settled else "waiting"
     result = {"state": state, "github": github, "claude": claude, "namespace": namespace,
               "needs": [n for n in setup_journal.open_needs(setup_journal.load()) if n.get("kind") in SIGNIN_NEEDS]}
     if choices:
         result["choices"] = choices
+    if joining:
+        result["brain"] = joining
     result.update(failed)
     return result
 
@@ -1963,10 +2320,11 @@ def phase_build(args) -> dict:
     org = args.org or (_signins_record().get("namespace") if new_company else None)
     journal = setup_journal.load()
     found = found_by_setup(args, journal, new_company)
+    confirmed = getattr(args, "confirm_brain", None) or _signins_record().get("brain_confirmed")
     report = start(HERE, invitation=args.invitation, brain=args.brain, company=found["company"], name=args.name,
                    email=found["email"], feeds=found["feeds"], org=org, home=args.home, template=args.template,
                    offline=args.offline, dry_run=args.dry_run, user_instructions=args.user_instructions,
-                   connected=found["connected"])
+                   connected=found["connected"], confirmed_brain=confirmed)
     LAST_REPORT = report
     if args.email and getattr(report, "workspace", None):   # what they typed is their choice: it replaces an address worked out before
         fill_address(report, spaceyaml.load(report.workspace).owner, address_in(args.email), replace=True)
@@ -2401,6 +2759,9 @@ def parser() -> argparse.ArgumentParser:
                     help="the phase to run, or resume to see where the setup stands (without one: build)")
     ap.add_argument("--invitation", help="<brain repo>:<slug>, from the invitation sentence")
     ap.add_argument("--brain", help="the company's brain repository (owner/name, a URL or a local path)")
+    ap.add_argument("--confirm-brain", dest="confirm_brain", metavar="OWNER/NAME",
+                    help="the person said yes: this is their company's brain (asked once GitHub reads back); "
+                    "setup never reads, joins or creates in another")
     ap.add_argument("--company", help="no brain yet: the company's name (default: the researched company's, "
                     "else the organization's)")
     ap.add_argument("--domain", help="research: the company's website domain, when it is not the mail address's")
@@ -2413,7 +2774,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--task-prefix", dest="task_prefix", help="build: start this computer's scheduled task names with "
                     "this (space-<letters>-), kept for later builds; for a computer where another account holds the names")
     ap.add_argument("--home", help="where the spaces are cloned (default ~/spaces)")
-    ap.add_argument("--template", help="the template repository (default: where this copy came from)")
+    ap.add_argument("--template", help="the template repository, when the person chose one that is not the official "
+                    f"{OFFICIAL_TEMPLATE} (default: where this copy came from, else {OFFICIAL_TEMPLATE})")
     ap.add_argument("--user-instructions", help="the user-level instruction file (default ~/.claude/CLAUDE.md)")
     ap.add_argument("--offline", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
@@ -2444,8 +2806,9 @@ def main(argv=None) -> int:
     if args.doctor:
         report = onboard.Report(case="doctor")
         target = parse_invitation(args.invitation)[0] if args.invitation else args.brain
-        ok = checkup(report, target, args.template or onboard.git_remote(HERE), args.offline, True,
-                     Path(args.home) if args.home else Path.home() / "spaces")
+        ok = checkup(report, target, template_source(args.template, HERE), args.offline, True,
+                     Path(args.home) if args.home else Path.home() / "spaces",
+                     args.confirm_brain or _signins_record().get("brain_confirmed"))
         onboard.print_steps(report.steps)
         return 0 if ok else 1
     if args.phase == "resume":

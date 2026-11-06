@@ -46,6 +46,7 @@ REQUEST_DEFAULTS = {
 }
 AUDIENCE_WORDS = ("owner", "crew", "everyone")
 TEMPLATE_MARKER = Path(".github") / "template-marker"
+NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*\Z")   # a space or mount name (pages.SLUG_RE)
 TEMPLATE_REPO_ENV = "SPACES_TEMPLATE_REPO"   # the checks set it from GitHub's own setting (is_template_repo)
 PRIVATE_STATE = Path("_meta") / "state" / "private"   # never staged (sync.PRIVATE_ZONES)
 SLUG = re.compile(r"^[a-z][a-z0-9-]*$")
@@ -78,7 +79,10 @@ DEFAULTS = {
                   "CLAUDE.md", "AGENTS.md", ".gitignore", ".gitattributes", ".gitmodules",
                   "_meta/templates/", "_meta/plugins/", ".claude-plugin/",
                   "_meta/state/routines/", "_meta/state/onboard.yaml", "_meta/migrations/", ".mcp.json",
-                  "CLAUDE.local.md", "conftest.py", "pytest.ini", "pyproject.toml", "setup.cfg", "tox.ini"],
+                  "CLAUDE.local.md", "conftest.py", "pytest.ini", "pyproject.toml", "setup.cfg", "tox.ini",
+                  ".pytest.ini", "pytest.toml", ".pytest.toml", "_meta/tests/behaviour/", "docs/shape-1.md",
+                  "_meta/state/invitations/", "_meta/access/resources.yaml", "_meta/state/template-origin.yaml",
+                  "requirements.txt", "requirements-dev.txt"],
     "budget": {"tokens_per_day": 100_000_000_000},
     "window_hours": 24,
     "models": ["any"],
@@ -345,9 +349,11 @@ class Space:
         return None
 
     def space_root(self, name: str | None) -> Path | None:
-        """The root of the space named `name`: this one, or a mount found by the mount's name or
-        by the mounted space's own. Homes, holders and destinations name the space, and the brain
-        is mounted as `brain` but named otherwise. None when no space here is named so."""
+        """The root of the space named `name`: this one, a mount found by the mount's name (this
+        space's own data), or the brain, which is mounted as `brain` but named otherwise and is
+        found by its own space.yaml. No other mount is found by what its space.yaml says: both
+        sides write a corridor's, so its other side could name it after any space. None when no
+        space here is named so."""
         if not name:
             return None
         if name == self.name:
@@ -355,14 +361,24 @@ class Space:
         found = self.mount_root(name)
         if found is not None:
             return found
-        for mount in self.mounts:
-            root = self.mount_root(mount.get("name", ""))
-            try:
-                if root is not None and load(root).name == name:
-                    return root
-            except Exception:
-                continue
-        return None
+        brain = self.mount_root("brain")
+        try:
+            return brain if brain is not None and load(brain).name == name else None
+        except Exception:
+            return None
+
+    def is_corridor(self, name: str) -> bool:
+        """The mount called `name` is a corridor (its name is `channel-...`, as mint makes one, or
+        its space.yaml says profile channel or names `between`): both sides write its files, so
+        it vouches for no one, names no signer and is no trusted owner."""
+        if str(name).startswith("channel-"):
+            return True
+        root = self.mount_root(str(name))
+        try:
+            data = load(root).data if root is not None else {}
+        except Exception:
+            return False
+        return data.get("profile") == "channel" or bool(data.get("between"))
 
     def brain_space(self) -> "Space | None":
         if self.profile == "brain":
@@ -394,6 +410,12 @@ class Space:
             errs.append(f"profile must be one of {', '.join(PROFILES)} (got {profile!r})")
         if self.mode not in MODES:
             errs.append(f"mode must be one of {', '.join(MODES)} (got {self.mode!r})")
+        # a space's name becomes a folder under the spaces home and is compared with registry homes
+        if data.get("name") and not NAME_RE.match(str(data["name"])):
+            errs.append(f"name must be a lowercase slug (got {data['name']!r})")
+        for n, mount in enumerate(data.get("mounts") or []):
+            if isinstance(mount, dict) and mount.get("name") and not NAME_RE.match(str(mount["name"])):
+                errs.append(f"mounts[{n}].name must be a lowercase slug (got {mount['name']!r})")
         if "time_scale" in data:
             if self.mode == "live":
                 errs.append("time_scale is accepted only when mode is shadow or fixture")

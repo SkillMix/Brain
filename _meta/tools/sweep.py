@@ -31,15 +31,32 @@ run needs and nothing a record says: `_meta/state/attachments-unread.jsonl` the 
 name of each attachment a run could not read, and `_meta/state/unsure-ids.jsonl` the id of each
 record parked as unsure (unsure.py), which every sweep notes.
 
+What a record says about itself is never trusted to widen anything. Its `source` is the feed
+file it sits in, whatever the line claims; its `audience` may only narrow its source's declared
+one (owner, then a list of names, then crew, then everyone); an `identifiers.subject` counts only
+on the journal feed, which link.journal_records writes. Its subject, sender and people reach a
+page as one line each (`needs_you.untrusted_line`), and the today snapshot makes their links,
+images and HTML inert (`needs_you.md_inline`). A record's file name has no control character or
+device name (`pages.record_file_name`), and a page that still cannot be written (a link in the
+way, a name the system refuses) is skipped with a plan line and counted as `unwritable`, so one
+record never stops the run. Every write goes through `pages`, never through a link.
+
     python sweep.py [root] [--dry-run]     --dry-run prints the plan and writes nothing
     python sweep.py [root] --attachments   the attachments to read as document records: those
                                            on records of exactly one subject, not read yet,
-                                           then those an earlier run could not read
-    python sweep.py [root] --attachment-unread <record id> <name>
+                                           then those an earlier run could not read; one line
+                                           each, `<record id> TAB <subject> TAB <name> TAB
+                                           <handle>`, a control character in an id or a name
+                                           shown escaped (`\\u000a`)
+    python sweep.py [root] --attachment-unread <handle>
                                            one this run could not read: every later run lists
                                            it again until a page for it exists
-    python sweep.py [root] --attachment-read <record id> <name>
+    python sweep.py [root] --attachment-read <handle>
                                            one listed is read (a file with no text gets no page)
+
+A handle (`att-` and twelve hex digits) names one attachment of one record and never needs
+quoting, so a name a sender chose never passes through a shell. It is the only value either
+command takes: anything that is not a handle prints the usage.
     python sweep.py [root] --cursor <source>
                                            where the export of that source starts: its feed
                                            file's newest record, else its mark, else 90 days
@@ -48,6 +65,7 @@ record parked as unsure (unsure.py), which every sweep notes.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import re
 import sys
@@ -59,6 +77,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import classify as gating  # noqa: E402
+import needs_you  # noqa: E402
 import pages  # noqa: E402
 import registry  # noqa: E402
 import release  # noqa: E402
@@ -71,6 +90,11 @@ WITNESS_ROOT = Path("knowledge") / "sources"
 RESOURCES = Path("_meta") / "access" / "resources.yaml"
 UNREAD = Path("_meta") / "state" / "attachments-unread.jsonl"   # tracked: record ids and names only
 CURSOR_DAYS = 90   # how far back the first export of a source reads
+LINKS = Path("_meta") / "state" / "links.json"   # the repository feed's audience (link.check)
+TITLE_MAX = 200    # a record's subject as a page title: one line, at most this long
+PEOPLE_MAX = 320   # one sender or recipient as a page keeps it
+JOURNAL_FEED = "journal"   # the one feed whose `identifiers.subject` a tool wrote (link.journal_records)
+HANDLE_RE = re.compile(r"^att-[0-9a-f]{12}\Z")
 
 
 @dataclass
@@ -82,6 +106,7 @@ class SweepReport:
     held_in_doubt: int = 0
     held_other: int = 0
     security_notices: int = 0
+    unwritable: int = 0   # records whose page could not be written: skipped, named in the plan
     watermark: str | None = None
     records_seen: int = 0
     cost_tokens: int = 0
@@ -183,18 +208,50 @@ def _feed_records(path: Path):
 
 
 def read_feed(root: Path) -> list:
+    """Every readable record of every feed file. A record's `source` is its file's name, whatever
+    the line says (a mail line claiming `wiki` would take the wiki's audience), and only the
+    journal feed's `identifiers.subject` is kept (`_bind`)."""
     records = []
     feed = root / FEED
     if not feed.is_dir():
         return records
     for path in sorted(feed.glob("*.jsonl")):
         for record in _feed_records(path):
-            record.setdefault("source", path.stem)
+            _bind(record, path.stem)
             record["_feed"] = path.stem   # the declared source this file is (space.yaml sources)
-            if isinstance(record.get("text"), str):   # a link's token never reaches a page
-                record["text"] = _scrub_links(record["text"])
+            _scrub_record(record)   # a link's token never reaches a page
             records.append(record)
     return records
+
+
+def _scrub_record(record: dict) -> dict:
+    """The record with a token in a link cut out of every field a witness page writes: its text,
+    its subject, each identifier and each attachment name (`scan.scrub_link_tokens`)."""
+    if isinstance(record.get("text"), str):
+        record["text"] = _scrub_links(record["text"])
+    if isinstance(record.get("subject"), str):
+        record["subject"] = _scrub_links(record["subject"])
+    if isinstance(record.get("identifiers"), dict):
+        record["identifiers"] = {k: (_scrub_links(v) if isinstance(v, str) else v)
+                                 for k, v in record["identifiers"].items()}
+    if isinstance(record.get("attachments"), list):
+        record["attachments"] = [
+            _scrub_links(a) if isinstance(a, str)
+            else dict(a, name=_scrub_links(a["name"])) if isinstance(a, dict) and isinstance(a.get("name"), str)
+            else a
+            for a in record["attachments"]]
+    return record
+
+
+def _bind(record: dict, source: str) -> dict:
+    """The record as the feed it came from vouches for it: `source` is that feed, and an
+    `identifiers.subject` (which attaches a record to a subject with no inference, so nothing
+    holds it in doubt) survives only on the journal feed, where a tool wrote it."""
+    record["source"] = source
+    ident = record.get("identifiers")
+    if isinstance(ident, dict) and "subject" in ident and source != JOURNAL_FEED:
+        record["identifiers"] = {k: v for k, v in ident.items() if k != "subject"}
+    return record
 
 
 def declared_feed(root: Path, space: spaceyaml.Space) -> list:
@@ -263,11 +320,31 @@ def _unread_rows(root: Path) -> tuple:
 
 def _append_unread(root: Path, rows: list) -> None:
     """Lines are only ever appended: the file merges by union, so a line taken out would come back."""
-    path = Path(root) / UNREAD
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8", newline="\n") as handle:
-        for row in rows:
-            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    pages.append_text(Path(root) / UNREAD, "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
+                      root=root)
+
+
+def attachment_handle(record_id: str, name: str) -> str:
+    """The handle of one attachment of one record: `att-` and twelve hex digits of a hash of both,
+    so a command names it with nothing to quote (a sender chose the name, and may have chosen
+    the record id too)."""
+    return "att-" + hashlib.sha1(f"{record_id}\0{name}".encode("utf-8")).hexdigest()[:12]
+
+
+def by_handle(root, handle: str) -> tuple | None:
+    """The (record id, name) pair a handle names: an attachment `attachments` lists, or one the
+    unread file holds, read or not; None when no attachment has it."""
+    listed, read = _unread_rows(Path(root))
+    for rid, name in [(rid, name) for rid, _, name in attachments(root)] + listed + sorted(read):
+        if attachment_handle(rid, name) == handle:
+            return rid, name
+    return None
+
+
+def _escaped(text: str) -> str:
+    """An id or a name for one tab-separated line: a control character, line break, tab or
+    invisible mark shown as its escape (`\\u000a`), so a name can never add or shift a row."""
+    return "".join(f"\\u{ord(ch):04x}" if needs_you._UNSAFE.match(ch) else ch for ch in str(text))
 
 
 def unread(root, have=()) -> list:
@@ -322,14 +399,12 @@ def mark_read(root, record_id: str, name: str, now: dt.datetime | None = None) -
     return True
 
 
-def audience_of(space: spaceyaml.Space, record: dict) -> str | list:
-    """The record's audience, else its source's declared audience, else owner."""
-    own = record.get("audience")
-    if own:
-        return own
-    name = record.get("source")
+def declared_audience(space: spaceyaml.Space, name) -> str | list:
+    """A source's declared audience: space.yaml's sources, then resources.yaml, then for the
+    repository feed the audience link.check wrote to links.json (else the one it would write),
+    else owner."""
     for source in space.sources:
-        if source.get("name") == name and source.get("audience"):
+        if isinstance(source, dict) and source.get("name") == name and source.get("audience"):
             return source["audience"]
     path = space.root / RESOURCES
     if path.exists():
@@ -337,19 +412,46 @@ def audience_of(space: spaceyaml.Space, record: dict) -> str | list:
         for source in (data.get("resources") or []) if isinstance(data, dict) else []:
             if isinstance(source, dict) and source.get("name") == name and source.get("audience"):
                 return source["audience"]
+    if name == "repository":
+        try:
+            found = json.loads((space.root / LINKS).read_text(encoding="utf-8")).get("audience")
+        except (OSError, ValueError, AttributeError):
+            found = None
+        return found or {"brain": "everyone", "project": "crew"}.get(space.profile, "owner")
     return "owner"
 
 
+def _rank(audience) -> int | None:
+    """How wide an audience is: owner 0, a list of names 1, crew 2, everyone 3; None for a value
+    that is none of these."""
+    if isinstance(audience, list):
+        return 1
+    return {"owner": 0, "crew": 2, "everyone": 3}.get(audience) if isinstance(audience, str) else None
+
+
+def audience_of(space: spaceyaml.Space, record: dict) -> str | list:
+    """The record's audience when it is its source's declared audience or narrower, else the
+    declared one: a record (an export that read a mail saying so) can never widen who reads it.
+    A list of names narrows a list only when every name is on the declared one, and narrows
+    `crew` only when every name is on this space's own audience list: a list naming someone
+    outside the crew would add a reader, however narrow its rank."""
+    declared = declared_audience(space, record.get("source"))
+    own = record.get("audience")
+    mine, theirs = _rank(own), _rank(declared)
+    if not own or mine is None or theirs is None or mine > theirs:
+        return declared
+    if isinstance(own, list) and declared != "everyone":
+        crew = declared if isinstance(declared, list) else space.audience if declared == "crew" else []
+        allowed = {str(n).strip().lower() for n in crew} if isinstance(crew, list) else set()
+        return own if own and all(str(n).strip().lower() in allowed for n in own) else declared
+    return own
+
+
 def file_name(record_id) -> str:
-    """A record id as a file name every system and every link accepts (no colon, slash, hash or
-    other reserved sign), short enough for every path limit: a long id keeps its start and
-    a hash of the whole."""
-    import hashlib
-    import re as _re
-    name = _re.sub(r'[<>:"/\\|?*#%\s]+', "-", str(record_id)).strip("-.") or "record"
-    if len(name) > 80:
-        name = f"{name[:68].rstrip('-.')}-{hashlib.sha1(str(record_id).encode('utf-8')).hexdigest()[:10]}"
-    return name
+    """A record id as a file name every system and every link accepts (no colon, slash, hash,
+    control character or other reserved sign, never a device name), short enough for every path
+    limit: a long id keeps its start and a hash of the whole (`pages.record_file_name`)."""
+    return pages.record_file_name(record_id)
 
 
 def witness_path(root: Path, record: dict) -> Path:
@@ -362,16 +464,30 @@ def record_text(record: dict) -> str:
 
 
 # ----- the witness page ------------------------------------------------------
+def title_of(record: dict) -> str:
+    """A record's subject as a page title: one line (`needs_you.untrusted_line`), at most
+    TITLE_MAX characters; a record with none is named by its kind and sender."""
+    kind = needs_you.untrusted_line(record.get("kind", "document"), 40) or "document"
+    return (needs_you.untrusted_line(record.get("subject"), TITLE_MAX)
+            or f"{kind} from {needs_you.untrusted_line(record.get('from'), 120) or 'unknown'}")
+
+
+def _people(value) -> list:
+    """A to, cc or participants field as a page keeps it: each entry one line."""
+    values = value if isinstance(value, list) else [value]
+    return [needs_you.untrusted_line(v, PEOPLE_MAX) for v in values if v not in (None, "")]
+
+
 def witness_frontmatter(record: dict, hits: list, mentions: list, audience, now: dt.datetime) -> dict:
     kind = record.get("kind", "document")
-    title = str(record.get("subject") or "").strip() or f"{kind} from {record.get('from', 'unknown')}"
-    fm = {"id": pages.new_id(), "type": "source", "title": title, "status": "draft",
+    fm = {"id": pages.new_id(), "type": "source", "title": title_of(record), "status": "draft",
           "generated": pages.generated("sweep", now), "record": str(record["id"]),
           "source": record.get("source"), "kind": kind,
-          "at": pages.iso(pages.parse_iso(record["at"])), "from": record.get("from", "")}
+          "at": pages.iso(pages.parse_iso(record["at"])),
+          "from": needs_you.untrusted_line(record.get("from", ""), PEOPLE_MAX)}
     for key in ("to", "cc", "participants"):
         if record.get(key):
-            fm[key] = list(record[key])
+            fm[key] = _people(record[key])
     if len(hits) == 1:
         fm["subject"] = hits[0].id
     fm["mentions"] = sorted({s.id for s in mentions})
@@ -498,8 +614,7 @@ def classify(space: spaceyaml.Space, record: dict, subject: registry.Subject, de
 def item_frontmatter(space: spaceyaml.Space, record: dict, subject_id, destination, cls: str,
                      stage_after: dt.datetime, now: dt.datetime, extra: dict | None = None) -> dict:
     kind = record.get("kind", "document")
-    title = str(record.get("subject") or "").strip() or f"{kind} from {record.get('from', 'unknown')}"
-    fm = {"id": pages.new_id(), "type": "source", "title": title, "status": "draft",
+    fm = {"id": pages.new_id(), "type": "source", "title": title_of(record), "status": "draft",
           "generated": pages.generated("sweep", now), "class": cls, "destination": destination,
           "subject": subject_id, "stage_after": pages.iso(stage_after), "listed": False,
           "evidence": [str(record["id"])], "from_space": space.name, "kind": kind}
@@ -510,7 +625,7 @@ def item_frontmatter(space: spaceyaml.Space, record: dict, subject_id, destinati
         pass
     for key in ("from", "to"):
         if record.get(key):
-            fm[key] = record[key] if key == "from" else list(record[key])
+            fm[key] = needs_you.untrusted_line(record[key], PEOPLE_MAX) if key == "from" else _people(record[key])
     thread = (record.get("identifiers") or {}).get("thread")
     if thread:
         fm["identifiers"] = {"thread": str(thread)}
@@ -584,8 +699,9 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
         rebuilt = {"id": fm.get("record") or path.stem, "source": fm.get("source"), "kind": fm.get("kind"),
                    "at": fm.get("at") or (fm.get("generated") or {}).get("at"), "from": fm.get("from"),
                    "to": fm.get("to") or [], "cc": fm.get("cc") or [], "subject": fm.get("title"), "text": body,
-                   "identifiers": fm.get("identifiers") or {}, "attachments": fm.get("attachments") or [],
+                   "identifiers": dict(fm.get("identifiers") or {}), "attachments": fm.get("attachments") or [],
                    "audience": fm.get("audience"), "participants": fm.get("participants") or []}
+        _bind(rebuilt, str(rebuilt.get("source") or ""))   # bound when the page was written; a subject only from the journal
         if not rebuilt["at"] or not reg.match(rebuilt):
             continue
         if not dry_run:
@@ -609,9 +725,14 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
             no_page.add(str(record["id"]))
             continue
         target = witness_path(root, record)
-        if target.exists():
-            if not _refresh(root, target, record, now, dry_run, report):
-                report.plan.append(f"skip {record['id']}: witness page exists")
+        shown = needs_you.untrusted_line(record["id"], 120)
+        try:
+            if target.exists():
+                if not _refresh(root, target, record, now, dry_run, report):
+                    report.plan.append(f"skip {shown}: witness page exists")
+                continue
+        except (OSError, ValueError) as exc:   # a link in the way, a name the system refuses
+            _unwritable(report, no_page, record, exc)
             continue
         chars += len(json.dumps({k: v for k, v in record.items() if not str(k).startswith('_')}))
         audience = audience_of(space, record)
@@ -620,7 +741,12 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
         fm = witness_frontmatter(record, hits, mentions, audience, now)
         report.plan.append(f"witness {target.relative_to(root).as_posix()}")
         if not dry_run:
-            _write_parts(root, target, record, fm, str(record.get("text") or ""))
+            try:
+                _write_parts(root, target, record, fm, str(record.get("text") or ""))
+            except (OSError, ValueError) as exc:
+                report.plan.pop()
+                _unwritable(report, no_page, record, exc)
+                continue
             if not record.get("_reattach") and _credential_seen(record) and _security_notice(root, space, record):
                 report.security_notices += 1
         report.witness_written += 1
@@ -676,17 +802,15 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
                                     verdict.stage_after, now, dict(verdict.extra or {}))
             report.plan.append(f"queue {verdict.cls} {record['id']} -> {home}: {verdict.why}")
             if not dry_run:   # without the router: never in full
-                pages.write(root / release.QUEUE / f"{item['id']}.md", item, shallow(body))
+                pages.write(root / release.QUEUE / f"{item['id']}.md", item, shallow(body), root=root)
             report.queued += 1
         if blocked or verdict.cls == "at_once":   # gated: nothing moves; at once: the item itself arrives
             continue
         signal = signal_for(subject.id, home, now)   # content-free: that something moved
-        report.plan.append(f"signal {record['id']} -> {home}")
+        report.plan.append(f"signal {shown} -> {home}")
         if not dry_run:
-            path = root / release.SIGNALS / f"{signal['id']}.yaml"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(yaml.safe_dump(signal, sort_keys=False, allow_unicode=True),
-                            encoding="utf-8", newline="\n")
+            pages.write_text(root / release.SIGNALS / f"{signal['id']}.yaml",
+                             yaml.safe_dump(signal, sort_keys=False, allow_unicode=True), root=root)
         report.signals += 1
 
     report.cost_tokens = chars // 4
@@ -695,11 +819,9 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
     if dry_run:
         return report
     if (newest is not None and newest != watermark) or newest_by_feed != marks:
-        path = root / WATERMARK
-        path.parent.mkdir(parents=True, exist_ok=True)
         data = {"at": pages.iso(newest)} if newest is not None else {}
         data["feeds"] = {name: pages.iso(at) for name, at in sorted(newest_by_feed.items())}
-        path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8", newline="\n")
+        pages.write_text(root / WATERMARK, yaml.safe_dump(data, sort_keys=False), root=root)
     unsure.note_ids(root, now)   # records the export parked as unsure by hand
     blank = [(rid, name) for rid, name in owed if f"{rid}/{name}" in no_page]
     if blank:   # read, yet no page says so (a file with no text): only its line here will
@@ -707,14 +829,26 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
                               for rid, name in blank])
     try:
         write_today(root, space, now)
+    except pages.UnsafePath:   # a link where the snapshot goes: named, never written through
+        report.plan.append("live/today.md is a link; not written")
     except Exception:  # a snapshot never stops the sweep
         pass
     release.append_run_line(root, "sweep", now, space, report.cost_tokens, {
         "records": report.records_seen, "witness": report.witness_written,
         "attached": report.attached, "queued": report.queued, "signals": report.signals,
         "held_in_doubt": report.held_in_doubt, "held_other": report.held_other,
-        "reattached": reattached, "security_notices": report.security_notices})
+        "reattached": reattached, "security_notices": report.security_notices,
+        **({"unwritable": report.unwritable} if report.unwritable else {})})
     return report
+
+
+def _unwritable(report: SweepReport, no_page: set, record: dict, exc: Exception) -> None:
+    """A record whose page cannot be written: named in the plan and counted, and the run goes on
+    to the next record, so one bad name never stops every later run."""
+    report.plan.append(f"skip {needs_you.untrusted_line(record['id'], 120)}: unwritable page "
+                       f"({type(exc).__name__})")
+    report.unwritable += 1
+    no_page.add(str(record["id"]))
 
 
 # ----- without the router, what leaves by identifier stays shallow -----------------------------
@@ -787,14 +921,14 @@ def _write_parts(root: Path, target: Path, record: dict, fm: dict, text: str) ->
     page and carries the attachment; every part says which it is)."""
     chunks = split_text(text, PART_BYTES) if len(text.encode("utf-8")) > PART_BYTES else [text]
     if len(chunks) == 1:
-        pages.write(target, fm, text)
+        pages.write(target, fm, text, root=root)
         return
     for k, (path, chunk) in enumerate(zip(_part_paths(root, record, len(chunks)), chunks), start=1):
         part_fm = dict(fm, part=k, parts=len(chunks))
         if k > 1:
             part_fm = dict(part_fm, id=pages.new_id(), record=f"{record['id']}#{k}")
             part_fm.pop("subject", None)
-        pages.write(path, part_fm, chunk)
+        pages.write(path, part_fm, chunk, root=root)
 
 
 def _existing_text(root: Path, fm: dict, body: str, record: dict) -> str:
@@ -831,12 +965,12 @@ def _refresh(root: Path, target: Path, record: dict, now: dt.datetime, dry_run: 
     fm = {k: v for k, v in old_fm.items() if k not in ("routing", "part", "parts", "imported_from")}
     # the deeper export knows the people and the thread better than the shallow one did
     if record.get("from"):
-        fm["from"] = record["from"]
+        fm["from"] = needs_you.untrusted_line(record["from"], PEOPLE_MAX)
     for key in ("to", "cc", "participants", "attachments"):
         if key in record:
             fm.pop(key, None)
             if record.get(key):
-                fm[key] = [str(x) for x in record[key]] if key == "attachments" else list(record[key])
+                fm[key] = [str(x) for x in record[key]] if key == "attachments" else _people(record[key])
     if record.get("identifiers"):
         fm["identifiers"] = dict(record["identifiers"])
     fm["refreshed_at"] = pages.iso(now)
@@ -947,7 +1081,9 @@ def who_is(space: spaceyaml.Space, root: Path, participant: str, index: dict) ->
 
 def write_today(root: Path, space: spaceyaml.Space, now: dt.datetime) -> Path | None:
     """`live/today.md`: today's and tomorrow's meetings from the calendar's witness pages, each
-    participant with who they are (registry) or when we last heard from them."""
+    participant with who they are (registry) or when we last heard from them. A title or a
+    name is one line with its links, images and HTML inert (`needs_you.md_inline`): an invite's
+    title can start no line of its own on the page or in the morning view."""
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     end = start + dt.timedelta(days=2)
     meetings = []
@@ -965,23 +1101,23 @@ def write_today(root: Path, space: spaceyaml.Space, now: dt.datetime) -> Path | 
     own = {space.owner.strip().lower(), space.owner_email.strip().lower()} - {""}
     lines = []
     for at, fm in sorted(meetings, key=lambda m: m[0]):
-        lines.append(f"- {at:%Y-%m-%d %H:%M} {fm.get('title') or 'a meeting'}")
+        lines.append(f"- {at:%Y-%m-%d %H:%M} {needs_you.md_inline(fm.get('title'), TITLE_MAX) or 'a meeting'}")
         for person in fm.get("participants") or []:
             if str(person).strip().lower() in own:
                 continue
-            lines.append(f"  - {who_is(space, root, str(person), index)}")
+            lines.append(f"  - {needs_you.md_inline(who_is(space, root, str(person), index), PEOPLE_MAX)}")
     body = ("# Today\n\nToday's and tomorrow's meetings from the calendar, with who is who. A "
             "snapshot the sweep rewrites each run.\n\n" + ("\n".join(lines) or "- No meetings.") + "\n")
     fm = {"id": _snapshot_id(root, "live/today.md"), "type": "snapshot", "title": "Today",
           "status": "draft", "generated": pages.generated("sweep", now)}
     target = root / "live" / "today.md"
-    pages.write(target, fm, body)
+    pages.write(target, fm, body, root=root)
     return target
 
 
 def _snapshot_id(root: Path, rel: str) -> str:
     path = Path(root) / rel
-    if path.exists():
+    if path.exists() and not pages.is_link(path):   # never read through a link
         try:
             return str(pages.read(path)[0].get("id") or pages.new_id())
         except Exception:
@@ -989,7 +1125,7 @@ def _snapshot_id(root: Path, rel: str) -> str:
     return pages.new_id()
 
 
-VALUED = {"--cursor": 1, "--attachment-unread": 2, "--attachment-read": 2}   # flag -> how many values
+VALUED = {"--cursor": 1, "--attachment-unread": 1, "--attachment-read": 1}   # flag -> how many values
 PLAIN = ("--dry-run", "--attachments")   # the flags with no value
 
 
@@ -1011,8 +1147,11 @@ def _flag(argv: list, flag: str, count: int):
 
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    needs_you.utf8_stdio()
     dry_run = "--dry-run" in argv
     flags = {flag: _flag(argv, flag, count) for flag, count in VALUED.items()}
+    if any(flags[f] and not HANDLE_RE.match(flags[f][0]) for f in ("--attachment-unread", "--attachment-read")):
+        flags["--attachment-unread"] = []   # a name or an id is no handle: the usage, never a guess
     if [] in flags.values() or any(a.startswith("--") and a not in PLAIN for a in argv):
         print(__doc__)   # a flag it does not know (`--attachment`) is a slip too, never a full sweep
         return 2
@@ -1021,17 +1160,24 @@ def main(argv=None) -> int:
     if flags["--cursor"]:
         print(cursor(root, flags["--cursor"][0]))
         return 0
-    if flags["--attachment-unread"]:
-        rid, name = flags["--attachment-unread"]
-        print(f"{rid} {name}: " + ("listed until it is read" if note_unread(root, rid, name) else "already listed"))
-        return 0
-    if flags["--attachment-read"]:
-        rid, name = flags["--attachment-read"]
-        print(f"{rid} {name}: " + ("read" if mark_read(root, rid, name) else "not listed as unread"))
+    for flag in ("--attachment-unread", "--attachment-read"):
+        values = flags[flag]
+        if not values:
+            continue
+        pair = by_handle(root, values[0])
+        if pair is None:
+            print(f"{values[0]}: no attachment with that handle")
+            return 1
+        rid, name = pair
+        shown = f"{_escaped(rid)} {_escaped(name)}"
+        if flag == "--attachment-unread":
+            print(f"{shown}: " + ("listed until it is read" if note_unread(root, rid, name) else "already listed"))
+        else:
+            print(f"{shown}: " + ("read" if mark_read(root, rid, name) else "not listed as unread"))
         return 0
     if "--attachments" in argv:
         for rid, sid, name in attachments(root):
-            print(f"{rid}	{sid}	{name}")
+            print(f"{_escaped(rid)}\t{sid}\t{_escaped(name)}\t{attachment_handle(rid, name)}")
         return 0
     report = run(root, dry_run=dry_run)
     if dry_run:

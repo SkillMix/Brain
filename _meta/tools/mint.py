@@ -74,15 +74,32 @@ def mount_space(root, name: str, url, path: str | None = None, online: bool = Tr
     """Mount another space read-only: its row in space.yaml and, online, the setup verb
     `git submodule add -b main <url> mounts/<name>`; the sync script lands both on its protected
     branch, the new mount's pin with its address in `.gitmodules`, after the person's click.
-    True when the row is new."""
+    True when the row is new. The name must be an id other than `brain` (the brain mount is
+    onboarding's alone), and online the path is `mounts/<name>` and the address an https GitHub one
+    (`onboard.mount_problem`), so nothing is mounted into a guarded folder or from an option-like
+    address; anything else raises `pages.UnsafePath` before any file is written. The row is written only
+    once git added the mount: a failed `git submodule add` raises `MountFailed` and writes nothing."""
     root = Path(root).resolve()
+    pages.check_slug(name, "mount name")
+    if name == "brain":
+        raise pages.UnsafePath("the brain mount is set by onboarding, not by --mount")
     path = path or f"mounts/{name}"
+    if online:
+        problem = onboard.mount_problem(url, path) if url else (
+            None if path == f"mounts/{name}" else f"{pages._shown(path)} is not mounts/{name}")
+        if problem:
+            raise pages.UnsafePath(f"not mounted: {problem}")
     if dry_run:
         return not any(m.get("name") == name for m in spaceyaml.load(root).mounts)
-    added = _add_mount(root, name, url, path)
     if online and url and not (root / path / "space.yaml").exists():
-        run_cmd(["git", "submodule", "add", "-b", "main", url, path], dry_run, cwd=root)
-    return added
+        res = run_cmd(["git", "submodule", "add", "-b", "main", url, path], dry_run, cwd=root)
+        if res.returncode != 0:   # no row for a mount git did not add: the next run tries again
+            raise MountFailed(f"git submodule add failed: {(res.stderr or res.stdout or '').strip()[:200]}")
+    return _add_mount(root, name, url, path)
+
+
+class MountFailed(RuntimeError):
+    """`git submodule add` did not take the mount: an index.lock held, no credentials, no network."""
 
 
 def mount_line(name: str, url) -> str:
@@ -136,7 +153,12 @@ def mount_in_crew(report, project_root, name: str, url, crew, near=(), home=None
             elsewhere.append(person)
             continue
         path = f"mounts/{name}" if online else os.path.relpath(project_root, ws).replace("\\", "/")
-        added = mount_space(ws, name, url, path, online, dry_run)
+        try:
+            added = mount_space(ws, name, url, path, online, dry_run)
+        except MountFailed as exc:
+            report.add(f"mount {name} in {Path(ws).name}", False, f"grep -c {name} {Path(ws) / 'space.yaml'}",
+                       f"{exc}: run `{mount_line(name, url)}` there again")
+            continue
         report.add(f"mount {name} in {Path(ws).name}", True, f"grep -c {name} {Path(ws) / 'space.yaml'}",
                    "added" if added else "already there")
     if not elsewhere:
@@ -239,7 +261,12 @@ def channel(root, other_root, online=False, org=None, home=None, dry_run=False,
     url = f"https://github.com/{repo}" if online and repo else repo
     for space_root in (root, other_root):
         rel = os.path.relpath(dst, space_root).replace("\\", "/") if not online else f"mounts/{name}"
-        added = mount_space(space_root, name, url, rel, online, dry_run)
+        try:
+            added = mount_space(space_root, name, url, rel, online, dry_run)
+        except MountFailed as exc:
+            report.add(f"mount {name} in {space_root.name}", False, f"grep -c {name} {space_root / 'space.yaml'}",
+                       f"{exc}: run `{mount_line(name, url)}` there again")
+            continue
         report.add(f"mount {name} in {space_root.name}", True, f"grep -c {name} {space_root / 'space.yaml'}",
                    "added" if added else "already there")
     onboard.register_sync(report, dst, name, 15, not online, dry_run)   # the corridor lands like any space
@@ -302,6 +329,46 @@ def link_items(name: str) -> tuple:
     return match, items
 
 
+def crew_logins(root, space, crew) -> dict:
+    """{crew name as the audience lists it: the GitHub login(s) its people rows register}, read from
+    the brain's own registry file (this space's when it is the brain), never a project's: a crew
+    writer edits that one, and a row there could shadow the person's by id or name. Every active
+    people row titled with that name counts, as `gate._login_of` unions them; an archived one never."""
+    brain = space.mount_root("brain") or (Path(root) if space.profile == "brain" else None)
+    rows = list(registry.Registry(brain).subjects.values()) if brain is not None else []
+    out = {}
+    for name in crew:
+        logins = sorted({str(v).strip() for s in rows
+                         if s.kind == "people" and s.state != "archived"
+                         and " ".join(str(s.title or "").split()).casefold() == " ".join(name.split()).casefold()
+                         for g in [(s.match or {}).get("github")] for v in (g if isinstance(g, list) else [g])
+                         if v not in (None, "") and str(v).strip()})
+        if logins:
+            out[name] = logins[0] if len(logins) == 1 else logins
+    return out
+
+
+def logins_upkeep(root) -> dict:
+    """A project space's `logins` kept to what the brain's registry gives its audience now: a crew
+    member whose login was filled, or who joined, after mint (`crew_logins`, the brain's own rows).
+    The table becomes exactly that: a login the registry no longer gives (cleared, or its row
+    archived) or a name that left the audience is taken out, so a revoked login stops vouching.
+    space.yaml is protected, so the sync carries the change on its protected branch and it counts
+    only after the owner's one click."""
+    root = Path(root)
+    space = spaceyaml.load(root)
+    have = space.data.get("logins")
+    have = dict(have) if isinstance(have, dict) else {}
+    if space.profile != "project" or space.mount_root("brain") is None:   # no brain read, no removal
+        return {"changed": []}
+    found = crew_logins(root, space, [str(a) for a in space.audience or []])
+    changed = sorted(k for k in set(have) | set(found) if have.get(k) != found.get(k))
+    if changed:
+        data = onboard.read_yaml(root / "space.yaml", {}) or {}
+        onboard.write_yaml(root / "space.yaml", dict(data, logins=found))
+    return {"changed": changed}
+
+
 def run(root, seed, name, crew, online, org=None, home=None, dry_run=False,
         parent: str | None = None) -> onboard.Report:
     root = Path(root).resolve()
@@ -348,6 +415,12 @@ def run(root, seed, name, crew, online, org=None, home=None, dry_run=False,
                                   parent or space.parent or "brain", mount.get("repo"), brain_path,
                                   mounts=extra_mounts or None)
     onboard.setup_space(report, dst, "project", values, [])
+    # the crew's logins beside the audience, landed with the fill, so the gate in the project's
+    # checks ties a crew member's signature to their push (gate._space_logins)
+    logins = crew_logins(root, space, crew)
+    if logins:
+        data = onboard.read_yaml(dst / "space.yaml", {}) or {}
+        onboard.write_yaml(dst / "space.yaml", dict(data, logins=logins))
     if not offline:
         # every ancestor mounted, flat: the brain and a sub-team's division, read-only
         wanted = [{"name": "brain", "repo": mount.get("repo"), "path": "brain"}] + extra_mounts
@@ -446,7 +519,11 @@ def main(argv=None) -> int:
             return 1
     if args.mount:
         name, url = args.mount
-        added = mount_space(args.root, name, url, online=not args.offline, dry_run=args.dry_run)
+        try:
+            added = mount_space(args.root, name, url, online=not args.offline, dry_run=args.dry_run)
+        except (pages.UnsafePath, MountFailed) as exc:
+            print(f"mint: {exc}")
+            return 1
         verb = ("would mount at" if args.dry_run else "mounted at") if added else "already mounted at"
         print(f"{name}: {verb} mounts/{name}")
         return 0

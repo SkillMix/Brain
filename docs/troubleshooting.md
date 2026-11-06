@@ -77,8 +77,40 @@ The doctor sets `core.longpaths true` for git.
 
 ### The organization invitation is not accepted
 
-The doctor accepts a pending invitation to the organization the sentence names: saying the
-sentence is the person asking to join. No invitation at all: the person asks an owner.
+Setup accepts a pending invitation only from the organization that owns the brain the person
+said yes to by name: that yes covers its organization. An invitation from any other organization
+is the person's own click on GitHub's page. No invitation at all: the person asks an owner.
+
+### Setup asks whether this is my company's brain
+
+It always asks, once: say yes in chat to the brain's exact name. Being a member of its
+organization is not enough on its own: anyone who can create a repository in an organization
+you belong to could make a look-alike brain there. The question names the owner and since when
+it is on GitHub, so check that with the colleague who invited you.
+
+### The checks cannot read the brain
+
+Seen: every pull request fails with "neither the mount key nor the mount token can read the
+brain". The checks read each mount with a read-only deploy key the agents made for this
+repository (the secret MOUNT_DEPLOY_KEYS). For a workspace in your own account the key waits
+until the brain owner's agent attaches it (`onboard.py <brain> --mount-keys`, in the brain's daily
+run, after the workspace's note reached the brain). For two weeks the checks only warn while the
+brain is unread through that waiting key, so your first pull requests land. The workspace's daily
+`onboard.py . --mount-keys` reads the brain's answer (`_meta/state/mount-keys-attached.yaml` in the
+brain; the brain's agent decides removals from its own record, which no pull request reaches): a refusal, or no answer within a week, makes it ask again, and the `mount token` row
+appears only then. When no key can be made at all (no ssh-keygen, no right to the repository's
+secrets), the same row says so: then a fine-grained token, read-only on the brain, is the fallback.
+A new mount gets its key on the next daily run. To start over, delete `_meta/state/mount-keys.yaml`
+and run `onboard.py . --mount-keys`.
+
+### A crew project was left out
+
+Seen: a `crew project <name> left out` row. The invitation offered a project whose repository is
+outside the brain's account, and the brain's registry does not pin that repository for the
+project. Once the brain's owner pins it (`match.repo` on the project, which waits for their
+click), the daily `onboard.py . --mount-keys` mounts it from that pinned address. space.yaml and
+.gitmodules are protected, so the mount lands with your one click on the sync's protected pull
+request, which Needs you lists.
 
 ### No read access to the template or the brain
 
@@ -87,6 +119,17 @@ it. The person asks the owner; the owner has an `invite-<slug>-access` item on t
 list recommending a company-wide team with read access to the brain (and to the template when the
 company uses a private copy). Re-running the invitation removes the item once the colleague can
 read them. Agents never grant access.
+
+### Template sync stops: "the provenance names ..." or "GitHub did not say which template"
+
+Seen: the weekly template sync copies nothing and prints one of these reasons. The sync reads its
+template only from what the owner's click lands: `space.yaml`'s `template:`, else
+`_meta/state/template-origin.yaml`, else the template GitHub recorded when the repository was made
+from one, else the official `SkillMix/Brain`; never from the provenance a run writes. When the
+provenance names another repository, or GitHub cannot be asked (gh not signed in, no network) and
+the space did not already follow the official template, it stops rather than guess. The owner sets `template: owner/name` in `space.yaml` (a protected change,
+so it lands on their click), or signs in with `gh auth login` and runs it again. A local copy of
+the template is synced only when named with `--from <path> --local`.
 
 ## The machine
 

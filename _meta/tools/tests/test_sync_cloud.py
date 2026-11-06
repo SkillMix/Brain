@@ -30,6 +30,15 @@ FAILED_LOG = ("checks\tTests as data\t2026-10-21T18:24:14Z answers: 0 passed, 1 
               "missing ['line one']\n")
 
 
+OWNER = "owner-gh"   # the login the cloud's token is (`gh api user`)
+PUSHED: dict = {}    # {(origin, branch): sha} each landing (`land`) pushed: GitHub's record of who pushed what
+
+
+def heads(origin: Path) -> dict:
+    out = git(origin, "for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads", check=False).stdout
+    return dict(line.split(" ", 1) for line in out.splitlines() if " " in line)
+
+
 class CloudGh:
     """GitHub as a cloud run's landing sees it, through REST (`gh api`) and `gh run` only. A POST
     opens a pull request; each read of one takes the next of `states` (the last one stays):
@@ -91,6 +100,12 @@ class CloudGh:
                     conclusion = self.rerun
             out = json.dumps({"check_runs": [{"name": "checks", "conclusion": conclusion, "details_url":
                                               f"https://github.com/o/r/actions/runs/{run}/job/{run * 10 + attempt}"}]})
+        elif args[:3] == ("api", "user", "--jq"):
+            out = OWNER + "\n"
+        elif m := re.fullmatch(r"repos/[^/]+/[^/]+/activity\?ref=refs/heads/(.+)&per_page=1", route):
+            sha = self.head(m[1])   # who last pushed the branch: the cloud when a landing (`land`) left it so
+            who = OWNER if sha and PUSHED.get((str(self.origin), m[1])) == sha else "someone-else-gh"
+            out = json.dumps([{"after": sha, "activity_type": "push", "actor": {"login": who}}] if sha else [])
         elif args[:2] == ("run", "view"):
             out = self.log
         elif args[:2] == ("run", "rerun"):
@@ -120,13 +135,24 @@ def land(clone: Path, monkeypatch, gh, *extra: str, chain: str = "sweep") -> tup
         real(self, *args, **kwargs)
         made.append(self)
     monkeypatch.setattr(sync.Run, "__init__", init)
+    origin = getattr(gh, "origin", None)
+    was = heads(origin) if isinstance(origin, Path) else {}
     code = sync.main(["--root", str(clone), "--cloud", chain, *extra])
+    for branch, sha in (heads(origin) if isinstance(origin, Path) else {}).items():
+        if was.get(branch) != sha:   # what this landing pushed, GitHub names its login for
+            PUSHED[(str(origin), branch)] = sha
     return code, made[0].notes
 
 
 def branch_files(clone: Path, chain: str = "sweep") -> list:
     git(clone, "fetch", "-q", "origin")
     return sorted(git(clone, "diff", "--name-only", "origin/main", f"origin/cloud/{chain}").stdout.split())
+
+
+def protected_files(clone: Path, chain: str = "sweep") -> list:
+    """What `cloud/<chain>-protected` changes against main: what the gate would hold, on its own branch (round 3)."""
+    git(clone, "fetch", "-q", "origin")
+    return sorted(git(clone, "diff", "--name-only", "origin/main", f"origin/cloud/{chain}-protected").stdout.split())
 
 
 def shown(clone: Path, ref: str, rel: str) -> str:
@@ -193,8 +219,9 @@ def test_a_protected_change_never_lands_from_the_cloud(repo, tmp_path, monkeypat
     write(repo / "work" / "notes.md", "# Notes\n\nline two\n")
     code, notes = land(repo, monkeypatch, CloudGh(tmp_path / "origin.git"))
     assert code == 0 and notes["landing"] == "merged"
-    assert branch_files(repo) == sorted([ITEMS, RUNS, "work/notes.md"])
-    items = yaml.safe_load(shown(repo, "origin/cloud/sweep", ITEMS))["items"]
+    # round 3: the security item would hold the cloud pull request, so it waits on its own branch
+    assert branch_files(repo) == sorted([RUNS, "work/notes.md"]) and protected_files(repo) == [ITEMS]
+    items = yaml.safe_load(shown(repo, "origin/cloud/sweep-protected", ITEMS))["items"]
     assert items[0] == other and len(items) == 2
     assert re.fullmatch(r"cloud-protected-sweep-[0-9a-f]{8}", items[1].pop("id"))
     assert items[1] == {"kind": "security", "text": "A cloud run changed 2 protected files; they were not landed.",
@@ -261,7 +288,17 @@ def test_each_protected_change_is_its_own_item_until_answered(repo, monkeypatch)
     land(repo, monkeypatch, CloudGh(Path()), "--no-push")
     assert items()[0] == first and len(items()) == 2 and items()[1].startswith("cloud-protected-sweep-")
     second = items()[1]
-    write(repo / "log.md", f"# Log\n\n- 2026-10-27 yes {second} by Ada Okafor\n")
+    # The person's answer is a row of the verdict store (sign.py's `status.record_verdict`, written
+    # here as the row it writes, since the cloud marker refuses the call), and it reaches the clone
+    # committed: a log.md line the cloud run writes is no answer, and an uncommitted store is left
+    # out as a protected change of its own.
+    store = repo / "_meta/state/verdicts.jsonl"
+    store.parent.mkdir(parents=True, exist_ok=True)
+    store.write_text(json.dumps({"at": "2026-10-27T10:00:00Z", "cutover": "log.md", "fingerprints": []}) + "\n"
+                     + json.dumps({"at": "2026-10-27T10:00:00Z", "id": second, "by": "Ada Okafor", "verb": "yes"})
+                     + "\n", encoding="utf-8")
+    git(repo, "add", "_meta/state/verdicts.jsonl")
+    git(repo, "commit", "-q", "-m", "the person's answer")
     (repo / ITEMS).write_text(yaml.safe_dump({"items": []}), encoding="utf-8")
     land(repo, monkeypatch, CloudGh(Path()), "--no-push")   # answered: not asked again
     assert items() == []
@@ -399,12 +436,13 @@ def test_a_landing_that_left_a_protected_file_out_always_asks_about_it(repo, tmp
     with (repo / RUNS).open("a", encoding="utf-8", newline="\n") as fh:
         fh.write(json.dumps(line) + "\n")
     code, notes = land(repo, monkeypatch, CloudGh(tmp_path / "origin.git"))
-    assert code == 0 and notes["landing"] == "merged"
+    # with the item on its own branch (round 3), a sweep's branch holds only run lines: quiet, no pull request yet
+    assert code == 0 and notes.get("landing") == ("merged" if proof or carried else None)
     landed = line_at(repo, "origin/cloud/sweep")
     assert landed["routine"] == "sync" and landed["notes"]["left_out"] == 1 and "proof" not in landed["notes"]
     assert "rules.md" not in branch_files(repo) and "rules.md" in git(repo, "status", "--porcelain").stdout
-    assert branch_files(repo) == sorted([ITEMS, RUNS])
-    [item] = yaml.safe_load(shown(repo, "origin/cloud/sweep", ITEMS))["items"]
+    assert branch_files(repo) == [RUNS] and protected_files(repo) == [ITEMS]   # the item on its own branch
+    [item] = yaml.safe_load(shown(repo, "origin/cloud/sweep-protected", ITEMS))["items"]
     assert item["id"].startswith("cloud-protected-sweep-") and item["kind"] == "security"
     assert item["text"] == "A cloud run changed 1 protected file; it was not landed."
     if proof:
@@ -451,8 +489,9 @@ def test_a_protected_push_between_begin_and_the_landing_is_one_security_item(rep
     write(repo / SOURCE, "# r0\n")
     code, notes = land(repo, monkeypatch, CloudGh(tmp_path / "origin.git"))
     assert code == 0 and notes["landing"] == "merged"
-    assert branch_files(repo) == sorted([ITEMS, SOURCE, RUNS])   # their change is not used
-    [item] = yaml.safe_load(shown(repo, "origin/cloud/sweep", ITEMS))["items"]
+    assert branch_files(repo) == sorted([SOURCE, RUNS])   # their change is not used
+    assert protected_files(repo) == [ITEMS]   # the security item waits on its own branch (round 3)
+    [item] = yaml.safe_load(shown(repo, "origin/cloud/sweep-protected", ITEMS))["items"]
     assert (item["id"], item["kind"], item["depends"]) == (f"cloud-branch-sweep-{pushed[:8]}", "security", 99)
     assert "cloud/sweep" in item["text"] and "1 protected file" in item["text"]
 

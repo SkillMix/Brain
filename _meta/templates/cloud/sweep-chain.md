@@ -55,18 +55,16 @@ Then, for each root, the workspace first:
    park an unsure one in `/home/user/<root>/_meta/state/private/unsure.jsonl`, as the skill says. There is no
    history to read in the cloud: the routines move here only once it is read.
 2. **Attachments.** `python3 /home/user/<root>/_meta/tools/sweep.py /home/user/<root> --attachments` prints one
-   row per attachment to read: the record id, its subject and the file name, separated by a tab each; the subject
-   is empty on some rows (`<record id>\t\t<name>`). Read each with the mail connector's attachment reader (it
-   returns the text, 40,000 characters a call; ask again from the offset for the rest) into the same feed file as a
-   document record of its own, as the skill says, with `read_via: connector`. There is no browser here. For one you
-   could not read, run
-   `python3 /home/user/<root>/_meta/tools/sweep.py /home/user/<root> --attachment-unread <record id> <name>`,
+   row per attachment to read: the record id, its subject, the file name and its handle, separated by a tab each;
+   the subject is empty on some rows (`<record id>\t\t<name>\t<handle>`). Read each with the mail connector's
+   attachment reader (it returns the text, 40,000 characters a call; ask again from the offset for the rest) into
+   the same feed file as a document record of its own, as the skill says, with `read_via: connector`. There is no
+   browser here. For one you could not read, run
+   `python3 /home/user/<root>/_meta/tools/sweep.py /home/user/<root> --attachment-unread <handle>`,
    so every later run lists it again until it is read; for one read that holds no text (an image), run
-   `python3 /home/user/<root>/_meta/tools/sweep.py /home/user/<root> --attachment-read <record id> <name>`.
-   A name holding anything but letters, digits, `.`, `-` and `_` goes in single quotes, each single quote in it
-   written as `'"'"'`: `Ada's "final" $5.pdf` is `'Ada'"'"'s "final" $5.pdf'`. A name holding a line break is left
-   unmarked: name it in your run line. A name that starts with `--` is left unmarked and named there too: sweep.py
-   reads it as a flag.
+   `python3 /home/user/<root>/_meta/tools/sweep.py /home/user/<root> --attachment-read <handle>`.
+   The handle is the row's last field, `att-` and twelve hex digits: it needs no quotes, and it is the only value
+   either command takes, so a name a sender chose never reaches the shell.
 3. **Sweep and route.** `python3 /home/user/<root>/_meta/tools/sweep.py /home/user/<root>`. When `space.yaml`
    has `routing:`, route as `/home/user/<root>/.claude/skills/route/SKILL.md` says: understand each subject first
    (its brief, built when missing), research what the records leave open (what a search finds is exported too),

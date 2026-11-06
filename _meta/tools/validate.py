@@ -6,6 +6,26 @@ under knowledge/ and work/, and the registry. Warnings never fail the run;
 errors do. Mounts that are absent on disk produce warnings, not errors, because
 CI often has no submodules.
 
+What a pull request can plant is checked too, so the required check stops it before it
+merges:
+
+- a stable page whose `signed_fields` no longer match its title, type, subject, kind,
+  high_stakes or signer (`sign.fields_problem`);
+- a candidate whose `target` (or, for a signed release, the path derived from its kind,
+  subject and id) is not a page file under `knowledge/` built from safe names, or reaches a
+  path the gate guards; a release whose ids, names or sender are malformed
+  (`landing.malformed`);
+- an entry of `_meta/state/ids.yaml` that is not a page id pointing at a page file under the
+  page roots inside the space (`ids.entry_problem`);
+- a stable page outside `knowledge/` and `identity/` (under `work/`, `journal/` or
+  `outbox/`), which only `sign` writes and only there: a warning, since a desk page can carry
+  a stale stamp (mint drops it) and grounding must count it as working, not signed;
+- a top-level folder spelled like a zone in another case (`Knowledge/`), and a page file
+  whose suffix is `.md` in another case (`x.MD`): Windows and macOS merge them with the zone,
+  where nothing else checked them;
+- a symbolic link git tracks anywhere (`git ls-files -s`, mode 120000), and a page file that is
+  a link: the repository carries none, since a link points the next write or read anywhere.
+
     python validate.py [root] [--template]
 """
 from __future__ import annotations
@@ -28,6 +48,12 @@ except ImportError:  # pragma: no cover
 PAGE_ROOTS = ("knowledge", "live", "identity", "_inbound/candidates", "_inbound/checks")
 LINK_ROOTS = PAGE_ROOTS + ("index.md", "work", "journal", "docs")
 IDS_PATH = Path("_meta") / "state" / "ids.yaml"
+# where agents and people write freely: a page there is never signed
+DESK_ZONES = ("work", "journal", "outbox")
+# the top-level folders a tool reads by name: a case variant of one is merged with it on
+# Windows and macOS, out of sight of every check that compares names exactly
+ZONES = ("knowledge", "live", "identity", "_inbound", "_outbound", "_meta", "work", "journal",
+         "outbox", "personal", "academic", "docs")
 
 
 def _ids_of(root: Path) -> dict:
@@ -56,8 +82,42 @@ def _ids_of(root: Path) -> dict:
     return found
 
 
+def _candidate_problems(root: Path, path: Path, fm: dict, space: spaceyaml.Space) -> list:
+    """What in a candidate would make sign or landing write outside the pages: a malformed
+    release, a target that is no page file under `knowledge/` or one the gate guards, a kind
+    this space does not have. The same rules sign.dest_of and landing.malformed apply, minus
+    the links, which a checkout in CI does not have."""
+    import landing
+    import sign
+    out = []
+    released = bool(fm.get("released_from"))
+    if released:
+        problem = landing.malformed(fm, path.stem)
+        if problem:
+            return [f"malformed release: {problem}"]
+    record = not landing.claims_signature(fm) and str(fm.get("type")) == "source"
+    if record or not (fm.get("target") or released):   # a record is filed by its id, never a target
+        return out
+    try:
+        rel = sign.check_target(sign.target_of(fm, path, space.now()), record=False)
+    except pages.UnsafePath as exc:
+        return [f"bad target: {exc}"]
+    reason = pages.guarded_reason(rel)
+    if reason:
+        out.append(f"bad target: {ascii(rel)[:90]} {reason}")
+    kind = rel.split("/")[1]
+    if kind not in space.all_kinds:
+        message = f"bad target: {ascii(rel)[:90]}: {ascii(kind)} is not one of the kinds"
+        kinds_known = space.profile in ("brain", spaceyaml.TEMPLATE_PROFILE) or space.brain_space() is not None
+        out.append(message if kinds_known else f"warning: {message}; the brain mount is absent")
+    return out
+
+
 def _check_page(root: Path, path: Path, space: spaceyaml.Space, seen_ids: dict, errs: list) -> str:
     rel = path.relative_to(root).as_posix()
+    if pages.is_link(path):   # never read through one: what it points at is not this space's page
+        errs.append(f"{rel}: a symbolic link; the repository carries none")
+        return ""
     try:
         fm, body = pages.read(path)
     except Exception as exc:  # unreadable YAML
@@ -98,16 +158,78 @@ def _check_page(root: Path, path: Path, space: spaceyaml.Space, seen_ids: dict, 
         for problem in procedure.problems(fm, body):
             errs.append(f"{rel}: {problem}" if status == "stable" else f"warning: {rel}: {problem}")
     if status == "stable":
+        import sign   # the signed fields are sign's own rule
         for key in pages.SIGNATURE_FIELDS:
             if not fm.get(key):
                 errs.append(f"{rel}: stable page missing signature field `{key}`")
         if fm.get("fingerprint") and fm["fingerprint"] != pages.fingerprint(body):
             errs.append(f"{rel}: fingerprint does not match the body (edited after signing?)")
+        problem = sign.fields_problem(fm)
+        if problem:
+            errs.append(f"{rel}: {problem}")
+    if rel.startswith("_inbound/candidates/"):
+        for problem in _candidate_problems(root, path, fm, space):
+            errs.append(f"warning: {rel}: {problem[len('warning: '):]}" if problem.startswith("warning: ")
+                        else f"{rel}: {problem}")
     if rel.startswith("knowledge/") and not rel.startswith("knowledge/sources/"):
         parts = rel.split("/")
         if len(parts) >= 2 and parts[1] not in space.all_kinds and parts[1] != "index.md":
             pass  # reported once per folder below
     return body
+
+
+def tracked_links(root: Path) -> list:
+    """An error for each symbolic link git tracks here (mode 120000), whatever its zone (outbox/
+    included): a link points a tool's next write or read anywhere, and the space carries none.
+    Empty when git is missing or this folder is no repository."""
+    import subprocess
+    try:
+        done = subprocess.run(["git", "-C", str(root), "ls-files", "-s", "-z"], capture_output=True,
+                              text=True, encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    if done.returncode != 0:
+        return []
+    errs = []
+    for entry in done.stdout.split("\0"):
+        meta, _, rel = entry.partition("\t")
+        if meta.split(" ", 1)[0] == "120000":
+            errs.append(f"{rel}: a symbolic link; the repository carries none")
+    return errs
+
+
+def _planted(root: Path) -> list:
+    """What a pull request could plant beside the pages: a forged index entry, a signed page on
+    the desk, a zone or a page suffix in another case, a tracked symbolic link."""
+    import ids
+    errs = tracked_links(root)
+    for pid, rel in sorted((ids.committed(root) or {}).items(), key=lambda kv: str(kv[0])):
+        problem = ids.entry_problem(root, pid, rel)
+        if problem:
+            errs.append(f"{IDS_PATH.as_posix()}: entry {ascii(pid)[:60]}: {problem}")
+    for zone in DESK_ZONES:
+        base = root / zone
+        for path in sorted(base.rglob("*")) if base.is_dir() else []:
+            if path.suffix.lower() != ".md" or not path.is_file():
+                continue
+            try:
+                fm, _ = pages.read(path)
+            except Exception:
+                continue
+            if str(fm.get("status") or "") == "stable":   # a warning: mint drops such a stamp
+                errs.append(f"warning: {path.relative_to(root).as_posix()}: a page under {zone}/ is never "
+                            "signed; only sign writes `status: stable`, under knowledge/ or identity/, "
+                            "so this one counts as working, not signed")
+    for child in sorted(root.iterdir()):
+        twin = next((z for z in ZONES if child.name != z and child.name.casefold() == z.casefold()), None)
+        if twin and child.is_dir():
+            errs.append(f"{child.name}/: spelled like `{twin}/` in another case; Windows and macOS merge them")
+    for sub in PAGE_ROOTS:
+        base = root / sub
+        for path in sorted(base.rglob("*")) if base.is_dir() else []:
+            if path.suffix.lower() == ".md" and path.suffix != ".md" and path.is_file():
+                errs.append(f"{path.relative_to(root).as_posix()}: a page file ends in `.md`, in lower case")
+    return errs
 
 
 def validate(root, template: bool = False) -> list:
@@ -193,6 +315,7 @@ def validate(root, template: bool = False) -> list:
             if not pages.is_page_path(path):
                 continue
             bodies[path] = _check_page(root, path, space, seen_ids, errs)
+    errs.extend(_planted(root))
     # id links: this space and every mount on disk. While a mount is absent, a link found
     # nowhere may point into it, so it is a warning that names the absent mounts, not an error.
     known = dict(_ids_of(root))

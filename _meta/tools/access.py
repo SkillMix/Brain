@@ -5,8 +5,13 @@ That is only true if the host agrees: a collaborator outside the audience reads 
 that lands there, and a name in the audience without access never sees it. Once a day (the
 daily chain) this compares the repository's readers on the host with the audience, through
 the people subjects' `match: {github: <login>}` in the registry, and writes what does not
-match to `_inbound/needs-you/access.yaml`. It never changes access; only the space's owner
-does that.
+match to `_inbound/needs-you/access.yaml`. A person who left (their people subject archived,
+`offboard.py <brain> --person`) is in no audience, a listed one included, so their remaining
+access shows. A reader whose login matches no registered person is always named: when some
+audience names have no login, as one `access-unknown` item beside `access-unverified`, since
+that reader may be one of them or a stranger, and the item says when there are more such
+readers than unlinked names, so at least one is a stranger. It never changes access; only the
+space's owner does that.
 
     python access.py [root]
 """
@@ -32,6 +37,7 @@ class AccessReport:
     repo: str | None = None
     extra: list = field(default_factory=list)        # logins that read the repository, outside the audience
     unverified: list = field(default_factory=list)   # audience names without a known login
+    unknown: list = field(default_factory=list)      # readers no registered person has as login, while names are unverified
     skipped: str = ""
 
 
@@ -64,19 +70,21 @@ def logins(root: Path, space: spaceyaml.Space) -> dict:
 
 
 def audience_names(root: Path, space: spaceyaml.Space) -> list:
-    """The names a space's `audience` stands for. A list is itself. `everyone` (the brain) is
-    the owner and every registered person who has not left (state `archived`); `owner` and
-    `crew` are the owner, since a space's crew is its audience list and its owner
+    """The names a space's `audience` stands for. A list is itself, less every name whose people
+    subject is archived (they left: their access is what the check must show). `everyone` (the
+    brain) is the owner and every registered person who has not left (state `archived`); `owner`
+    and `crew` are the owner, since a space's crew is its audience list and its owner
     (mint.crew_of) and the word alone lists no one else."""
+    try:
+        subjects = [s for s in registry_mod.Registry(root, space).everywhere() if s.kind == "people"]
+    except Exception:
+        subjects = []
+    left = {str(s.title) for s in subjects if s.state == "archived"}
     if isinstance(space.audience, list):
-        return space.audience
-    names = [space.owner] if space.owner else []
+        return [name for name in space.audience if str(name) not in left]
+    names = [space.owner] if space.owner and space.owner not in left else []
     if space.audience == "everyone":
-        try:
-            subjects = registry_mod.Registry(root, space).everywhere()
-        except Exception:
-            subjects = []
-        names += [str(s.title) for s in subjects if s.kind == "people" and s.state != "archived"]
+        names += [str(s.title) for s in subjects if s.state != "archived"]
     return list(dict.fromkeys(names))
 
 
@@ -100,10 +108,13 @@ def check(root, readers_fn=readers) -> AccessReport:
     known = logins(root, space)
     allowed = {known[name].lower() for name in audience if name in known}
     report.unverified = sorted(name for name in audience if name not in known)
-    report.extra = sorted(login for login in found if login.lower() not in allowed)
-    if report.unverified:   # without every login the extras cannot be told apart from members
-        names_by_login = {v.lower(): k for k, v in known.items()}
-        report.extra = [login for login in report.extra if login.lower() in names_by_login]
+    outside = sorted(login for login in found if login.lower() not in allowed)
+    if report.unverified:   # an unknown reader may be an unlinked member, or a stranger: named apart, never dropped
+        known_logins = {v.lower() for v in known.values()}
+        report.extra = [login for login in outside if login.lower() in known_logins]
+        report.unknown = [login for login in outside if login.lower() not in known_logins]
+    else:
+        report.extra = outside
     return report
 
 
@@ -119,6 +130,18 @@ def write_needs_you(root, report: AccessReport) -> None:
                                         "otherwise remove their access on the host",
                       "default": "they keep reading it", "depends": 0,
                       "check": f"gh api repos/{report.repo}/collaborators/{login}/permission -q .permission"})
+    if report.unknown:
+        strangers = len(report.unknown) > len(report.unverified)
+        items.append({"id": "access-unknown", "kind": "question", "for": space.owner,
+                      "text": f"{', '.join(report.unknown)} can read {report.repo} and match no registered person. "
+                              f"If one is {', '.join(report.unverified)}, add match: {{github: <login>}} to that "
+                              "person's subject; anyone else reads everything that lands there."
+                              + (f" There are more of them ({len(report.unknown)}) than people without a login "
+                                 f"({len(report.unverified)}), so at least one is not in the audience."
+                                 if strangers else ""),
+                      "recommendation": "link each login to its person, or remove their access on the host",
+                      "default": "they keep reading it", "depends": 0,
+                      "check": f"gh api repos/{report.repo}/collaborators?affiliation=all -q '.[].login'"})
     if report.unverified:
         items.append({"id": "access-unverified", "kind": "question", "for": space.owner,
                       "text": "Access to " + str(report.repo) + " cannot be checked for " + ", ".join(report.unverified)

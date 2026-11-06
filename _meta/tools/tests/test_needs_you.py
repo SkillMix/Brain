@@ -10,6 +10,7 @@ import pages
 import sign
 import sign_questions
 import spaceyaml
+import status
 from conftest import NOW, make_space, write_page
 
 
@@ -95,6 +96,7 @@ def test_collect_checks_doubt_routine_items_high_stakes_and_stale_outbox(tmp_pat
          "default": "waits", "deadline": None, "depends": 0, "payload": "x", "fingerprint": "def"},
     ]}), encoding="utf-8")
     (root / "log.md").write_text("# Log\n- 2026-10-12T08:00:00Z yes pr-8 by Ada Okafor\n", encoding="utf-8")
+    status.record_verdict(root, "pr-8", "Ada Okafor", verb="yes", at="2026-10-12T08:00:00Z")   # the answer itself
     (root / "outbox").mkdir(exist_ok=True)
     # 8 hours at time_scale 48 is 16 scaled days: stale. One hour is two scaled days: fresh.
     write_page(root, "outbox/old-draft.md", id="p-00000701", type="snapshot", title="Old draft",
@@ -103,8 +105,10 @@ def test_collect_checks_doubt_routine_items_high_stakes_and_stale_outbox(tmp_pat
                generated=pages.generated("me", NOW - dt.timedelta(hours=1)), body="Hi.\n")
     items = needs_you.collect(root, now=NOW)
     by_id = {i.id: i for i in items}
+    # the item held by the scan is never silent: the agent's health line names it
     assert sorted(i.kind for i in items) == sorted(
-        ["check", "doubt", "protected_pr", "high_stakes", "outbox"])
+        ["check", "doubt", "protected_pr", "high_stakes", "outbox", "health"])
+    assert "Held 3 held: the secrets scan could not read it whole" in by_id["health"].text
     assert "pr-8" not in by_id
     assert items[0].id == "pr-7"           # depends 3 wins among items without a deadline
     assert items[1].kind == "high_stakes"  # then the kind order
@@ -210,6 +214,7 @@ def test_a_mounted_space_the_person_owns_brings_its_unaddressed_items_to_their_l
         {"id": "invite-ben", "kind": "question", "text": "Invite Ben Liu"}]}), encoding="utf-8")
     (brain / "log.md").write_text("# Log\n\n- 2026-10-12T09:00:00Z yes onboard-domains by Ada Okafor\n",
                                   encoding="utf-8")
+    status.record_verdict(brain, "onboard-domains", "Ada Okafor", verb="yes", at="2026-10-12T09:00:00Z")
     ada, ben = make_space(tmp_path / "ada", owner="Ada Okafor"), make_space(tmp_path / "ben", owner="Ben Liu")
     mount_brain(ada, brain)
     mount_brain(ben, brain)
@@ -227,6 +232,7 @@ def test_an_approved_high_stakes_item_is_never_asked_again(tmp_path):
     queue_item(root, "p-00000602", "Price list", NOW + dt.timedelta(hours=5), high_stakes="a price")
     (root / "log.md").write_text("---\ntitle: Log\n---\n# Log\n\n"
                                  "- 2026-10-11T09:00:00Z yes p-00000601 by Ada Okafor\n", encoding="utf-8")
+    status.record_verdict(root, "p-00000601", "Ada Okafor", verb="yes", at="2026-10-11T09:00:00Z")
     items = needs_you.collect(root, now=NOW, online=False)
     assert [(i.id, i.kind) for i in items] == [("p-00000602", "high_stakes")]
     # a requeue dropped its listing: the morning view lists it again, nobody is asked

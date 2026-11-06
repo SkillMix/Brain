@@ -34,8 +34,10 @@ run line, or that a proof stopped it.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
 import getpass
+import io
 import json
 import os
 import platform
@@ -230,7 +232,11 @@ def git_remote(root) -> str | None:
 
 
 def template_repo(root, offline=False) -> str | None:
-    """Where this repository came from: a recorded origin, else what the platform says, else here."""
+    """The template this repository came from: the origin onboarding recorded
+    (`_meta/state/template-origin.yaml`), else, unless `offline`, what GitHub recorded when the
+    repository was made from a template. Only an `offline` look (start.py, whose root is the copy
+    the agent cloned of the template) at a copy still the template's own takes its origin remote as
+    the template; a space's own remote is never its template, so otherwise None."""
     data = read_yaml(Path(root) / "_meta" / "state" / "template-origin.yaml", {}) or {}
     if data.get("repo"):
         return data["repo"]
@@ -243,7 +249,10 @@ def template_repo(root, offline=False) -> str | None:
                 return parent
         except Exception:
             pass
-    return remote
+        return None
+    yaml_file = Path(root) / "space.yaml"
+    text = yaml_file.read_text(encoding="utf-8", errors="replace") if yaml_file.is_file() else None
+    return remote if remote and spaceyaml.still_template(text) else None
 
 
 def sources_of(feeds) -> list:
@@ -345,9 +354,10 @@ def remove_forbidden(report, dst, profile) -> None:
 
 def space_values(answers, name, owner, owner_email, audience, parent, brain_repo=None,
                  brain_path="brain", standing_choices=None, feeds=None, mounts=None) -> dict:
-    mounts = list(mounts or [])
-    if not any(m.get("name") == "brain" for m in mounts):
-        mounts.insert(0, {"name": "brain", "repo": brain_repo, "path": brain_path, "branch": "main"})
+    # The brain mount is always the one given here (the sentence's brain): another mount named `brain`,
+    # from a crew list an invitation carried, is dropped, so it can never stand in for the company layer.
+    mounts = [m for m in (mounts or []) if m.get("name") != "brain"]
+    mounts.insert(0, {"name": "brain", "repo": brain_repo, "path": brain_path, "branch": "main"})
     return {"name": name, "owner": owner or "", "owner_email": owner_email or "", "mounts": mounts,
             "audience": audience, "parent": parent, "mode": answers.get("mode") or "live",
             "time_scale": answers.get("time_scale"),
@@ -377,8 +387,37 @@ def fill_space(dst, profile, **values) -> dict:
     return yaml.safe_load(text)
 
 
+def begin_verdicts(dst) -> bool:
+    """Begin a new space's verdict store with its cut-over (`status.pin_cutover`), right after its
+    log.md is written: a new space has no earlier answers to keep, so the pin is empty, and no line
+    written to its log before its first status run can ever count as an answer. True when the row
+    was written; a store already there, a cloud run or a log.md that cannot be read safely leave
+    it to the next run that can pin (pin_cutover's own refusals)."""
+    import status
+    return status.pin_cutover(dst)
+
+
+def record_template_origin(dst, tpl, dry_run=False) -> bool:
+    """A space made from a template other than the official one records it in
+    `_meta/state/template-origin.yaml` (`repo: <owner/name>`) before its first commit, so its
+    template sync follows that template without asking GitHub (`template_sync.pinned`; the file is
+    protected, gate.MINIMUM_PROTECTED). Only a plain GitHub owner/name is recorded: the official
+    template, a local folder (a fixture) and a dry run write nothing. True when the file was written."""
+    import template_sync
+    name = template_sync.repo_name(tpl)
+    if dry_run or name is None or name.casefold() == template_sync.OFFICIAL_TEMPLATE.casefold():
+        return False
+    try:
+        pages.write_text(Path(dst) / template_sync.ORIGIN, yaml.safe_dump({"repo": name}, sort_keys=False),
+                         root=Path(dst))
+    except pages.UnsafePath:   # a link in the way: nothing is written through it
+        return False
+    return True
+
+
 def setup_space(report, dst, profile, values, feeds) -> None:
-    """Fill a space for its profile unless it is configured already; shape its tree."""
+    """Fill a space for its profile unless it is configured already; shape its tree. A space filled
+    here for the first time begins its verdict store with an empty cut-over (`begin_verdicts`)."""
     dst = Path(dst)
     current = read_yaml(dst / "space.yaml", {}) or {}
     if current.get("profile") in (None, "", spaceyaml.TEMPLATE_PROFILE):
@@ -387,6 +426,8 @@ def setup_space(report, dst, profile, values, feeds) -> None:
     else:
         result = "kept: already configured"
     ensure_required(dst, profile)
+    if result == "written":
+        begin_verdicts(dst)
     remove_forbidden(report, dst, profile)
     if feeds:
         write_yaml(dst / "_meta" / "access" / "resources.yaml", {"resources": sources_of(feeds)})
@@ -395,10 +436,14 @@ def setup_space(report, dst, profile, values, feeds) -> None:
 
 def create_space(report, root, dirname, repo_name, offline, org, home, tpl, dry_run):
     """The directory of a new space: offline a copy under `home` (default: a sibling), online a
-    clone of a new repository. A dry run writes nothing: it only says where the space would go."""
+    clone of a new repository made from the template `tpl`. A space it makes from a template that
+    is not the official one records it (`record_template_origin`); a space it adopts or finds
+    already there is left as it is. A dry run writes nothing: it only says where the space would go."""
     if offline:
         dst = (Path(home) if home else Path(root).parent) / dirname
         made = "would copy" if dry_run else "copied" if copy_template(root, dst) else "exists"
+        if made == "copied":
+            record_template_origin(dst, tpl)
         report.add(f"create {dirname}", True, f"test -f {dst / 'space.yaml'}", made)
         return dst, None
     base = Path(home) if home else Path.home() / ".spaces"
@@ -436,6 +481,8 @@ def create_space(report, root, dirname, repo_name, offline, org, home, tpl, dry_
         return None, full
     res = run_cmd(["gh", "repo", "create", full, "--template", tpl, "--private", "--clone"], dry_run, cwd=base)
     ok = res.returncode == 0 and (dry_run or (dst / "space.yaml").exists())
+    if ok:
+        record_template_origin(dst, tpl, dry_run)
     report.add(f"create {dirname}", ok, f"gh repo view {full}",
                f"{'would clone' if dry_run else 'cloned'} into {dst}" if ok else (res.stderr or res.stdout).strip()[:200])
     return (dst if ok else None), full
@@ -498,9 +545,30 @@ def hold_admins(report, dst, dry_run, repo=None) -> None:
                "your own account cannot push to main past the checks either" if res.returncode == 0 else said[:200])
 
 
+MOUNT_URL = re.compile(r"https://github\.com/([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))/([A-Za-z0-9._-]{1,100}?)(?:\.git)?/?")
+
+
+def mount_problem(repo, path) -> str | None:
+    """Why a mount may not be added, or None: the repository must be an https GitHub address (never an
+    option, a local path or another host), and the path `brain` or `mounts/<name>`, one plain folder,
+    so a submodule can never land in `.claude/`, `.github/`, `_meta/` or any other guarded place."""
+    if not isinstance(repo, str) or not MOUNT_URL.fullmatch(repo) or MOUNT_URL.fullmatch(repo).group(2) in (".", ".."):
+        return f"{pages._shown(repo)} is not an https://github.com/<owner>/<name> address"
+    rel = str(path or "")
+    if rel != "brain" and not (rel.startswith("mounts/") and rel.count("/") == 1 and pages.is_slug(rel[7:])):
+        return f"{pages._shown(rel)} is not brain or mounts/<name>"
+    return None
+
+
 def add_mount(report, root, repo, path, dry_run) -> None:
     """Mount `repo` at `path` (a submodule on its `main`), as one step: a mount that did not come says so with git's
-    own words, since a workspace without its brain has no company layer to read (rc1 run, issue 14)."""
+    own words, since a workspace without its brain has no company layer to read (rc1 run, issue 14). A repository
+    or a path `mount_problem` refuses is never handed to git: its row says why."""
+    problem = mount_problem(repo, str(path).replace("\\", "/"))
+    if problem:
+        report.add(f"mount {path} in {Path(root).name}", False, f"test -f {Path(root).name}/{path}/space.yaml",
+                   f"not mounted: {problem}")
+        return
     res = run_cmd(["git", "submodule", "add", "-b", "main", repo, str(path)], dry_run, cwd=root)
     there = dry_run or (Path(root) / path / "space.yaml").exists()
     said = " ".join(((res.stderr or "") + (res.stdout or "")).split())[:300]
@@ -517,6 +585,8 @@ def people_of(answers) -> list:
         slug = answers.get("owner_slug") or slugify(owner)
         people[slug] = {"name": owner, "slug": slug, "email": answers.get("owner_email") or "",
                         "parent": "brain", "domain": None}
+        if LOGIN.fullmatch(str(answers.get("owner_login") or "")):   # the gate ties the owner's upkeep to it
+            people[slug]["login"] = answers["owner_login"]
         order.append(slug)
     for p in answers.get("people") or []:
         slug = p.get("slug") or slugify(p.get("name"))
@@ -538,12 +608,19 @@ def classification_default(answers) -> str:
     return "closed" if str(value or "").strip().lower() == "closed" else "open"
 
 
-def fill_registry(report, root, answers, top_owner, brain_name, now, workspaces=None) -> None:
-    """`workspaces` maps a person's slug to the space name of the workspace made for them."""
+def fill_registry(report, root, answers, top_owner, brain_name, now, workspaces=None,
+                  workspace_repos=None) -> None:
+    """`workspaces` maps a person's slug to the space name of the workspace made for them, and
+    `workspace_repos` to that workspace's repository (`https://github.com/<owner>/<name>`), the
+    one onboarding created or adopted for them. A person's `workspace_repo` is where landing
+    reads that workspace's signatures (`release.trust_repo`), so it is written from what this
+    run made, never from anything a workspace says; like `workspace`, it is set once, which
+    also fills it in for a person registered before the field existed."""
     space = spaceyaml.load(root)
     reg = registry.Registry(root, space)
     names = {p["slug"]: p["name"] for p in people_of(answers)}
     workspaces = dict(workspaces or {})
+    workspace_repos = dict(workspace_repos or {})
     added = []
 
     def upsert(data):
@@ -556,11 +633,13 @@ def fill_registry(report, root, answers, top_owner, brain_name, now, workspaces=
         for key in ("owner", "home", "part_of"):
             if data.get(key) and not getattr(existing, key):
                 setattr(existing, key, data[key])
-        for key in ("workspace", "classification"):   # set once; a later decision is never undone
+        for key in ("workspace", "workspace_repo", "classification"):   # set once; never undone
             if data.get(key) and not existing.extra.get(key):
+                if key == "workspace_repo" and existing.extra.get("workspace") != data.get("workspace"):
+                    continue   # a repository only beside the workspace it is
                 existing.extra[key] = data[key]
-        if data.get("match") and not existing.match:
-            existing.match = dict(data["match"])
+        for key, value in (data.get("match") or {}).items():   # set once; never undone
+            existing.match.setdefault(key, value)
 
     for d in parse_pairs(answers.get("domains"), "id", "owner", top_owner):
         upsert({"id": slugify(d["id"]), "kind": "domains", "title": humanize(d["id"]),
@@ -604,8 +683,12 @@ def fill_registry(report, root, answers, top_owner, brain_name, now, workspaces=
         data = {"id": person["slug"], "kind": "people", "title": person["name"]}
         if person.get("email"):
             data["email"] = person["email"]
+        if person.get("login"):
+            data["match"] = {"github": person["login"]}
         if workspaces.get(person["slug"]):
             data["workspace"] = workspaces[person["slug"]]
+            if workspace_repos.get(person["slug"]):
+                data["workspace_repo"] = workspace_repos[person["slug"]]
         if person.get("domain") and reg.get(slugify(person["domain"])) is not None:
             data["part_of"] = slugify(person["domain"])
         upsert(data)
@@ -1514,11 +1597,63 @@ def forget_space(root) -> bool:
     return len(keep) != len(rows)
 
 
+def signing_key_check(root) -> str:
+    import gate
+    return f"git -C {Path(root)} show origin/main:{gate.ALLOWED_SIGNERS}"
+
+
+def make_signing_key(root) -> str:
+    """This computer's commit-signing key for the space at `root` (`sync.make_signing_key`, idempotent): made when
+    the computer has none and listed in the space's protected `.github/allowed_signers`, never in a cloud run (the
+    key is the gate's proof that no cloud run made a commit, `gate._key_signed`). '' when done, else what failed."""
+    import sync
+    if os.environ.get("CLAUDE_CODE_REMOTE", "").lower() == "true":
+        return "a cloud run makes no signing key: the computer's own sync makes it"
+    with contextlib.redirect_stdout(io.StringIO()) as said:
+        made = sync.make_signing_key(Path(root))
+    return "" if made == sync.OK else (said.getvalue().strip()[:200] + ": install OpenSSH (ssh-keygen), then the "
+                                       "daily run makes the key")
+
+
+def signing_key_step(root) -> Step:
+    """Whether main's `.github/allowed_signers` lists this computer's key (read only). Until it does, every new
+    signature this computer lands waits for a click (`gate._key_signed`): the person's one click on the sync's
+    protected pull request when the line waits there, else the agent's `make_signing_key`."""
+    import gate
+    import sync
+    root, check = Path(root), signing_key_check(root)
+    pub = Path(f"{sync.signing_key()}.pub")
+    public = " ".join(pub.read_text(encoding="utf-8").split()[:2]) if pub.is_file() else ""
+    if not public:
+        return Step("signing key", False, check, "this computer's commits are not key-signed: it has no signing key "
+                    "(`python _meta/tools/sync.py --signing-key` makes it), so every new signature waits for a click")
+    if public in (gate._show(root, "origin/main", gate.ALLOWED_SIGNERS) or ""):
+        return Step("signing key", True, check, "main lists this computer's commit-signing key")
+    local = root / gate.ALLOWED_SIGNERS
+    if public in (local.read_text(encoding="utf-8") if local.is_file() else ""):
+        # every computer's line reads alike: only its key's end, read here on the computer, tells the person's apart
+        return Step("signing key", False, check, "this computer's key is not on main's .github/allowed_signers yet: it "
+                    "lands with your one click on the sync's protected pull request; click only if the line it adds "
+                    f"ends in {public[-16:]} (no computer of yours made a line that ends otherwise); till then every "
+                    "new signature from this computer waits for a click", needs_owner=True)
+    return Step("signing key", False, check, "this computer's key is not in .github/allowed_signers: the daily run "
+                "lists it (`python _meta/tools/sync.py --signing-key`); till then every new signature waits for a click")
+
+
 def register_sync(report, root, name, minutes, offline, dry_run) -> dict:
     """Register `sync.py` every `minutes`. Offline: recorded, not registered (the command of this system's
     scheduler; a Linux is recorded with cron, since whether it has a systemd user session is only found by
     asking systemctl, which offline mode never does)."""
     root = Path(root)
+    if not dry_run:
+        import sync
+        made = make_signing_key(root)
+        pub = Path(f"{sync.signing_key()}.pub")
+        tail = (pub.read_text(encoding="utf-8").split() + ["", ""])[1][-16:] if not made and pub.is_file() else ""
+        report.add(f"signing key {name}", not made, signing_key_check(root), made or (
+            "this computer's commit-signing key is listed in .github/allowed_signers: it lands with the first fill, "
+            f"else with your one click on the sync's protected pull request, if the line it adds ends in {tail}"),
+            needs_owner=bool(made))
     script, task = root / "_meta" / "tools" / "sync.py", f"{task_prefix()}sync-{name}"
     args = [script, "--root", root, "--release-leg"]
     if offline:
@@ -2325,6 +2460,827 @@ def unscheduled_step(workspace) -> Step:
                 "record the harness's own persistent tasks with --routines-scheduled")
 
 
+MOUNT_TOKENS = ("BRAIN_READ_TOKEN", "MOUNT_READ_TOKEN")
+
+
+def mount_token_advice(repo: str, brain: str | None = None) -> str:
+    """How the owner makes the checks' mount token, in one sentence: a fine-grained token per repository."""
+    owner = str(repo).split("/")[0]
+    return (f"the owner adds the repository secret BRAIN_READ_TOKEN to {repo} only: a fine-grained personal access "
+            f"token, resource owner {owner}, repository access 'Only select repositories: {brain or 'the brain'}', "
+            "permission Contents: read-only, with an expiry. Never an organization secret and never a classic token: "
+            "anyone who can push to a repository can read the secrets it sees")
+
+
+def brain_of_gitmodules(root) -> str | None:
+    """owner/name of the brain mount `.gitmodules` records, for the token advice; None when it names none."""
+    try:
+        text = (Path(root) / ".gitmodules").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    found = re.search(r'\[submodule "brain"\][^\[]*?url\s*=\s*(\S+)', text)
+    match = MOUNT_URL.fullmatch(found.group(1)) if found else None
+    return f"{match.group(1)}/{match.group(2)}" if match else None
+
+
+def mount_token(report, repo: str, org, dry_run, brain: str | None = None) -> None:
+    """The checks' mount token for one repository with mounts: present as this repository's own secret,
+    else one owner row with `mount_token_advice`. An organization secret of that name is one owner row of
+    its own, to delete it: it reaches every repository of the organization, every colleague's workspace
+    included, so every colleague can read it."""
+    listed = run_cmd(["gh", "secret", "list", "--repo", repo], dry_run)
+    names = {line.split()[0] for line in (listed.stdout or "").splitlines() if line.split()}
+    present = listed.returncode == 0 and any(name in names for name in MOUNT_TOKENS)   # the name itself, not a longer one
+    report.add(f"mount token {repo}", present or dry_run, f"gh secret list --repo {repo}",
+               "present as this repository's own secret" if present else mount_token_advice(repo, brain),
+               needs_owner=not present)
+    organization_token(report, repo, org, dry_run)
+
+
+def organization_token(report, repo: str, org, dry_run) -> None:
+    """An organization secret of a mount token's name is one owner row, to delete it: it reaches every
+    repository of the organization, every colleague's workspace included, so every colleague can read it."""
+    owner = org or str(repo).split("/")[0]
+    shared = [name for name in MOUNT_TOKENS
+              if not dry_run and run_cmd(["gh", "api", f"orgs/{owner}/actions/secrets/{name}", "-q", ".name"],
+                                         dry_run).returncode == 0]
+    if shared:
+        report.add(f"organization token {owner}", False, f"gh api orgs/{owner}/actions/secrets/{shared[0]} -q .name",
+                   f"the organization secret {', '.join(shared)} reaches every repository of {owner}, so every "
+                   f"colleague can read it: delete it (`gh secret delete {shared[0]} --org {owner}`) and give each "
+                   "repository its own fine-grained token that reads the brain only", needs_owner=True)
+
+
+# ----- mount keys: the checks read each mount with a read-only deploy key the agents make ----------
+# A fine-grained token is made by hand and expires; a deploy key is made by the agent, reads one
+# repository, read-only, and does not expire. Each consuming repository (a workspace, a project
+# space) gets one keypair per repository it mounts: the public half is a read-only deploy key on
+# the mounted repository, the private halves together are the consuming repository's secret
+# MOUNT_DEPLOY_KEYS, which only its `mounts` job reads (checks.yml). A key is made only when everyone
+# who can push to the consuming repository can already read the mounted one, since anyone who can
+# push there can read its secrets: so no key reads anything a writer could not read already.
+DEPLOY_KEYS_SECRET = "MOUNT_DEPLOY_KEYS"
+MOUNT_KEYS_STATE = Path("_meta") / "state" / "mount-keys.yaml"        # in the consuming space: which mounts are keyed
+KEY_REQUESTS = Path("_meta") / "state" / "private" / "key-requests"  # in the brain: public keys sent by note, never staged
+ATTACHED_KEYS = Path("_meta") / "state" / "mount-keys-attached.yaml"  # in the brain: the answers its workspaces read
+# The record removals read lives in the git dir (`key_record_path`), where no merge and no pull request writes it, as
+# sync.py keeps its leases: a pull request that force-adds an ignored file overwrites it in the work tree on merge.
+# KEY_RECORD is where it was before, read once to carry it over, and the record outside git, where nothing merges.
+KEY_RECORD = KEY_REQUESTS / "record" / "attached.yaml"
+RECORD_GIT_PATH = "spaces/mount-keys-attached.yaml"
+PRIVATE_STATE = Path("_meta") / "state" / "private"
+PENDING_DAYS = 7      # a key the brain's agent has not attached by then is asked for again
+PENDING_GRACE = 14    # until then the checks warn, not fail, when the brain is unread only through that key
+KEY_REFUSED = "the brain's agent refused it: "
+LASTING = ("someone who can push to", KEY_REFUSED)   # left-out reasons tried again weekly, not daily
+PUBLIC_KEY = re.compile(r"ssh-ed25519 [A-Za-z0-9+/]{68}")             # an ed25519 public key, no comment
+LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})")
+PLAIN_REPO = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}")
+
+
+def plain_repo(value) -> str | None:
+    """owner/name of a repository text, from `owner/name` or an https GitHub address; None for any
+    other shape (an option, a path, another host), so nothing else reaches a `gh api` path."""
+    text = str(value or "").strip()
+    match = MOUNT_URL.fullmatch(text)
+    if match:
+        text = f"{match.group(1)}/{match.group(2)}"
+    text = text[:-4] if text.endswith(".git") else text
+    return text if PLAIN_REPO.fullmatch(text) and text.split("/")[1] not in (".", "..") else None
+
+
+def mount_key_title(consumer: str) -> str:
+    """The deploy key's title on a mounted repository: names the consuming repository, so a re-key
+    or an offboarding finds and removes exactly that repository's keys, and nobody else's."""
+    return f"spaces checks of {str(consumer).lower()}"
+
+
+def gitmodules_repos(root) -> list:
+    """owner/name of every mount `.gitmodules` records at a plain https GitHub address, the brain first."""
+    try:
+        text = (Path(root) / ".gitmodules").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    found = []
+    for block in re.split(r"(?=^\[submodule )", text, flags=re.M):
+        url = re.search(r"^\s*url\s*=\s*(\S+)\s*$", block, flags=re.M)
+        repo = plain_repo(url.group(1)) if url and MOUNT_URL.fullmatch(url.group(1)) else None
+        if repo:
+            found.append((0 if block.startswith('[submodule "brain"]') else 1, repo))
+    return list(dict.fromkeys(repo for _, repo in sorted(found, key=lambda f: f[0])))
+
+
+def gh_input(args, input_text: str) -> subprocess.CompletedProcess:
+    """gh with its input on stdin: a private key never goes on a command line, where any process of
+    this computer could read it."""
+    argv = ["gh", *[str(a) for a in args]]
+    try:
+        return subprocess.run(argv, input=input_text, capture_output=True, text=True, check=False, timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return subprocess.CompletedProcess(argv, 127, "", str(exc))
+
+
+def default_gh(dry_run=False):
+    """The door the mount keys use: `gh <args>` through `run_cmd`, and through `gh_input` when it has
+    input. Tests pass their own."""
+    def gh(args, input=None):
+        if dry_run:
+            return run_cmd(["gh", *args], True)
+        return run_cmd(["gh", *args]) if input is None else gh_input(args, input)
+    return gh
+
+
+def make_keypair(title: str):
+    """(private key, public key) of a new ed25519 keypair, made by ssh-keygen in a private folder of
+    the machine's temporary folder that is removed at once; None when ssh-keygen is not here. The public
+    key comes back without its comment (`PUBLIC_KEY`)."""
+    if not shutil.which("ssh-keygen"):
+        return None
+    folder = tempfile.mkdtemp(prefix="spaces-key-")
+    try:
+        key = Path(folder) / "key"
+        res = subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", title, "-f", str(key)],
+                             capture_output=True, text=True, check=False, timeout=60, stdin=subprocess.DEVNULL)
+        if res.returncode != 0 or not key.is_file():
+            return None
+        public = " ".join(key.with_suffix(".pub").read_text(encoding="utf-8").split()[:2])
+        return key.read_text(encoding="utf-8"), public
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def key_fingerprint(public: str) -> str:
+    """The key's SHA256 fingerprint, as GitHub and ssh-keygen show it."""
+    import base64
+    import hashlib
+    blob = base64.b64decode(public.split()[1])
+    return "SHA256:" + base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip("=")
+
+
+def key_bundle(private: dict, pending: dict | None = None) -> str:
+    """The secret MOUNT_DEPLOY_KEYS: per mounted repository a `mount <owner>/<name>` line, then its
+    private key (the format checks.yml reads). A key the brain's agent has still to attach gets a
+    `pending <owner>/<name> <yyyy-mm-dd>` line first: until that day the checks warn, not fail, when the
+    brain is unread only through it, so a colleague's first pull requests land while the key waits."""
+    pending = pending or {}
+    return "".join((f"pending {repo} {pending[repo]}\n" if repo in pending else "") + f"mount {repo}\n{key.strip()}\n"
+                   for repo, key in private.items())
+
+
+def _gh_ok(gh, *args) -> tuple:
+    res = gh(list(args))
+    return res.returncode == 0, (res.stdout or "").strip()
+
+
+def is_admin(gh, repo: str) -> bool:
+    """Whether the signed-in account administers `repo` (a read)."""
+    ok, out = _gh_ok(gh, "api", f"repos/{repo}", "-q", ".permissions.admin")
+    return ok and out == "true"
+
+
+def writers_can_read(gh, consumer: str, mount: str, own_login: str | None = None) -> bool:
+    """Whether everyone who can push to `consumer` can already read `mount`: only then may a key that
+    reads `mount` sit in `consumer`'s secrets. A public `mount` is readable by anyone. A list that
+    cannot be read is a no (fail closed). `own_login` is a person whose read of `mount` is already known."""
+    ok, private = _gh_ok(gh, "api", f"repos/{mount}", "-q", ".private")
+    if ok and private == "false":
+        return True
+    ok, out = _gh_ok(gh, "api", f"repos/{consumer}/collaborators?affiliation=all&permission=push&per_page=100",
+                     "--paginate", "-q", ".[].login")
+    if not ok:
+        return False
+    for login in dict.fromkeys(l.strip() for l in out.splitlines() if l.strip()):
+        if not LOGIN.fullmatch(login):
+            return False
+        if own_login and login.lower() == own_login.lower():
+            continue
+        ok, level = _gh_ok(gh, "api", f"repos/{mount}/collaborators/{login}/permission", "-q", ".permission")
+        if not ok or level not in READ_LEVELS:
+            return False
+    return True
+
+
+def attach_key(gh, mount: str, consumer: str, public: str) -> bool:
+    """Put `public` on `mount` as the read-only deploy key of `consumer`, in place of any key of that
+    title (a re-key), and read it back: True only when GitHub lists it read-only."""
+    title = mount_key_title(consumer)
+    ok, out = _gh_ok(gh, "api", f"repos/{mount}/keys", "--paginate", "-q", '.[] | "\\(.id) \\(.title)"')
+    if not ok:
+        return False
+    for line in out.splitlines():
+        kid, _, ktitle = line.partition(" ")
+        if ktitle.strip().lower() == title and kid.isdigit():
+            gh(["api", "-X", "DELETE", f"repos/{mount}/keys/{kid}"])
+    res = gh(["api", "-X", "POST", f"repos/{mount}/keys", "-f", f"title={title}", "-f", f"key={public}",
+              "-F", "read_only=true", "-q", ".read_only"])
+    return res.returncode == 0 and (res.stdout or "").strip() == "true"
+
+
+def remove_keys(gh, mount: str, consumer: str) -> tuple:
+    """Remove every deploy key `consumer` holds on `mount` (offboarding, a mount let go); (removed,
+    read back): read back is True once no key of that title is listed."""
+    ok, ids = key_ids(gh, mount, consumer)
+    if not ok:
+        return 0, False
+    removed = sum(gh(["api", "-X", "DELETE", f"repos/{mount}/keys/{kid}"]).returncode == 0
+                  for kid in ids if kid.isdigit())
+    ok, left = key_ids(gh, mount, consumer)
+    return removed, ok and not left
+
+
+def key_ids(gh, mount: str, consumer: str) -> tuple:
+    """(listed, ids): the ids of the deploy keys on `mount` titled for `consumer` (`mount_key_title`)."""
+    title = mount_key_title(consumer)
+    ok, out = _gh_ok(gh, "api", f"repos/{mount}/keys", "--paginate", "-q", '.[] | "\\(.id) \\(.title)"')
+    return ok, [l.partition(" ")[0] for l in out.splitlines() if l.partition(" ")[2].strip().lower() == title]
+
+
+def request_key(root, mount: str, consumer: str, public: str) -> str | None:
+    """Ask the brain's agent to attach `public` to `mount` for `consumer`, by a registry note from this
+    workspace about its own person (`classify.note`, kind `key`): the brain checks the note against its
+    registry before it attaches anything (`queue_mount_key`, `attach_mount_keys`). None when the note
+    went, else why it could not."""
+    try:
+        import classify
+        space = spaceyaml.load(root)
+        # about this workspace's own person, by registry id, as its `workspace` note is (`classify.announce`)
+        sid = classify.person_id(registry.Registry(root, space), space.owner)
+        classify.note(root, sid, "key", {"consumer": consumer, "mount": mount, "key": public})
+    except Exception as exc:   # a brain whose tools take no key note yet, a person it does not hold
+        return str(exc)[:160] or exc.__class__.__name__
+    return None
+
+
+def _days_since(text, today) -> int:
+    """Whole days from an ISO date to `today`; a date that cannot be read is long ago."""
+    try:
+        return (today - dt.date.fromisoformat(str(text)[:10])).days
+    except ValueError:
+        return 9999
+
+
+def brain_answers(root) -> dict:
+    """What the brain's agent did with the keys this space asked it for: its record (`ATTACHED_KEYS`),
+    read through this space's brain mount, by `<consumer> <mount>` in lower case; {} when there is none.
+    Only an outcome whose fingerprint is the key this space sent counts (`mount_access`)."""
+    try:
+        broot = spaceyaml.load(root).mount_root("brain")
+        data = read_yaml(Path(broot) / ATTACHED_KEYS, {}) if broot is not None else {}
+    except Exception:   # no brain mount, an unreadable record: nothing is known yet
+        return {}
+    keys = data.get("keys") if isinstance(data, dict) else None
+    return {str(k).lower(): v for k, v in keys.items() if isinstance(v, dict)} if isinstance(keys, dict) else {}
+
+
+def _lasting(why: str) -> bool:
+    """A mount left out for a reason a retry today would not change: then it is tried again weekly."""
+    return str(why).startswith(LASTING)
+
+
+def mount_access(report, repo: str, root, org=None, dry_run=False, gh=None, keygen=None, today=None) -> None:
+    """The checks' read access to every mount of one repository, made by the agent: one read-only deploy
+    key per mounted repository, its private half in the repository's secret MOUNT_DEPLOY_KEYS. A mount
+    this account administers gets its key at once (`attach_key`), only when everyone who can push here
+    can already read it (`writers_can_read`); any other (the company's brain, seen from a colleague's
+    own account) is asked of the brain's agent by a registry note (`request_key`), which checks the same
+    before it attaches it and records what it did (`brain_answers`). Nothing changes while every mount is
+    settled (keyed and attached, asked less than PENDING_DAYS ago, or left out for a lasting reason this
+    week, in `_meta/state/mount-keys.yaml`, with the secret present); anything else makes every key again,
+    since a secret cannot be read back to add one. So a key the brain refused or never attached, and a
+    mount left out for a passing reason (the brain could not be asked, GitHub did not take it), are tried
+    again on the next run (`keys_upkeep`, daily). Where the brain is unread by any key, the fine-grained
+    token is the fallback (`mount_token`): the person hears of it only when neither is there."""
+    root = Path(root)
+    mounts = gitmodules_repos(root)
+    consumer = plain_repo(repo)
+    if not mounts or not consumer:
+        mount_token(report, repo, org, dry_run, brain_of_gitmodules(root))
+        return
+    gh = gh or default_gh(dry_run)
+    keygen = keygen or make_keypair
+    today = today or dt.datetime.now(dt.timezone.utc).date()
+    check = f"gh secret list --repo {consumer}"
+    if dry_run:
+        report.add(f"mount keys {repo}", True, check, f"would make a read-only deploy key for {', '.join(mounts)}")
+        return
+    state = read_yaml(root / MOUNT_KEYS_STATE, {}) or {}
+    ours = isinstance(state, dict) and str(state.get("repo") or "").lower() == consumer.lower()
+    keyed = dict(state.get("keys")) if ours and isinstance(state.get("keys"), dict) else {}
+    was_left = dict(state.get("left")) if ours and isinstance(state.get("left"), dict) else {}
+    answers, changed, unanswered = brain_answers(root), False, {}
+    for mount, rec in list(keyed.items()):
+        rec = rec if isinstance(rec, dict) else {}
+        if rec.get("attached"):
+            continue
+        said = answers.get(f"{consumer} {mount}".lower()) or {}
+        said = said if said.get("fingerprint") == rec.get("fingerprint") else {}
+        if said.get("outcome") == "attached":
+            keyed[mount], changed = {**rec, "attached": True}, True
+        elif said.get("outcome") == "refused" or _days_since(rec.get("asked"), today) >= PENDING_DAYS:
+            keyed.pop(mount)
+            was_left[mount] = (f"{KEY_REFUSED}{pages._shown(said.get('why'))[:160]}" if said
+                               else f"the brain's agent did not attach it in {PENDING_DAYS} days")
+            if not said:
+                unanswered[mount] = int(rec.get("asks") or 1)
+            changed = True
+    ok, out = _gh_ok(gh, "secret", "list", "--repo", consumer)
+    present = ok and DEPLOY_KEYS_SECRET in {line.split()[0] for line in out.splitlines() if line.split()}
+    week = _days_since(state.get("at"), today) < PENDING_DAYS if ours else False
+    if ours and present and all(m in keyed or (m in was_left and _lasting(was_left[m]) and week) for m in mounts):
+        if changed:
+            write_yaml(root / MOUNT_KEYS_STATE, {**state, "keys": keyed, **({"left": was_left} if was_left else {})})
+        _mount_keys_row(report, repo, check, list(keyed), [m for m in keyed if not (keyed[m] or {}).get("attached")],
+                        {m: was_left[m] for m in mounts if m in was_left})
+        if mounts[0] in was_left or int((keyed.get(mounts[0]) or {}).get("asks") or 1) > 1:
+            mount_token(report, repo, org, dry_run, mounts[0])
+        else:
+            organization_token(report, repo, org, dry_run)
+        return
+    if not is_admin(gh, consumer):
+        report.add(f"mount keys {repo}", True, check, f"no deploy key: this account cannot set {consumer}'s secrets")
+        mount_token(report, repo, org, dry_run, mounts[0])
+        return
+    private, record, left, pending = {}, {}, {}, {}
+    for mount in mounts:
+        own = is_admin(gh, mount)
+        if own and not writers_can_read(gh, consumer, mount):
+            left[mount] = f"someone who can push to {consumer} cannot read it"
+            continue
+        pair = keygen(mount_key_title(consumer))
+        if pair is None or not PUBLIC_KEY.fullmatch(str(pair[1])):
+            left[mount] = "no ed25519 key could be made here (ssh-keygen)"
+            continue
+        secret, public = pair
+        if own:
+            if not attach_key(gh, mount, consumer, public):
+                left[mount] = "GitHub did not take the deploy key"
+                continue
+        else:
+            refused = request_key(root, mount, consumer, public)
+            if refused:
+                left[mount] = f"the brain's agent could not be asked ({refused})"
+                continue
+            pending[mount] = (today + dt.timedelta(days=PENDING_GRACE)).isoformat()
+        private[mount] = secret
+        record[mount] = {"fingerprint": key_fingerprint(public), "attached": own,
+                         **({} if own else {"asked": today.isoformat(), "asks": unanswered.get(mount, 0) + 1})}
+    if private and gh(["secret", "set", DEPLOY_KEYS_SECRET, "--repo", consumer],
+                      input=key_bundle(private, pending)).returncode != 0:
+        left.update({m: f"GitHub did not store the secret {DEPLOY_KEYS_SECRET}" for m in private})
+        private, record = {}, {}
+    if private:
+        write_yaml(root / MOUNT_KEYS_STATE, {"repo": consumer, "secret": DEPLOY_KEYS_SECRET, "at": today.isoformat(),
+                                             "keys": record, **({"left": left} if left else {})})
+    _mount_keys_row(report, repo, check, list(private), [m for m, r in record.items() if not r["attached"]], left)
+    # The brain unread by a key, or asked of the brain's agent more than once with no answer: the token is the
+    # fallback, and only its absence is the person's.
+    if mounts[0] in left or int((record.get(mounts[0]) or {}).get("asks") or 1) > 1:
+        mount_token(report, repo, org, dry_run, mounts[0])
+    else:
+        organization_token(report, repo, org, dry_run)
+
+
+def _mount_keys_row(report, repo, check, keyed, waiting, left) -> None:
+    """One row for the mount keys: which mounts are keyed, which wait for the brain's agent, which were
+    left out and why. Done: what is left out is a mount the checks skip with a warning, and the brain's
+    own fallback is the token row."""
+    report.add(f"mount keys {repo}", True, check,
+               (f"a read-only deploy key for {', '.join(keyed)}" if keyed else "no deploy key")
+               + (f"; the brain's agent attaches the one for {', '.join(waiting)}" if waiting else "")
+               + "".join(f"; {m} left out: {why}" for m, why in left.items()))
+
+
+def space_repo(root) -> str | None:
+    """owner/name of this space's own repository: what onboarding recorded, else its origin remote."""
+    state = read_yaml(Path(root) / "_meta" / "state" / "onboard.yaml", {}) or {}
+    return plain_repo((state.get("repo") if isinstance(state, dict) else None) or git_remote(root))
+
+
+def key_mounts(root, reg, person) -> set:
+    """The repositories a colleague's workspace may hold a key for, in lower case: the brain itself, and
+    each project the brain's registry has them on the crew of (its `match.repo`, else the space the
+    brain's onboarding made for it). Nothing else, whatever else they can read. The crew is read as landing
+    and the gate read it (`classify._crew_of`): the subject's, its umbrellas', and its walled classification's."""
+    import classify
+    state = read_yaml(Path(root) / "_meta" / "state" / "onboard.yaml", {}) or {}
+    spaces = state.get("spaces") if isinstance(state, dict) and isinstance(state.get("spaces"), dict) else {}
+    found = {space_repo(root)}
+    for subject in reg.subjects.values():
+        if subject.kind == "people" or subject.state == "archived" or person.id not in classify._crew_of(reg, subject.id):
+            continue
+        repo = plain_repo((subject.match or {}).get("repo"))
+        if not repo and subject.home in spaces:
+            repo = plain_repo(git_remote(Path(str(spaces[subject.home]))))
+        found.add(repo)
+    return {f.lower() for f in found if f}
+
+
+def queue_mount_key(root, signal: dict, reg=None) -> tuple:
+    """In the brain: keep a `key` registry note's request for `attach_mount_keys`, after the checks that
+    need no host: the person who sent it is registered and the note came from their registered workspace
+    (or they have none yet), the consuming repository is their `workspace_repo` when one is registered
+    (else, once their login is known, in their own account), the mounted repository is a plain name and
+    the key an ed25519 public key. `reg` is the registry the caller holds, so a note that comes in the same
+    batch as the workspace's own `workspace` note sees it. ("applied", "") or ("refused", why). Only a note
+    the brain's main branch holds as it is counts (`merged_note`): one written into `_inbound/signals/` here by
+    hand never queues a key. The request goes to KEY_REQUESTS, which is never staged. Nothing is
+    attached here: what is not settled yet (no workspace, login or workspace repository registered) waits
+    there for `attach_mount_keys`, which checks everything again."""
+    root = Path(root)
+    data = signal.get("data") if isinstance(signal.get("data"), dict) else {}
+    by, sender = str(signal.get("by") or ""), str(signal.get("from") or "")
+    reg = reg if reg is not None else registry.Registry(root, spaceyaml.load(root))
+    person = next((s for s in reg.subjects.values() if s.kind == "people" and s.state != "archived"
+                   and str(s.title).strip().lower() == by.strip().lower()), None)
+    had = str(person.extra.get("workspace") or "") if person is not None else ""
+    someone_else = any(s is not person and s.kind == "people" and str(s.extra.get("workspace") or "") == sender
+                       for s in reg.subjects.values())
+    if person is None or not pages.is_slug(sender) or (had and had != sender) or someone_else:
+        return "refused", f"{by or 'the sender'} has no registered workspace {sender or ''}".strip()
+    consumer, mount = plain_repo(data.get("consumer")), plain_repo(data.get("mount"))
+    public = str(data.get("key") or "").strip()
+    if not consumer or not mount or not PUBLIC_KEY.fullmatch(public):
+        return "refused", "a key note names its repository, the mount and an ed25519 public key"
+    pinned = plain_repo(person.extra.get("workspace_repo"))
+    login = str(person.match.get("github") or "")
+    if pinned and pinned.lower() != consumer.lower():
+        return "refused", f"{consumer} is not {person.title}'s workspace repository"
+    if not merged_note(root, signal):
+        return "refused", "a key note counts only once it reached the brain's main branch through a pull request"
+    name = f"{consumer.replace('/', '--')}--{mount.replace('/', '--')}".lower()
+    write_yaml(root / KEY_REQUESTS / f"{name}.yaml",
+               {"person": person.id, "from": sender, "consumer": consumer, "mount": mount, "key": public,
+                "fingerprint": key_fingerprint(public), "at": signal.get("at")})
+    return "applied", ""
+
+
+def merged_note(root, signal: dict) -> bool:
+    """Whether `signal` is the note the brain's main branch on GitHub holds at `_inbound/signals/<id>.yaml`,
+    unchanged: a note from another space reaches the brain only by a pull request, whose `from` the gate bound to
+    the login that pushed it. A note written into `_inbound/signals/` on this computer (a routine a mail talked
+    into it) is not on origin/main, and the sync's pull request that would carry it is held, so it never queues
+    a key. Read with git directly, as bytes, so a name outside ASCII compares the same on every computer."""
+    sid = str(signal.get("id") or "")
+    if not pages.is_page_id(sid):
+        return False
+    try:
+        res = subprocess.run(["git", "-C", str(root), "show", f"origin/main:_inbound/signals/{sid}.yaml"],
+                             capture_output=True, check=False, timeout=60)
+        return res.returncode == 0 and yaml.safe_load(res.stdout.decode("utf-8")) == signal
+    except (OSError, subprocess.TimeoutExpired, UnicodeError, yaml.YAMLError):
+        return False
+
+
+def _tracked(root, folder) -> set | None:
+    """The names git tracks in `folder`, or None when git cannot say. A key request git tracks came in a
+    pull request, not from a note on this computer: it is never attached."""
+    res = run_cmd(["git", "ls-files", "-z", "--", Path(folder).relative_to(root).as_posix()], cwd=root)
+    if res.returncode != 0:
+        return None
+    return {Path(p).name for p in (res.stdout or "").split("\0") if p}
+
+
+def _key_entries(path) -> dict:
+    try:
+        data = read_yaml(path, {}) or {}
+    except (OSError, yaml.YAMLError):
+        return {}
+    keys = data.get("keys") if isinstance(data, dict) else None
+    return {str(k): v for k, v in keys.items() if isinstance(v, dict)} if isinstance(keys, dict) else {}
+
+
+def key_record_path(root) -> Path:
+    """The brain's record of attached keys: `RECORD_GIT_PATH` in its git dir, which no merge or pull request
+    writes; `KEY_RECORD` only where git names no git dir (then nothing merges into the work tree either)."""
+    root = Path(root)
+    try:
+        res = subprocess.run(["git", "-C", str(root), "rev-parse", "--git-path", RECORD_GIT_PATH],
+                             capture_output=True, text=True, check=False, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return root / KEY_RECORD
+    found = res.stdout.strip() if res.returncode == 0 else ""
+    if not found:
+        return root / KEY_RECORD
+    return Path(found) if Path(found).is_absolute() else root / found
+
+
+def attached_keys(root, taken=None) -> dict:
+    """The brain's record of every key request its agent settled: by `<consumer> <mount>`, the person, the
+    fingerprint and the outcome (attached, refused or removed). The record is in the git dir (`key_record_path`),
+    so no pull request, merged or not, hides a key from its removal; the work-tree record of before
+    (`KEY_RECORD`) is read only while the git dir holds none and git does not track it. A key the published
+    answers (`ATTACHED_KEYS`) call attached and the record does not is added, so a record lost with a computer
+    still finds the keys. Anyone can edit the answers in a pull request and an entry here can lead to a removal,
+    so one is taken only under its own `<consumer> <mount>` key, where the record holds nothing, and for a
+    registered person whose consumer it is (`_consumer_of`): it can then only remove that person's own key.
+    `taken`, a set, receives the keys that came from the answers only."""
+    root = Path(root)
+    path, legacy = key_record_path(root), root / KEY_RECORD
+    record = _key_entries(path)
+    if not path.is_file() and path != legacy and legacy.is_file():
+        tracked = _tracked(root, legacy.parent)
+        if tracked is not None and KEY_RECORD.name not in tracked:
+            record = _key_entries(legacy)
+    answers = _key_entries(root / ATTACHED_KEYS)
+    try:
+        subjects = registry.Registry(root, spaceyaml.load(root)).subjects if answers else {}
+    except Exception:   # no registry to check an answer against: take none
+        subjects = {}
+    for key, entry in answers.items():
+        consumer, mount = plain_repo(entry.get("consumer")), plain_repo(entry.get("mount"))
+        person = subjects.get(str(entry.get("person") or ""))
+        if entry.get("outcome") == "attached" and consumer and mount and key == f"{consumer} {mount}".lower()                 and key not in record and person is not None and person.kind == "people"                 and _consumer_of(person, consumer):
+            record[key] = entry
+            if taken is not None:
+                taken.add(key)
+    return record
+
+
+def _consumer_of(person, consumer: str) -> bool:
+    """`consumer` is this person's repository as attaching requires: their `workspace_repo`, or, when none is
+    registered, a repository in their own GitHub account."""
+    pinned = plain_repo(person.extra.get("workspace_repo"))
+    login = str(person.match.get("github") or "")
+    if pinned:
+        return pinned.lower() == consumer.lower()
+    return bool(LOGIN.fullmatch(login)) and consumer.split("/")[0].lower() == login.lower()
+
+
+def attached_mounts(root, person_id: str) -> list:
+    """The mounted repositories the brain's record says hold a key attached for this person's workspace:
+    offboarding removes their keys there too, not only on the repositories they read."""
+    found = [plain_repo(v.get("mount")) for v in attached_keys(root).values()
+             if v.get("outcome") == "attached" and str(v.get("person") or "") == str(person_id)]
+    return list(dict.fromkeys(f for f in found if f))
+
+
+def attach_mount_keys(brain_root, gh=None) -> Report:
+    """In the brain, by its owner's agent: attach each queued key request (`queue_mount_key`) once the
+    registry and the host agree it reads nothing new. A request git tracks is refused (it came in a pull
+    request). The registry: the person is registered, not archived, the request came from their registered
+    workspace, the consuming repository is their `workspace_repo` (or in their own account when none is
+    registered), and the mount is the brain or a project they are crew on (`key_mounts`); what the
+    registry does not hold yet waits. The host: this account administers the mount, their login reads it,
+    and everyone who can push to the consuming repository reads it too (`writers_can_read`; only the brain,
+    for a workspace in their own account, is theirs to share as a clone would be). Every outcome goes to
+    the record (`KEY_RECORD`, never staged), which offboarding reads for their keys, and to the answers
+    (`ATTACHED_KEYS`), which their workspace reads through its brain mount. Each run also removes a recorded key whose person is archived, is off that crew
+    or no longer reads the mount. `python onboard.py <brain> --mount-keys`, in the daily chain."""
+    root = Path(brain_root).resolve()
+    gh = gh or default_gh()
+    report = Report(case="mount-keys")
+    reg = registry.Registry(root, spaceyaml.load(root))
+    from_answers = set()
+    record = attached_keys(root, from_answers)
+    before = json.dumps(record, sort_keys=True, default=str)
+    unconfirmed = {}   # answers GitHub could not be asked about: kept in the answers only, asked again next run
+    for key in from_answers:   # anyone can edit the answers: one is kept only for a key the brain sees on a mount it administers
+        mount, consumer = plain_repo(record[key].get("mount")), plain_repo(record[key].get("consumer"))
+        res = gh(["api", f"repos/{mount}", "-q", ".permissions.admin"])
+        ok, admin = res.returncode == 0, (res.stdout or "").strip()
+        # a 404 is an answer: this account cannot see the mount, so it holds no key there to keep or remove
+        unseen = not ok and bool(re.search(r"HTTP 404|Not Found", res.stderr or "", re.I))
+        listed, ids = key_ids(gh, mount, consumer) if ok and admin == "true" else (ok or unseen, [])
+        entry = record.pop(key)
+        if ids:
+            record[key] = entry
+        elif not listed:   # a failed call is no answer: dropping it here would lose a real key's removal for good
+            unconfirmed[key] = entry
+            report.add(f"mount key {consumer} on {mount}", False, f"gh api repos/{mount}/keys -q '.[].title'",
+                       f"could not confirm mount key {consumer} on {mount}: tried again next run")
+    own_brain = space_repo(root)
+    folder = root / KEY_REQUESTS
+    paths = sorted(folder.glob("*.yaml")) if folder.is_dir() else []
+    tracked = _tracked(root, folder) if paths else set()
+    for path in paths:
+        try:
+            request = read_yaml(path, {}) or {}
+        except (OSError, yaml.YAMLError):
+            request = {}
+        request = request if isinstance(request, dict) else {}
+        consumer, mount = plain_repo(request.get("consumer")), plain_repo(request.get("mount"))
+        public = str(request.get("key") or "")
+        person = reg.subjects.get(str(request.get("person") or ""))
+        name = f"mount key {consumer or '?'} on {mount or '?'}"
+        check = f"gh api repos/{mount}/keys -q '.[].title'" if mount else ""
+
+        def settle(outcome, why):
+            if consumer and mount and person is not None:
+                record[f"{consumer} {mount}".lower()] = {
+                    "person": person.id, "consumer": consumer, "mount": mount, "outcome": outcome,
+                    "fingerprint": key_fingerprint(public) if PUBLIC_KEY.fullmatch(public) else "",
+                    **({"why": why} if why else {}), "at": dt.datetime.now(dt.timezone.utc).date().isoformat()}
+            report.add(name, True, check, why and f"refused: {why}" or "attached")
+            path.unlink()
+        if tracked is None:
+            report.add(name, False, "git ls-files _meta/state/private", "git cannot say whether this request came "
+                       "from a note on this computer: tried again next run")
+            continue
+        if path.name in tracked:
+            settle("refused", "a request git tracks came in a pull request, not from a note")
+            continue
+        if not consumer or not mount or not PUBLIC_KEY.fullmatch(public) or person is None \
+                or person.kind != "people" or person.state == "archived":
+            settle("refused", "the request names no registered person, or no plain repository and key")
+            continue
+        workspace = str(person.extra.get("workspace") or "")
+        login = str(person.match.get("github") or "")
+        pinned = plain_repo(person.extra.get("workspace_repo"))
+        own_account = LOGIN.fullmatch(login) and consumer.split("/")[0].lower() == login.lower()
+        if workspace and workspace != str(request.get("from") or ""):
+            settle("refused", f"it did not come from {person.title}'s registered workspace")
+            continue
+        if pinned and pinned.lower() != consumer.lower():
+            settle("refused", f"{consumer} is not {person.title}'s workspace repository")
+            continue
+        if not workspace or not LOGIN.fullmatch(login) or not (pinned or own_account):
+            report.add(name, True, check, f"waits until the registry gives {person.title} their workspace, GitHub "
+                       "login and workspace repository")
+            continue
+        if mount.lower() not in key_mounts(root, reg, person):
+            settle("refused", f"{mount} is neither the brain nor a project {person.title} is crew on")
+            continue
+        if not is_admin(gh, mount):
+            # only the brain attaches keys, and without admin it cannot read back a key added by hand: admin it is
+            report.add(name, False, check, f"this account does not administer {mount}: ask whoever administers it "
+                       f"(the {mount.split('/')[0]} account) to give you admin on {mount}; the next daily run then "
+                       f"attaches {person.title}'s read-only key", needs_owner=True)
+            continue
+        ok, level = _gh_ok(gh, "api", f"repos/{mount}/collaborators/{login}/permission", "-q", ".permission")
+        if not ok or level not in READ_LEVELS:
+            settle("refused", f"{person.title} ({login}) cannot read {mount}")
+            continue
+        theirs = own_account and own_brain and mount.lower() == own_brain.lower()
+        if not theirs and not writers_can_read(gh, consumer, mount, own_login=login):
+            settle("refused", f"someone who can push to {consumer} cannot read {mount}")
+            continue
+        if attach_key(gh, mount, consumer, public):
+            settle("attached", "")
+        else:
+            report.add(name, False, check, "GitHub did not take it: tried again next run")
+    for key, entry in list(record.items()):
+        person = reg.subjects.get(str(entry.get("person") or ""))
+        consumer, mount = plain_repo(entry.get("consumer")), plain_repo(entry.get("mount"))
+        if entry.get("outcome") != "attached" or not consumer or not mount:
+            continue
+        login = str(person.match.get("github") or "") if person is not None else ""
+        why = ""
+        if person is None or person.state == "archived":
+            why = "their person is archived"
+        elif mount.lower() not in key_mounts(root, reg, person):
+            why = f"{person.title} is no longer on its crew"
+        elif LOGIN.fullmatch(login):
+            ok, level = _gh_ok(gh, "api", f"repos/{mount}/collaborators/{login}/permission", "-q", ".permission")
+            why = f"{person.title} ({login}) no longer reads it" if ok and level not in READ_LEVELS else ""
+        if not why:
+            continue
+        removed, clear = remove_keys(gh, mount, consumer)
+        if not clear and not is_admin(gh, mount):
+            report.add(f"mount key {consumer} on {mount}", False, f"gh api repos/{mount}/keys -q '.[].title'",
+                       f"{why}, and this account does not administer {mount}: ask whoever administers it (the "
+                       f"{mount.split('/')[0]} account) to remove the deploy key titled '{mount_key_title(consumer)}', "
+                       f"or to give you admin on {mount} so the next daily run removes it", needs_owner=True)
+            continue
+        report.add(f"mount key {consumer} on {mount}", clear, f"gh api repos/{mount}/keys -q '.[].title'",
+                   f"removed: {why}" if clear else f"{why}, and the key could not be removed: tried again next run")
+        if clear:
+            record[key] = {**entry, "outcome": "removed", "why": why}
+    for target, keys in ((key_record_path(root), record), (root / ATTACHED_KEYS, {**record, **unconfirmed})):
+        after = json.dumps(keys, sort_keys=True, default=str)   # the record removals read, the answers workspaces read
+        if after != before or json.dumps(_key_entries(target), sort_keys=True, default=str) != after:
+            write_yaml(target, {"keys": keys})
+    private_tracked(report, root)
+    return report
+
+
+def private_tracked(report, root) -> None:
+    """A file git tracks under `_meta/state/private/` came in a pull request (the sync never stages there): a
+    security notice to the person through owner_email, once per set of files, and a failing row. Nothing reads it:
+    the key record is in the git dir, and a tracked key request is refused."""
+    names = _tracked(root, Path(root) / PRIVATE_STATE)
+    if not names:
+        return
+    report.add("private files tracked", False, f"git ls-files {PRIVATE_STATE.as_posix()}",
+               f"git tracks {len(names)} file(s) in the private folder, so a merged pull request put them there: "
+               "they are not read; remove them from the repository", needs_owner=True)
+    import hashlib
+    import owner_email
+    notice = {"kind": "security", "sender": "sync", "title": "A merged change added files that should stay private",
+              "summary": "A change merged into the shared repository put files in the folder that stays on this "
+                         "computer only. They were not read, and the list of colleague access stays as it was.",
+              "steps": ["Find the change that added them and ask its author why.",
+                        "Remove those files from the shared repository in a new change."],
+              "reassure": "Nothing was read from them and no access was given or removed because of them.",
+              "key": "private-tracked-" + hashlib.sha256("\n".join(sorted(names)).encode()).hexdigest()[:16]}
+    try:
+        owner_email.queue(root, notice)
+    except (Exception, SystemExit):   # the failing row above still names it
+        pass
+
+
+def keys_upkeep(root, gh=None, keygen=None, today=None) -> Report:
+    """The daily upkeep of the checks' mount access, run by any space's agent with no person: this space's
+    own mount keys (`mount_access`, which changes nothing while they are settled), in the brain every key
+    request a colleague's workspace sent by note (`attach_mount_keys`), and the crew projects setup left
+    out (`crew_left_steps`). What the agent fixes goes to its health rows (`needs_you.set_health`, writer
+    `mount-keys`), which the daily retries; what only the person can do (a needs_owner row) is a Needs-you
+    item of theirs (`MOUNT_KEY_ITEMS`), an organization secret every colleague reads also a security notice
+    (owner_email). In the brain, an owner's row with no GitHub login gets it (`owner_login_step`): the gate ties
+    the owner's upkeep to it. `python onboard.py <space> --mount-keys`, in every space's daily chain."""
+    import needs_you
+    root = Path(root).resolve()
+    space = spaceyaml.load(root)
+    report = Report(case="mount-keys")
+    if (root / ".gitmodules").exists():
+        repo = space_repo(root)
+        if repo:
+            mount_access(report, repo, root, gh=gh, keygen=keygen, today=today)
+        else:
+            report.add("mount keys", False, "git remote get-url origin",
+                       "this space's repository is not known: add the origin remote (`git remote add origin "
+                       "<its address>`)", needs_owner=True)
+    if space.profile == "brain":
+        report.steps += attach_mount_keys(root, gh=gh).steps
+        owner_login_step(report, root, space, gh=gh)
+    import mint
+    report.steps += crew_left_steps(space, mount=mint.mount_space)
+
+    def row_id(s):
+        return "mount-keys-" + (re.sub(r"[^a-z0-9]+", "-", s.name.lower()).strip("-") or "row")
+    needs_you.set_health(root, "mount-keys", [
+        {"id": row_id(s), "text": f"{s.name}: {s.result}",
+         "agent": f"the daily chain tries it again (chain.py daily; check: {s.check})"} for s in report.failed()])
+    made = make_signing_key(root)   # its own health writer: this computer's key, not the checks' mount keys
+    signing = Step("signing key", False, signing_key_check(root), made) if made else signing_key_step(root)
+    needs_you.set_health(root, "signing-key", [] if signing.done or signing.needs_owner else [
+        {"id": "signing-key", "text": f"{signing.name}: {signing.result}",
+         "agent": f"the daily chain checks it again (chain.py daily; check: {signing.check})"}])
+    theirs = [s for s in report.steps if s.needs_owner and not s.done]
+    # the key click is the person's: a question of theirs, whose full text keeps the key's end to compare. Its id
+    # carries the key's end too: an answer stays with its own key, so a new key is a new question on Needs you
+    def item_id(s):
+        if s is not signing:
+            return row_id(s)
+        import sync
+        key = Path(f"{sync.signing_key()}.pub").read_text(encoding="utf-8").split()[1]
+        return row_id(s) + "-" + re.sub(r"[^a-z0-9]+", "-", key[-16:].lower()).strip("-")
+    items = [{"id": item_id(s), "kind": "question", "for": space.owner, "text": s.name, "recommendation": s.result,
+              "default": "it stays as it is; the daily chain checks it again", "depends": 0, "check": s.check}
+             for s in theirs + ([signing] if signing.needs_owner and not signing.done else [])]
+    path = root / MOUNT_KEY_ITEMS
+    if items or path.exists():
+        write_yaml(path, {"items": items})
+    for s in theirs:
+        if s.name.startswith("organization token "):
+            org_secret_notice(root, s.name[len("organization token "):])
+    return report
+
+
+MOUNT_KEY_ITEMS = Path("_inbound") / "needs-you" / "mount-keys.yaml"
+
+
+def owner_login_step(report, root, space, gh=None) -> None:
+    """In the brain: the owner's own registry row needs `match.github`, which the gate ties the owner's
+    signatures, upkeep and releases to. A brain set up before onboarding wrote it gets it here, as a tool write:
+    the login the base branch's CODEOWNERS names (onboarding wrote it, and the gate already takes it as the
+    owner's), else the signed-in account's. A `match.github` change waits for the owner's click on the sync's
+    protected pull request, so the person only clicks."""
+    import gate
+    reg = registry.Registry(root, space)
+    mine = [s for s in reg.subjects.values()
+            if s.kind == "people" and " ".join(str(s.title).split()).casefold() == " ".join(str(space.owner).split()).casefold()]
+    if not mine or any(LOGIN.fullmatch(str((s.match or {}).get("github") or "")) for s in mine):
+        return
+    named = gate._code_owner_logins(root, "origin/main")
+    login = next(iter(named)) if len(named) == 1 else _gh_ok(gh or default_gh(), "api", "user", "-q", ".login")[1]
+    if not LOGIN.fullmatch(login):
+        report.add("owner login", False, "gh auth status", "your GitHub login is not known here: sign in with "
+                   "`gh auth login`; the next daily run writes it to your registry row", needs_owner=True)
+        return
+    mine[0].match = {**(mine[0].match or {}), "github": login}
+    reg.save()
+    report.add("owner login", True, f"python _meta/tools/registry.py . find {mine[0].id}",
+               f"@{login} written to your row `{mine[0].id}`: it lands with your one click on the sync's pull request")
+
+
+def org_secret_notice(root, owner: str) -> None:
+    """The organization-secret row as a security notice to the person, once per organisation."""
+    import owner_email
+    notice = {"kind": "security", "sender": "sync", "title": "A shared secret every colleague can read",
+              "summary": f"The {owner} organisation holds a read token as an organisation secret. Every repository "
+                         "there sees it, so every colleague who can push to one can read it.",
+              "steps": ["Delete that organisation secret in the organisation's settings, under Secrets and variables.",
+                        "Your agent then asks each repository for a read key of its own."],
+              "reassure": "Nothing else changes: each repository keeps its own access.",
+              "key": f"org-read-token-{owner.lower()}"}
+    try:
+        owner_email.queue(root, notice)
+    except (Exception, SystemExit):   # the Needs-you item still names it
+        pass
+
+
 def platform_settings(report, root, repo, org, dry_run) -> None:
     if not repo:
         report.add("platform settings", False, "gh api repos/<org>/<repo> -q .allow_auto_merge",
@@ -2357,15 +3313,13 @@ def platform_settings(report, root, repo, org, dry_run) -> None:
             write_text(owners, text.replace("@OWNER-LOGIN", f"@{login}"))
         report.add("CODEOWNERS", "@OWNER-LOGIN" not in owners.read_text(encoding="utf-8"),
                    "grep -c OWNER-LOGIN .github/CODEOWNERS", f"@{login}")
-    # A repository outside the organization cannot see the organization's mount-reading
-    # secret: its checks need the same token as a repository secret, which only the owner holds.
-    if org and not repo.lower().startswith(org.lower() + "/") and (Path(root) / ".gitmodules").exists():
-        listed = run_cmd(["gh", "secret", "list", "--repo", repo], dry_run)
-        present = any(name in (listed.stdout or "") for name in ("BRAIN_READ_TOKEN", "MOUNT_READ_TOKEN"))
-        report.add(f"mount token {repo}", present or dry_run, f"gh secret list --repo {repo}",
-                   "present" if present else "the owner adds the repository secret BRAIN_READ_TOKEN "
-                   "(a token that reads the mounted repositories) so the checks can read the mounts",
-                   needs_owner=not present)
+    # The checks read the mounts with read-only deploy keys the agent makes, else a token. Anyone who
+    # can push to a repository can read every Actions secret it sees (a branch that edits the workflow
+    # runs it with the secrets), so each is a repository secret of this repository alone, reading only
+    # what everyone who can push here already reads: never an organization secret, which would hand
+    # every colleague one secret that reads every walled project (rules.md section 9).
+    if (Path(root) / ".gitmodules").exists():
+        mount_access(report, repo, root, org, dry_run)
     # No organization-level grant is needed: the checks workflow arms auto-merge with the
     # repository token, which the merge settings above allow (proved on the template's own
     # pull requests). The platform's own first pull request is the read-back check.
@@ -2550,6 +3504,114 @@ def resolve_brain(root, brain, offline):
     return mount.get("repo"), mount.get("path") or "brain"
 
 
+def brain_account(brain_repo, brain_path=None) -> str | None:
+    """The GitHub account that holds the brain: the owner in its https address, else, for a brain
+    checked out on this machine, the owner of that checkout's origin remote or of the repository its
+    onboarding recorded (`_meta/state/onboard.yaml`). None when neither says."""
+    match = MOUNT_URL.fullmatch(str(brain_repo or ""))
+    if match:
+        return match.group(1)
+    if not brain_path or not Path(str(brain_path)).is_absolute() or not Path(str(brain_path)).is_dir():
+        return None
+    recorded = read_yaml(Path(str(brain_path)) / "_meta" / "state" / "onboard.yaml", {}) or {}
+    repo = git_remote(brain_path) or (recorded.get("repo") if isinstance(recorded, dict) else None)
+    owner = str(repo or "").split("/")[0]
+    return owner if re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})", owner) else None
+
+
+CREW_LEFT = Path("_meta") / "state" / "crew-left-out.yaml"   # crew projects an invitation offered and setup left out
+
+
+def registry_pin(subjects, name: str) -> str | None:
+    """The repository the brain's own registry pins for the project space `name`: the `match.repo` of
+    the subject that is that space itself (`id == home == name`, as mint writes it; the subject branch
+    of `release.trust_repo`), never a person's workspace. An https GitHub address, else None."""
+    for s in subjects or []:
+        if s.id != name or s.home != name or s.kind == "people" or s.state == "archived":
+            continue
+        values = s.match.get("repo") if isinstance(s.match.get("repo"), list) else [s.match.get("repo")]
+        found = next((url for url in map(registry.clone_url, values) if url), None)
+        if found:
+            return found
+    return None
+
+
+def brain_pins(brain_repo, brain_path=None, offline=False):
+    """`registry_pin` over the brain's registry: the brain checked out on this machine (its mount, or a
+    local brain), else, online, the registry on the brain's default branch read from GitHub, where a change
+    to `home` or `match.repo` waits for the owner's click. A function of the project's name; it answers
+    None for every name when the registry cannot be read."""
+    subjects = None
+    local = Path(str(brain_path)) if brain_path and Path(str(brain_path)).is_absolute() else None
+    if local is not None and (local / "space.yaml").is_file():
+        try:
+            subjects = registry.Registry(local, spaceyaml.load(local)).all()
+        except Exception:
+            subjects = None
+    elif not offline and plain_repo(brain_repo):
+        res = run_cmd(["gh", "api", f"repos/{plain_repo(brain_repo)}/contents/{registry.REGISTRY_PATH.as_posix()}",
+                       "-H", "Accept: application/vnd.github.raw"])
+        try:
+            data = yaml.safe_load(res.stdout) if res.returncode == 0 else None
+        except yaml.YAMLError:
+            data = None
+        rows = data.get("subjects") if isinstance(data, dict) else None
+        if isinstance(rows, list):
+            subjects = [registry.Subject.from_dict(r) for r in rows if isinstance(r, dict) and r.get("id")]
+    return lambda name: registry_pin(subjects, name)
+
+
+def crew_mount(project: dict, root, own_name: str, brain_repo, offline: bool, brain_path=None,
+               pinned=None) -> tuple:
+    """One crew project an invitation offers, as a mount, or (None, why it is left out). The list sits
+    in a file in the brain that someone other than the person may have written, so each entry is
+    checked: its name must be an id that is neither `brain` nor this space's own name (the brain mount
+    comes from the sentence alone, `space_values`); online its path is always `mounts/<name>`, whatever
+    the entry says, and its repository an https GitHub address in the brain's own account
+    (`brain_account`, from the brain's address or, for a brain checked out here, its checkout), or the
+    one the brain's own registry pins for that project (`pinned`, from `brain_pins`: a client-hosted
+    project), then mounted from the pinned address; anything else is left out with why, and the caller
+    keeps it (`CREW_LEFT`) so the check mounts it once the registry pins it. Offline (the fixture, a copy
+    beside the brain) a given path may point at a space outside this one or under its `mounts/`, never
+    elsewhere inside it."""
+    raw = project.get("name")
+    pname = slugify(raw) if isinstance(raw, str) else ""
+    if not pages.is_slug(pname) or pname in ("brain", own_name, "mounts"):
+        return None, f"{pages._shown(raw)} is not a crew project's name"
+    repo = project.get("repo")
+    root = Path(root).resolve()
+    if offline:
+        given = project.get("path")
+        if not given:
+            return {"name": pname, "repo": repo, "path": f"mounts/{pname}", "branch": "main"}, ""
+        if not isinstance(given, str) or "\n" in given or "\r" in given:
+            return None, f"{pages._shown(given)} is not a path"
+        target = (root / given).resolve() if not Path(given).is_absolute() else Path(given).resolve()
+        inside = target == root or target.is_relative_to(root)
+        if inside and not target.is_relative_to(root / "mounts"):
+            return None, f"{pages._shown(given)} lies inside this space but not under mounts/"
+        if not inside and not (target / "space.yaml").is_file():
+            return None, f"{pages._shown(given)} holds no space"
+        return {"name": pname, "repo": repo, "path": os.path.relpath(target, root).replace("\\", "/"),
+                "branch": "main"}, ""
+    path = f"mounts/{pname}"
+    problem = mount_problem(repo, path)
+    if problem:
+        return None, problem
+    account = brain_account(brain_repo, brain_path)
+    owner = MOUNT_URL.fullmatch(repo).group(1)
+    if account and owner.lower() == account.lower():
+        return {"name": pname, "repo": repo, "path": path, "branch": "main"}, ""
+    pin = pinned(pname) if pinned else None
+    if pin and registry.same_repo(pin, repo):
+        return {"name": pname, "repo": pin, "path": path, "branch": "main"}, ""
+    if not account:
+        return None, (f"{pages._shown(repo)} cannot be checked: the brain's account on GitHub is not known, "
+                      "and the brain's registry does not pin it for this project")
+    return None, (f"{pages._shown(repo)} is not in the brain's account {account}, and the brain's registry "
+                  "does not pin it for this project")
+
+
 def scan_codebases(report, root, now, offline) -> None:
     """The codebases the person can reach are linked to their subjects (link.py scan). Offline
     asks no host. Never an owner step: a session's first `resolve` places what a scan missed."""
@@ -2621,7 +3683,9 @@ def run(root, answers, offline=False, org=None, dry_run=False, home=None, user_i
             settings["classification_default"] = classification_default(answers)
             write_yaml(root / "space.yaml", settings)
         fill_registry(report, root, answers, top["name"], name, now,
-                      workspaces={i["slug"]: i["slug"] for k, i, _, _ in created if k == "personal"})
+                      workspaces={i["slug"]: i["slug"] for k, i, _, _ in created if k == "personal"},
+                      workspace_repos={i["slug"]: f"https://github.com/{r}" for k, i, _, r in created
+                                       if k == "personal" and r})
         report.spaces[name] = root
         report.spaces.setdefault("brain", root)
         workspace = None
@@ -2664,15 +3728,26 @@ def run(root, answers, offline=False, org=None, dry_run=False, home=None, user_i
         name = slugify(answers.get("slug") or answers.get("name") or answers.get("owner") or root.name)
         brain_repo, path = resolve_brain(root, brain or answers.get("brain") or None, offline)
         # a person joining later mounts every project they are crew on, as the company case does
-        crew_mounts = []
+        crew_mounts, crew_left = [], []
+        pinned = brain_pins(brain_repo, path, offline) if answers.get("crew_projects") and not offline else None
         for project in answers.get("crew_projects") or []:
-            pname = slugify(project.get("name") or "")
-            if not pname or (project.get("vault") and answers.get("name") not in (project.get("audience") or [])):
+            if not isinstance(project, dict) or (
+                    project.get("vault") and answers.get("name") not in (project.get("audience") or [])):
                 continue   # a vault is mounted only by the names on it
-            ppath = project.get("path") or f"mounts/{pname}"
-            if offline and project.get("path") and Path(project["path"]).is_absolute():
-                ppath = os.path.relpath(project["path"], root).replace("\\", "/")
-            crew_mounts.append({"name": pname, "repo": project.get("repo"), "path": ppath, "branch": "main"})
+            mount, why = crew_mount(project, root, name, brain_repo, offline, brain_path=path, pinned=pinned)
+            if mount is None:
+                pname = slugify(project["name"]) if isinstance(project.get("name"), str) else ""
+                report.add(f"mount {pname or 'crew project'}", True,
+                           "grep -A3 crew_projects _meta/state/invitations/<slug>.yaml",
+                           f"left out: {why}; it mounts once the brain's registry pins it (onboard --check)")
+                repo_given = project.get("repo")
+                if pages.is_slug(pname) and isinstance(repo_given, str) and MOUNT_URL.fullmatch(repo_given):
+                    crew_left.append({"name": pname, "repo": repo_given, "why": why[:200]})
+                continue
+            if all(m["name"] != mount["name"] for m in crew_mounts):
+                crew_mounts.append(mount)
+        if crew_left:
+            write_yaml(root / CREW_LEFT, {"left_out": crew_left})
         values = space_values(answers, name, answers.get("name") or answers.get("owner"),
                               answers.get("email") or answers.get("owner_email"),
                               [answers.get("name") or answers.get("owner") or name],
@@ -2799,19 +3874,68 @@ def company_name(root, space) -> str:
     return space.data.get("company") or (found.group(1).strip() if found else humanize(space.name))
 
 
+def _plain(text) -> str:
+    """A name or an address as compared: lower case, one space between words."""
+    return " ".join(str(text or "").lower().split())
+
+
+def login_from_members(org: str | None, person, taken=()) -> tuple:
+    """The colleague's GitHub login read from the organisation's member list: the one member whose
+    public profile address is their registered address, and whom no other person in the registry has
+    as login. GitHub shows only an address that account verified; a profile name is never used, since
+    any member can set theirs to a colleague's name. (login, how it was found), or (None, "") when
+    the account is no organisation, the list cannot be read, or no member or more than one matches:
+    then the agent asks the person in chat (`--login`). A read only, never a grant."""
+    if not org or not LOGIN.fullmatch(str(org)):
+        return None, ""
+    kind = run_cmd(["gh", "api", f"users/{org}", "-q", ".type"])
+    if kind.returncode != 0 or (kind.stdout or "").strip() != "Organization":
+        return None, ""
+    listed = run_cmd(["gh", "api", f"orgs/{org}/members?per_page=100", "--paginate", "-q", ".[].login"])
+    if listed.returncode != 0:
+        return None, ""
+    want_mail = _plain(person.extra.get("email"))
+    if not want_mail:
+        return None, ""
+    taken = {_plain(t) for t in taken}
+    found = []
+    for member in [l.strip() for l in (listed.stdout or "").splitlines() if l.strip()][:500]:
+        if not LOGIN.fullmatch(member) or _plain(member) in taken:
+            continue
+        res = run_cmd(["gh", "api", f"users/{member}", "-q", "{email: .email}"])
+        try:
+            profile = json.loads(res.stdout) if res.returncode == 0 and res.stdout else {}
+        except ValueError:
+            profile = {}
+        if isinstance(profile, dict) and _plain(profile.get("email")) == want_mail:
+            found.append((member, "their address"))
+    if len({m.lower() for m, _ in found}) != 1:
+        return None, ""
+    return found[0][0], f"from {org}'s member list, by {found[0][1]}"
+
+
 def invite(root, slug: str, org: str | None = None, workspace_org: str | None = None,
-           name: str | None = None, email: str | None = None) -> Path:
+           name: str | None = None, email: str | None = None, login: str | None = None) -> Path:
     """Write `_meta/state/invitations/<slug>.yaml` (the colleague's answers: name, parent, the
     brain, the projects they are crew on, their host login when the registry has it) and one
     Needs-you item for the owner with its read-back (their workspace's first synced run line).
-    The sentence works only once the colleague
+    The colleague's setup takes from the file only who they are and the crew projects, each checked
+    (`start.invitation_answers`, `crew_mount`): where their workspace goes (`org`, `workspace_org`
+    are kept for this item's read-back) and their briefing address stay theirs, and they confirm the
+    brain by name first. The sentence works only once the colleague
     can read the template and the brain: when the host does not confirm both (or no login is
     known), a second item recommends the access and who grants it (`grant_advice`: a team, a
     collaborator on a personal account, or the owner of a repository this person cannot
     administer); agents never grant it (decision 2026-10-12, Organization teams). Nothing is
     sent: the owner hands the file over. A colleague
     not yet in the registry is added as a person when `name` is given; else a ValueError says how.
-    A public template needs no grant: then the item asks for the brain alone."""
+    A public template needs no grant: then the item asks for the brain alone.
+    The colleague's GitHub login is written into the invitation and onto their registry row
+    (`match: {github: <login>}`) in the same change, so their releases are trusted from their first
+    day: `login` when the person gave it in chat, else the one member of the organisation's list that
+    matches them (`login_from_members`). The item names it and how it was found, so the owner sees it
+    before sending the sentence, and the registry change waits for their click like every login does.
+    A login already registered is never replaced: a different `login` is a ValueError."""
     root = Path(root).resolve()
     space = spaceyaml.load(root)
     reg = registry.Registry(root, space)
@@ -2846,7 +3970,24 @@ def invite(root, slug: str, org: str | None = None, workspace_org: str | None = 
     company = company_name(root, space)
     say = (f"Onboard me to {company}: https://github.com/{template} with my invitation "
            f"{repo or '<brain>'}:{slug}")
+    given = str(login or "").strip().lstrip("@")
     login = str(person.match.get("github") or "").strip()
+    if given and not LOGIN.fullmatch(given):
+        raise ValueError(f"{pages._shown(given)} is not a GitHub login")
+    if given and login and given.lower() != login.lower():
+        raise ValueError(f"the registry already names {login} as {person.title}'s GitHub login: a login is "
+                         "changed in the registry by its owner, never by an invitation")
+    how = ""
+    if not login and slug in reg.subjects:
+        taken = [str(s.match.get("github") or "") for s in reg.everywhere()
+                 if s.kind == "people" and s.id != slug and s.match.get("github")]
+        if given and given.lower() in {t.lower() for t in taken}:
+            raise ValueError(f"{given} is another person's GitHub login in the registry")
+        found, how = (given, "as you gave it") if given else login_from_members(org, person, taken)
+        if found:
+            reg.subjects[slug].match = {**reg.subjects[slug].match, "github": found}
+            reg.save()
+            login = found
     answers = {"name": person.title, "slug": slug, "email": person.extra.get("email") or "",
                "parent": space.name if space.profile != "brain" else "brain",
                "brain": f"https://github.com/{repo}" if repo else "", "feeds": "none", "schedule": 15,
@@ -2868,7 +4009,13 @@ def invite(root, slug: str, org: str | None = None, workspace_org: str | None = 
                   "text": (f"Invite {person.title}: send them this one sentence to say in Claude Code "
                            f"on their own machine: \"{say}\". Their agent does the rest (about fifteen "
                            f"minutes, mostly their sign-ins); the answers are in "
-                           f"{target.relative_to(root).as_posix()}. The sentence works once they can "
+                           f"{target.relative_to(root).as_posix()}"
+                           + (f". Their GitHub login is {login} ({how}); if that is not them, say so before "
+                              "you send the sentence" if how else "")
+                           + ". Send it to them yourself, directly: "
+                           f"their setup asks them to confirm {repo or 'the brain'} by name and then accepts "
+                           f"its organisation's invitation; one from any other organisation is theirs to accept. "
+                           f"The sentence works once they can "
                            f"read {readable}"),
                   "recommendation": "yes, on their first day", "default": "they work without a workspace for now "
                   "(rules.md section 10)", "depends": 1,
@@ -2884,8 +4031,8 @@ def invite(root, slug: str, org: str | None = None, workspace_org: str | None = 
         rec = grant_advice([r for r in both if not r.startswith("<")], person.title, login) or \
             f"give {person.title} read access to {readable}"
         if not login:
-            rec += (f"; then add their host login to the registry (`match: {{github: <login>}}` on {slug}) "
-                    "and invite again, so this check runs itself")
+            rec += (f"; then say their GitHub login, and the agent invites again with it (`--login <login>`), "
+                    "so this check runs itself and their releases are trusted")
         items.append({"id": access_id, "kind": "question",
                       "text": text + ". Who sees the brain is your choice: agents never grant access "
                       "(decision 2026-10-12, Organization teams)",
@@ -2960,6 +4107,7 @@ def check(root) -> list:
         steps.append(Step(f"mount {name} resolves", space.mount_root(name) is not None,
                           f"test -f {mount.get('path') or name}/space.yaml", str(space.mount_root(name) or "absent")))
     steps.extend(crew_mount_steps(space))
+    steps.extend(crew_left_steps(space))
     if state.get("user_instructions") and state.get("workspace"):
         ui = Path(state["user_instructions"])
         steps.append(Step("personal instruction installed", instruction_present(ui, state["workspace"]),
@@ -2986,6 +4134,7 @@ def check(root) -> list:
         for r in doctor.diagnose(doctor.Machine(run=run_cmd, reach=lambda: True), fix=False,
                                  repos=[state["repo"]] if state.get("repo") else []):
             steps.append(Step(f"doctor: {r.name}", r.ok, r.check, r.found if r.ok else r.yours, not r.ok))
+        steps.append(signing_key_step(root))
     if state.get("repo") and not state.get("offline"):
         res = run_cmd(["gh", "api", f"repos/{state['repo']}", "-q", ".allow_auto_merge"])
         steps.append(Step("auto-merge armed", res.stdout.strip() == "true",
@@ -3043,6 +4192,47 @@ def task_step(label: str, task: dict) -> Step:
     res = run_cmd(task["check"])
     ok = res.returncode == 0 and (not task.get("line") or task["line"] in res.stdout)
     return Step(label, ok, " ".join(task["check"]), task.get("name", ""))
+
+
+def crew_left_steps(space, mount=None) -> list:
+    """The crew projects setup left out (`CREW_LEFT`), one row each while it is not mounted: once the
+    brain's registry pins the project at the address the invitation gave (`registry_pin`), the daily upkeep
+    mounts it from the pinned address (`mount`, `mint.mount_space`): space.yaml and .gitmodules are protected,
+    so it lands with the person's one click on the sync's protected pull request. Without `mount` (the check),
+    a failing row with the command (`mint.mount_line`) the daily runs; until the pin, a row that says it waits
+    for the brain to pin it. Never a silent skip, never a mount from the invitation's own address."""
+    data = read_yaml(space.root / CREW_LEFT, {}) or {}
+    rows = data.get("left_out") if isinstance(data, dict) else None
+    if not isinstance(rows, list) or not rows:
+        return []
+    import mint
+    broot = space.mount_root("brain")
+    pinned = brain_pins(None, broot) if broot is not None else (lambda name: None)
+    steps = []
+    for row in rows:
+        name = str(row.get("name") or "") if isinstance(row, dict) else ""
+        if not pages.is_slug(name) or any(m.get("name") == name for m in space.mounts):
+            continue
+        pin = pinned(name)
+        if pin and registry.same_repo(pin, row.get("repo")):
+            check = f"grep -c {name} {space.root / 'space.yaml'}"
+            if mount is None:
+                steps.append(Step(f"crew project {name} mounted", False, check,
+                                  f"the brain's registry pins it now: the daily runs `{mint.mount_line(name, pin)}`"))
+                continue
+            try:
+                mount(space.root, name, pin)
+            except Exception as exc:   # an address mint refuses, a space.yaml it cannot write: tried again next run
+                steps.append(Step(f"crew project {name} mounted", False, check,
+                                  f"`{mint.mount_line(name, pin)}` failed ({str(exc)[:160]}): tried again next run"))
+                continue
+            steps.append(Step(f"crew project {name} mounted", True, check,
+                              "mounted from the brain's registry pin; it lands with your one click on the sync's "
+                              "protected pull request"))
+        else:
+            steps.append(Step(f"crew project {name} left out", True, f"cat {CREW_LEFT.as_posix()}",
+                              f"waits for the brain's registry to pin {pages._shown(row.get('repo'))} for {name}"))
+    return steps
 
 
 def crew_mount_steps(space) -> list:
@@ -3254,7 +4444,10 @@ def _late_feeds(spaces: dict):
     """Records in `feed/<slug>-late.jsonl` arrive on scaled day 4, stamped with the virtual
     clock, so the checker meets evidence newer than what was signed on day 2. On day 5 the
     top owner shortens the window of their signed Harbor page (`review_every: 2`), as a person
-    may, so the weekly review batch has something to list within the fixture's week."""
+    may, so the weekly review batch has something to list within the fixture's week, and Ben
+    answers yes to the conflict note his late record raised: it quotes a mail the release rule
+    held for his yes, so the note waits for it too (check.conflict_notes), and travels once he
+    gives it."""
     def inject(day: int, at) -> None:
         if day == 2:
             # Chloe, outside the Harbor crew, asks Harbor through her corridor: its status (a
@@ -3290,6 +4483,13 @@ def _late_feeds(spaces: dict):
                     fm, body = pages.read(path)
                     if fm.get("status") == "stable" and not fm.get("review_every"):
                         pages.write(path, dict(fm, review_every=2), body)
+            ben = spaces.get("ben")
+            held = Path(ben) / "_outbound" / "held" if ben else None
+            notes = [path.stem for path in sorted(held.glob("*.md"))
+                     if pages.read(path)[0].get("conflict_note")] if held and held.is_dir() else []
+            if notes:
+                import sign
+                sign.apply(ben, {note: "yes" for note in notes}, by=spaceyaml.load(ben).owner, now=at)
             return
         if day != 4:
             return
@@ -3459,6 +4659,11 @@ def main(argv=None) -> int:
                     "and the owner's Needs-you item")
     ap.add_argument("--name", help="with --invite: the colleague's full name, to register them when new")
     ap.add_argument("--email", help="with --invite: the colleague's address (optional)")
+    ap.add_argument("--login", help="with --invite: the colleague's GitHub login, as the person said it in chat "
+                    "(else read from the organisation's member list)")
+    ap.add_argument("--mount-keys", action="store_true", dest="mount_keys",
+                    help="daily upkeep: this space's own mount keys, in the brain the keys colleagues' "
+                         "workspaces asked for by note, and the crew projects left out")
     ap.add_argument("--go-live", action="store_true",
                     help="switch this shadow space to live (mounts by name from --answers `mounts:`)")
     ap.add_argument("--with-projects", action="store_true",
@@ -3497,7 +4702,7 @@ def main(argv=None) -> int:
         print("onboard: --routines-cloud takes --check, or --sweep and --timezone together")
         return 2
     if args.dry_run and (args.routines_cloud or args.routines_here or args.pause or args.resume or args.connect
-                         or args.invite):
+                         or args.invite or args.mount_keys):
         print("onboard: --dry-run goes with setting up a space or --register-sync only")
         return 2
     if args.routines_cloud:   # it registers no task
@@ -3531,7 +4736,8 @@ def main(argv=None) -> int:
         except OSError:
             pass
         return 0 if done else 1
-    if not (args.check or args.connect or args.invite or args.routines_scheduled):   # the others register no task
+    if not (args.check or args.connect or args.invite or args.routines_scheduled
+            or args.mount_keys):   # the others register no task
         try:
             task_prefix()
         except ValueError as exc:
@@ -3550,11 +4756,15 @@ def main(argv=None) -> int:
         return 0
     if args.invite:
         try:
-            print(f"invitation: {invite(root, args.invite, org=args.org, name=args.name, email=args.email)}")
+            print(f"invitation: {invite(root, args.invite, org=args.org, name=args.name, email=args.email, login=args.login)}")
         except ValueError as exc:
             print(f"invite: {exc}")
             return 1
         return 0
+    if args.mount_keys:
+        report = keys_upkeep(root)
+        print_steps(report.steps)
+        return 1 if report.failed() else 0
     if args.register_sync:
         report = Report(case="sync")
         register_sync(report, root, spaceyaml.load(root).name, 15, args.offline, args.dry_run)

@@ -64,14 +64,16 @@ can already read, content its holder approved (by name or by a standing choice f
 destination), retractions and signals. Otherwise after one window and one morning view.
 Where `space.yaml` turns `routing` on, an agent reads each record in full and picks the tier
 per projection: ordinary work for the destination goes at once, anything more sensitive waits
-one window and one morning view with its reason. Never-leaves terms hold a projection; the
-high-stakes list and medium confidence force the window; low confidence asks the owner; a
+one window and one morning view with its reason. Never-leaves and left-out categories are
+judged by the router and a second agent's check, never matched as words; a decision that flags
+never-leaves material waits the window; the high-stakes list and medium confidence force the window; low confidence asks the owner; a
 review period (`routing.review_until`), when set, holds every projection for the window; it is off by default.
 Doubt about the class means the window; doubt about privacy means the item stays home and
 is shown as a count. External disclosure is not internal permission. A subject's `home` is
 the narrowest shared space whose audience covers everyone on the subject; no home means the
 conclusion stays where it was made. A release to a project carries only project facts:
-a line with a left-out term or another client's name stays home. A client, project or deal,
+a line the router judges left-out for the destination, or about another client, stays home. A
+client, project or deal,
 or anything part of one, sends nothing out of the space where its material came in until its
 owner's workspace has classified it `company`, `walled` or `owner` after asking the other
 workspaces for obligations; a new obligation re-opens a `company` classification, and the first
@@ -93,10 +95,15 @@ else lands when the checks pass.
 A signature is a commit in the signer's own space, made under their platform identity by
 the sync script running with their credentials; nothing else can produce one. The
 fingerprint (the sha256 of the approved text) travels with every release, and the merge
-gate of the receiving space checks it against the body before the page lands. At the home a
-routine signed release lands silently; a high-stakes one, a change to someone else's signed
-page, a disagreement between two releases and a release whose body does not match its
-fingerprint land pending. Each week the domain owner checks a sample of what landed
+gate of the receiving space checks it against the body before the page lands. The receiving
+space finds the signer's repository in its own mounts and registry, never in the release (for a
+person's workspace, the `workspace_repo` on their registry entry, or, when none is recorded,
+only a repository under that person's own registered login), and reads that repository's
+history for the signature and its signed fields; a release it cannot check this way lands
+pending. At the home a routine signed release lands silently; a
+high-stakes one, a change to someone else's signed page, a disagreement between two releases,
+a release whose body does not match its fingerprint, and a release whose signer's history does
+not show the signature, or that names no repository the home knows, land pending. Each week the domain owner checks a sample of what landed
 silently; a pulled-back release or a failed sample pauses the path that let it through for
 four weeks, and a releaser whose samples fail too often lands pending until it recovers.
 Agents act with the person's own grants, never with a company-wide token.

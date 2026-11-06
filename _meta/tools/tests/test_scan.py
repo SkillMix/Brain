@@ -94,15 +94,19 @@ def test_finding_never_carries_the_value(tmp_path):
     assert "BEGIN" not in dump
 
 
-def test_large_binary_and_missing_files_are_skipped(tmp_path):
+def test_large_binary_and_non_utf8_files_are_scanned_and_missing_ones_skipped(tmp_path):
+    # Before: a file over 1 MB, a binary file and a non-UTF-8 file were skipped as clean, so
+    # sync committed them unscanned. Now each is read whole and its key is found.
     big = tmp_path / "big.txt"
     big.write_bytes((PRIVATE_KEY + "\n").encode("utf-8") * 80000)  # over 2 MB
     assert big.stat().st_size > 2 * 1024 * 1024
     blob = tmp_path / "blob.bin"
     blob.write_bytes(b"\x00\x01\x02" + PRIVATE_KEY.encode("utf-8"))
     latin = tmp_path / "latin.txt"
-    latin.write_bytes(b"\xff\xfe" + PRIVATE_KEY.encode("utf-8"))
-    assert scan.scan_paths([big, blob, latin, tmp_path / "nope.txt", tmp_path]) == []
+    latin.write_bytes(b"\xe9t\xe9 " + PRIVATE_KEY.encode("utf-8"))
+    for path in (big, blob, latin):
+        assert {f.kind for f in scan.scan_paths([path])} == {"private_key"}, path.name
+    assert scan.scan_paths([tmp_path / "nope.txt", tmp_path]) == []
 
 
 def test_iban_needs_a_valid_checksum(tmp_path):

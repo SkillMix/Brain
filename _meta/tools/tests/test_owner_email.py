@@ -133,9 +133,10 @@ def test_cli_render_writes_payload_and_preview(tmp_path, capsys):
     root = make_space(tmp_path / "ada")
     notice = tmp_path / "notice.json"
     notice.write_text(json.dumps(briefing()), encoding="utf-8")
-    out, page = tmp_path / "p.json", tmp_path / "p.html"
+    # the two files land in the space's preview folder only (a path anywhere else is refused)
+    out, page = root / oe.PREVIEW / "p.json", root / oe.PREVIEW / "p.html"
     code = oe.main(["render", str(notice), "--root", str(root), "--out", str(out),
-                    "--preview", str(page), "--date", "2026-10-12"])
+                    "--preview", "p.html", "--date", "2026-10-12"])
     assert code == 0
     payload = json.loads(out.read_text(encoding="utf-8"))
     assert set(payload) == {"to", "subject", "htmlBody", "body"}

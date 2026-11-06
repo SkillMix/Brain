@@ -71,16 +71,18 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      - run: pip install pyyaml pytest
+      # Pinned by hash (requirements-dev.txt): only the checked release of each package installs.
+      - run: |
+          python -m pip install --disable-pip-version-check --only-binary=:all: --require-hashes -r requirements-dev.txt
 
       - name: Unit tests
-        run: python -m pytest _meta/tools/tests -q
+        run: python -I -m pytest _meta/tools/tests -q
 
       - name: Behaviour scenarios
         run: python _meta/tools/behaviour.py . --all
 
       - name: Offline start from a fixture invitation, and the cron command under env -i
-        run: python -m pytest _meta/tools/tests/test_start.py _meta/tools/tests/test_sync_task.py -v -k "start_command or empty_environment"
+        run: python -I -m pytest _meta/tools/tests/test_start.py _meta/tools/tests/test_sync_task.py -v -k "start_command or empty_environment"
 
   bare:
     if: github.event.repository.is_template
@@ -111,5 +113,5 @@ jobs:
         run: |
           export PATH="$HOME/.spaces/tools/gh/bin:$HOME/.spaces/tools/uv:$PATH"
           uv venv /tmp/tests --python 3.12
-          uv pip install --python /tmp/tests/bin/python pyyaml pytest
-          /tmp/tests/bin/python -m pytest _meta/tools/tests/test_start.py _meta/tools/tests/test_doctor.py -q -k "start_command or doctor or bootstrap"
+          uv pip install --python /tmp/tests/bin/python --require-hashes -r requirements-dev.txt
+          /tmp/tests/bin/python -I -m pytest _meta/tools/tests/test_start.py _meta/tools/tests/test_doctor.py -q -k "start_command or doctor or bootstrap"

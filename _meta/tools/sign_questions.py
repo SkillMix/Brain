@@ -283,7 +283,12 @@ def settle(root, qid, source: str, by, now) -> Question:
 
 def answer(root, qid, by, now, text: str = "", kept_in: str = "") -> Question:
     """A named person's answer, or their correction of one: the later answer wins. A sensitive
-    question takes only `kept_in`, where the answer is kept; any other takes `text`."""
+    question takes only `kept_in`, where the answer is kept; any other takes `text`. Refused inside a
+    routine or a cloud run (`routine.in_routine`): an answer is a person's word, whatever `by` says."""
+    import routine   # here and not at the top: only a person's answer asks it
+    running = routine.in_routine()
+    if running:
+        raise QuestionError(f"an answer is a named person's, and {running}; a routine never answers")
     who = _named(by, person=True)
     if _get(root, qid).sensitive:
         if str(text or "").strip():
@@ -319,10 +324,10 @@ COMMANDS = ("list", "ask", "reword", "settle", "answer", "park", "drop", "reopen
 
 
 def main(argv=None) -> int:
-    # a console that cannot show a character (cp1252 on Windows) must not fail a write that landed
-    reconfigure = getattr(sys.stdout, "reconfigure", None)
-    if reconfigure:
-        reconfigure(errors="backslashreplace")
+    # a console that cannot show a character (cp1252 on Windows) must not fail a write that landed,
+    # nor turn a question's own words into escape codes: UTF-8, escapes only for what still fails
+    import needs_you   # here and not at the top: its helpers are the CLI's alone
+    needs_you.utf8_stdio()
     argv = list(sys.argv[1:] if argv is None else argv)
     root = Path(".")
     if argv and argv[0] not in COMMANDS and not argv[0].startswith("-"):

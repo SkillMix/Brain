@@ -37,14 +37,34 @@ note or under another verb, stops the whole run before anything is written.
 
 Per kind: a candidate lands at its `target` signed (yes), with the note or the body file
 as its body (edit), is discarded with a tombstone (no), gets a deadline one scaled day out
-(later), or lands and adds a standing choice for its destination (always); a signed candidate
+(later), or lands and adds a standing choice for its destination (always). A decision an
+outside sender wrote (`origin.inside: false`) that nobody `checked` takes no yes or always: the
+read-back says who sent it, and an edit stays open. Where it lands
+comes from data (a routine's candidate, another space's release), so `target_of` and `dest_of`
+refuse any target that is not a page file under `knowledge/` built from safe names: no
+absolute path, no `..`, no link on the way, nothing the gate guards (a `CLAUDE.md`, a
+`.claude/`), a kind this space has, `knowledge/sources/` for records only. The read-back says
+where a yes lands; a candidate whose target is refused is refused like a changed draft and
+stays where it is. A signed candidate
 with a `destination` also queues a release carrying the signature, `at_once`, or `window` when
 the page is flagged `high_stakes`. Signed over a page already at its target, the page keeps its
 id, every record in its `evidence` (unless the candidate sets it aside), its `set_aside` entries
 and its `high_stakes` flag (unless the candidate names its own). A check
 verdict goes to `_meta/state/check-verdicts.jsonl`. A leaving release ships tonight
-(yes), is pulled to `_outbound/held/` (no) or waits a scaled day (later). Every verdict
-appends one line to `log.md`: `- <ISO> <verb> <id> by <name>`.
+(yes), is pulled to `_outbound/held/` (no) or waits a scaled day (later). Every verdict and
+note is recorded in the verdict store, `_meta/state/verdicts.jsonl` (`status.record_verdict`),
+which is what every tool acting on an answer reads; it also appends one narrative line to
+`log.md`: `- <ISO> <verb> <id> by <name>`. Inside a routine nothing is applied without its
+read-back pin outside a fixture space. A line written to `log.md` is
+always one line: every line break or separator in a value (an id, a name, a note) becomes a
+space, so no value can start a line of its own and pass for a verdict or a signature.
+
+A signature binds the text and what the page says about itself. `fingerprint` is the sha256
+of the body; `signed_fields` is the sha256 of `SIGNED_FIELDS` (id, type, title, subject, kind,
+high_stakes and the signer's own fields), so a page whose title, subject or high-stakes flag
+changed after signing no longer checks (`fields_fingerprint`). Both go to the trust root,
+this space's own `log.md`: `- <ISO> fingerprint <id> <sha256> by <name>` and
+`- <ISO> fields <id> <sha256> by <name>`, which another space's landing reads back.
 """
 from __future__ import annotations
 
@@ -72,6 +92,13 @@ KEPT_ON_RESIGN = ("contested", "released_by", "released_from", "released_at", "r
                   "acted_for", "path", "domain", "landed_at", "landed_from")
 CHECK_VERDICTS = Path("_meta") / "state" / "check-verdicts.jsonl"
 CHECK_VERDICT_OF = {"yes": "yes", "always": "yes", "no": "no", "edit": "edit"}
+# What a signature binds besides the body: what the page says it is, about what, how high its
+# stakes are and who signed it where. Not what tools rightly change on a stable page later
+# (verified_at, contested, landed_*, released_*, evidence) and not `target`, which landing strips.
+SIGNED_FIELDS = ("id", "type", "title", "subject", "kind", "high_stakes", "signed_by", "signed_at",
+                 "signed_in")
+# Every character str.splitlines() breaks a line on: a value holding one would start a log line.
+LINE_BREAKS = frozenset("\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029")
 
 
 @dataclass
@@ -233,11 +260,26 @@ def read_back(root, selection, bodies: dict | None = None) -> str:
                              + (f" (it will go to {where})" if where else ""))
             parts.append("\n".join(lines) + "\n")
             continue
-        title = entry.fm.get("title") or (entry.item.text if entry.item else item_id)
+        title = needs_you.untrusted_line(entry.fm.get("title") or (entry.item.text if entry.item else item_id), 200)
         lines = [f"## {item_id}: {title} ({entry.kind})" + (" (your edit)" if edited else ""), *unused]
         destination = entry.fm.get("destination")
         if destination:
-            lines.append(f"it will go to {destination}")
+            lines.append(f"it will go to {needs_you.untrusted_line(destination, 120)}")
+        decision = entry.fm.get("decision")
+        if entry.fm.get("type") == "review" and isinstance(decision, dict) and "routes" in decision:
+            routes = [r for r in decision.get("routes") or [] if isinstance(r, dict)]
+            lines.append("it will route to: " + ", ".join(
+                needs_you.untrusted_line(f"{r.get('space')} ({r.get('subject')}, {r.get('tier', 'window')})", 120)
+                for r in routes) if routes else "it stays in the workspace")
+        if _outside_decision(entry.fm):
+            lines.append(f"from: {needs_you.untrusted_line(entry.fm['origin'].get('from'), 120)} "
+                         "(outside the company)")
+        if _page_candidate(entry):   # where a yes writes, so the person sees it before saying yes
+            try:
+                where = _where(root, entry)
+                lines.append(f"it lands at {where}" + _over(root, where, entry.fm))
+            except pages.UnsafePath as exc:
+                lines.append(f"it cannot land: {exc}")
         if entry.path is not None:
             body = _text_of(entry, edit if edited else None)
             if body != pages.normalize(edit if edited else entry.body):
@@ -253,17 +295,106 @@ def read_back(root, selection, bodies: dict | None = None) -> str:
     return "\n".join(parts)
 
 
+def _where(root: Path, entry: Found) -> str:
+    """The repository-relative path a yes on this page candidate writes, or UnsafePath."""
+    space = spaceyaml.load(root)
+    return dest_of(root, entry.fm, entry.path, space.now(), kinds=space.all_kinds).relative_to(root).as_posix()
+
+
+def _over(root: Path, where: str, fm: dict) -> str:
+    """What a yes replaces at `where`, said in the read-back: a page already there under another
+    id is signed over and keeps its own id (an edit of it), so the person sees which one."""
+    path = Path(root) / where
+    if not path.is_file():
+        return ""
+    try:
+        old_fm, _ = pages.read(path)
+    except (OSError, UnicodeError, ValueError, yaml.YAMLError):
+        return ", over a page there that cannot be read"
+    old_id = str(old_fm.get("id") or "")
+    if old_id and old_id == str(fm.get("id") or ""):
+        return ""
+    title = _short(old_fm.get("title") or old_id or "a page without an id")
+    return f", over {old_id or 'a page without an id'} there ({title}), which keeps its id"
+
+
+def _short(value) -> str:
+    """A value from a page for one line of the read-back: one line, at most 80 characters."""
+    text = one_line(value).strip()
+    return text if len(text) <= 80 else text[:77] + "..."
+
+
 # ----- small writers ---------------------------------------------------------------
+def one_line(text) -> str:
+    """`text` as one line: every character that would break it (a newline, a carriage return,
+    a line or paragraph separator) is a space, so a value from data never starts a line."""
+    return "".join(" " if ch in LINE_BREAKS else ch for ch in str(text))
+
+
 def _append(path: Path, line: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    """Append one line, never through a link (pages.append_text); the line is made one line
+    first, so a value inside it can never start a line of its own."""
+    text = path.read_text(encoding="utf-8") if path.is_file() else ""
     prefix = "" if (not text or text.endswith("\n")) else "\n"
-    with path.open("a", encoding="utf-8", newline="\n") as handle:
-        handle.write(prefix + line + "\n")
+    pages.append_text(path, prefix + one_line(line).rstrip() + "\n")
 
 
 def _log(root: Path, line: str) -> None:
     _append(root / "log.md", line)
+
+
+def _verdict(root: Path, item_id, by, verb=None, note=None, now=None) -> None:
+    """The answer as authority: one row in the verdict store (`status.record_verdict`), which
+    every tool acting on an answer reads. The log.md line beside it is narrative only."""
+    import status
+    status.record_verdict(root, str(item_id), by, verb=verb, note=note, at=now)
+
+
+def _outside_decision(fm: dict) -> bool:
+    """A decision another company sent (`origin.inside` false) that nobody checked yet."""
+    origin = fm.get("origin")
+    return fm.get("type") == "decision" and isinstance(origin, dict) and origin.get("inside") is False \
+        and not fm.get("checked")
+
+
+def _log_signature(root: Path, now: dt.datetime, pid, fm: dict, by: str) -> None:
+    """The trust root: this space's own history names what was signed, by whom, its text and
+    its signed fields (rules.md section 9). Another space's landing reads these two lines."""
+    _log(root, f"- {pages.iso(now)} fingerprint {pid} {fm['fingerprint']} by {by}")
+    if fm.get("signed_fields"):
+        _log(root, f"- {pages.iso(now)} fields {pid} {fm['signed_fields']} by {by}")
+
+
+def _plain(value):
+    """A frontmatter value as the digest reads it: empty is None, a time is its ISO text, so
+    `signed_at` quoted or not and a flag kept as '' or dropped read the same."""
+    if value in (None, "", False) or value == [] or value == {}:
+        return None
+    if isinstance(value, dt.datetime):
+        return pages.iso(value)
+    if isinstance(value, dt.date):
+        return value.isoformat()
+    return value
+
+
+def fields_fingerprint(fm: dict) -> str:
+    """sha256 of the fields a signature binds besides the body (SIGNED_FIELDS)."""
+    import hashlib
+    data = {key: _plain(fm.get(key)) for key in SIGNED_FIELDS}
+    text = yaml.safe_dump(data, sort_keys=True, allow_unicode=True, default_flow_style=False)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def fields_problem(fm: dict) -> str | None:
+    """Why a stable page's signed fields do not check, or None: a page signed before the fields
+    were bound carries no `signed_fields` and is not checked here (landing requires them)."""
+    given = fm.get("signed_fields")
+    if not given:
+        return None
+    if str(given) != fields_fingerprint(fm):
+        return ("its signed fields (title, type, subject, kind, high_stakes, signer) changed after "
+                "signing")
+    return None
 
 
 def _add_standing_choice(space: spaceyaml.Space, destination, kind, report: ApplyReport) -> None:
@@ -289,21 +420,74 @@ def _home_of(root: Path, space: spaceyaml.Space, subject) -> str | None:
         return None
 
 
+NOT_PAGES = ("index.md", "log.md", "README.md")
+
+
+def check_target(rel, *, record: bool | None = None) -> str:
+    """`rel` when it is a path a page may land at, else UnsafePath: text, `knowledge/` and at
+    least a kind and a file below it, a page file (`.md`, not an index, log or README in any
+    case), every
+    part a safe name (pages.check_name: no `..`, no colon, no control character, no device
+    name). With `record` True it must be under `knowledge/sources/`, with False it must not be
+    (a signed page there is invalid). What needs the space (links, the gate's guards, the
+    space's kinds) is `dest_of`'s."""
+    shown = ascii(rel)[:90]
+    if not isinstance(rel, str):
+        raise pages.UnsafePath(f"target {shown} is not text")
+    parts = rel.split("/")
+    if len(parts) < 3 or parts[0] != "knowledge":
+        raise pages.UnsafePath(f"target {shown} is not a page under knowledge/")
+    for part in parts:
+        pages.check_name(part, what=f"target {shown}: part")
+    # ignoring case: on Windows and macOS `INDEX.md` is the hub `index.md` and `Log.md` the log
+    if not rel.endswith(".md") or parts[-1].casefold() in {n.casefold() for n in NOT_PAGES}:
+        raise pages.UnsafePath(f"target {shown} is not a page file")
+    in_sources = parts[1].casefold() == "sources"
+    if record is True and parts[1] != "sources":
+        raise pages.UnsafePath(f"target {shown}: a record is filed under knowledge/sources/")
+    if record is False and in_sources:
+        raise pages.UnsafePath(f"target {shown}: a signed page never lands under knowledge/sources/")
+    return rel
+
+
 def target_of(fm: dict, path: Path, now: dt.datetime) -> str:
-    """Where a candidate lands: its `target`, else derived from kind, subject and type."""
+    """Where a candidate lands: its `target`, else derived from kind, subject and type. Every
+    piece comes from data, so each is checked before it becomes part of a path: a target by
+    `check_target`, a released page's id as a page id, a kind and a subject as slugs, a local
+    candidate's file name as a safe name. A refused piece raises UnsafePath."""
     if fm.get("target"):
-        return str(fm["target"])
-    pid = str(fm.get("id") or path.stem)
-    kind = fm.get("kind") or "topics"
-    if fm.get("released_from"):
+        return check_target(fm["target"])
+    released = bool(fm.get("released_from"))
+    stem = path.stem
+    if released:
+        pid = pages.check_page_id(fm.get("id") or stem, what="released id")
+    else:
+        stem = pages.check_name(stem, what="candidate file name")
+    kind = pages.check_slug(fm.get("kind") or "topics", what="kind")
+    subject = fm.get("subject")
+    if subject:
+        subject = pages.check_slug(subject, what="subject")
+    if released:
         if fm.get("type") == "source":
             gen = fm.get("generated") if isinstance(fm.get("generated"), dict) else {}
             at = pages.parse_iso(gen.get("at")) if gen.get("at") else now
-            return f"knowledge/sources/{at:%Y}/{at:%m}/{pid}.md"
-        return f"knowledge/{kind}/{fm.get('subject') or pid}/{pid}.md"
+            return check_target(f"knowledge/sources/{at:%Y}/{at:%m}/{pid}.md")
+        return check_target(f"knowledge/{kind}/{subject or pid}/{pid}.md")
     if fm.get("type") == "decision" or kind == "decisions":
-        return f"knowledge/decisions/{path.stem}.md"
-    return f"knowledge/{kind}/{fm.get('subject') or path.stem}/{path.stem}.md"
+        return check_target(f"knowledge/decisions/{stem}.md")
+    return check_target(f"knowledge/{kind}/{subject or stem}/{stem}.md")
+
+
+def dest_of(root, fm: dict, path: Path, now: dt.datetime, *, record: bool = False, kinds=None) -> Path:
+    """The file a candidate lands at, under root, or UnsafePath: `target_of`'s path, under
+    `knowledge/sources/` exactly when it is a record, in a kind this space has (`kinds`, when
+    given), and confined (pages.confine): no link on the way, inside root once resolved, and
+    nothing the gate guards at any depth (a `CLAUDE.md`, a `.claude/`, a `conftest.py`)."""
+    rel = check_target(target_of(fm, path, now), record=record)
+    kind = rel.split("/")[1]
+    if kinds is not None and not record and kind not in kinds:
+        raise pages.UnsafePath(f"target {ascii(rel)[:90]}: {ascii(kind)} is not one of this space's kinds")
+    return pages.confine(root, rel, zones=("knowledge/",), guarded=True, what="target")
 
 
 def landing_text(body: str) -> str:
@@ -349,7 +533,8 @@ def _high_stakes(space: spaceyaml.Space, fm: dict, body: str) -> bool:
 
 def _file_evidence(root, space, fm: dict, body: str, path: Path, item_id, by, now, report) -> None:
     """A record is evidence: filed as a witness page, never signed (a stable page under
-    `knowledge/sources/` is invalid)."""
+    `knowledge/sources/` is invalid). A record whose id is already a page under `knowledge/`
+    is refused (UnsafePath) and stays on Needs you: a yes never writes over it."""
     when = now
     for key in ("at", "released_at"):
         try:
@@ -357,10 +542,20 @@ def _file_evidence(root, space, fm: dict, body: str, path: Path, item_id, by, no
             break
         except (TypeError, ValueError):
             continue
-    target = root / "knowledge" / "sources" / f"{when:%Y}" / f"{when:%m}" / f"{fm.get('id') or path.stem}.md"
+    pid = fm.get("id") or path.stem
+    if fm.get("id") or fm.get("released_from"):   # an id from data names the file: a page id only
+        pages.check_page_id(pid, what="record id")
+    else:
+        pages.check_name(pid, what="record file name")
+    rel = check_target(f"knowledge/sources/{when:%Y}/{when:%m}/{pid}.md", record=True)
+    target = pages.confine(root, rel, zones=("knowledge/sources/",), guarded=True, what="record")
+    import ids   # an id is one page: a yes never writes over another record or a signed page
+    there = rel if target.exists() else ids.scan(root, roots=("knowledge",)).get(pid)
+    if there is not None:
+        raise pages.UnsafePath(f"record {pid}: its id is already the page at {there}")
     page_fm = {k: v for k, v in fm.items() if k not in CANDIDATE_ONLY}
     page_fm.update(status="draft", filed_by=by, filed_at=pages.iso(now))
-    pages.write(target, page_fm, body)
+    pages.write(target, page_fm, body, root=root)
     path.unlink()
     _log(root, f"- {pages.iso(now)} filed record {item_id} as evidence by {by}")
     report.verdicts_recorded += 1
@@ -389,12 +584,18 @@ def _candidate(root, space, entry: Found, item_id, verb, note, by, now, report: 
             fm.update(title=first[:80], target=f"knowledge/topics/lessons/{distill.slugify(first)}.md")
     body = landing_text(body)
     fingerprint = pages.fingerprint(body)
-    target = root / target_of(fm, path, now)
+    # where it lands and where its release waits, both refused before anything is written
+    target = dest_of(root, fm, path, now, kinds=space.all_kinds)
     if target.exists():   # an edit of a page already here: its id is permanent (shape-1.md, Pages)
         old_fm, _ = pages.read(target)
         fm["id"] = old_fm.get("id") or fm.get("id")
         fm.update({k: old_fm[k] for k in KEPT_ON_RESIGN if k in old_fm and k not in fm})
         fm.update(provenance_kept(old_fm, fm))
+    pid = str(fm.get("id") or path.stem)
+    if fm.get("id"):
+        pages.check_page_id(pid)
+    destination = fm.get("destination")
+    queue_path = root / needs_you.QUEUE / f"{pages.check_name(pid, what='release file name')}.md"
     signature = {"status": "stable", "signed_by": by, "signed_at": pages.iso(now),
                  "signed_in": space.name, "fingerprint": fingerprint}
     repo = _own_repo(root)
@@ -402,14 +603,13 @@ def _candidate(root, space, entry: Found, item_id, verb, note, by, now, report: 
         signature["signed_repo"] = repo   # where another space's landing checks this signature
     page_fm = {k: v for k, v in fm.items() if k not in CANDIDATE_ONLY}
     page_fm.update(signature)
-    pages.write(target, page_fm, body)
+    page_fm["signed_fields"] = fields_fingerprint(page_fm)
+    pages.write(target, page_fm, body, root=root)
     path.unlink()
-    # the trust root: this space's own history names what was signed, by whom, and its text
-    _log(root, f"- {pages.iso(now)} fingerprint {fm.get('id') or item_id} {fingerprint} by {by}")
+    _log_signature(root, now, pid, page_fm, by)
     report.signed.append(item_id)
-    destination = fm.get("destination")
     if destination:
-        qid = str(fm.get("id") or path.stem)
+        qid = pid
         stakes = _high_stakes(space, fm, body)  # a signature never skips the window for these
         queue_fm = {"id": qid, "type": fm.get("type") or "entity", "title": fm.get("title") or qid,
                     "generated": pages.generated("sign", now), "class": "window" if stakes else "at_once",
@@ -417,11 +617,14 @@ def _candidate(root, space, entry: Found, item_id, verb, note, by, now, report: 
                     "stage_after": pages.iso(now + space.window() if stakes else now), "listed": False,
                     "high_stakes": fm.get("high_stakes") or None, "path": f"approved:{by}", "approved_by": by,
                     "evidence": list(fm.get("evidence") or []), "from_space": space.name,
-                    "kind": fm.get("kind"), "page": target.relative_to(root).as_posix()}
+                    "kind": fm.get("kind")}   # its id names the page; where it sits here never travels
         if str(fm.get("target") or "").startswith("knowledge/topics/lessons/"):   # one page per lesson there too
             queue_fm["target"] = fm["target"]
         queue_fm.update(signature)
-        pages.write(root / needs_you.QUEUE / f"{qid}.md", queue_fm, body)
+        queue_fm["signed_fields"] = fields_fingerprint(queue_fm)
+        if queue_fm["signed_fields"] != page_fm["signed_fields"]:   # the release states its own fields
+            _log(root, f"- {pages.iso(now)} fields {qid} {queue_fm['signed_fields']} by {by}")
+        pages.write(queue_path, queue_fm, body, root=root)
         report.released_queued.append(qid)
     if verb == "always":
         _add_standing_choice(space, destination or _home_of(root, space, fm.get("subject")),
@@ -467,6 +670,8 @@ def _queue_item(root, space, entry: Found, item_id, verb, note, by, now, report:
         if fm.get("fingerprint"):  # a signed body changed: it is signed again, by this person
             fm.update(signed_by=by, signed_at=pages.iso(now), signed_in=space.name,
                       fingerprint=pages.fingerprint(body))
+            fm["signed_fields"] = fields_fingerprint(fm)
+            _log_signature(root, now, pages.check_page_id(str(fm.get("id") or path.stem)), fm, by)
         report.edited.append(item_id)
     if _high_stakes(space, fm, body):
         # the holder's yes is recorded, but a high-stakes item still waits its window
@@ -569,17 +774,19 @@ def _question(root, space, entry: Found, item_id, verb, note, by, now, report: A
             _log(root, f"- {pages.iso(now)} ownership answer for {item_id} by {by} could not be applied: {exc}")
     if note.strip():
         _log(root, f"- {pages.iso(now)} note {item_id} by {by}: {' '.join(note.split())}")
+        _verdict(root, item_id, by, note=note, now=now)
     path.unlink()
     report.verdicts_recorded += 1
 
 
 def _routine_item(root, space, entry: Found, item_id, verb, note, by, now, report: ApplyReport):
-    """An item a routine wrote: the verdict line in log.md is the answer it reads back."""
+    """An item a routine wrote: the verdict store row (`_verdict`) is the answer it reads back."""
     if verb == "later":
         report.deferred.append(item_id)
         return
     if note.strip():
         _log(root, f"- {pages.iso(now)} note {item_id} by {by}: {' '.join(note.split())}")
+        _verdict(root, item_id, by, note=note, now=now)
     report.verdicts_recorded += 1
 
 
@@ -594,10 +801,25 @@ def _review_line(root: Path, space, batch: Path, number: int, verb: str, note: s
     line = next((l for l in lines if int(l.get("n", 0)) == number), None)
     if line is None or line.get("answered"):
         return ""
+    if fm.get("released_from"):
+        # a review batch is this space's own (check writes it); one another space released would
+        # let a yes, no or edit here verify, deprecate or re-sign pages that space chose
+        why = "a review batch from another space is never answered here"
+        _log(root, f"- {pages.iso(now)} refused {batch.stem}#{number} by {by}: {why}")
+        report.refused.append({"id": f"{batch.stem}#{number}", "why": why})
+        return "refused"
     if verb == "later":
         report.deferred.append(f"{batch.stem}#{number}")
         return "answered"
-    target = root / str(line["page"])
+    # the line's page comes from the batch file: a page under knowledge/ or a draft, nothing else
+    try:
+        target = pages.confine(root, line.get("page"), zones=("knowledge/", "_inbound/candidates/"),
+                               guarded=True, what="review line page")
+    except pages.UnsafePath as exc:
+        why = f"it would write where it may not: {exc}"
+        _log(root, f"- {pages.iso(now)} refused {batch.stem}#{number} by {by}: {why}")
+        report.refused.append({"id": f"{batch.stem}#{number}", "why": why})
+        return "refused"
     draft = (Found("candidate", target, *pages.read(target))
              if str(line["page"]).startswith("_inbound/candidates/") and target.exists() else None)
     if require_pin and verb in PINNED_VERBS and draft is not None and _pinned(draft):
@@ -608,8 +830,14 @@ def _review_line(root: Path, space, batch: Path, number: int, verb: str, note: s
     if not target.exists():
         line["answered"] = "gone"
     elif draft is not None:
-        _candidate(root, space, draft, str(line.get("id") or target.stem),
-                   "yes" if verb in ("yes", "always") else verb, note, by, now, report)
+        try:
+            _candidate(root, space, draft, str(line.get("id") or target.stem),
+                       "yes" if verb in ("yes", "always") else verb, note, by, now, report)
+        except pages.UnsafePath as exc:   # refused before anything was written: the line stays open
+            why = f"it cannot land: {exc}"
+            _log(root, f"- {pages.iso(now)} refused {batch.stem}#{number} by {by}: {why}")
+            report.refused.append({"id": f"{batch.stem}#{number}", "why": why})
+            return "refused"
         line["answered"] = verb
     else:
         pfm, pbody = pages.read(target)
@@ -621,12 +849,15 @@ def _review_line(root: Path, space, batch: Path, number: int, verb: str, note: s
             pbody = pages.normalize(note)
             pfm.update(status="stable", signed_by=by, signed_at=pages.iso(now), signed_in=space.name,
                        fingerprint=pages.fingerprint(pbody), verified_at=pages.iso(now), verified_by=by)
+            pfm["signed_fields"] = fields_fingerprint(pfm)
             pfm.pop("contested", None)
+            if pages.is_page_id(pfm.get("id")):
+                _log_signature(root, now, pfm["id"], pfm, by)
             report.edited.append(f"{batch.stem}#{number}")
         elif verb == "no":
             pfm.update(status="deprecated", deprecated_at=pages.iso(now), deprecated_by=by)
             report.discarded.append(f"{batch.stem}#{number}")
-        pages.write(target, pfm, pbody)
+        pages.write(target, pfm, pbody, root=root)
         line["answered"] = verb
     if all(l.get("answered") for l in lines):
         _log(root, f"- {pages.iso(now)} review batch {batch.stem} answered in full by {by}")
@@ -667,11 +898,20 @@ def _split(verdict) -> tuple:
 def apply(root, verdicts: dict, by: str, now: dt.datetime | None = None,
           require_pin: bool = False) -> ApplyReport:
     """Record a named person's verdicts. Refuses routines, bad verbs and bad body files
-    before any write. A yes, edit or always on a pinned page signs only the text that was read
-    back; with `require_pin`, one that names no fingerprint is refused too."""
+    before any write: a call made inside a routine (`routine.in_routine`, a computer's run or a
+    cloud run, whatever spelling of the command reached here and whether or not it carries a
+    pin) is refused before any item is read, since a routine never answers for the person. A
+    yes, edit or always on a pinned page signs only the text that was read back; with
+    `require_pin` (the command line always passes it), one that names no fingerprint is
+    refused too."""
     actor = str(by or "").strip()
     if not actor or actor.lower().startswith("routine:"):
         raise ValueError("sign.apply needs a named person as `by`; routines never sign "
+                         "(rules.md section 1, hard rule 3)")
+    import routine
+    running = routine.in_routine()
+    if running:   # before any write: the verdict store would refuse it, but only after the page
+        raise ValueError(f"a signature is a named person's, and {running}; routines never sign "
                          "(rules.md section 1, hard rule 3)")
     root = Path(root)
     wanted = {}
@@ -691,48 +931,81 @@ def apply(root, verdicts: dict, by: str, now: dt.datetime | None = None,
     found = index(root)
     report = ApplyReport()
     for item_id, (verb, note, pin) in wanted.items():
-        if "#" in item_id:  # one line of a weekly review batch: `review-<date>#<n>`
-            stem, _, number = item_id.partition("#")
-            batch = root / needs_you.CANDIDATES / f"{stem}.md"
-            outcome = (_review_line(root, space, batch, int(number), verb, note, actor, now, report,
-                                    require_pin) if batch.exists() and number.isdigit() else "")
-            if outcome == "answered":
-                _log(root, f"- {pages.iso(now)} {verb} {item_id} by {actor}")
-            elif not outcome:
-                report.skipped.append(item_id)
-            continue
-        entry = found.get(item_id)
-        if entry is not None and entry.kind == "candidate" and entry.fm.get("review_batch") and verb != "later":
-            # the whole batch at once: the verb applies to every open line
-            outcomes = [_review_line(root, space, entry.path, int(line["n"]), verb, note, actor, now, report,
-                                     require_pin)
-                        for line in list(entry.fm.get("lines") or [])
-                        if not line.get("answered") and entry.path.exists()]
-            if "answered" in outcomes or "refused" not in outcomes:   # not when every line was refused
-                _log(root, f"- {pages.iso(now)} {verb} {item_id} by {actor}")
-            continue
-        if entry is None and verb == "no":
-            # an item that already left (listed under "left yesterday"): pulled back with one word
-            import release
-            if release.released_record(root, item_id) is not None:
-                release.retract(root, item_id, now=now)
-                report.retracted.append(item_id)
-                _log(root, f"- {pages.iso(now)} {verb} {item_id} by {actor}")
-                continue
-        if entry is None:
-            report.skipped.append(item_id)
-            continue
-        why = _refusal(entry, verb, note, pin, require_pin)
-        if why:   # not what was read back: it stays where it is, still on Needs you
+        try:
+            _one(root, space, found, item_id, verb, note, pin, actor, now, report, require_pin)
+        except pages.UnsafePath as exc:
+            # a path from data that would write outside its place: nothing was written for it,
+            # and it stays where it is, still on Needs you
+            why = f"it would write where it may not: {exc}"
             _log(root, f"- {pages.iso(now)} refused {item_id} by {actor}: {why}")
             report.refused.append({"id": item_id, "why": why})
-            continue
-        HANDLERS.get(entry.kind, _routine_item)(root, space, entry, item_id, verb, note, actor, now, report)
-        _log(root, f"- {pages.iso(now)} {verb} {item_id} by {actor}")
     return report
 
 
+def _one(root: Path, space, found: dict, item_id: str, verb: str, note: str, pin: dict, actor: str,
+         now: dt.datetime, report: ApplyReport, require_pin: bool) -> None:
+    """One verdict of `apply`. A target or a queue file that is not a safe place raises
+    UnsafePath before anything is written for this item; so does a routine, asked again here
+    (`status._routine_running`, the verdict store's own question) so that refusal can never
+    come after a handler wrote the page."""
+    import status
+    running = status._routine_running()
+    if running:
+        raise ValueError(f"a signature is a named person's, and {running}; routines never sign "
+                         "(rules.md section 1, hard rule 3)")
+    if "#" in item_id:  # one line of a weekly review batch: `review-<date>#<n>`
+        stem, _, number = item_id.partition("#")
+        batch = root / needs_you.CANDIDATES / f"{pages.check_name(stem, what='review batch')}.md"
+        outcome = (_review_line(root, space, batch, int(number), verb, note, actor, now, report,
+                                require_pin) if batch.exists() and number.isdigit() else "")
+        if outcome == "answered":
+            _log(root, f"- {pages.iso(now)} {verb} {item_id} by {actor}")
+            _verdict(root, item_id, actor, verb=verb, now=now)
+        elif not outcome:
+            report.skipped.append(item_id)
+        return
+    entry = found.get(item_id)
+    if entry is not None and entry.kind == "candidate" and entry.fm.get("review_batch") and verb != "later":
+        # the whole batch at once: the verb applies to every open line
+        outcomes = [_review_line(root, space, entry.path, int(line["n"]), verb, note, actor, now, report,
+                                 require_pin)
+                    for line in list(entry.fm.get("lines") or [])
+                    if not line.get("answered") and entry.path.exists()]
+        if "answered" in outcomes or "refused" not in outcomes:   # not when every line was refused
+            _log(root, f"- {pages.iso(now)} {verb} {item_id} by {actor}")
+            _verdict(root, item_id, actor, verb=verb, now=now)
+        return
+    if entry is None and verb == "no":
+        # an item that already left (listed under "left yesterday"): pulled back with one word
+        import release
+        if release.released_record(root, item_id) is not None:
+            release.retract(root, item_id, now=now)
+            report.retracted.append(item_id)
+            _log(root, f"- {pages.iso(now)} {verb} {item_id} by {actor}")
+            _verdict(root, item_id, actor, verb=verb, now=now)
+            return
+    if entry is None:
+        report.skipped.append(item_id)
+        return
+    why = _refusal(entry, verb, note, pin, require_pin)
+    if not why and verb in ("yes", "always") and _outside_decision(entry.fm):
+        why = "an outside sender's decision: check it first"
+    if not why and _page_candidate(entry) and verb in PINNED_VERBS:
+        try:   # where a yes would write, checked before anything is: a refused target stays a candidate
+            dest_of(root, entry.fm, entry.path, now, kinds=space.all_kinds)
+        except pages.UnsafePath as exc:
+            why = f"it cannot land: {exc}"
+    if why:   # not what was read back: it stays where it is, still on Needs you
+        _log(root, f"- {pages.iso(now)} refused {item_id} by {actor}: {why}")
+        report.refused.append({"id": item_id, "why": why})
+        return
+    HANDLERS.get(entry.kind, _routine_item)(root, space, entry, item_id, verb, note, actor, now, report)
+    _log(root, f"- {pages.iso(now)} {verb} {item_id} by {actor}")
+    _verdict(root, item_id, actor, verb=verb, now=now)
+
+
 def main(argv=None) -> int:
+    needs_you.utf8_stdio()   # a title in any script prints, never raises on a cp1252 pipe
     argv = list(sys.argv[1:] if argv is None else argv)
     root = Path(".")
     if argv and argv[0] not in ("read-back", "apply") and not argv[0].startswith("-"):

@@ -4,7 +4,7 @@ from pathlib import Path
 import yaml
 
 import behaviour
-from conftest import make_space
+from conftest import make_space as _make_space
 
 TEMPLATE = Path(__file__).resolve().parents[3]
 
@@ -15,8 +15,24 @@ def scenario(path, **data):
     return path
 
 
+# A scenario runs one tool of the space (behaviour.scenario_problem): these tests run their code through a tool that
+# executes its first argument, which `make_space` below puts into each space.
+TOOL = "_meta/tools/scenario_tool.py"
+
+
 def py(code):
-    return ["python", "-c", code]
+    return ["python", TOOL, code]
+
+
+def make_space(root, **kw):
+    root = _make_space(root, **kw)
+    _with_tool(root)
+    return root
+
+
+def _with_tool(root):
+    (root / TOOL).parent.mkdir(parents=True, exist_ok=True)
+    (root / TOOL).write_text("import sys\nexec(sys.argv[1])\n", encoding="utf-8")
 
 
 def test_run_fails_a_command_that_writes_outside_the_allowed_prefixes(tmp_path):
@@ -126,7 +142,8 @@ def test_run_never_copies_private_zones_or_the_feed(tmp_path):
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         (root / rel).write_text("private\n", encoding="utf-8")
     (root / "space.yaml").write_text("shape: 1\nprofile: personal\nname: space\n", encoding="utf-8")
-    path = scenario(tmp_path / "s.yaml", name="private zones", command=["python", "-c", "print(1)"],
+    _with_tool(root)
+    path = scenario(tmp_path / "s.yaml", name="private zones", command=py("print(1)"),
                     expect={"exit": 0, "must_not_exist": ["personal/diary.txt", "academic/thesis.txt",
                                                          "_scratch/tmp.txt", "_meta/state/feed/mail.jsonl",
                                                          "knowledge/topics/x/page.md"]})
@@ -181,3 +198,19 @@ def test_the_template_records_no_behaviour_line(tmp_path):
     scenario(folder / "ok.yaml", command=py("pass"), expect={"exit": 0})
     assert behaviour.run_all(root).passed == 1
     assert not (root / "_meta" / "state" / "tests.jsonl").exists()
+
+
+def test_a_scenario_writes_under_a_home_of_its_own(tmp_path):
+    """A tool that writes under ~ (the sync's signing key) never writes this machine's home."""
+    root = make_space(tmp_path / "ada")
+    marker = tmp_path / "home-seen.txt"
+    code = ("import os, pathlib; home = pathlib.Path.home(); "
+            "(home / 'touched').write_text('x'); "
+            f"pathlib.Path({str(marker)!r}).write_text(str(home))")
+    path = scenario(tmp_path / "home.yaml", command=py(code), expect={"exit": 0})
+    real = Path(__import__("os").path.expanduser("~"))
+    report = behaviour.run(root, path)
+    assert report.failed == 0, report.details
+    seen = Path(marker.read_text(encoding="utf-8"))
+    assert seen != real and seen.name == "home" and seen.parent.name.startswith("behaviour-")
+    assert not (real / "touched").exists()

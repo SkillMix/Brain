@@ -10,6 +10,13 @@ address or marked `direction: sent`) and, for each draft:
 - no such record and the draft idle for fourteen scaled days: it moves to `outbox/archive/`
   silently (one line in `log.md`, nothing on Needs you).
 
+A draft that is a symbolic link or a junction, or not a plain file, is never read and never
+moved: a link a pull request committed would otherwise copy the file it points at (a
+`~/.netrc`) into the repository. It stays where it is and the run line counts it as skipped.
+Every write (the moved draft, `log.md`, the run line) goes through `pages.write_text` or
+`pages.append_text`, which refuse to write through a link; a draft whose move is refused stays
+in place and is skipped too. An `outbox/` that is itself a link is not read at all.
+
 Nothing is deleted and nothing is sent. One run line.
 
     python outbox_reconcile.py [root]
@@ -41,6 +48,7 @@ class Report:
     sent: list = field(default_factory=list)
     archived: list = field(default_factory=list)
     waiting: int = 0
+    skipped: list = field(default_factory=list)
 
 
 def norm(subject) -> str:
@@ -87,16 +95,28 @@ def _since(fm: dict, path: Path) -> dt.datetime:
     return dt.datetime.fromtimestamp(path.stat().st_mtime, dt.timezone.utc)
 
 
-def _move(src: Path, folder: Path, text: str) -> Path:
-    folder.mkdir(parents=True, exist_ok=True)
+def _move(root: Path, src: Path, folder: Path, text: str) -> Path:
+    """Write the draft's text under `folder`, then remove the draft. The write never follows a
+    link (it raises pages.UnsafePath), and the draft goes only once its text is written."""
     target = folder / src.name
     n = 1
-    while target.exists():
+    while target.exists() or pages.is_link(target):   # a dangling link does not `exist`, yet is there
         target = folder / f"{src.stem}-{n}{src.suffix}"
         n += 1
-    target.write_text(text, encoding="utf-8", newline="\n")
+    pages.write_text(target, text, root=root)
     src.unlink()
     return target
+
+
+def _plain_draft(path: Path) -> bool:
+    """A regular file, looked at without following a link: a linked draft is never read."""
+    return not pages.is_link(path) and path.is_file()
+
+
+def _one_line(value) -> str:
+    """A field of a mail record as one word in a log line: a newline in a message id the feed
+    carried can never start a line of its own in log.md."""
+    return "-".join(str(value).split()) or "-"
 
 
 def run(root, now: dt.datetime | None = None) -> Report:
@@ -106,7 +126,14 @@ def run(root, now: dt.datetime | None = None) -> Report:
     report = Report()
     records = sent_records(root, space)
     log = root / "log.md"
-    for path in sorted((root / OUTBOX).glob("*.md")) if (root / OUTBOX).is_dir() else []:
+    outbox = root / OUTBOX
+    if pages.is_link(outbox):
+        report.skipped.append(OUTBOX.as_posix())
+    drafts = sorted(outbox.glob("*.md")) if outbox.is_dir() and not pages.is_link(outbox) else []
+    for path in drafts:
+        if not _plain_draft(path):
+            report.skipped.append(path.relative_to(root).as_posix())
+            continue
         text = path.read_text(encoding="utf-8", errors="replace")
         fm, body = pages.split(text)
         subject = norm(fm.get("subject") or fm.get("title") or path.stem)
@@ -121,36 +148,44 @@ def run(root, now: dt.datetime | None = None) -> Report:
             break
         if match is not None:
             to = ", ".join(sorted(_emails(match.get("to")))) or "the recipients"
-            sent_text = text.rstrip("\n") + (f"\n\n## Sent\n\n- message {match.get('id')}, "
-                                             f"sent {match.get('at')}, to {to}\n")
-            target = _move(path, root / SENT, sent_text)
+            mid = _one_line(match.get("id"))
+            sent_text = text.rstrip("\n") + (f"\n\n## Sent\n\n- message {mid}, "
+                                             f"sent {_one_line(match.get('at'))}, to {to}\n")
+            try:
+                target = _move(root, path, root / SENT, sent_text)
+            except pages.UnsafePath:
+                report.skipped.append(path.relative_to(root).as_posix())
+                continue
             report.sent.append(target.relative_to(root).as_posix())
-            with log.open("a", encoding="utf-8", newline="\n") as handle:
-                handle.write(f"- {pages.iso(now)} outbox {path.name} sent as {match.get('id')}\n")
+            pages.append_text(log, f"- {pages.iso(now)} outbox {path.name} sent as {mid}\n", root=root)
             continue
         if now - _since(fm, path) > space.scale(IDLE_DAYS * 24):
-            target = _move(path, root / ARCHIVE, text)
+            try:
+                target = _move(root, path, root / ARCHIVE, text)
+            except pages.UnsafePath:
+                report.skipped.append(path.relative_to(root).as_posix())
+                continue
             report.archived.append(target.relative_to(root).as_posix())
-            with log.open("a", encoding="utf-8", newline="\n") as handle:
-                handle.write(f"- {pages.iso(now)} outbox {path.name} archived after "
-                             f"{IDLE_DAYS} idle days\n")
+            pages.append_text(log, f"- {pages.iso(now)} outbox {path.name} archived after "
+                                   f"{IDLE_DAYS} idle days\n", root=root)
             continue
         report.waiting += 1
-    runs = root / RUNS
-    runs.parent.mkdir(parents=True, exist_ok=True)
-    with runs.open("a", encoding="utf-8", newline="\n") as handle:
-        handle.write(json.dumps({"routine": "outbox-reconcile", "at": pages.iso(now), "space": space.name,
-                                 "cost_tokens": 0, "notes": {"sent": len(report.sent),
-                                                             "archived": len(report.archived),
-                                                             "waiting": report.waiting}}) + "\n")
+    notes = {"sent": len(report.sent), "archived": len(report.archived), "waiting": report.waiting}
+    if report.skipped:
+        notes["skipped"] = len(report.skipped)
+    pages.append_text(root / RUNS, json.dumps({"routine": "outbox-reconcile", "at": pages.iso(now),
+                                               "space": space.name, "cost_tokens": 0, "notes": notes}) + "\n",
+                      root=root)
     return report
 
 
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     report = run(Path(argv[0]) if argv else Path("."))
+    skipped = (f", {len(report.skipped)} skipped (a link, or a move refused): {', '.join(report.skipped)}"
+               if report.skipped else "")
     print(f"outbox: {len(report.sent)} filed as sent, {len(report.archived)} archived, "
-          f"{report.waiting} waiting")
+          f"{report.waiting} waiting{skipped}")
     return 0
 
 

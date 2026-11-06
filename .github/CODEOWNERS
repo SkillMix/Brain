@@ -1,12 +1,55 @@
-# Protected paths (space.yaml `protected:`, rules.md section 8). Pull requests touching
-# these wait for the space owner's one click; everything else lands on green.
-# `onboard` replaces @OWNER-LOGIN with the owner's GitHub login and keeps this list in
-# step with space.yaml. The template repository itself lands every pull request on
-# green (docs/decisions.md), so there this file only documents the instance rule.
+# Protected paths (space.yaml `protected:`, rules.md section 8, gate.MINIMUM_PROTECTED and
+# gate.ANY_DEPTH). In a space, pull requests touching these wait for the owner's one click and
+# everything else lands on green; an approved template release lands on green too. `onboard`
+# replaces @OWNER-LOGIN with the owner's GitHub login and keeps this list in step with space.yaml.
+# The file names who decides; the gate's verdict enforces it. A space turns on no code-owner
+# review: a release pull request is opened with the owner's own token, and GitHub never lets the
+# author approve, so every release would stop (SECURITY.md). In the template repository pull
+# requests land on green, machinery included, and the release tag is the human gate; a template
+# with a second maintainer may require a code owner's review there.
 
-/identity/      @OWNER-LOGIN
-/rules.md       @OWNER-LOGIN
-/space.yaml     @OWNER-LOGIN
-/.claude/       @OWNER-LOGIN
-/_meta/tools/   @OWNER-LOGIN
-/.github/       @OWNER-LOGIN
+/identity/                          @OWNER-LOGIN
+/rules.md                           @OWNER-LOGIN
+/space.yaml                         @OWNER-LOGIN
+/.claude/                           @OWNER-LOGIN
+/_meta/tools/                       @OWNER-LOGIN
+/.github/                           @OWNER-LOGIN
+/.gitignore                         @OWNER-LOGIN
+/.gitmodules                        @OWNER-LOGIN
+/_meta/templates/                   @OWNER-LOGIN
+/_meta/plugins/                     @OWNER-LOGIN
+/.claude-plugin/                    @OWNER-LOGIN
+/_meta/state/routines/              @OWNER-LOGIN
+/_meta/state/onboard.yaml           @OWNER-LOGIN
+/_meta/migrations/                  @OWNER-LOGIN
+/_meta/tests/behaviour/             @OWNER-LOGIN
+/docs/shape-1.md                    @OWNER-LOGIN
+/_meta/state/invitations/           @OWNER-LOGIN
+/_meta/access/resources.yaml        @OWNER-LOGIN
+/_meta/state/template-origin.yaml   @OWNER-LOGIN
+/requirements.txt                   @OWNER-LOGIN
+/requirements-dev.txt               @OWNER-LOGIN
+/*.py                               @OWNER-LOGIN
+/*.pyw                              @OWNER-LOGIN
+/*.pyd                              @OWNER-LOGIN
+/*.so                               @OWNER-LOGIN
+/*/__init__.*                       @OWNER-LOGIN
+
+# read at any depth
+CLAUDE.md                           @OWNER-LOGIN
+CLAUDE.local.md                     @OWNER-LOGIN
+AGENTS.md                           @OWNER-LOGIN
+.gitattributes                      @OWNER-LOGIN
+.mcp.json                           @OWNER-LOGIN
+conftest.py                         @OWNER-LOGIN
+pytest.ini                          @OWNER-LOGIN
+.pytest.ini                         @OWNER-LOGIN
+pytest.toml                         @OWNER-LOGIN
+.pytest.toml                        @OWNER-LOGIN
+pyproject.toml                      @OWNER-LOGIN
+setup.cfg                           @OWNER-LOGIN
+tox.ini                             @OWNER-LOGIN
+**/.claude/                         @OWNER-LOGIN
+*.pyc                               @OWNER-LOGIN
+*.pyo                               @OWNER-LOGIN
+__pycache__/                        @OWNER-LOGIN

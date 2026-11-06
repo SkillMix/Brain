@@ -94,8 +94,7 @@ def test_a_low_capture_rate_proposes_the_switch(tmp_path):
     items = yaml.safe_load((root / "_inbound/needs-you/librarian.yaml").read_text(encoding="utf-8"))["items"]
     item = next(i for i in items if i["id"] == "transcripts-on")
     assert "0.00" in item["text"]
-    with (root / "log.md").open("a", encoding="utf-8") as fh:
-        fh.write("- 2026-10-12T10:00:00Z yes transcripts-on by Ada Okafor\n")
+    status.record_verdict(root, "transcripts-on", "Ada Okafor", verb="yes", at="2026-10-12T10:00:00Z")
     status.run(root, now=NOW + dt.timedelta(hours=1))
     data = yaml.safe_load((root / "space.yaml").read_text(encoding="utf-8"))
     assert data["transcripts"]["switch"] == "on"
