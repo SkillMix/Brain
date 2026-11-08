@@ -29,6 +29,8 @@ import status
 import template_sync
 from conftest import make_space
 
+OFFICIAL = template_sync.OFFICIAL_TEMPLATE
+
 BS = "\\"
 
 
@@ -145,7 +147,7 @@ def test_a_space_made_from_another_template_records_it_and_template_sync_follows
     assert template_sync.pinned(spaceyaml.load(root)) == "lantern/brain-template"
 
 
-@pytest.mark.parametrize("tpl", ["SkillMix/Brain", "skillmix/brain", None, "", "C:/templates/brain",
+@pytest.mark.parametrize("tpl", [OFFICIAL, OFFICIAL.lower(), None, "", "C:/templates/brain",
                                  "/srv/brain-template", "https://example.test/lantern/brain"])
 def test_the_official_template_or_a_local_copy_records_nothing(tmp_path, tpl):
     root = make_space(tmp_path / "ada")

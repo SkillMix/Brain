@@ -155,7 +155,7 @@ LABELLED_RE = re.compile(
     r"signing[_-]?secret|app[_-]?secret|consumer[_-]?secret)[A-Za-z0-9_-]{0,30}"
     r"[\"']?\s*[:=]\s*[\"']?([A-Za-z0-9_\-/+=.]{20,})")
 # The same in the shapes a .env file and a JSON or YAML document give it without those words: an
-# environment name ending in KEY, TOKEN or SECRET (`GITHUB_TOKEN=`, `NOTETAKER_KEY=`, `SECRET=`;
+# environment name ending in KEY, TOKEN or SECRET (`GITHUB_TOKEN=`, `CALLS_KEY=`, `SECRET=`;
 # upper case only, so `cache_key = ...` in code is no label), and a field named just `token` or
 # `secret`. The value is held to more there (`_generic`): a path or a dotted name is no key.
 ENV_LABEL_RE = re.compile(r"(?<![A-Za-z0-9_])(?:[A-Z][A-Z0-9]*_)*(?:KEY|TOKEN|SECRET|APIKEY)[\"']?\s*[:=]\s*"

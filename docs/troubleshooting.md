@@ -125,7 +125,7 @@ read them. Agents never grant access.
 Seen: the weekly template sync copies nothing and prints one of these reasons. The sync reads its
 template only from what the owner's click lands: `space.yaml`'s `template:`, else
 `_meta/state/template-origin.yaml`, else the template GitHub recorded when the repository was made
-from one, else the official `SkillMix/Brain`; never from the provenance a run writes. When the
+from one, else the official template; never from the provenance a run writes. When the
 provenance names another repository, or GitHub cannot be asked (gh not signed in, no network) and
 the space did not already follow the official template, it stops rather than guess. The owner sets `template: owner/name` in `space.yaml` (a protected change,
 so it lands on their click), or signs in with `gh auth login` and runs it again. A local copy of

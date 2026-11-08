@@ -14,6 +14,7 @@ import yaml
 import behaviour
 import gate
 import template_archive
+import start
 import template_sync
 from conftest import make_space, write_page
 
@@ -292,7 +293,7 @@ def test_the_provenance_cannot_name_the_source(tmp_path):
 
 def test_the_source_is_space_yaml_or_the_official_template(tmp_path):
     space = make_space(tmp_path / "ada")
-    assert template_sync.template_source(space, None) == template_sync.OFFICIAL_TEMPLATE == "SkillMix/Brain"
+    assert template_sync.template_source(space, None) == template_sync.OFFICIAL_TEMPLATE == start.OFFICIAL_TEMPLATE != ""
     other = make_space(tmp_path / "bea", template="https://github.com/acme/tpl.git")
     assert template_sync.template_source(other, None) == "acme/tpl"
     (other / PROV).write_text(yaml.safe_dump({"repo": "acme/tpl", "files": {}}), encoding="utf-8")

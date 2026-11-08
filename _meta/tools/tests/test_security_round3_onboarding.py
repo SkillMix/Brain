@@ -424,7 +424,7 @@ def _inviting_brain(tmp_path, **ben):
               {"id": "ben", "kind": "people", "title": "Ben Liu", "email": "ben@northwind.example", **ben}]
     brain = make_space(tmp_path / "brain", profile="brain", name="brain", subjects=people)
     onboard.write_yaml(brain / "_meta" / "state" / "onboard.yaml", {"case": "company", "repo": "northwind-co/brain"})
-    onboard.write_yaml(brain / "_meta" / "state" / "template-version.yaml", {"repo": "SkillMix/Brain"})
+    onboard.write_yaml(brain / "_meta" / "state" / "template-version.yaml", {"repo": start.OFFICIAL_TEMPLATE})
     return brain
 
 
@@ -517,7 +517,7 @@ def test_setup_never_takes_a_membership_as_the_yes(tmp_path, monkeypatch):
     monkeypatch.setattr(onboard, "create_space", lambda *a, **k: made.append(a) or (None, None))
     report = onboard.Report("start")
     start.setup(report, TEMPLATE, "evil-org/brain:ada", None, None, "Ada Okafor", None, None, None,
-                tmp_path / "home", "SkillMix/Brain", False, False, None)
+                tmp_path / "home", start.OFFICIAL_TEMPLATE, False, False, None)
     row = next(s for s in report.steps if s.name == "invitation brain")
     assert not row.done and row.needs_owner and report.stopped
     assert made == [] and not any(s.name == "invitation template" for s in report.steps)   # nothing made, no swap
@@ -548,9 +548,9 @@ def test_the_doctor_accepts_the_invitation_of_the_confirmed_brains_organisation_
     assert not doctor._organization(dry, "northwind-co", fix=False, accept=True).ok   # a dry run changes nothing
     seen = []
     monkeypatch.setattr(start.doctor, "diagnose", lambda **kw: seen.append(kw) or [])
-    start.checkup(onboard.Report("start"), "northwind-co/brain", "SkillMix/Brain", False, True, tmp_path,
+    start.checkup(onboard.Report("start"), "northwind-co/brain", start.OFFICIAL_TEMPLATE, False, True, tmp_path,
                   "northwind-co/brain")
-    start.checkup(onboard.Report("start"), "northwind-co/brain", "SkillMix/Brain", False, True, tmp_path, None)
+    start.checkup(onboard.Report("start"), "northwind-co/brain", start.OFFICIAL_TEMPLATE, False, True, tmp_path, None)
     assert seen[0]["accept_orgs"] == ["northwind-co"] and seen[1]["accept_orgs"] == [] and seen[1]["orgs"] == []
 
 

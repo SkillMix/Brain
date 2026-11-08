@@ -349,8 +349,11 @@ def test_a_link_anywhere_on_an_entrys_path_makes_the_table_scan(tmp_path):
     write_index(root, {"p-0000dead": "knowledge/projects/harbor/secret.md"})
     ids._CHECKED.clear()
     assert ids.table(root) == {}   # the scan reads no page through the link
-    assert ids.entry_problem(root, "p-0000dead", "knowledge/projects/HARBOR/secret.md")
-    assert not ids.usable(root, {"p-0000dead": "knowledge/projects/HARBOR/secret.md"})   # case ignored
+    assert ids.entry_problem(root, "p-0000dead", "knowledge/projects/harbor/secret.md")
+    assert not ids.usable(root, {"p-0000dead": "knowledge/projects/harbor/secret.md"})
+    if (root / "knowledge" / "projects" / "HARBOR").exists():   # a filesystem that ignores case reaches it too
+        assert ids.entry_problem(root, "p-0000dead", "knowledge/projects/HARBOR/secret.md")
+        assert not ids.usable(root, {"p-0000dead": "knowledge/projects/HARBOR/secret.md"})
 
 
 @pytest.mark.parametrize("rel", ["../outside/a.md", "knowledge/../a.md", "/etc/a.md", "C:/a.md", "work/a.md",

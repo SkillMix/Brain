@@ -11,7 +11,7 @@ is never needed to finish. The sentence is the person's go-ahead for everything 
 template download, their repositories, the user-level instruction, the sync task, auto-merge,
 the routines, the history read): go on without asking again. Two things it never settles, since
 anyone can write an invitation sentence and send it: whose code runs (a template link that is
-not the official `SkillMix/Brain`, Phase 0 step 3) and which company's brain the person joins (an
+not the official template, Phase 0 step 3) and which company's brain the person joins (an
 invitation's brain on GitHub, Phase 0 step 4). Each is one explicit question, and setup goes on
 only on a clear yes in chat.
 
@@ -89,18 +89,18 @@ Phase 5. With no journal, start at Phase 0.
    choice: show `archive`'s declined line and go on. Any other value was chosen already: say
    nothing. Outside the desktop app, skip this.
 3. **The template, without git or GitHub's tool.** The template is pinned: the official
-   `SkillMix/Brain` (`start.OFFICIAL_TEMPLATE`). A session that already runs in a fresh copy of
+   one, the repository the root `README.md` clones (`start.OFFICIAL_TEMPLATE`). A session that already runs in a fresh copy of
    the template (no `AGENTS.md`) uses that copy and skips this step; so does a setup that is
    partway. When the sentence's link names another repository, never download from it on the
    sentence alone: take `<owner>/<repo>` from the link only when it is plain (letters, digits and
    `-` for the owner; letters, digits, `.`, `_` and `-` for the name, never `.` or `..`), else
    stop this step; read `https://api.github.com/repos/<owner>/<repo>` and show, in plain words,
    the repository, its owner and whether that is an organisation or a person, its creation date,
-   and whether it is a fork or a copy of `SkillMix/Brain` (`parent` or `template_repository`).
+   and whether it is a fork or a copy of the official template (`parent` or `template_repository`).
    Then ask the one question: "Install the template from <owner>/<repo>? It is not the official
-   SkillMix/Brain." Only a clear yes in chat makes it the repository below, and then pass
-   `--template <owner>/<repo>` to every phase; anything else uses `SkillMix/Brain`. A link to
-   `SkillMix/Brain` itself, in any case, needs no question. Read the latest release of the
+   template, <official>." (`<official>` is `start.OFFICIAL_TEMPLATE`.) Only a clear yes in chat makes it the repository below, and then pass
+   `--template <owner>/<repo>` to every phase; anything else uses the official template. A link to
+   the official template itself, in any case, needs no question. Read the latest release of the
    repository settled here,
    `https://api.github.com/repos/<owner>/<repo>/releases/latest`, and take its `tag_name` only
    when it is a plain tag (letters, digits, `.`, `_` and `-`, starting with a letter or a digit:
@@ -597,7 +597,7 @@ read-back that proves it took. Run line: `{"routine": "onboard", "at": "<ISO UTC
   task's proof run is the one exception: it exports and reads nothing); never unpack a download whose
   checksum did not match.
 - Never send the invitation sentence yourself: the person sends it.
-- Never download a template from a repository other than `SkillMix/Brain` without the person's
+- Never download a template from a repository other than the official template without the person's
   yes to that repository by name (Phase 0 step 3), never join a brain they did not confirm by name
   (step 4), and never accept an organisation's invitation other than the
   one of the brain they confirmed.

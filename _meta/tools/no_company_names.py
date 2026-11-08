@@ -33,6 +33,26 @@ BRAND_FILE = "_meta/templates/onboarding.css"
 BRAND_FILES = (BRAND_FILE, "README.md")   # the root README only: the template's own address
 BRAND = "59bcbc833b166b267b9ae14b6d07dd886cc66294aad86779f2fdc7fef7ab7f96"   # the sha256 of the brand, as on the list
 COMPOUND = re.compile(r"[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)+")
+TEMPLATE_NAME = "Brain"   # the official template's repository under the brand's GitHub owner
+
+
+def brand(root=None) -> str:
+    """The brand as its brand file spells it: the one word there whose sha256 is `BRAND`, so no other text in the
+    file (protected: `_meta/templates/`) can stand in for it. '' when the file or the word is not there."""
+    path = Path(root) if root else Path(__file__).resolve().parents[2]
+    try:
+        text = (path / BRAND_FILE).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+    return next((w for w in TOKEN.findall(text) if hashlib.sha256(w.lower().encode("utf-8")).hexdigest() == BRAND),
+                "")
+
+
+def official_template(root=None) -> str:
+    """The official template, `<brand>/Brain`, the address the root README gives; '' without the brand, which
+    names no template (shortcut: the name is spelled in no tool, by the name gate; a renamed template is a release)."""
+    name = brand(root)
+    return f"{name}/{TEMPLATE_NAME}" if name else ""
 
 
 def load_hashes(path: Path) -> set:

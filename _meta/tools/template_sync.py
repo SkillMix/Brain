@@ -58,6 +58,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gate  # noqa: E402
+import no_company_names  # noqa: E402
 import pages  # noqa: E402
 import spaceyaml  # noqa: E402
 
@@ -88,7 +89,7 @@ YES_LINE = re.compile(r"^- (\S+) yes template-(v\d+\.\d+\.\d+)-([0-9a-f]{40}) by
 # (`kept_yes`), so a space that upgraded through it stays quiet.
 LEGACY_YES_LINE = re.compile(r"^- (\S+) yes template-(v\d+\.\d+\.\d+)-([0-9a-f]{8}) by (.+?)\s*$")
 # The template every space follows unless its space.yaml names another (the same as start.OFFICIAL_TEMPLATE).
-OFFICIAL_TEMPLATE = "SkillMix/Brain"
+OFFICIAL_TEMPLATE = no_company_names.official_template()
 # Where onboarding records the template a space was made from (protected: gate.MINIMUM_PROTECTED).
 ORIGIN = Path("_meta") / "state" / "template-origin.yaml"
 # A GitHub `owner/name`: the only form in which a template is read when it comes from a file.
@@ -289,7 +290,7 @@ def template_source(root: Path, given: str | None, local: bool = False) -> str:
         # GitHub cannot be asked now (gh signed out, no network). A space whose provenance already
         # names the official template goes on with it: that is trusted code, and the provenance can
         # only keep it there, never point it elsewhere. Any other space stops, rather than guess.
-        if (repo_name(named) or "").casefold() != OFFICIAL_TEMPLATE.casefold():
+        if not OFFICIAL_TEMPLATE or (repo_name(named) or "").casefold() != OFFICIAL_TEMPLATE.casefold():
             raise
         source = OFFICIAL_TEMPLATE
     if named not in (None, "") and (repo_name(named) or "").casefold() != source.casefold():
@@ -297,6 +298,9 @@ def template_source(root: Path, given: str | None, local: bool = False) -> str:
                               f"{source} (space.yaml `template:`, else {ORIGIN.as_posix()}, else the template "
                               "GitHub recorded, else the official one); nothing was synced. To follow the other "
                               "one, set `template: owner/name` in space.yaml")
+    if not source:   # no brand file names the official template here: never a guess
+        raise TemplateRefused(f"template sync: no template is named here and {no_company_names.BRAND_FILE}, which "
+                              "names the official one, is missing; nothing was synced")
     return source
 
 

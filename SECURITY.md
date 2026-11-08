@@ -184,7 +184,7 @@ A second GitHub login for the cloud would not help while the proxy's token is in
 
 An invitation sentence is text anyone can write and send. Setup treats it that way.
 
-- **The template.** Setup installs the official template, `SkillMix/Brain`. A link to any other
+- **The template.** Setup installs the official template, the repository the root `README.md` names. A link to any other
   repository is shown to the person (its owner, its creation date, whether it is a fork) and used
   only on their explicit yes. The release's `SHA256SUMS` sits beside the zip, so it proves the
   download is whole, not who made it. The weekly template sync reads the template a space

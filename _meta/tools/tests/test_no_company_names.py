@@ -124,3 +124,34 @@ def test_the_brand_files_are_the_only_places_this_repository_needs_the_exception
     monkeypatch.setattr(no_company_names, "BRAND_FILES", ())
     hits = no_company_names.check(REPO_ROOT)
     assert hits and {rel for rel, _ in hits} == {"_meta/templates/onboarding.css", "README.md"}
+
+
+def test_the_official_template_is_the_brand_its_brand_file_spells_and_nothing_else_names_it(tmp_path, monkeypatch):
+    """The tools spell no brand (the gate above): the official template is `<brand>/Brain`, the brand read from the
+    brand file as the one word whose sha256 is BRAND, so an edited file names another owner never, only none."""
+    monkeypatch.setattr(no_company_names, "BRAND", _hash("acmeco"))
+    css = tmp_path / no_company_names.BRAND_FILE
+    css.parent.mkdir(parents=True)
+    css.write_text('.x::after { content: "" / "OtherCo"; }\n', encoding="utf-8")
+    assert no_company_names.official_template(tmp_path) == ""
+    css.write_text('/* EvilCo, Acme */ .x::after { content: "" / "AcmeCo"; }\n', encoding="utf-8")
+    assert no_company_names.official_template(tmp_path) == "AcmeCo/Brain"
+    assert no_company_names.official_template(tmp_path / "nowhere") == ""
+
+
+def test_this_template_names_its_official_template():
+    assert no_company_names.official_template().endswith("/Brain")
+    assert _hash(no_company_names.official_template().split("/")[0]) == no_company_names.BRAND
+
+
+def test_without_its_brand_file_nothing_falls_back_to_a_guessed_template(tmp_path, monkeypatch):
+    import start
+    import template_sync
+    from conftest import make_space
+    monkeypatch.setattr(template_sync, "OFFICIAL_TEMPLATE", "")
+    monkeypatch.setattr(start, "OFFICIAL_TEMPLATE", "")
+    monkeypatch.setattr(template_sync, "made_from", lambda root: None)
+    with pytest.raises(template_sync.TemplateRefused, match="missing"):
+        template_sync.template_source(make_space(tmp_path / "ada"), None)
+    with pytest.raises(SystemExit, match="missing"):
+        start.template_source(None, tmp_path)

@@ -18,6 +18,7 @@ import registry
 import setup_journal
 import spaceyaml
 import start
+import template_sync
 from conftest import make_space
 from test_start import brain_with_invitation, template_copy
 
@@ -114,7 +115,7 @@ def test_an_unconfirmed_brain_stops_before_anything_is_read_joined_or_created(tm
     monkeypatch.setattr(onboard, "create_space", lambda *a, **k: made.append(a) or (None, None))
     report = onboard.Report("start")
     start.setup(report, TEMPLATE, "evil-org/brain:ada", None, None, "Ada Okafor", None, None, None,
-                tmp_path / "home", "SkillMix/Brain", False, False, None)
+                tmp_path / "home", start.OFFICIAL_TEMPLATE, False, False, None)
     row = next(s for s in report.steps if s.name == "invitation brain")
     assert not row.done and row.needs_owner and report.stopped and made == []
     assert "evil-org/brain" in row.result and "organisation" in row.result and "2026-11-01" in row.result
@@ -136,7 +137,7 @@ def test_a_confirmed_brain_takes_only_who_the_person_is_from_the_invitation(tmp_
     monkeypatch.setattr(start, "finish_workspace", lambda *a, **k: [])
     report = onboard.Report("start")
     start.setup(report, TEMPLATE, "evil-org/brain:ada", None, None, "Ada Okafor", None, None, None,
-                tmp_path / "home", "SkillMix/Brain", False, False, None, confirmed_brain="Evil-Org/Brain")
+                tmp_path / "home", start.OFFICIAL_TEMPLATE, False, False, None, confirmed_brain="Evil-Org/Brain")
     assert made == ["ada-lw"]   # pending in evil-org: the person's own account, never the invitation's
     [(answers, kw)] = ran
     assert kw["org"] == "ada-lw"
@@ -149,7 +150,7 @@ def test_a_confirmed_brain_takes_only_who_the_person_is_from_the_invitation(tmp_
     host.member, made[:] = "active", []
     ran.clear()
     start.setup(onboard.Report("start"), TEMPLATE, "evil-org/brain:ada", None, None, "Ada Okafor", None, None, None,
-                tmp_path / "home", "SkillMix/Brain", False, False, None, confirmed_brain="evil-org/brain")
+                tmp_path / "home", start.OFFICIAL_TEMPLATE, False, False, None, confirmed_brain="evil-org/brain")
     assert made == ["evil-org"]
 
 
@@ -162,14 +163,14 @@ def test_a_brain_made_from_another_template_gives_the_workspace_its_template(tmp
     monkeypatch.setattr(onboard, "create_space", lambda *a, **k: made.append(a[7]) or (None, None))
     report = onboard.Report("start")
     start.setup(report, TEMPLATE, "evil-org/brain:ada", None, None, "Ada Okafor", None, None, None,
-                tmp_path / "home", "SkillMix/Brain", False, False, None, confirmed_brain="evil-org/brain")
+                tmp_path / "home", start.OFFICIAL_TEMPLATE, False, False, None, confirmed_brain="evil-org/brain")
     row = next(s for s in report.steps if s.name == "invitation template")
     assert row.done and "acme/brain-template" in row.result and not getattr(report, "stopped", False)
     assert made and set(made) == {"acme/brain-template"}
 
 
 def test_the_template_is_the_official_one_unless_the_person_names_another(tmp_path):
-    assert start.template_source(None, tmp_path) == start.OFFICIAL_TEMPLATE == "SkillMix/Brain"
+    assert start.template_source(None, tmp_path) == start.OFFICIAL_TEMPLATE == template_sync.OFFICIAL_TEMPLATE != ""
     assert start.template_source("acme/brain-template", tmp_path) == "acme/brain-template"
 
 
@@ -418,7 +419,7 @@ def test_a_brain_on_a_network_share_stops_like_an_unconfirmed_one(tmp_path, monk
     monkeypatch.setattr(onboard, "create_space", lambda *a, **k: (_ for _ in ()).throw(AssertionError(a)))
     report = onboard.Report("start")
     start.setup(report, TEMPLATE, "//attacker.example/share/brain:ada", None, None, "Ada Okafor", None, None, None,
-                tmp_path / "home", "SkillMix/Brain", False, False, None)
+                tmp_path / "home", start.OFFICIAL_TEMPLATE, False, False, None)
     assert report.stopped and any(s.name == "invitation brain" and not s.done for s in report.steps)
     assert not any("invitations" in " ".join(c) for c in host.calls)
     monkeypatch.setattr(start.doctor, "diagnose", lambda **kw: (_ for _ in ()).throw(AssertionError(kw)))

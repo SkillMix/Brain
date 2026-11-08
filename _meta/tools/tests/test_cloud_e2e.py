@@ -298,8 +298,16 @@ def computer_sync(world) -> list:
     platform, opened = world["platform"], set(world["platform"].pulls)
     assert sync.main(["--root", str(world["computer"]), "--min-age-minutes", "0"]) == 0
     mine = [n for n in platform.pulls if n not in opened]
-    assert {platform.pulls[n]["branch"] for n in mine} <= {f"sync/{sync.hostname()}"}
+    plain, held = f"sync/{sync.hostname()}", f"sync/{sync.hostname()}-protected"
+    assert {platform.pulls[n]["branch"] for n in mine} <= {plain, held}
+    # the daily's key upkeep (`onboard.keys_upkeep`) lists this computer's signing key where the origin's path reads
+    # as owner/name (not a Windows path): that line alone waits on the protected branch for the person's click
+    waiting = [n for n in mine if platform.pulls[n]["branch"] == held]
+    mine = [n for n in mine if platform.pulls[n]["branch"] == plain]
     assert all(platform.act(n)["merged"] for n in mine)
+    for _ in waiting:   # its own commit, on the plain part main holds now
+        changed = git(platform.origin(SPACE), "diff", "--name-only", f"refs/heads/main...refs/heads/{held}").stdout
+        assert changed.split() == [".github/allowed_signers"], changed
     return mine
 
 
@@ -407,8 +415,11 @@ def test_cloud_sweeps_land_end_to_end_beside_the_daily_on_the_computer(world, ca
     for slug in (SPACE, BRAIN):
         assert not [p for p in tree(world, slug) if p.startswith(FEED)]
         changed = git(platform.origin(slug), "diff", "--name-only", world["start"][slug], "main").stdout.split()
-        if slug == SPACE:
-            assert changed and sync.protected_paths(world["seeds"][slug], changed) == [], changed
+        if slug == SPACE:   # the one protected change is the computer's own key line, merged as the person's click
+            protected = sync.protected_paths(world["seeds"][slug], changed)
+            assert changed and protected in ([], [".github/allowed_signers"]), changed
+            if protected:
+                assert shown(world, SPACE, "main", ".github/allowed_signers").splitlines() == [sync.own_signer()]
         else:   # the brain's sweeps were all quiet: nothing reached its main
             assert changed == [], changed
         # Only the platform wrote to main, merging pull requests: no run pushed to it.
@@ -418,7 +429,9 @@ def test_cloud_sweeps_land_end_to_end_beside_the_daily_on_the_computer(world, ca
     # itself (the access check) only reads, through REST: never GraphQL, never a write.
     assert all(c[0] in ("api", "run", "--version") and "graphql" not in " ".join(c) for c in platform.calls)
     writes = {"-X", "--method", "-f", "-F", "--field", "--raw-field", "--input"}
-    assert all(c[1] == "api" and "graphql" not in " ".join(c) and not writes & set(c) for c in world["stray"])
+    # (the daily's mount-key upkeep reads the space's secret names with `gh secret list`, also a read)
+    assert all((c[1] == "api" or c[1:3] == ("secret", "list")) and "graphql" not in " ".join(c)
+               and not writes & set(c) for c in world["stray"]), world["stray"]
 
 
 def proof_run(world, name: str, capsys, edit_went_through: bool) -> tuple:

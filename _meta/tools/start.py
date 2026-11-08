@@ -26,7 +26,7 @@ which does every step itself and asks nothing that has a default:
   every step: what is done, what runs now, what is next, what only the person can do.
 
 The template is the one the person named (`--template`), else where this copy came from, else the
-official `SkillMix/Brain` (`OFFICIAL_TEMPLATE`); joining a brain that records another template uses
+official one, the root README's address (`OFFICIAL_TEMPLATE`); joining a brain that records another template uses
 the brain's, with a row that says so (`brain_template`). It is passed to every space onboard creates (`onboard.create_space`),
 and a space made from a template other than the official one records it in
 `_meta/state/template-origin.yaml` (`onboard.record_template_origin`), so its template sync keeps
@@ -255,6 +255,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import apps  # noqa: E402
 import doctor  # noqa: E402
 import offboard  # noqa: E402
+import no_company_names  # noqa: E402
 import onboard  # noqa: E402
 import onboarding_page  # noqa: E402
 import pages  # noqa: E402
@@ -405,7 +406,7 @@ def find_invitation(brain: str, slug: str | None, who: dict) -> tuple[dict | Non
 
 # The template's own repository: where a new space is created from unless the person names another
 # (`--template`). A link in an invitation sentence never chooses it: anyone can write that sentence.
-OFFICIAL_TEMPLATE = "SkillMix/Brain"
+OFFICIAL_TEMPLATE = no_company_names.official_template()   # the brand is spelled in its brand file alone
 REPO_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}")   # owner/name as GitHub allows them
 LOGIN_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})")
 DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -432,7 +433,11 @@ def template_source(template, here) -> str:
     """The template a new space is created from: the one the person named (`--template`), else where
     this copy came from (the origin it recorded, or, while the copy is still the template's own, its
     origin remote), else the official template."""
-    return template or onboard.template_repo(Path(here).resolve(), offline=True) or OFFICIAL_TEMPLATE
+    found = template or onboard.template_repo(Path(here).resolve(), offline=True) or OFFICIAL_TEMPLATE
+    if not found:   # no brand file names the official template in this copy: never a guess
+        raise SystemExit(f"start: no template is named and {no_company_names.BRAND_FILE}, which names the "
+                         "official one, is missing from this copy; pass --template <owner>/<repo>")
+    return found
 
 
 def brain_facts(brain: str) -> dict:

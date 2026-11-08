@@ -433,7 +433,7 @@ VALUE = j("Zq8Xw7Vu6Ts5", "Rq4Po3Nm2Lk1Jh")   # a key-shaped value under some la
 # ----- #39: keys under the labels a .env file or a JSON document gives them ------------------------
 @pytest.mark.parametrize("kind,line", [
     ("labelled_key", j("GITHUB_", "TOKEN=", VALUE)),
-    ("labelled_key", j("export NOTETAKER_", "KEY=", VALUE)),
+    ("labelled_key", j("export CALLS_", "KEY=", VALUE)),
     ("labelled_key", j("SEC", "RET=", VALUE)),
     ("labelled_key", j("STRIPE_", "SECRET: ", VALUE)),
     ("labelled_key", j('{"tok', 'en": "', VALUE, '"}')),
@@ -448,7 +448,7 @@ def test_a_key_under_an_environment_or_json_label_is_found(kind, line):
 
 @pytest.mark.parametrize("line", [
     j("cache_", 'key = "user_profile_v2_settings_2024"'),
-    j('const ', 'KEY="skillmix-notes-state-2026-10-22-v1";'),
+    j('const ', 'KEY="acme-notes-state-2026-10-22-v1";'),
     j("ADS_", "KEY=", "abcd1234-5678-90ab-cdef-", "1234567890ab"),
     j("TOKEN_", "URL=https://oauth2.example.com/token"),
     j("key", ": knowledge/clients/acme2024/notes/page.md"),
