@@ -148,7 +148,8 @@ def test_a_space_made_from_another_template_records_it_and_template_sync_follows
 
 
 @pytest.mark.parametrize("tpl", [OFFICIAL, OFFICIAL.lower(), None, "", "C:/templates/brain",
-                                 "/srv/brain-template", "https://example.test/lantern/brain"])
+                                 "/srv/brain-template", "https://example.test/lantern/brain"],
+                         ids=["official", "official-lower", "none", "empty", "windows-path", "posix-path", "other-host"])
 def test_the_official_template_or_a_local_copy_records_nothing(tmp_path, tpl):
     root = make_space(tmp_path / "ada")
     assert onboard.record_template_origin(root, tpl) is False

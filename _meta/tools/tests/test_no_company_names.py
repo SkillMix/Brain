@@ -62,6 +62,8 @@ def test_skips_git_hashes_file_feed_binaries_and_large_files(tmp_path):
     root = _space(tmp_path, "acmeco")
     (root / ".git" / "objects").mkdir(parents=True)
     (root / ".git" / "objects" / "x").write_text("acmeco\n", encoding="utf-8")
+    (root / ".pytest_cache" / "v" / "cache").mkdir(parents=True)   # test ids pytest writes before validate runs
+    (root / ".pytest_cache" / "v" / "cache" / "nodeids").write_text('["t.py::test[acmeco]"]\n', encoding="utf-8")
     (root / "_meta" / "state" / "feed").mkdir(parents=True)
     (root / "_meta" / "state" / "feed" / "mail.jsonl").write_text('{"from": "acmeco"}\n',
                                                                    encoding="utf-8")

@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 
 HASHES_PATH = Path("_meta") / "tests" / "forbidden-names.sha256"
-SKIP_DIRS = (".git",)
+SKIP_DIRS = (".git", ".pytest_cache")   # generated, git-ignored: test ids, never committed
 SKIP_PREFIXES = ("_meta/state/feed/",)
 MAX_BYTES = 1024 * 1024
 SNIFF_BYTES = 8192
