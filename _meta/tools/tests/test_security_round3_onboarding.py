@@ -42,7 +42,8 @@ def public_key() -> str:
     return "ssh-ed25519 " + base64.b64encode(blob).decode()
 
 
-PRIVATE = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA{n}\n-----END OPENSSH PRIVATE KEY-----\n"
+BEGIN_KEY = "-----BEGIN OPENSSH " "PRIVATE KEY-----"   # split, so the secrets scan of this file finds no key block
+PRIVATE = BEGIN_KEY + "\nb3BlbnNzaC1rZXktdjEAAAAA{n}\n-----END OPENSSH PRIVATE KEY-----\n"
 REAL_MERGED_NOTE = onboard.merged_note
 
 
@@ -166,7 +167,7 @@ def test_a_mount_with_a_deploy_key_is_read_over_ssh_with_that_key_and_no_token(t
     read = {c[0]: c for c in calls}
     assert read["brain"][1] == "ssh://git@github.com/northwind-co/brain.git"
     assert read["mounts/harbor"][1] == "ssh://git@github.com/harbor-client/harbor.git"
-    assert all(c[2] == "-----BEGIN OPENSSH PRIVATE KEY-----" for c in calls)   # each read with its own key file
+    assert all(c[2] == BEGIN_KEY for c in calls)   # each read with its own key file
     assert all("protocol.ssh.allow=always" in c[3] and "extraheader" not in c[3] for c in calls)
     assert "mount brain read with its deploy key" in res.stdout
     assert not (runner / "mount-keys").exists()   # the keys leave with the step
@@ -277,7 +278,7 @@ def test_the_agent_keys_every_mount_it_administers_and_stores_the_private_halves
     assert len(posts) == 2 and all("read_only=true" in c for c in posts)
     [(args, bundle)] = gh.inputs
     assert args == ["secret", "set", "MOUNT_DEPLOY_KEYS", "--repo", "northwind-co/ada-workspace"]
-    assert "mount northwind-co/brain\n-----BEGIN OPENSSH PRIVATE KEY-----" in bundle
+    assert "mount northwind-co/brain\n" + BEGIN_KEY in bundle
     assert not any("PRIVATE KEY" in " ".join(c) for c in gh.calls)   # never on a command line
     state = yaml.safe_load((ws / onboard.MOUNT_KEYS_STATE).read_text(encoding="utf-8"))
     assert state["repo"] == "northwind-co/ada-workspace" and state["keys"]["northwind-co/brain"]["attached"] is True

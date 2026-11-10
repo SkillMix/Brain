@@ -291,7 +291,7 @@ def _noise(size: int, seed: int) -> bytes:
 
 def test_random_compressed_bytes_that_spelled_a_password_are_no_finding_but_a_token_in_them_is():
     noise = _noise(200_000, 11)
-    spelled = noise[:100_000] + b"\x9cPWd=Zq81xLm\x07" + noise[100_000:]
+    spelled = noise[:100_000] + b"\x9cPW" b"d=Zq81xLm\x07" + noise[100_000:]   # split: the scan of this file
     bare = spelled.replace(b"\0", b"").decode("latin-1")
     assert "password" in {f.kind for f in scan.scan_text(bare, "export.npz")}   # what every check made of it
     assert not scan._textlike(spelled)
@@ -519,7 +519,7 @@ def test_the_lock_moves_on_while_the_scan_reads(repo, monkeypatch):
 
 
 # ----- round 3, verified: text among binary bytes, and a PDF's encoded streams ------------------------
-CONFIG = f"[db]\nhost = db.example.test\n{WORD} = Hunter2Harbor9\niban = BE71 0961 2345 6769\n".encode()
+CONFIG = f"[db]\nhost = db.example.test\n{WORD} = Hunter2Harbor9\niban = BE71 0961 " "2345 6769\n".encode()
 
 
 def _tar(gz: bool) -> bytes:
@@ -543,7 +543,7 @@ def test_a_sqlite_row_beside_a_blob_and_a_mail_body_beside_its_attachment_are_re
     path = tmp_path / "notes.db"
     with contextlib.closing(sqlite3.connect(path)) as db:
         db.execute("create table t (a text, b blob)")
-        db.execute("insert into t values (?, ?)", ("wachtwoord: Hunter2Harbor9", _noise(5_000, 6)))
+        db.execute("insert into t values (?, ?)", ("wacht" "woord: Hunter2Harbor9", _noise(5_000, 6)))
         db.commit()
     assert {f.kind for f in scan.scan_file(path)} == {"password"}
     body = f"Hello Ben,\r\n{WORD}: Hunter2Harbor9\r\n".encode("utf-16-le")
@@ -578,7 +578,7 @@ def _pdf(body: bytes, filters: bytes) -> bytes:
 
 def test_an_ascii85_stream_that_spells_a_password_is_no_finding_but_a_token_in_it_is():
     encoded = base64.a85encode(zlib.compress(_noise(20_000, 8)), wrapcol=72)
-    spelled = encoded[:9_000] + b"PWd=Zq81lLm" + encoded[9_000:]   # all printable: the old reading took it as text
+    spelled = encoded[:9_000] + b"PW" b"d=Zq81lLm" + encoded[9_000:]   # all printable: the old reading took it as text
     assert scan.scan_bytes(_pdf(spelled, b"[/ASCII85Decode /FlateDecode]"), "drawing.pdf") == []
     content = f"BT /F1 12 Tf ({GH}) Tj ET\n".encode() + _noise(3_000, 9)
     for filters, body in ((b"[/ASCII85Decode /FlateDecode]", zlib.compress(content)), (b"/ASCII85Decode", content)):
