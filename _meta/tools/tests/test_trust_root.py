@@ -29,17 +29,25 @@ def test_signing_writes_the_fingerprint_line_and_names_the_repository(tmp_path, 
 
 
 def released(root, pid, text, repo="acme/ada-workspace"):
-    write_page(root, f"_inbound/candidates/{pid}.md", text, id=pid, type="concept", title="Go-live",
-               subject="harbor", status="stable", signed_by="Ada Okafor", signed_at="2026-10-11T00:00:00Z",
-               signed_in="ada", fingerprint=pages.fingerprint(text), released_from="ada", signed_repo=repo,
-               target=f"knowledge/projects/harbor/{pid}.md")
+    fm = dict(id=pid, type="concept", title="Go-live", subject="harbor", status="stable", signed_by="Ada Okafor",
+              signed_at="2026-10-11T00:00:00Z", signed_in="ada", fingerprint=pages.fingerprint(text),
+              released_from="ada", signed_repo=repo, target=f"knowledge/projects/harbor/{pid}.md")
+    fm["signed_fields"] = sign.fields_fingerprint(fm)
+    write_page(root, f"_inbound/candidates/{pid}.md", text, **fm)
+    return fm
+
+
+ADA = {"id": "ada-okafor", "kind": "people", "title": "Ada Okafor", "workspace": "ada"}
 
 
 def test_landing_files_silently_only_what_the_signers_history_shows(tmp_path, monkeypatch):
-    root = make_space(tmp_path / "harbor", profile="project", name="harbor", subjects=[HARBOR])
-    released(root, "p-0000b711", "Go-live is 3 November.\n")
+    # harbor's own data names ada's repository and who signs there; the release only repeats it
+    root = make_space(tmp_path / "harbor", profile="project", name="harbor", subjects=[HARBOR, ADA],
+                      mounts=[{"name": "ada", "repo": "acme/ada-workspace"}])
+    first = released(root, "p-0000b711", "Go-live is 3 November.\n")
     released(root, "p-0000b712", "The port opens in May.\n")
-    line = f"- 2026-10-11T00:00:00Z fingerprint p-0000b711 {pages.fingerprint('Go-live is 3 November.' + chr(10))} by Ada Okafor\n"
+    line = (f"- 2026-10-11T00:00:00Z fingerprint p-0000b711 {pages.fingerprint('Go-live is 3 November.' + chr(10))} "
+            f"by Ada Okafor\n- 2026-10-11T00:00:00Z fields p-0000b711 {first['signed_fields']} by Ada Okafor\n")
     monkeypatch.setattr(landing, "signer_log", lambda repo, cache: line)
     report = landing.land(root, now=NOW)
     assert report.silent == ["p-0000b711"] and report.pending == ["p-0000b712"]

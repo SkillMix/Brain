@@ -30,7 +30,8 @@ SKILLS = TEMPLATE / ".claude" / "skills"
 SAMPLE = {"<workspace>": "ada-space", "<root>": "ada-space", "<repo>": "ada/ada-site", "<number>": "5",
           "<since>": "2026-10-01T08:00:00Z", "<source>": "mail", "<record id>": "gmail-1a2b", "<name>": "report.pdf",
           "<file>": "/home/user/ada-space/_meta/state/private/notices/n1.json", "<message id>": "m1",
-          "<address>": "ada@example.test", "<id>": "t1", "<key>": "ADA-1", "<tool>": "status"}
+          "<address>": "ada@example.test", "<id>": "t1", "<key>": "ADA-1", "<tool>": "status",
+          "<handle>": "att-0123456789ab"}
 # The read tools the sweep's task is given (`cloud.task_grant`), and a tool the computer has seen that it is not.
 READS = ["mcp__mail__get_message", "mcp__mail__search_threads", "mcp__tracker__list_issues"]
 NOT_GIVEN = ["mcp__mail__trash_message", "mcp__mail__send_message", "mcp__tracker__create_issue"]
@@ -41,7 +42,7 @@ TRIES = (NETWORK_TRY,)
 PROOF_LINE = ("python3 /home/user/<workspace>/_meta/tools/cloud.py proof-line --chain sweep --edit yes --tool yes "
               "--network yes")
 LAND = "python3 /home/user/<workspace>/_meta/tools/sync.py --root /home/user/<workspace> --cloud sweep"
-# An attachment's name that holds a single quote, a double quote and a `$`, and how the prompt and the skill write it.
+# An attachment's name that holds a single quote, a double quote and a `$`: it never reaches a command, its handle does.
 # Commands the sweep's task must refuse by its deny list alone: a tool of the space that writes beyond the sweep, a
 # GraphQL call, a pull request listing and a git write. The control that makes a deny list's silence mean something.
 MUST_REFUSE = ("python3 /home/user/<workspace>/_meta/tools/sign.py /home/user/<workspace>", "gh pr list",
@@ -359,33 +360,28 @@ def test_the_cloud_prompt_ends_a_run_at_a_tool_or_a_refusal_it_does_not_name():
 def test_the_cloud_sweep_names_the_attachment_commands_and_the_rows_they_read():
     for path in (PROMPT, SKILLS / "sweep" / "SKILL.md"):
         body = text(path)
-        assert "--attachment-unread <record id> <name>" in body and "--attachment-read <record id> <name>" in body
-        assert "--attachments" in body and r"<record id>\t\t<name>" in body and "tab" in body
-        # One rule for a name, the same in both: single quotes, each single quote in it closed, given between
-        # double quotes and opened again; a line break, which a guard refuses even between quotes, is not marked.
-        said = step(body, "--attachment-unread <record id> <name>")
-        assert "letters, digits, `.`, `-` and `_`" in said and "single quotes" in said, path.name
-        assert "`'\"'\"'`" in said, path.name
-        assert "line break" in said and "left unmarked" in said and "run line" in said, path.name
-        assert "double quotes" not in said and "cannot be written" not in said, path.name
-        # sweep.py takes a value that starts with `--` for a flag and refuses it: that name is not marked either.
-        assert "starts with `--`" in said and said.count("left unmarked") == 2, path.name
-    assert sweep._flag(["--attachment-read", "gmail-1a2b", "--draft.pdf"], "--attachment-read", 2) == []
+        assert "--attachment-unread <handle>" in body and "--attachment-read <handle>" in body
+        assert "--attachments" in body and r"<record id>\t\t<name>\t<handle>" in body and "tab" in body
+        # a name a sender chose never goes into a command: the handle is the only value either takes
+        assert "<record id> <name>" not in body and "single quotes" not in step(body, "--attachment-unread"), path.name
+        assert "never reaches the shell" in step(body, "--attachment-unread <handle>"), path.name
+    assert sweep._flag(["--attachment-read", "--draft.pdf"], "--attachment-read", 1) == []
+    assert sweep.main(["--attachment-read", "gmail-1a2b", "draft.pdf"]) == 2   # a record id is no handle
 
 
-def test_an_attachment_name_with_quotes_and_a_dollar_reaches_sweep_py_whole(tmp_path, machine):
-    """A name the sender chose can hold anything: written as the rule says, its attachment command passes a
-    computer's routine guard and the cloud task's deny list, and the shell hands sweep.py the exact name."""
-    assert written(AWKWARD) == AWKWARD_WRITTEN and written("report-1_v2.pdf") == "report-1_v2.pdf"
+def test_an_attachment_handle_reaches_sweep_py_whole(tmp_path, machine):
+    """A name the sender chose can hold anything, and none of it reaches the shell: the command carries the
+    handle alone, which passes a computer's routine guard and the cloud task's deny list as it is."""
+    handle = sweep.attachment_handle("gmail-1a2b", AWKWARD)
+    assert sweep.HANDLE_RE.match(handle)
     _, profile, _ = computer_profile(tmp_path, machine)
     refused = task_refuses(tmp_path / "cloud-home")
     for path in (PROMPT, SKILLS / "sweep" / "SKILL.md"):
-        assert f"`{AWKWARD_WRITTEN}`" in text(path), path.name   # the example each gives is this name, so written
         for flag in ("--attachment-unread", "--attachment-read"):
-            command = next(c for c in commands_in(text(path)) if f"{flag} <record id> <name>" in c)
-            command = command.replace("<name>", written(AWKWARD))
+            command = next(c for c in commands_in(text(path)) if f"{flag} <handle>" in c)
+            command = command.replace("<handle>", handle)
             filled = fill(command, machine.as_posix())
-            assert shlex.split(filled)[-3:] == [flag, "gmail-1a2b", AWKWARD], filled
+            assert shlex.split(filled)[-2:] == [flag, handle], filled
             assert passes(profile, filled), (path.name, filled)
             assert not refused(fill(command)), (path.name, command)
 

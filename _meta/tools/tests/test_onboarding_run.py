@@ -91,12 +91,12 @@ def test_a_venv_made_from_a_python_the_scheduler_cannot_see_is_made_again(tmp_pa
 
     def run(argv, **kw):
         calls.append([str(a) for a in argv])
-        if argv[1:3] == ["-m", "venv"]:
-            a_venv(Path(argv[3]))
+        if argv[1:4] == ["-I", "-m", "venv"]:   # isolated: no planted venv.py can run
+            a_venv(Path(argv[4]))
         return subprocess.CompletedProcess(argv, 0, "", "")
     code = start.ensure_yaml(["build"], venv=venv, run=run, have=lambda: False, windows=True, env=env)
     assert code == 0 and not (venv / "pyvenv.cfg").exists()   # the old venv went; the new one is made from this Python
-    assert [c for c in calls if c[1:3] == ["-m", "venv"]] == [[sys.executable, "-m", "venv", str(venv)]]
+    assert [c for c in calls if c[1:4] == ["-I", "-m", "venv"]] == [[sys.executable, "-I", "-m", "venv", str(venv)]]
     assert not [c for c in calls if "--user" in c]   # a --user install lands under %APPDATA% too
 
 
@@ -109,7 +109,7 @@ def test_a_venv_from_a_python_the_scheduler_sees_is_kept(tmp_path, monkeypatch):
         calls.append([str(a) for a in argv])
         return subprocess.CompletedProcess(argv, 0, "", "")
     assert start.ensure_yaml([], venv=venv, run=run, have=lambda: False, windows=True, env=env) == 0
-    assert (venv / "pyvenv.cfg").exists() and not [c for c in calls if c[1:3] == ["-m", "venv"]]
+    assert (venv / "pyvenv.cfg").exists() and not [c for c in calls if c[1:4] == ["-I", "-m", "venv"]]
 
 
 def test_the_probe_task_on_windows_writes_what_it_said_to_a_log(tmp_path, monkeypatch):
@@ -218,8 +218,11 @@ def test_a_protected_change_in_a_copy_that_still_has_the_marker_waits_for_the_ow
     monkeypatch.setenv(spaceyaml.TEMPLATE_REPO_ENV, "false")
     cls, reasons = gate.classify(root, ["space.yaml"], base_ref="HEAD")
     assert cls == gate.PROTECTED and not any("template repository" in r for r in reasons)
-    monkeypatch.setenv(spaceyaml.TEMPLATE_REPO_ENV, "true")   # the template itself still lands on green
-    assert gate.classify(root, ["space.yaml"], base_ref="HEAD")[0] == gate.AUTO
+    monkeypatch.setenv(spaceyaml.TEMPLATE_REPO_ENV, "true")
+    # the template itself lands its machinery on green: the release tag is the human gate
+    cls, reasons = gate.classify(root, ["space.yaml"], base_ref="HEAD")
+    assert cls == gate.AUTO and any("release tag is the human gate" in r for r in reasons)
+    assert gate.classify(root, ["docs/notes.md"], base_ref="HEAD")[0] == gate.AUTO
 
 
 class MovingGh(FakeGh):

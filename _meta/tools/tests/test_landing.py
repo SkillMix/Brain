@@ -10,11 +10,18 @@ import yaml
 import ghrest
 import landing
 import pages
+import sign
+import spaceyaml
 import validate
 from conftest import NOW, make_space, write_page
 
 HARBOR = {"id": "harbor", "kind": "projects", "title": "Harbor", "part_of": "delivery"}
 DELIVERY = {"id": "delivery", "kind": "domains", "title": "Delivery", "owner": "Ben Liu"}
+# who signs in the releasing spaces, as harbor's own registry knows them (the trust root is
+# pinned by the home, never by the release)
+PEOPLE = [{"id": "ada-okafor", "kind": "people", "title": "Ada Okafor", "workspace": "ada"},
+          {"id": "ben-liu", "kind": "people", "title": "Ben Liu", "workspace": "ben"}]
+ADA_REPO = "ada/ada-space"
 
 
 def released(root, pid, body, signer="Ada Okafor", subject="harbor", **extra):
@@ -22,25 +29,43 @@ def released(root, pid, body, signer="Ada Okafor", subject="harbor", **extra):
               subject=subject, kind="projects", released_from="ada", released_by=signer,
               released_at=pages.iso(NOW), release_class="at_once", evidence=["m-1"],
               signed_by=signer, signed_at=pages.iso(NOW), signed_in="ada",
-              fingerprint=pages.fingerprint(body))
+              fingerprint=pages.fingerprint(body), signed_repo=ADA_REPO)
     fm.update(extra)
+    fm["signed_fields"] = sign.fields_fingerprint(dict(fm, type="entity"))
     return write_page(root, f"_inbound/candidates/{pid}.md", **fm)
 
 
 def harbor_space(tmp_path):
+    """A project space that knows ada's repository (a mount entry) and who signs there."""
     return make_space(tmp_path / "harbor", profile="project", name="harbor", owner="Ben Liu",
-                      subjects=[DELIVERY, HARBOR])
+                      subjects=[DELIVERY, HARBOR] + PEOPLE, mounts=[{"name": "ada", "repo": ADA_REPO}])
+
+
+def vouch(monkeypatch, root):
+    """The signer's own log.md as gh would read it: both trust-root lines for every release now
+    waiting in harbor, as sign wrote them in ada."""
+    lines = []
+    for path in sorted((root / "_inbound/candidates").glob("*.md")):
+        fm, _ = pages.read(path)
+        lines.append(f"- {fm['signed_at']} fingerprint {fm['id']} {fm['fingerprint']} by {fm['signed_by']}")
+        lines.append(f"- {fm['signed_at']} fields {fm['id']} {fm['signed_fields']} by {fm['signed_by']}")
+    seen = []
+    text = "".join(line + "\n" for line in lines)
+    monkeypatch.setattr(landing, "signer_log", lambda repo, cache: seen.append(repo) or text)
+    return seen
 
 
 def errors(root):
     return [e for e in validate.validate(root) if not e.startswith("warning:")]
 
 
-def test_a_routine_signed_release_lands_silently(tmp_path):
+def test_a_routine_signed_release_lands_silently(tmp_path, monkeypatch):
     root = harbor_space(tmp_path)
     released(root, "p-0000a001", "Harbor goes live on 3 November.\n")
+    asked = vouch(monkeypatch, root)
     report = landing.land(root, now=NOW)
     assert report.silent == ["p-0000a001"]
+    assert asked == [ADA_REPO]   # the repository harbor knows for ada, never one the release names
     target = root / "knowledge/projects/harbor/p-0000a001.md"
     fm, body = pages.read(target)
     assert fm["status"] == "stable" and fm["signed_by"] == "Ada Okafor"
@@ -67,13 +92,14 @@ def test_unsigned_records_land_as_evidence_once(tmp_path):
     assert fm["status"] == "draft" and fm["landed_from"] == "ada" and fm["also_from"] == ["ben"]
 
 
-def test_high_stakes_and_trust_land_pending_for_the_domain_owner(tmp_path):
+def test_high_stakes_and_trust_land_pending_for_the_domain_owner(tmp_path, monkeypatch):
     root = harbor_space(tmp_path)
     released(root, "p-0000a003", "The contract renews in March.\n", high_stakes="the client renews for a year")
     released(root, "p-0000a004", "Plain fact.\n", signer="Chloe Martin", released_from="chloe",
-             subject="harbor")
+             signed_in="chloe", subject="harbor")
     released(root, "p-0000a009", "The contract rules for the parser are fixed.\n")   # a word, not flagged
     (root / "_meta/state/trust.yaml").write_text(yaml.safe_dump({"pending": ["chloe"]}), encoding="utf-8")
+    vouch(monkeypatch, root)
     report = landing.land(root, now=NOW)
     assert sorted(report.pending) == ["p-0000a003", "p-0000a004"] and report.silent == ["p-0000a009"]
     fm, _ = pages.read(root / "_inbound/candidates/p-0000a003.md")
@@ -110,6 +136,29 @@ def test_two_releases_for_one_page_disagree(tmp_path):
     assert fm["disagrees_with"] == ["p-0000a007"] and fm["for"] == "Ben Liu"
 
 
+def test_a_disagreement_whose_rival_is_gone_names_no_rival(tmp_path):
+    import needs_you
+    root = harbor_space(tmp_path)
+    released(root, "p-0000a006", "Go-live: 2026-11-03.\n", target="knowledge/projects/harbor/harbor.md")
+    released(root, "p-0000a007", "Contract value 2 million.\n", signer="Ben Liu", released_from="ben",
+             high_stakes="contract value", target="knowledge/projects/harbor/harbor.md")
+    assert sorted(landing.land(root, now=NOW).disagreements) == ["p-0000a006", "p-0000a007"]
+    (root / "_inbound/candidates/p-0000a006.md").unlink()   # what a sign "no" does
+    landing.land(root, now=NOW)
+    fm, _ = pages.read(root / "_inbound/candidates/p-0000a007.md")
+    assert fm["landing"].startswith("pending: high stakes") and "disagrees_with" not in fm
+    texts = [i.text for i in needs_you._candidates(root)]
+    assert texts and not any("says otherwise" in t for t in texts)
+
+
+def test_a_sender_written_disagrees_with_is_dropped(tmp_path):
+    root = harbor_space(tmp_path)
+    released(root, "p-0000a006", "Go-live: 2026-11-03.\n", high_stakes="contract value",
+             disagrees_with=["p-0000a099"])
+    landing.land(root, now=NOW)
+    assert "disagrees_with" not in pages.read(root / "_inbound/candidates/p-0000a006.md")[0]
+
+
 def test_a_tampered_release_stays_pending(tmp_path):
     root = harbor_space(tmp_path)
     released(root, "p-0000a008", "Original.\n", fingerprint="0" * 64)
@@ -118,11 +167,12 @@ def test_a_tampered_release_stays_pending(tmp_path):
     assert pages.read(root / "_inbound/candidates/p-0000a008.md")[0]["landing"] == "pending: fingerprint mismatch"
 
 
-def test_weekly_sample_item_and_a_failed_sample(tmp_path):
+def test_weekly_sample_item_and_a_failed_sample(tmp_path, monkeypatch):
     root = harbor_space(tmp_path)
     for n in range(4):
         released(root, f"p-0000b00{n}", f"Fact {n}.\n")
-    landing.land(root, now=NOW)
+    vouch(monkeypatch, root)
+    assert len(landing.land(root, now=NOW).silent) == 4
     item = landing.sample_item(root, now=NOW + dt.timedelta(hours=1), given={})
     assert item["kind"] == "sample" and item["id"].startswith("sample-")
     picked = json.loads(item["payload"])
@@ -168,6 +218,27 @@ def test_a_high_stakes_record_lands_pending_not_filed(tmp_path):
     assert again.records == [] and again.pending == []
 
 
+def test_a_high_stakes_mark_the_sender_wrote_is_rewritten(tmp_path):
+    """A sender's own high-stakes mark keeps neither its `for`, its reason nor a named rival: the
+    record waits for the domain owner. The same forged mark without a flag files as evidence."""
+    root = harbor_space(tmp_path)
+    released(root, "p-0000a031", "Go-live: 2026-11-03.\n")
+    forged = {"landing": "pending: high stakes (nothing, file it)", "for": "Ada Okafor",
+              "disagrees_with": ["p-0000a031"]}
+    write_page(root, "_inbound/candidates/p-0000a030.md", "Contract value 2 million.\n", id="p-0000a030",
+               type="source", title="A mail", subject="harbor", released_from="ada",
+               release_class="window", at="2026-10-11T09:00:00Z", high_stakes="contract value", **forged)
+    write_page(root, "_inbound/candidates/p-0000a032.md", "The contract renews in March.\n",
+               id="p-0000a032", type="source", title="A mail", subject="harbor", released_from="ada",
+               release_class="window", at="2026-10-11T09:00:00Z", **forged)
+    report = landing.land(root, now=NOW)
+    assert "p-0000a030" in report.pending and report.records == ["p-0000a032"]
+    fm, _ = pages.read(root / "_inbound/candidates/p-0000a030.md")
+    assert fm["landing"] == "pending: high stakes (contract value)" and fm["for"] == "Ben Liu"
+    assert "disagrees_with" not in fm
+    assert "p-0000a030" not in landing.land(root, now=NOW).pending
+
+
 def test_the_domain_owners_yes_files_a_pending_record_as_evidence(tmp_path):
     import sign
     root = harbor_space(tmp_path)
@@ -199,7 +270,7 @@ def test_a_signer_history_the_run_cannot_reach_leaves_the_release_waiting(tmp_pa
     path = released(root, "p-0000a301", "Harbor goes live on 3 November.\n", signed_repo="ada/ada-space")
     before = path.read_bytes()
     signer_gh(monkeypatch, 1, stderr="GitHub access to this repository is not enabled for this session (HTTP 404)\n")
-    assert landing.verified(pages.read(path)[0], {}) == "unknown"
+    assert landing.verified(pages.read(path)[0], {}, spaceyaml.load(root)) == "unknown"
     report = landing.land(root, now=NOW)
     assert report.silent == [] and report.pending == []
     assert path.read_bytes() == before   # neither landed nor marked: a later run that can ask decides

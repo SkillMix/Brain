@@ -93,18 +93,51 @@ def test_a_signal_flags_the_homes_status_page(tmp_path):
     assert "News from ada: something here moved; the details follow" in text
 
 
-def test_disagreeing_releases_carry_a_disagreements_line(tmp_path):
-    root = make_space(tmp_path / "harbor", profile="project", name="harbor", subjects=[HARBOR])
+def test_disagreeing_releases_are_marked_in_frontmatter_only(tmp_path, monkeypatch):
+    """The mark leaves the body alone: the owner's sync push of it is upkeep (gate.marks_only), the
+    next landing still sees a disagreement (not a fingerprint mismatch), and a yes signs no list.
+    Needs you names the other release."""
+    import subprocess
+    import gate
+    cfg = tmp_path / "gitconfig"
+    cfg.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(cfg))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    people = [{"id": "ben-liu", "kind": "people", "title": "Ben Liu", "match": {"github": "benliu"}}]
+    root = make_space(tmp_path / "harbor", profile="project", name="harbor", owner="Ben Liu",
+                      subjects=[HARBOR] + people)
+
+    def git(*args):
+        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@e.example", *args], cwd=root,
+                              check=True, capture_output=True, text=True).stdout.strip()
+
+    git("init", "-q", "-b", "main")
+    bodies = {}
     for pid, text, who in (("p-0000f031", "Go-live is 3 November.\n", "Ada Okafor"),
                            ("p-0000f032", "Go-live is 9 November.\n", "Ben Liu")):
         write_page(root, f"_inbound/candidates/{pid}.md", text, id=pid, type="concept",
                    title="Go-live", subject="harbor", target="knowledge/projects/harbor/go-live.md",
                    status="stable", signed_by=who, signed_at="2026-10-11T08:00:00Z", signed_in="ada",
                    fingerprint=pages.fingerprint(text), released_from="ada")
+        bodies[pid] = text
+    git("add", "-A")
+    git("commit", "-q", "-m", "releases arrived")
+    base = git("rev-parse", "HEAD")
     report = landing.land(root, now=NOW)
     assert sorted(report.disagreements) == ["p-0000f031", "p-0000f032"]
-    _, body = pages.read(root / "_inbound/candidates/p-0000f031.md")
-    assert "## Disagreements" in body and "p-0000f032" in body
+    for pid, text in bodies.items():
+        fm, body = pages.read(root / f"_inbound/candidates/{pid}.md")
+        assert body == text and fm["landing"] == "pending: disagreement"
+    git("add", "-A")
+    git("commit", "-q", "-m", "chore: sync")
+    changed = gate.changed_files(root, base)
+    assert changed
+    assert gate.classify(root, changed, base_ref=base, author="benliu",
+                         head_ref="sync/m-1a2b3c4d")[0] == "auto-mergeable"
+    assert sorted(landing.land(root, now=NOW).disagreements) == ["p-0000f031", "p-0000f032"]
+    assert pages.read(root / "_inbound/candidates/p-0000f031.md")[0]["landing"] == "pending: disagreement"
+    item = next(i for i in needs_you._candidates(root) if i.id == "p-0000f031")
+    assert "p-0000f032, released from ada by Ben Liu, says otherwise" in item.text
 
 
 def test_the_morning_view_counts_the_weeks_silent_landings(tmp_path):

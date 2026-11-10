@@ -157,6 +157,33 @@ def test_the_owners_yes_to_an_ownership_question_applies_the_change(tmp_path):
     assert errors(root) == []
 
 
+def test_a_filing_asked_from_the_run_is_applied_on_the_owners_yes(tmp_path):
+    subjects = [dict(HARBOR, owner="Ada Okafor"), dict(BEACON, owner="Ben Achebe")]
+    root = make_space(tmp_path / "ada", subjects=subjects)
+    page = write_page(root, "knowledge/projects/beacon/note.md", id="p-1a2b3c4d", type="concept", title="Note",
+                      subject="harbor")
+    report = librarian.run(root, now=NOW, scorer=lambda r: (0, 0))
+    (key,) = report.asked
+    assert page.exists() and (root / "_inbound/questions" / f"librarian-{key}.md").exists()
+    assert librarian.answer(root, key, by="Ada Okafor", now=NOW) == "applied"
+    assert not page.exists() and (root / "knowledge/projects/harbor/note.md").exists()
+
+
+def test_a_merge_that_crosses_classifications_names_the_classes(tmp_path):
+    subjects = [dict(HARBOR, owner="Ada Okafor", added="2026-01-01",
+                     classification={"state": "settled", "class": "company", "home": "brain"}),
+                {"id": "harbor-ops", "kind": "projects", "title": "Harbor", "owner": "Ada Okafor",
+                 "added": "2026-02-01", "classification": {"state": "settled", "class": "walled",
+                                                           "home": "harbor-crew", "crew": ["Ada Okafor"]}}]
+    root = make_space(tmp_path / "ada", subjects=subjects)
+    librarian.run(root, now=NOW, scorer=lambda r: (0, 0))
+    (key,) = [k for k, v in librarian.proposals(root).items() if v["change"]["kind"] == "merge"]
+    assert librarian.apply(root, key, "second agent", now=NOW, scorer=lambda r: (0, 0)) == "asked"
+    fm, _ = pages.read(root / "_inbound/questions" / f"librarian-{key}.md")
+    assert "walled (crew Ada Okafor; home harbor-crew) -> company (home brain)" in fm["question"]
+    assert "walled" in fm["recommendation"] and "company" in fm["recommendation"]
+
+
 def test_a_yes_to_an_ownership_question_whose_proposal_is_gone_is_logged(tmp_path):
     import sign
     root = make_space(tmp_path / "ada", subjects=[HARBOR])

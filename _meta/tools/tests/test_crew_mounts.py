@@ -102,7 +102,8 @@ def test_repository_urls_are_normalised_to_https():
 # ----- the mount verb -------------------------------------------------------------------
 def test_mount_writes_the_row_and_runs_the_setup_verb_once(tmp_path, monkeypatch):
     calls = []
-    monkeypatch.setattr(mint, "run_cmd", lambda argv, dry_run=False, cwd=None: calls.append((list(argv), cwd)))
+    monkeypatch.setattr(mint, "run_cmd", lambda argv, dry_run=False, cwd=None: calls.append((list(argv), cwd))
+                        or subprocess.CompletedProcess(argv, 0, "", ""))
     ada = make_space(tmp_path / "ada", name="ada")
     url = "https://github.com/lantern/harbor"
     assert mint.main([str(ada), "--mount", "harbor", url]) == 0
@@ -202,6 +203,7 @@ def test_release_reaches_a_destination_through_the_registry_when_no_mount_names_
     _, ada = unmounted(tmp_path, bare_clone(tmp_path, harbor, "harbor"))
     spaces_home = tmp_path / "spaces-home"
     monkeypatch.setenv("SPACES_HOME", str(spaces_home))
+    monkeypatch.setenv("SPACES_LOCAL_CLONES", "1")   # the bare repository is a local path
     monkeypatch.setattr(release, "publish", lambda checkout_path, slug, source, write: (write(), True)[1])
     write_feed(ada, [record()])
     sweep.run(ada, now=NOW)

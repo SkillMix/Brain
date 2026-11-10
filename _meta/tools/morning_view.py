@@ -13,13 +13,22 @@ payload to its mail connector. In the shadow the subject and title say so.
 `record-send --to` takes the recipients read back from the sent message, all after one `--to` or
 one `--to` each; every one is kept. Any address but the owner's makes the line a failed send
 and puts one security item on Needs you; no address is written into the space.
+
+Every briefing carries a reply reference, a random code in its footer that only the mail itself
+holds: the day's listing (`_meta/state/morning/<date>.json`) keeps a hash of it and never the
+code, and reply.py takes an answer only from a mail that quotes one (`reference_of`). The mail
+counts a briefing that reached someone else apart from the other security items, and counts
+neither from another space (needs_you reads `security` only from its own writers' files). The
+meetings section takes only the lines the sweep writes for a meeting and its people.
 """
 from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import re
+import secrets
 import sys
 from collections import Counter
 from dataclasses import dataclass
@@ -53,10 +62,24 @@ STALE = Path("_meta") / "state" / "stale.yaml"
 ITEMS = Path("_inbound") / "needs-you" / "morning-view.yaml"
 RECIPIENT_ITEM = "morning-view-recipient"
 RECIPIENT_DEPENDS = 99
-ALWAYS_COUNTED = ("security",)
+# The recipient item counts under `security`; every other security item (a cloud run that changed
+# protected files) under its own label, so the mail never calls one the other.
+SECURITY_OTHER = "security_warning"
+ALWAYS_COUNTED = ("security", SECURITY_OTHER)
+# The reply reference: twenty characters of base32 (100 random bits), shown as `reference <code>`.
+# The tracked listing keeps its sha256, which a reader of the repository could test every guess
+# against offline while the reply window runs: 100 bits keeps that out of reach (60 would not,
+# for someone with enough hardware). A reply may quote one of 12 to 32 characters, so a
+# briefing mailed before the length grew is still answered while its window runs.
+REFERENCE_ALPHABET = "abcdefghijklmnopqrstuvwxyz234567"
+REFERENCE_LENGTH = 20
+REFERENCE_RE = re.compile(r"\bref(?:erence)?\s*:?\s*([a-z2-7]{12,32})\b", re.I)
+REFERENCES_KEPT = 10   # per day: a view rendered again before the send keeps the earlier ones
+REFERENCE_DAYS = 7     # a reply to a briefing older than this is not read
+MORNING = Path("_meta") / "state" / "morning"
 # Counts that tell the person something and ask nothing: they rank after every kind that waits on
 # them, so hundreds of attachments to read never push a change waiting for one click off the mail.
-INFORMATION = ("landed_silently", "meetings", "unsure", "unread_attachments")
+INFORMATION = ("landed_silently", "meetings", "unsure", "unread_attachments", "health")
 
 # One plain label per item kind for the email's counts (they pass the plain-language check).
 LABELS = {
@@ -75,9 +98,11 @@ LABELS = {
     "classification": "items waiting for a client's classification",
     "doubt": "items held back in doubt",
     "landed_silently": "updates that landed here silently this week",
+    "health": "things your agent is fixing on its own",
     "meetings": "meetings today and tomorrow, with who is who on your page",
     "sample": "samples to look over",
     "security": "briefings that reached an address that is not yours",
+    SECURITY_OTHER: "security warnings to look at",
     "unsure": "records not sorted as work or personal, since your last briefing",
     "unread_attachments": "attachments not yet read",
 }
@@ -221,9 +246,8 @@ def _recipient_item(root: Path, message_id: str, now: dt.datetime) -> None:
                               "Check the message in your Sent mail.",
                       "recommendation": "check who received it and tell them to delete it",
                       "default": "it stays on this list until you answer", "depends": RECIPIENT_DEPENDS})
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump({"items": items}, sort_keys=False, allow_unicode=True, width=100),
-                    encoding="utf-8", newline="\n")
+    pages.write_text(path, yaml.safe_dump({"items": items}, sort_keys=False, allow_unicode=True, width=100),
+                     root=root)
 
 
 def record_send(root, message_id: str | None = None, failed: str | None = None,
@@ -246,10 +270,7 @@ def record_send(root, message_id: str | None = None, failed: str | None = None,
         notes["email"] = str(message_id or "")
     line = {"routine": ROUTINE, "at": pages.iso(now), "space": space.name,
             "cost_tokens": int(cost_tokens), "notes": notes}
-    runs = root / RUNS
-    runs.parent.mkdir(parents=True, exist_ok=True)
-    with runs.open("a", encoding="utf-8", newline="\n") as handle:
-        handle.write(json.dumps(line) + "\n")
+    pages.append_text(root / RUNS, json.dumps(line) + "\n", root=root)
     return line
 
 
@@ -283,8 +304,21 @@ def _with_stale(root: Path, name: str, lines: list) -> list:
     return out
 
 
+# The two lines the sweep writes for a meeting (sweep.write_today): the meeting, then each person.
+MEETING_LINE = re.compile(r"^- \d{4}-\d\d-\d\d \d\d:\d\d \S")
+PERSON_LINE = re.compile(r"^  - \S")
+# What md_inline escapes (an image, a link target, a tag); a line that still holds one once its
+# escaped pairs are set aside was not written by the sweep (a page edited by hand, or older).
+ESCAPED = re.compile(r"\\.")
+LIVE_MARKUP = re.compile(r"!\[|\]\(|<")
+
+
 def _today_lines(root: Path) -> list:
-    """The meetings snapshot the sweep wrote, with who is who."""
+    """The meetings snapshot the sweep wrote, with who is who: only the lines of the shapes the
+    sweep writes (it made their text inert), so a page that holds anything else, one written
+    before titles were kept to one line, adds nothing to the list or the count. A line of the
+    right shape that still holds an unescaped image, link or tag (a page written by hand or by
+    an older sweep) is left out too."""
     path = root / "live" / "today.md"
     if not path.exists():
         return []
@@ -292,8 +326,16 @@ def _today_lines(root: Path) -> list:
         _, body = pages.read(path)
     except Exception:
         return []
-    return [line.rstrip() for line in body.splitlines() if line.lstrip().startswith("- ")
-            and line.strip() != "- No meetings."]
+    out = []
+    for line in body.splitlines():
+        line = line.rstrip()
+        if LIVE_MARKUP.search(ESCAPED.sub("", line)):   # an image, link or tag the sweep did not escape
+            continue
+        if MEETING_LINE.match(line):
+            out.append("- " + needs_you.untrusted_line(line[2:], None))
+        elif PERSON_LINE.match(line) and out:
+            out.append("  - " + needs_you.untrusted_line(line[4:], None))
+    return out
 
 
 def _owned_homes(root: Path, space: spaceyaml.Space) -> list:
@@ -489,9 +531,63 @@ def _page_id(root: Path) -> str:
     return pages.new_id()
 
 
-def _write_json(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
+def _write_json(path: Path, data: dict, root: Path | None = None) -> None:
+    pages.write_text(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n", root=root)
+
+
+# ----- the reply reference -------------------------------------------------------------
+def new_reference() -> str:
+    """A fresh reply reference: REFERENCE_LENGTH random characters, unguessable and never stored."""
+    return "".join(secrets.choice(REFERENCE_ALPHABET) for _ in range(REFERENCE_LENGTH))
+
+
+def reference_hash(reference: str) -> str:
+    """What the day's listing keeps of a reference: a hash, so a reader of the repository (a
+    colleague, a cloud clone) learns nothing that would let a mail pass as the person's reply."""
+    return hashlib.sha256(f"briefing-reference:{str(reference).lower()}".encode("utf-8")).hexdigest()
+
+
+def reference_of(root, text: str, now: dt.datetime, days: int = REFERENCE_DAYS) -> str | None:
+    """The day (YYYY-MM-DD) of the briefing whose reference `text` quotes, or None: the first
+    `ref <code>` in the text (a reply quotes the briefing it answers above older ones) whose hash
+    the listing of a day at most `days` before `now` keeps."""
+    folder = Path(root) / MORNING
+    known: dict = {}
+    for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
+        try:
+            day = dt.date.fromisoformat(path.stem)
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            continue
+        if not (0 <= (now.date() - day).days <= days) or not isinstance(data, dict):
+            continue
+        for digest in data.get("references") or []:
+            known.setdefault(str(digest), path.stem)
+    for found in REFERENCE_RE.finditer(str(text or "")):
+        day = known.get(reference_hash(found.group(1)))
+        if day:
+            return day
+    return None
+
+
+def _kept_references(path: Path) -> list:
+    """The reference hashes a listing already keeps (a view of the same day rendered earlier)."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, ValueError):
+        return []
+    refs = data.get("references") if isinstance(data, dict) else None
+    return [str(r) for r in refs if isinstance(r, str)] if isinstance(refs, list) else []
+
+
+def _count_kind(item) -> str:
+    """The kind a mail count files an item under: a security item only from this space (a mounted
+    space's payload carries its name before a colon), the recipient item apart from the rest."""
+    if item.kind != "security":
+        return item.kind
+    if ":" in str(item.payload).split("/", 1)[0]:
+        return ""
+    return "security" if str(item.id).startswith(RECIPIENT_ITEM) else SECURITY_OTHER
 
 
 def run(root, person: str, now: dt.datetime | None = None, shadow: bool = False,
@@ -501,13 +597,16 @@ def run(root, person: str, now: dt.datetime | None = None, shadow: bool = False,
     now = now or space.now()
     shadow = bool(shadow) or space.mode == "shadow"
     items = needs_you.collect(root, now=now)
-    counts = dict(Counter(item.kind for item in items))
+    counts = dict(Counter(_count_kind(item) for item in items))
+    counts.pop("", None)   # a security item another space raised is never counted
     if "doubt" in counts:  # one list line, but the mail counts the held pages
         counts["doubt"] = needs_you.doubt_count(root)
     if "classification" in counts:   # one line too; the mail counts what waits
         counts["classification"] = sum(needs_you.classification_waits(root, space).values())
     if "fork_pr" in counts:   # one line for every pull request from a fork; the mail counts them
         counts["fork_pr"] = needs_you.fork_pr_count(items)
+    if "health" in counts:   # one line too; the mail counts what the agent works through
+        counts["health"] = len(needs_you.health_work(root))
     silent = sum(_landed_this_week(home, space, now) for home in _owned_homes(root, space))
     if silent:
         counts["landed_silently"] = silent
@@ -533,6 +632,8 @@ def run(root, person: str, now: dt.datetime | None = None, shadow: bool = False,
     if PAGE.parts[0] not in spaceyaml.PROFILE_TABLE.get(space.profile, {}).get("forbidden", []):
         pages.write(root / PAGE, page_fm, _markdown(root, space, person, items, now, limit, health, approved))
     notice, base = _notice(space, items, counts, health, shadow)
+    reference = new_reference()   # in the mail only; the listing keeps its hash
+    notice["reference"] = reference
     unsure.expire(root, now)
     asked = _unsure_also(notice, unsure.waiting(root))
     payload = _payload(space, notice, base, shadow, now)
@@ -541,20 +642,19 @@ def run(root, person: str, now: dt.datetime | None = None, shadow: bool = False,
     unsure.mark_listed(root, [r["key"] for r in asked], now)
     for legacy in LEGACY:   # before the private zone these were tracked: never send a stale copy
         (root / legacy).unlink(missing_ok=True)
-    _write_json(root / NOTICE, notice)
-    _write_json(root / PAYLOAD, payload)
-    # the day's numbering, so a reply ("1-4 yes, 5 later") maps to the items as listed
-    _write_json(root / "_meta" / "state" / "morning" / f"{now:%Y-%m-%d}.json",
-                {"date": f"{now:%Y-%m-%d}", "items": [{"id": i.id, "kind": i.kind, "text": i.text,
-                                                       "fingerprint": i.fingerprint} for i in items],
-                 "left": _left_ids(_left_yesterday(root, space, now))})
+    _write_json(root / NOTICE, notice, root)
+    _write_json(root / PAYLOAD, payload, root)
+    # the day's numbering, so a reply ("1-4 yes, 5 later") maps to the items as listed, and the
+    # hash of every reference a view of the day mailed, so only a reply quoting one is read
+    listing = root / MORNING / f"{now:%Y-%m-%d}.json"
+    references = (_kept_references(listing) + [reference_hash(reference)])[-REFERENCES_KEPT:]
+    _write_json(listing, {"date": f"{now:%Y-%m-%d}", "items": [{"id": i.id, "kind": i.kind, "text": i.text,
+                                                                "fingerprint": i.fingerprint} for i in items],
+                          "left": _left_ids(_left_yesterday(root, space, now)), "references": references}, root)
     line = {"routine": ROUTINE, "at": pages.iso(now), "space": space.name, "cost_tokens": 0,
             "notes": {"items": len(items), "listed": len(listed), "unsure_asked": len(asked), "shadow": shadow,
                       "recipient": bool(payload["to"])}}
-    runs = root / RUNS
-    runs.parent.mkdir(parents=True, exist_ok=True)
-    with runs.open("a", encoding="utf-8", newline="\n") as handle:
-        handle.write(json.dumps(line) + "\n")
+    pages.append_text(root / RUNS, json.dumps(line) + "\n", root=root)
     return MorningReport(markdown_path=root / PAGE, notice_path=root / NOTICE,
                          payload_path=root / PAYLOAD, listed=listed, counts=counts)
 
@@ -588,6 +688,7 @@ def _guard_cli(argv: list):
 
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
+    needs_you.utf8_stdio()
     guarded = _guard_cli(argv)
     if guarded is not None:
         return guarded

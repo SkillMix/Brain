@@ -254,6 +254,16 @@ tasks on this computer, the one instruction at user level, and reading your conn
 history once the app card has been shown for ten minutes. "Skip <app>" leaves an app out, and
 "read <app> again" takes that back.
 
+Two things the sentence never settles, because anyone can write one and send it to you. Setup
+installs the official template, `SkillMix/Brain`; a link to any other repository is shown to
+you by owner and date, and used only when you say yes to it. And before it joins a company's
+brain, setup shows you whose repository it is and where your workspace would go, and asks you to
+confirm it by name. Only after that yes does it accept that one organisation's invitation for
+you (any other organisation's stays yours to accept), and it takes nothing from an invitation
+but your name, your login and the projects you are crew on: your workspace goes in your own
+account unless you are a member of the brain's organisation, and your briefing goes to an
+address of yours.
+
 While it runs, `start.py` keeps a page at `~/.spaces/onboarding.html` and your agent opens it:
 how far setup is, what it found, what each part of your history costs, and anything waiting,
 with the one thing that clears it ([docs/troubleshooting.md](docs/troubleshooting.md) explains
@@ -273,7 +283,11 @@ When a person asks to be set up, onboarded or to start, and names this repositor
    them, in plain words.
 2. Without a copy of the template yet, fetch it without git: the latest release's
    `brain-template-<tag>.zip` and `SHA256SUMS`, the zip checked against its checksum before it
-   is unpacked to `~/.spaces/template`.
+   is unpacked to `~/.spaces/template`. The release comes from `SkillMix/Brain`. A link in the
+   sentence that names another repository is shown to the person (owner, creation date, whether
+   it is a fork of this one) and used only on their explicit yes, then passed as `--template`.
+   The checksum sits beside the zip in the same release, so it proves the download is whole, not
+   who made it: the repository is what the person must trust.
 3. Run the phases of `_meta/tools/start.py` through the bootstrap script, which finds or
    installs Python 3.10+: `sh _meta/tools/bootstrap.sh <phase> ... --json` (Windows:
    `powershell -NoProfile -ExecutionPolicy Bypass -File _meta\tools\bootstrap.ps1 <phase> ...`).
@@ -281,6 +295,9 @@ When a person asks to be set up, onboarded or to start, and names this repositor
    Pass `--invitation <brain>:<slug>` when the person gave an invitation and `--company
    "<name>"` when they named their company. Each phase answers with its state and what only the
    person can do (`needs`), and `resume --json` says where a setup that was interrupted stands.
+   For a brain on GitHub, the `signins` answer's `brain` holds one question; ask it, and only on
+   the person's yes run `signins ... --confirm-brain <owner/name>`. Never accept an organisation
+   invitation for them.
 4. The build schedules the routines itself and proves them with a test run through the
    scheduler; the history phase reads the person's history window oldest first, in parts paced
    to their plan.
@@ -290,7 +307,8 @@ Run again, `start.py` changes nothing that is right: it adopts the repositories 
 Where they go: the brain is `<company>-brain`, in the organisation that matches the company or
 its mail domain when exactly one does, else in the person's own account; when that is not
 clear, the sign-ins ask once (the `namespace` need) and `build --org <name>` answers. A
-person's workspace goes in the same account, private.
+person's workspace goes in the same account, private. A colleague's workspace goes in the
+brain's organisation when they are already a member of it, else in their own account.
 
 ### Without an agent
 

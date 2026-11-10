@@ -74,7 +74,8 @@ def test_an_invitation_is_found_by_the_persons_name(tmp_path):
 
 def test_one_sentence_sets_a_person_up_from_their_invitation(tmp_path, monkeypatch):
     monkeypatch.setattr(onboard, "run_cmd", lambda *a, **k: (_ for _ in ()).throw(AssertionError(a)))
-    monkeypatch.setattr(start, "_out", lambda *a, **k: "")
+    # git knows the person by the invitation's address: only an address of theirs is taken from it
+    monkeypatch.setattr(start, "_out", lambda argv, *a, **k: "ada@lantern.example" if "user.email" in argv else "")
     tpl, brain = template_copy(tmp_path), brain_with_invitation(tmp_path)
     ui = tmp_path / "home" / ".claude" / "CLAUDE.md"
     report = start.start(tpl, invitation=f"{brain.as_posix()}:ada", offline=True, home=tmp_path / "home",
@@ -324,7 +325,8 @@ def test_an_invited_colleague_is_not_asked_where_the_companys_repositories_go(tm
     _signed_in(monkeypatch)
     started = []
     monkeypatch.setattr(start, "start", lambda *a, **k: started.append(k) or onboard.Report(case="start"))
-    code = start.main(["signins", "--invitation", "acme/brain:ada", "--json"])
+    # the brain is confirmed by name first (asked once GitHub reads back): an invitation alone joins nothing
+    code = start.main(["signins", "--invitation", "acme/brain:ada", "--confirm-brain", "acme/brain", "--json"])
     result = json.loads(capsys.readouterr().out)
     assert code == 0 and result["state"] == "done" and result["needs"] == [] and "namespace" not in setup_journal.load()["signins"]
     assert start.main(["build", "--invitation", "acme/brain:ada", "--json"]) == 0
@@ -1425,12 +1427,21 @@ def test_a_capitalised_invitation_address_is_still_the_invitations(tmp_path):
 
 
 def test_a_colleague_whose_invitation_holds_a_capitalised_address_is_recorded_as_invited(tmp_path, monkeypatch):
+    no_outside(monkeypatch)   # git knows Ada as ada.private@example.org
+    finished_setup()
+    brain = brain_with_invitation(tmp_path, email="Ada.Private@Example.org")
+    result = start.phase_build(args(tmp_path, invitation=f"{brain.as_posix()}:ada"))
+    assert spaceyaml.load(result["workspace"]).owner_email == "Ada.Private@Example.org"
+    assert setup_journal.load()["build"]["owner_email_source"] == "invitation"
+
+
+def test_an_invitation_that_names_someone_elses_address_keeps_the_persons_own(tmp_path, monkeypatch):
     no_outside(monkeypatch)
     finished_setup()
     brain = brain_with_invitation(tmp_path, email="Ben@LanternWorks.example")
     result = start.phase_build(args(tmp_path, invitation=f"{brain.as_posix()}:ada"))
-    assert spaceyaml.load(result["workspace"]).owner_email == "Ben@LanternWorks.example"
-    assert setup_journal.load()["build"]["owner_email_source"] == "invitation"
+    assert spaceyaml.load(result["workspace"]).owner_email == "ada@lanternworks.example"   # the work mailbox
+    assert setup_journal.load()["build"]["owner_email_source"] == "work-mailbox"
 
 
 @pytest.mark.parametrize("typed", ["ada", "ada@lanternworks", "a@b.example, c@d.example", "no address here"])

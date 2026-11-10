@@ -15,7 +15,10 @@ marks a session captured when a daily note carries its marker (`<!-- session: <i
 an entry heading (`## HH:MMZ`) falls inside the session's span. The health line shows the
 share captured over four scaled weeks. With `switch: on`, each finished session that capture
 missed becomes a witness page under `knowledge/sources/` in this personal space only: what
-the person asked and how the session ended, no attachment, no subject. With `routing:` the
+the person asked and how the session ended, no attachment, no subject. A token in a link is
+cut out of each excerpt, and an excerpt the secrets scan finds a password or key in is written
+`[redacted]`, with a security notice to the person that names the session, never the value
+(`sweep._security_notice`). With `routing:` the
 router reads it like any record and decides what, if anything, informs a subject's home.
 When `path` is not a folder on this computer (a cloud run, a second laptop), the scan reports
 `path: missing` and writes nothing, so the last scan's sessions and capture rate stay. A scan that
@@ -141,9 +144,27 @@ def captured(session: dict, notes: dict) -> bool:
     return False
 
 
+def _clean(text: str) -> tuple[str, bool]:
+    """An excerpt of what the person typed, as a page may hold it: a token in a link cut out
+    (`scan.scrub_link_tokens`), and the whole excerpt `[redacted]` when the scan still finds a
+    password or key in it (`scan.alarms`). True when something was redacted; never the value."""
+    try:
+        import scan
+    except ImportError:   # no scan, no excerpt: nothing typed reaches a page unread
+        return "[redacted]", bool(text.strip())
+    text = scan.scrub_link_tokens(text)
+    return ("[redacted]", True) if scan.alarms(text) else (text, False)
+
+
 def _witness(root: Path, session: dict, now: dt.datetime, space: spaceyaml.Space) -> Path:
-    asked = "\n".join(f"- {' '.join(a.split())[:300]}" for a in session["asked"][:8]) or "- (nothing recorded)"
-    last = " ".join(session["last"].split())[:EXCERPT] or "(nothing recorded)"
+    cleaned = [_clean(" ".join(a.split())[:300]) for a in session["asked"][:8]]
+    tail, cut = _clean(" ".join(session["last"].split())[:EXCERPT])
+    asked = "\n".join(f"- {text}" for text, _ in cleaned) or "- (nothing recorded)"
+    last = tail or "(nothing recorded)"
+    if cut or any(hit for _, hit in cleaned):   # the person hears where and when, never the value
+        import sweep
+        sweep._security_notice(root, space, {"id": f"session-{session['id']}", "kind": "session",
+                                             "source": "sessions", "at": pages.iso(session["start"])})
     body = (f"# Session {session['start']:%Y-%m-%d %H:%M}Z in {Path(session['cwd']).name or 'a folder'}\n\n"
             f"Capture missed this session; the transcript adapter recorded it.\n\n"
             f"The person asked:\n{asked}\n\nIt ended with:\n{last}\n")
@@ -154,7 +175,7 @@ def _witness(root: Path, session: dict, now: dt.datetime, space: spaceyaml.Space
           "identifiers": {}}
     target = root / "knowledge" / "sources" / f"{session['start']:%Y}" / f"{session['start']:%m}" / \
         f"session-{session['id']}.md"
-    return pages.write(target, fm, body)
+    return pages.write(target, fm, body, root=root)
 
 
 def _rows(root: Path) -> list | None:

@@ -31,10 +31,15 @@ def fixture_dir(tmp_path_factory):
     import subprocess
     import sys
     target = tmp_path_factory.mktemp("lantern")
+    # conftest's home folder does not reach a subprocess: the run's sync tasks make a signing key under HOME
+    home = tmp_path_factory.mktemp("home")
+    real_key = Path.home() / ".spaces" / "signing_key"
+    before = real_key.stat().st_mtime_ns if real_key.exists() else None
+    env = {k: v for k, v in __import__("os").environ.items() if k not in ("SPACE_NOW", spaceyaml.TEMPLATE_REPO_ENV)}
     res = subprocess.run([sys.executable, str(TEMPLATE_ROOT / "_meta" / "tools" / "onboard.py"),
                           "--fixture", str(target)], capture_output=True, text=True,
-                         cwd=str(TEMPLATE_ROOT), env={k: v for k, v in __import__("os").environ.items()
-                                                      if k not in ("SPACE_NOW", spaceyaml.TEMPLATE_REPO_ENV)})
+                         cwd=str(TEMPLATE_ROOT), env={**env, "HOME": str(home), "USERPROFILE": str(home)})
+    assert (real_key.stat().st_mtime_ns if real_key.exists() else None) == before, "the real ~/.spaces was touched"
     if res.returncode != 0:
         print(res.stdout[-3000:], res.stderr[-2000:])
     OUTPUT["stdout"] = res.stdout
@@ -189,8 +194,9 @@ def test_requests_through_the_corridors(fixture_dir):
 
 def test_weekly_batch_and_a_conflict_note(fixture_dir):
     """Ada's page passes its shortened window: her weekly batch lists it. Ben hears another
-    go-live date than the page Ada's release filed at harbor: a conflict note travels there
-    after its window and marks that page contested."""
+    go-live date than the page Ada's release filed at harbor, from a mail held for his yes: the
+    conflict note quoting it waits for his yes too, then travels there and marks that page
+    contested."""
     target, _ = fixture_dir
     batches = sorted((target / "ada" / "_inbound" / "candidates").glob("review-*.md"))
     assert batches, "the weekly batch should list Ada's Harbor page"

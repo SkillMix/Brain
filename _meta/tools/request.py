@@ -22,6 +22,21 @@ come with template defaults per profile; a personal space ships none, so its per
 decides. Unanswered after one scaled day a request expires. After five requests of one class
 from one asker in thirty scaled days the holder gets one proposal to answer that class at
 once. Both sides log; neither log leaves its space.
+
+A corridor's other side is read from its `between`, bound to the name this space mounted it
+under (`channel-<a>-<b>`), so the other side cannot rewrite it to pass for another space. A
+request file is written by the other side of the corridor, so the holder trusts none of it
+but the question. It answers only a request whose id is one `ask` makes, whose `from` is the
+corridor's other side, and whose `subject` is a registered subject this space is home of; any
+other is declined, logged, and nothing is sent. The asker's profile is read from the registry
+this space trusts (a person's registered workspace is `personal`, a subject that is that space
+itself a `project`), else from the asker's own space.yaml where this space can read it, never
+from the request; where neither says, a standing choice that names a profile counts only at
+its strictest. The asker follows a subject that moved: when the registry names another home
+than the one a request went to (which declines a subject not homed there), `collect` asks the
+new home the same question instead of letting it expire. At once only facts travel: a status,
+the dates of what is coming up and the date of the last contact, never a line's wording. The
+person's answers are read from the verdict store sign.py writes (`status.verdicts`).
 """
 from __future__ import annotations
 
@@ -55,6 +70,9 @@ EXPIRE_HOURS = 24
 PROPOSE_AFTER = 5
 PROPOSE_DAYS = 30
 DATED = re.compile(r"^- (\d{4}-\d{2}-\d{2}):")   # a status page's coming-up line, its date first
+DAY = re.compile(r"^\d{4}-\d{2}-\d{2}\Z")          # all that leaves at once of a timeline line
+RID = re.compile(r"^rq-[0-9a-f]{8}\Z")              # a request id, as new_id makes it
+STRICTEST = {"never": 0, "ask": 1, "at_once": 2}
 
 
 @dataclass
@@ -66,6 +84,8 @@ class Report:
     expired: list = field(default_factory=list)
     collected: list = field(default_factory=list)
     proposals: list = field(default_factory=list)
+    refused: list = field(default_factory=list)    # requests declined as invalid: nothing was sent
+    readdressed: list = field(default_factory=list)   # asked again of the subject's current home
 
 
 # ----- small helpers ---------------------------------------------------------------------
@@ -116,9 +136,21 @@ def corridor(space: spaceyaml.Space, other: str, offline_roots: dict | None = No
             cs = spaceyaml.load(root)
         except Exception:
             continue
-        if cs.profile == "channel" and set(cs.data.get("between") or []) == names:
+        if cs.profile == "channel" and set(cs.data.get("between") or []) == names                 and _named_for(name, cs, space.name, other):
             return cs.name, root
     return None, None
+
+
+def _named_for(name: str, cs: spaceyaml.Space, here: str, other: str) -> bool:
+    """The corridor this space reaches as `name` (its mount's name, or its offline root's key)
+    joins `here` and `other`: its own space.yaml says that name, and a name of the form
+    `channel-<a>-<b>` (as `mint.py --channel` makes one) is the two names sorted. Both sides
+    can write a corridor's space.yaml, but not this space's mount of it, so the other side
+    cannot rewrite `between` to pass for a space it is not. A corridor minted under another
+    name is bound by its `between` alone."""
+    if cs.name != name:
+        return False
+    return not name.startswith("channel-") or name == "channel-" + "-".join(sorted([here, other]))
 
 
 def corridors(space: spaceyaml.Space, offline_roots: dict | None = None) -> list:
@@ -135,8 +167,10 @@ def corridors(space: spaceyaml.Space, offline_roots: dict | None = None) -> list
             continue
         between = list(cs.data.get("between") or [])
         if cs.profile == "channel" and space.name in between and cs.name not in seen:
-            seen.add(cs.name)
             other = next((b for b in between if b != space.name), "")
+            if not _named_for(str(name), cs, space.name, other):
+                continue   # its `between` is not the corridor this space mounted
+            seen.add(cs.name)
             out.append((cs.name, Path(root), other))
     return out
 
@@ -154,14 +188,26 @@ def channel_files(root: Path, folder: Path) -> dict:
 
 
 # ----- choices -----------------------------------------------------------------------------
-def choice_for(space: spaceyaml.Space, asker: str, asker_profile: str, cls: str) -> str:
+def choice_for(space: spaceyaml.Space, asker: str, asker_profile: str | None, cls: str) -> str:
     """at_once | ask | never: the first standing choice that names the asker, its profile or
-    any; nothing named means the holder's person decides."""
+    any; nothing named means the holder's person decides. With the asker's profile unknown
+    (None), a choice that names a profile may be the one that governs, so the strictest of
+    those and the `any` choice counts."""
+    if asker_profile is None:
+        named = [c for c in space.request_choices if str(c.get("class")) == cls]
+        if any(str(c.get("from") or "any") == asker for c in named):
+            return choice_for(space, asker, "", cls)
+        profiled = [str(c.get("answer") or "ask") for c in named
+                    if str(c.get("from") or "any") in spaceyaml.PROFILES]
+        if profiled:
+            fallback = choice_for(space, asker, "", cls)
+            return min(profiled + [fallback], key=lambda a: STRICTEST.get(a, 0))
+        asker_profile = ""
     order = {asker: 0, asker_profile: 1, "any": 2}
     best = None
     for choice in space.request_choices:
         who = str(choice.get("from") or "any")
-        if who in order and str(choice.get("class")) == cls:
+        if who in order and who != "" and str(choice.get("class")) == cls:
             if best is None or order[who] < order[best[0]]:
                 best = (who, str(choice.get("answer") or "ask"))
     return best[1] if best else "ask"
@@ -169,9 +215,15 @@ def choice_for(space: spaceyaml.Space, asker: str, asker_profile: str, cls: str)
 
 # ----- rendering the covered answer --------------------------------------------------------
 def _status_lines(root: Path, subject: str) -> dict:
-    """The holder's status page for the subject, by section."""
-    path = root / "live" / "subjects" / f"{subject}.md"
-    if not path.exists():
+    """The holder's status page for the subject, by section. A subject that is not a slug
+    names no status page: nothing outside `live/subjects/` is ever read for a request."""
+    if not pages.is_slug(subject):
+        return {}
+    try:
+        path = pages.confine(root, f"live/subjects/{subject}.md", zones=("live/subjects/",), what="status page")
+    except pages.UnsafePath:
+        return {}
+    if not path.is_file():
         return {}
     _, body = pages.read(path)
     out, current = {}, None
@@ -213,7 +265,10 @@ def render(root: Path, request: dict, now: dt.datetime, at_once: bool = True) ->
         if timeline:
             newest = timeline[0]
             date = newest.rsplit(",", 1)[-1].strip(" )")
-            lines.append(f"- last contact: {date} (witness, {holder.name}, {date})")
+            if DAY.match(date):   # a date, or nothing: never the line's own words
+                lines.append(f"- last contact: {date} (witness, {holder.name}, {date})")
+            else:
+                left.append("the last contact date could not be read")
     if cls in ("detail", "correspondence"):
         left.append(f"{cls}: not covered by a standing choice")
     return lines, left
@@ -225,7 +280,7 @@ def readable_here(space: spaceyaml.Space, home: str | None) -> bool:
 
 
 def ask(root, subject: str, cls: str, question: str, narrowest: str = "", asked_by: str = "",
-        now: dt.datetime | None = None, force: bool = False) -> Path | None:
+        now: dt.datetime | None = None, force: bool = False, readdressed_from: list | None = None) -> Path | None:
     root = Path(root)
     space = spaceyaml.load(root)
     now = now or space.now()
@@ -243,6 +298,8 @@ def ask(root, subject: str, cls: str, question: str, narrowest: str = "", asked_
           "from_profile": space.profile, "asked_by": asked_by or space.owner, "subject": subject,
           "class": cls, "question": question, "narrowest": narrowest or spaceyaml.REQUEST_CLASSES[cls],
           "at": pages.iso(now), "expires_at": pages.iso(now + space.scale(EXPIRE_HOURS))}
+    if readdressed_from:   # the requests it follows, kept here (release carries none of it)
+        fm["readdressed_from"] = [str(r) for r in readdressed_from]
     path = pages.write(root / OUT_REQUESTS / f"{rid}.md", fm, f"{question}\n")
     _append(root / ASKER_LOG, {"at": pages.iso(now), "id": rid, "to": home, "subject": subject,
                                "class": cls, "outcome": "asked"})
@@ -258,12 +315,56 @@ def _answer_page(root: Path, rid: str, fm: dict, body: str, request: dict, now) 
     return pages.write(root / IN_ANSWERS / f"{rid}.md", page, body)
 
 
+READDRESS_MAX = 2   # how many times one question follows its subject to a new home
+
+
+def _moved_home(space, reg, req: dict) -> str | None:
+    """The subject's home in the registry today when it is not the space the request went to
+    (nor this one): the holder declines a request for a subject not homed there, so the question
+    follows the subject instead of expiring. None when the home is the same, unknown, or the
+    question has followed it READDRESS_MAX times already."""
+    subject = req.get("subject")
+    if reg is None or not pages.is_slug(subject) or len(req.get("readdressed_from") or []) >= READDRESS_MAX:
+        return None
+    try:   # only the registry this space trusts moves a question: never a corridor's, which the holder writes
+        home = (reg.trusted_view() if hasattr(reg, "trusted_view") else reg).home_of(str(subject))
+    except Exception:
+        return None
+    if not pages.is_slug(home) or home in (str(req.get("to")), space.name):
+        return None
+    return home
+
+
+def _readdress(root: Path, space, req: dict, qbody: str, path: Path, now, report) -> bool:
+    """Ask the subject's current home the same question, once the registry names another
+    (`_moved_home`): a new request, with its own `asked` line, so release ships it only to that
+    home's corridor; the old one is marked `readdressed` and never ships again."""
+    rid = str(req.get("id") or path.stem)
+    try:
+        new = ask(root, str(req.get("subject")), str(req.get("class")), str(req.get("question") or qbody.strip()),
+                  str(req.get("narrowest") or ""), str(req.get("asked_by") or ""), now=now,
+                  readdressed_from=[*(req.get("readdressed_from") or []), rid])
+    except ValueError:
+        return False
+    to = new.stem if new is not None else "here"   # None: the new home is readable here, no request needed
+    pages.write(path, dict(req, status="readdressed", readdressed_to=to), qbody)
+    _append(root / ASKER_LOG, {"at": pages.iso(now), "id": rid, "to": req.get("to"), "outcome": "readdressed",
+                               "readdressed_to": to})
+    report.readdressed.append(rid)
+    return True
+
+
 def collect(root, now: dt.datetime | None = None, offline_roots: dict | None = None) -> Report:
-    """Land arrived answers as dated evidence; mark expired requests; tell the person."""
+    """Land arrived answers as dated evidence; re-address a request whose subject's home moved
+    (`_readdress`); mark expired requests; tell the person."""
     root = Path(root)
     space = spaceyaml.load(root)
     now = now or space.now()
     report = Report()
+    try:
+        reg = registry_mod.Registry(root, space)
+    except Exception:
+        reg = None
     answers = {}
     for name, croot, _ in corridors(space, offline_roots):
         answers.update(channel_files(croot, IN_ANSWERS))
@@ -293,6 +394,8 @@ def collect(root, now: dt.datetime | None = None, offline_roots: dict | None = N
                 pass
             _notice(root, space, req, body)
             report.collected.append(rid)
+            continue
+        if _moved_home(space, reg, req) and _readdress(root, space, req, qbody, path, now, report):
             continue
         expires = _when(req.get("expires_at"))
         if expires is not None and now > expires:
@@ -336,9 +439,63 @@ def _paused(root: Path, path: str, now, space) -> bool:
 
 
 def _log_line(root: Path, line: str) -> None:
-    log = Path(root) / "log.md"
-    with log.open("a", encoding="utf-8", newline="\n") as handle:
-        handle.write(line.rstrip("\n") + "\n")
+    """One line of log.md: values from a request (another space wrote them) never break it."""
+    pages.append_text(Path(root) / "log.md", " ".join(str(line).split()) + "\n", root=Path(root))
+
+
+def _problem(holder, reg, rid: str, req: dict, other: str) -> str:
+    """Why a request is not one this space answers, or "": its id is not one `ask` makes, it
+    does not come from the corridor's other side, its subject is not a registered subject this
+    space is home of, or its class is none."""
+    if not RID.match(rid) or str(req.get("id") or rid) != rid:
+        return "its id is not a request id"
+    if str(req.get("from")) != other:
+        return f"it says it is from {str(req.get('from'))[:40]!r}, but the corridor's other side is {other}"
+    subject = req.get("subject")
+    if not pages.is_slug(subject) or reg.get(subject) is None:
+        return "its subject is not a registered subject"
+    found = reg.get(subject)
+    home = reg.home_of(subject) or found.space
+    if home != holder.name:
+        return f"{subject} is not homed here"
+    if str(req.get("class")) not in spaceyaml.REQUEST_CLASSES:
+        return "its class is not a request class"
+    return ""
+
+
+def registry_profile(reg, name: str) -> str | None:
+    """The profile the registry this space trusts (its own and the brain's it mounts) gives the
+    space called `name`: `personal` when it is the registered workspace of exactly one person,
+    `project` when one subject is that space itself (`id == home == name`, as mint writes it);
+    None when neither, or both, says so. Only this space's own registry and the brain's are read
+    (`Registry.trusted_view`), whose fields wait for their owner's click (`gate.registry_reasons`);
+    never a corridor's or a project mount's, which the asker can write, so an asker cannot choose
+    its own."""
+    if reg is None or not pages.is_slug(name):
+        return None
+    reg = reg.trusted_view() if hasattr(reg, "trusted_view") else reg
+    every = [s for s in reg.everywhere() if s.state != "archived"]
+    people = [s for s in every if s.kind == "people" and str(s.extra.get("workspace") or "") == name]
+    projects = [s for s in every if s.id == name and str(s.home or "") == name]
+    if len(people) == 1 and not projects:
+        return "personal"
+    if len(projects) == 1 and not people:
+        return "project"
+    return None
+
+
+def _asker_profile(holder, other: str, offline_roots: dict | None, reg=None) -> str | None:
+    """The asker's profile: what the registry this space trusts says (`registry_profile`), else
+    the asker's own space.yaml when this space can read it; else None (a standing choice that
+    names a profile then counts only at its strictest)."""
+    known = registry_profile(reg, other)
+    if known is not None:
+        return known
+    try:
+        found = _space_named(holder, other, offline_roots)
+    except Exception:
+        return None
+    return found.profile if found is not None and found.name == other else None
 
 
 def _ship_answer(root: Path, holder, rid: str, request: dict, lines: list, left: list, approved: str, now) -> Path:
@@ -348,7 +505,13 @@ def _ship_answer(root: Path, holder, rid: str, request: dict, lines: list, left:
           "generated": pages.generated("request", now), "request": rid, "from": holder.name,
           "to": request.get("from"), "class": request.get("class"), "approved_by": approved,
           "answered_at": pages.iso(now), "covered": bool(lines), "destination": None}
-    return pages.write(root / OUT_ANSWERS / f"{rid}.md", fm, body)
+    return pages.write(root / OUT_ANSWERS / f"{rid}.md", fm, body, root=root)
+
+
+def _answer_digest(path: Path) -> str:
+    """The fingerprint of the answer's body as written: release.ship_requests ships it only while
+    the file still holds that text, so an answer changed after it was given never leaves."""
+    return pages.fingerprint(pages.read(path)[1])
 
 
 def answer(root, now: dt.datetime | None = None, offline_roots: dict | None = None) -> Report:
@@ -361,16 +524,25 @@ def answer(root, now: dt.datetime | None = None, offline_roots: dict | None = No
     for row in _jsonl(root / HOLDER_LOG):
         handled.setdefault(str(row.get("id")), []).append(row)
     given = _verdicts(root)
+    reg = registry_mod.Registry(root, holder)
     items, choices_changed = [], False
     for cname, croot, other in corridors(holder, offline_roots):
+        aprofile = _asker_profile(holder, other, offline_roots, reg)
         for rid, (req, _) in sorted(channel_files(croot, IN_REQUESTS).items()):
             if str(req.get("to")) != holder.name:
                 continue
             outcomes = [r.get("outcome") for r in handled.get(rid, [])]
             if any(o in ("answered", "never", "expired", "declined") for o in outcomes):
                 continue
+            why = _problem(holder, reg, rid, req, other)
+            if why:   # declined and logged under the corridor's other side; nothing is sent
+                _append(root / HOLDER_LOG, {"at": pages.iso(now), "id": rid, "from": other,
+                                            "class": str(req.get("class"))[:40], "outcome": "declined",
+                                            "reason": "invalid", "why": why})
+                report.refused.append(rid)
+                continue
             expires = _when(req.get("expires_at"))
-            asker, aprofile, cls = str(req.get("from")), str(req.get("from_profile") or ""), str(req.get("class"))
+            asker, cls = other, str(req.get("class"))
             if expires is not None and now > expires:
                 _append(root / HOLDER_LOG, {"at": pages.iso(now), "id": rid, "from": asker, "class": cls,
                                             "asked_by": req.get("asked_by"), "outcome": "expired"})
@@ -388,21 +560,23 @@ def answer(root, now: dt.datetime | None = None, offline_roots: dict | None = No
                 choice = "ask"   # a failed sample paused this standing choice: the holder answers by hand
             lines, left = render(root, req, now, at_once=choice == "at_once")
             if choice == "at_once" and lines:
-                _ship_answer(root, holder, rid, req, lines, left, f"standing choice: {cls} for {asker}", now)
+                written = _ship_answer(root, holder, rid, req, lines, left, f"standing choice: {cls} for {asker}", now)
                 _log_line(root, f"- {pages.iso(now)} answered {rid} for {asker} at_once "
                                 f"(standing choice: {cls}; path {choice_path})")
                 _append(root / HOLDER_LOG, {"at": pages.iso(now), "id": rid, "from": asker, "class": cls,
                                             "asked_by": req.get("asked_by"), "outcome": "answered",
-                                            "choice": f"{cls}:at_once", "subject": req.get("subject")})
+                                            "choice": f"{cls}:at_once", "subject": req.get("subject"),
+                                            "sha256": _answer_digest(written)})
                 report.answered.append(rid)
                 continue
             if verdict.get("verb") in ("yes", "edit", "always"):
                 sent = [f"- {verdict['note']}"] if verdict.get("verb") == "edit" and verdict.get("note") else lines
-                _ship_answer(root, holder, rid, req, sent, [] if verdict.get("verb") == "edit" else left,
-                             f"{verdict.get('by')} by name", now)
+                written = _ship_answer(root, holder, rid, req, sent, [] if verdict.get("verb") == "edit" else left,
+                                       f"{verdict.get('by')} by name", now)
                 _append(root / HOLDER_LOG, {"at": pages.iso(now), "id": rid, "from": asker, "class": cls,
                                             "asked_by": req.get("asked_by"), "outcome": "answered",
-                                            "choice": f"person:{verdict.get('verb')}"})
+                                            "choice": f"person:{verdict.get('verb')}",
+                                            "sha256": _answer_digest(written)})
                 if verdict.get("verb") == "always":
                     holder.data["request_choices"] = holder.request_choices + [
                         {"from": asker, "class": cls, "answer": "at_once"}]

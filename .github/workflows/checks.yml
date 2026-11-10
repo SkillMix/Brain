@@ -1,11 +1,24 @@
-# The required check and the arming job. `checks` runs the pull request's own code (validate,
-# the tool tests, the secrets scan, the answer and leak tests) with a read-only token and no
-# stored credentials. `arm` runs afterwards with the write token, checks out only the base
-# branch, reads the commit `checks` tested as data and runs the base branch's gate.py on it:
-# the platform merges a pull request the gate calls auto-mergeable, and protected paths wait for
-# the owner's click instead (rules.md section 8). A pull request from a fork is never armed.
-# Two jobs where there was one: a sync costs one more short job, the price of keeping the write
-# token away from the pull request's code.
+# The required check and the jobs around it. No job that runs the pull request's own code holds a
+# secret: GitHub hands a job every secret it names when the job starts, and a hosted runner gives
+# its steps sudo, so code in any step could read them from the runner's memory.
+# - `disarm` runs first on a push to a pull request, with no checkout and no Python: it switches
+#   off an auto-merge armed before the push, so new commits never merge on an earlier verdict.
+# - `mounts` holds the mount keys and the mount token. It checks out the mounts the default branch's
+#   .gitmodules names (never the pull request's), and runs only the default branch's validate.py and
+#   tests_run.py on the pull request's files, as data.
+# - `checks` is the required check. It runs the pull request's own code (the tool tests, validate,
+#   the behaviour scenarios, and the answer and leak tests when `mounts` did not run them) with a
+#   read-only token, no mounts and no stored credentials, and the base branch's gate and secrets
+#   scan on what changed; it fails when `mounts` failed.
+# - `gate` holds the template token. It checks out only the default branch, reads the commit
+#   `checks` tested as data and runs the default branch's gate.py on it. Only a same-repository
+#   pull request into the default branch gets this far.
+# - `arm` holds the write token and runs no Python and no checkout: on a fresh runner it merges, or
+#   arms, a pull request the gate called auto-mergeable, pinned to the head commit `checks` tested,
+#   and leaves a protected one for the owner's click (rules.md section 8). A fork is never armed.
+# Every Python package a job installs is pinned with its sha256. A pull request that edits this file
+# runs its own copy: the gate holds `.github/` for the owner, and a token without GitHub's `workflow`
+# scope cannot push such a change at all (SECURITY.md).
 name: checks
 
 on:
@@ -18,50 +31,262 @@ permissions:
   contents: read
 
 jobs:
-  checks:
-    # A pull request's merge was checked on the pull request; a direct push to main still runs.
+  # GitHub keeps auto-merge armed through a push by anyone who may write, so an arming from an earlier
+  # push (`arm` arms rather than merges while GitHub still waits on something), or one set by hand,
+  # would merge the new commits the moment `checks` passes, before `gate` judged them. This job
+  # switches it off before any check of the new head can pass; `arm` arms again what the gate allows.
+  # It holds the write token and runs only gh: no checkout, no code of the pull request. When it
+  # cannot say the arming is off, `mounts` fails, and with it the required check.
+  disarm:
     if: >-
-      github.event_name != 'push' ||
+      github.event_name == 'pull_request' && github.event.action == 'synchronize' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Switch off auto-merge armed before this push
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          for wait in 0 10 30; do
+            sleep "$wait"
+            armed=$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null') || continue
+            if [ "$armed" != true ] || gh pr merge --disable-auto "$PR_URL"; then
+              echo "auto-merge is off until the gate judges this push"
+              exit 0
+            fi
+          done
+          echo "::error::could not switch off the auto-merge armed before this push"
+          exit 1
+
+  mounts:
+    needs: disarm
+    # A pull request's merge was checked on the pull request; a direct push to main still runs. It
+    # runs whether `disarm` ran or was skipped (any event but a push to a pull request).
+    if: >-
+      !cancelled() && (github.event_name != 'push' ||
       !(startsWith(github.event.head_commit.message, 'Merge pull request #') ||
-      contains(github.event.head_commit.message, ' (#'))
+      contains(github.event.head_commit.message, ' (#')))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Whether this job ran the answer and leak tests: when it did not, `checks` runs them.
+    outputs:
+      ran_tests: ${{ steps.mounted.outputs.ran_tests }}
+    env:
+      GIT_TERMINAL_PROMPT: "0"
+    steps:
+      - name: The arming from before this push is off
+        env:
+          DISARM: ${{ needs.disarm.result }}
+        run: |
+          if [ "$DISARM" != success ] && [ "$DISARM" != skipped ]; then
+            echo "::error::the disarm job did not pass ($DISARM): an earlier auto-merge may still be armed"
+            exit 1
+          fi
+
+      # The commit under test, as data: nothing of it runs in this job.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch the default branch
+        if: github.event_name == 'pull_request'
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c "http.https://github.com/.extraheader=$header" fetch --no-recurse-submodules --no-tags origin \
+            "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}"
+
+      # Mounts are submodules, read one at a time: a mount that cannot be read is skipped (validate
+      # warns and skips its cross-space checks) and the rest still load. Which mounts, and from
+      # where, is the default branch's .gitmodules, never the pull request's: it replaces the pull
+      # request's copy here, and .gitmodules is a protected path, so a pull request cannot add or
+      # redirect a mount. Every address it holds of the plain form https://github.com/<owner>/<name>
+      # is read, whoever owns it (a workspace in a person's own account mounts the company's brain
+      # from the organisation), and is pinned in .git/config in that form before the checkout; any
+      # other address, and any path that is not a plain folder, is skipped. Only https, or ssh to
+      # github.com built from that same address, is allowed (`protocol.allow=never`).
+      # A mount is read with its deploy key when MOUNT_DEPLOY_KEYS holds one for it: one read-only
+      # key per mounted repository, made for this repository alone by the agents (onboard.py
+      # `mount_access`), each after a `mount <owner>/<name>` line. The host is checked against
+      # GitHub's published key, pinned here. A key the brain's agent has still to attach comes after a
+      # `pending <owner>/<name> <yyyy-mm-dd>` line: until that day a brain unread only through it is a
+      # warning, so a colleague's first pull requests land while it waits; after it, the usual failure.
+      # A mount without a key, or whose key fails, is read
+      # with the read-only token when there is one (MOUNT_READ_TOKEN first, else BRAIN_READ_TOKEN,
+      # the fallback where a deploy key cannot be made). The brain is the mount every space's
+      # checks need, so a key or token that cannot read it fails here, the day it stops working.
+      # With neither (a fork's pull request) the checks run without mounts. Both are repository
+      # secrets of this repository, never organisation secrets (SECURITY.md). The token goes to each
+      # git command (`-c`), never into a config file; the keys live in the runner's temporary folder
+      # for this step alone.
+      - name: Check out mounts
+        env:
+          TOKEN: ${{ secrets.MOUNT_READ_TOKEN || secrets.BRAIN_READ_TOKEN }}
+          DEPLOY_KEYS: ${{ secrets.MOUNT_DEPLOY_KEYS }}
+          EVENT: ${{ github.event_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then ref="origin/$DEFAULT_BRANCH"; else ref=HEAD; fi
+          if ! git cat-file -e "$ref:.gitmodules" 2>/dev/null; then
+            echo "no mounts on $ref"
+            exit 0
+          fi
+          if [ -z "$TOKEN" ] && [ -z "$DEPLOY_KEYS" ]; then
+            echo "no mount key (MOUNT_DEPLOY_KEYS) and no mount token (MOUNT_READ_TOKEN or BRAIN_READ_TOKEN); continuing without mounts"
+            exit 0
+          fi
+          git show "$ref:.gitmodules" > "$RUNNER_TEMP/base.gitmodules"
+          cp "$RUNNER_TEMP/base.gitmodules" .gitmodules
+          keys="$RUNNER_TEMP/mount-keys"
+          rm -rf "$keys"
+          mkdir -m 700 "$keys"
+          trap 'rm -rf "$keys"' EXIT
+          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" > "$keys/known_hosts"
+          if [ -n "$DEPLOY_KEYS" ]; then
+            printf '%s\n' "$DEPLOY_KEYS" | tr -d '\r' | awk -v dir="$keys" '
+              /^pending [A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+ [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/ { k = tolower($2); sub("/", "@", k); print $3 > (dir "/pending-" k); f = ""; next }
+              /^mount [A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/ { k = tolower(substr($0, 7)); sub("/", "@", k); f = dir "/key-" k; next }
+              /^mount / { f = ""; next }
+              f != "" { print > f }'
+            chmod 600 "$keys"/key-* 2>/dev/null || true
+          fi
+          header=""
+          if [ -n "$TOKEN" ]; then
+            header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          fi
+          git config -f .gitmodules --get-regexp '^submodule\..*\.path$' | while read -r entry path; do
+            sub=${entry#submodule.}
+            sub=${sub%.path}
+            url=$(git config -f .gitmodules --get "submodule.$sub.url" || true)
+            rest=${url#https://github.com/}
+            rest=${rest%/}
+            rest=${rest%.git}
+            owner=${rest%%/*}
+            repo=${rest#*/}
+            if [ "$rest" = "$url" ] || [[ ! "$owner" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]] ||
+               [[ ! "$repo" =~ ^[A-Za-z0-9._-]{1,100}$ ]] || [ "$repo" = . ] || [ "$repo" = .. ]; then
+              echo "::warning::mount $path is not an https://github.com/<owner>/<name> address; skipped"
+              continue
+            fi
+            case "$path" in
+              /*|*..*|*\\*|*:*|"") echo "::warning::mount path $path is not a plain folder; skipped"; continue ;;
+            esac
+            case "$sub" in
+              /*|*..*|*\\*|*:*|"") echo "::warning::mount $path has a name that is not a plain folder; skipped"; continue ;;
+            esac
+            git config "submodule.$sub.update" checkout
+            keyfile="$keys/key-$(printf '%s@%s' "$owner" "$repo" | tr 'A-Z' 'a-z')"
+            got=""
+            if [ -s "$keyfile" ]; then
+              git config "submodule.$sub.url" "ssh://git@github.com/$owner/$repo.git"
+              if GIT_SSH_COMMAND="ssh -i '$keyfile' -o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile='$keys/known_hosts' -o HostKeyAlgorithms=ssh-ed25519" \
+                 git -c protocol.allow=never -c protocol.ssh.allow=always submodule update --init -- "$path"; then
+                got="deploy key"
+              else
+                rm -rf -- ".git/modules/$sub"
+              fi
+            fi
+            if [ -z "$got" ] && [ -n "$header" ]; then
+              git config "submodule.$sub.url" "https://github.com/$owner/$repo"
+              git -c protocol.allow=never -c protocol.https.allow=always \
+                -c "http.https://github.com/.extraheader=$header" submodule update --init -- "$path" && got="token"
+            fi
+            if [ -n "$got" ]; then
+              echo "mount $path read with its $got"
+            else
+              echo "::warning::mount $path is unavailable to the mount key and token; its cross-space checks are skipped"
+              until=$(cat "$keys/pending-$(printf '%s@%s' "$owner" "$repo" | tr 'A-Z' 'a-z')" 2>/dev/null || true)
+              if [ "$sub" = brain ] && [ -n "$until" ] && [[ ! "$(date -u +%F)" > "$until" ]]; then
+                echo "$until" > "$keys/brain-pending"
+              fi
+            fi
+          done
+          brain=$(git config -f .gitmodules --get submodule.brain.path || true)
+          if [ -n "$brain" ] && [ ! -e "$brain/.git" ] && [ -s "$keys/brain-pending" ]; then
+            echo "::warning::the brain's deploy key waits for the brain's agent until $(cat "$keys/brain-pending") (onboard.py --mount-keys); the cross-space checks are skipped until it reads"
+          elif [ -n "$brain" ] && [ ! -e "$brain/.git" ]; then
+            echo "::error::neither the mount key nor the mount token can read the brain ($brain): the agent of the brain's owner attaches the key (onboard.py --mount-keys)"
+            exit 1
+          fi
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML, pinned by hash
+        run: |
+          cat > "$RUNNER_TEMP/requirements.txt" <<'EOF'
+          PyYAML==6.0.3 \
+              --hash=sha256:41715c910c881bc081f1e8872880d3c650acf13dfa8214bad49ed4cede7c34ea \
+              --hash=sha256:ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc
+          EOF
+          python -m pip install --disable-pip-version-check --no-deps --only-binary=:all: --require-hashes \
+            -r "$RUNNER_TEMP/requirements.txt"
+
+      # The default branch's tools on the pull request's files: validate with the mounts in place,
+      # and the answer and leak tests, which may read the mounts. `-I` keeps the checkout off
+      # Python's path, so a module the pull request adds at its root is never imported. A pull
+      # request that changes the tools themselves (a template release) is validated by its own
+      # tools in `checks`, without mounts, since the old validate.py may not read the new tree; its
+      # answer and leak tests still run here, with the default branch's tests_run.py and the
+      # mounts: they read the space's questions and pages as data, which such a pull request does
+      # not change. (Template sync on the computer already ran them with the new tools, before and
+      # after the copy, and put back a change that scored lower.) Where the default branch has no
+      # tests_run.py, `checks` runs the pull request's own (`ran_tests`).
+      - name: Validate and test with the mounts
+        id: mounted
+        env:
+          EVENT: ${{ github.event_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then ref="origin/$DEFAULT_BRANCH"; else ref=HEAD; fi
+          mkdir -p "$RUNNER_TEMP/base"
+          git archive "$ref" _meta/tools | tar -x -C "$RUNNER_TEMP/base"
+          if [ -n "$(git diff --name-only "$ref...HEAD" -- _meta/tools)" ]; then
+            echo "::notice::the pull request changes _meta/tools: its own validate.py runs in checks, without mounts"
+          else
+            python -I "$RUNNER_TEMP/base/_meta/tools/validate.py" .
+          fi
+          if [ -f _meta/tests/answers.yaml ] && [ -f "$RUNNER_TEMP/base/_meta/tools/tests_run.py" ]; then
+            python -I "$RUNNER_TEMP/base/_meta/tools/tests_run.py" .
+            echo "ran_tests=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  checks:
+    needs: mounts
+    # Runs after `mounts` whatever its result, so this required check fails when `mounts` failed
+    # rather than being skipped (a skipped required check would count as passed).
+    if: >-
+      !cancelled() && (github.event_name != 'push' ||
+      !(startsWith(github.event.head_commit.message, 'Merge pull request #') ||
+      contains(github.event.head_commit.message, ' (#')))
     runs-on: ubuntu-latest
     permissions:
       contents: read
     env:
       GIT_TERMINAL_PROMPT: "0"
     steps:
+      - name: The mounts job passed
+        env:
+          MOUNTS: ${{ needs.mounts.result }}
+        run: |
+          if [ "$MOUNTS" != success ]; then
+            echo "::error::the mounts job did not pass ($MOUNTS)"
+            exit 1
+          fi
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
           persist-credentials: false
-
-      # Mounts are submodules read with a read-only token, one at a time: a mount the token cannot
-      # read is skipped (validate warns and skips its cross-space checks) and the rest still load.
-      # The brain is the mount every space's checks need, so a token that cannot read it fails
-      # here, the day it expires or loses access. Without a token (a fork's pull request) the
-      # checks run without mounts. The token goes to each git command (`-c`), never into a config
-      # file, so the pull request's code in the steps below cannot read it.
-      - name: Check out mounts
-        if: hashFiles('.gitmodules') != ''
-        env:
-          # An organization secret reaches organization repositories; a workspace in a person's
-          # own account needs the same token as a repository secret (onboard lists it).
-          TOKEN: ${{ secrets.BRAIN_READ_TOKEN || secrets.MOUNT_READ_TOKEN }}
-        run: |
-          if [ -z "$TOKEN" ]; then
-            echo "no mount token (BRAIN_READ_TOKEN or MOUNT_READ_TOKEN); continuing without mounts"
-            exit 0
-          fi
-          header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
-          git config -f .gitmodules --get-regexp '^submodule\..*\.path$' | while read -r _ path; do
-            git -c "http.https://github.com/.extraheader=$header" submodule update --init --recursive -- "$path" ||
-              echo "::warning::mount $path is unavailable to the mount token; its cross-space checks are skipped"
-          done
-          brain=$(git config -f .gitmodules --get submodule.brain.path || true)
-          if [ -n "$brain" ] && [ ! -e "$brain/.git" ]; then
-            echo "::error::the mount token cannot read the brain ($brain): give it read access to the brain repository"
-            exit 1
-          fi
 
       # The checkout stored no credentials, so the job's read-only token goes to this one fetch.
       - name: Fetch the base branch
@@ -98,25 +323,47 @@ jobs:
         with:
           python-version: "3.12"
 
-      - run: pip install pyyaml ${{ steps.scope.outputs.tools == 'true' && 'pytest' || '' }}
+      - name: Install PyYAML and pytest, pinned by hash
+        run: |
+          cat > "$RUNNER_TEMP/requirements.txt" <<'EOF'
+          PyYAML==6.0.3 \
+              --hash=sha256:41715c910c881bc081f1e8872880d3c650acf13dfa8214bad49ed4cede7c34ea \
+              --hash=sha256:ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc
+          pytest==9.1.1 \
+              --hash=sha256:37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c
+          iniconfig==2.3.0 \
+              --hash=sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12
+          packaging==26.3 \
+              --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
+          pluggy==1.6.0 \
+              --hash=sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746
+          Pygments==2.21.0 \
+              --hash=sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9
+          EOF
+          python -m pip install --disable-pip-version-check --no-deps --only-binary=:all: --require-hashes \
+            -r "$RUNNER_TEMP/requirements.txt"
 
       # The base branch's gate, before any of the pull request's code runs: a signature error
-      # (gate.py exits 1) fails this required check. Its class is printed for the log; `arm`
+      # (gate.py exits 1) fails this required check. Its class is printed for the log; `gate`
       # decides, with the template token this job never holds. pipefail: tee must not hide the exit.
       - name: Gate (signatures)
         if: github.event_name == 'pull_request'
         env:
           SPACES_TEMPLATE_REPO: ${{ github.event.repository.is_template }}
           BASE_REF: ${{ github.base_ref }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_HEAD_REF: ${{ github.head_ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -o pipefail
           mkdir -p "$RUNNER_TEMP/base"
           git archive "origin/${BASE_REF}" _meta/tools | tar -x -C "$RUNNER_TEMP/base"
-          python "$RUNNER_TEMP/base/_meta/tools/gate.py" "origin/${BASE_REF}" . | tee "$RUNNER_TEMP/gate.txt"
+          python -I "$RUNNER_TEMP/base/_meta/tools/gate.py" "origin/${BASE_REF}" . --author "$PR_AUTHOR" --head-ref "$PR_HEAD_REF" | tee "$RUNNER_TEMP/gate.txt"
 
       # The template's name gate compares against hashes kept in a CI secret, never in the
       # repository (docs/decisions.md, 2026-10-21). Without the secret the check has no list to
-      # compare against. In a space the step is skipped.
+      # compare against. In a space the step is skipped. It is the one secret this job names: a
+      # list of hashes, in the template only, whose writers are its maintainers.
       - name: The forbidden names list
         if: github.event.repository.is_template
         env:
@@ -129,13 +376,15 @@ jobs:
             echo "::notice::no FORBIDDEN_NAMES_SHA256 secret: the name check has no list to compare against"
           fi
 
+      # `-I`: the checkout is not on Python's path, so a module the pull request puts at the root
+      # (a `yaml.py`, a `pytest.py`) is never imported in place of the installed one.
       - name: Unit tests
         if: steps.scope.outputs.tools == 'true'
         env:
           SPACES_TEMPLATE_REPO: ${{ github.event.repository.is_template }}
           GIT_CONFIG_GLOBAL: /dev/null
           GIT_TERMINAL_PROMPT: "0"
-        run: python -m pytest _meta/tools/tests -q
+        run: python -I -m pytest _meta/tools/tests -q
 
       - name: Validate the space
         run: python _meta/tools/validate.py .
@@ -144,14 +393,26 @@ jobs:
         if: github.event.repository.is_template
         run: python _meta/tools/validate.py . --template
 
+      # The base branch's scanner, extracted by the gate step: a pull request that edits scan.py
+      # cannot pick the scanner that judges it (that edit is protected and waits for the owner).
       - name: Secrets scan on what changed
         if: github.event_name == 'pull_request'
         env:
-          BASE_REF: ${{ github.base_ref || 'main' }}
-        run: python _meta/tools/scan.py --changed-since "origin/${BASE_REF}"
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ ! -f "$RUNNER_TEMP/base/_meta/tools/scan.py" ]; then
+            echo "::error::the base branch has no _meta/tools/scan.py to scan with"
+            exit 1
+          fi
+          python -I "$RUNNER_TEMP/base/_meta/tools/scan.py" --changed-since "origin/${BASE_REF}" --root .
 
+      # The answer and leak tests run in `mounts`, which has the mounts, with the default branch's
+      # tests_run.py; only when it did not run them (the default branch has none yet) do they run
+      # here, with the pull request's own and no mounts.
       - name: Tests as data
-        if: hashFiles('_meta/tests/answers.yaml') != '' && hashFiles('_meta/tools/tests_run.py') != ''
+        if: >-
+          needs.mounts.outputs.ran_tests != 'true' &&
+          hashFiles('_meta/tests/answers.yaml') != '' && hashFiles('_meta/tools/tests_run.py') != ''
         run: python _meta/tools/tests_run.py .
 
       - name: Behaviour scenarios
@@ -165,28 +426,31 @@ jobs:
           GIT_CONFIG_GLOBAL: /dev/null
         run: python _meta/tools/onboard.py --fixture "$RUNNER_TEMP/fixture"
 
-  # Only a pull request that passed `checks` is armed, and only one from this repository. This job
-  # holds the write token, so it never runs the pull request's code: it checks out the base branch,
-  # fetches the commit `checks` tested as data, and runs the base branch's gate.py on that tree.
-  # The gate as it stands on the base branch decides, never the pull request's own copy, so a pull
-  # request cannot loosen the rule that judges it. A protected sync of a template release the
-  # owner approved lands on green when its protected files are that release's, byte for byte; the
-  # release is fetched from the template, with a token when the template is private.
-  arm:
+  # Only a pull request that passed `checks`, from this repository and into the default branch, is
+  # judged: the gate that decides is the default branch's, never a branch a pusher made (a pull
+  # request into any other branch is never armed). This job checks out the default branch, fetches
+  # the commit `checks` tested as data, and runs the default branch's gate.py on that tree, so a pull
+  # request cannot loosen the rule that judges it. A protected sync of a template release the owner
+  # approved lands on green when its protected files are that release's, byte for byte; the release
+  # is fetched from the template, with a token when the template is private. It holds no write
+  # token: its verdict is its one output.
+  gate:
     needs: checks
     if: >-
       github.event_name == 'pull_request' &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.base_ref == github.event.repository.default_branch
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
+    outputs:
+      verdict: ${{ steps.verdict.outputs.verdict }}
     env:
       GIT_TERMINAL_PROMPT: "0"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          ref: ${{ github.base_ref }}
+          ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -194,47 +458,85 @@ jobs:
       # to a worktree in the runner's temp folder, where the gate reads them; nothing there runs.
       - name: Fetch the pull request as data
         env:
-          BASE_REF: ${{ github.base_ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           MERGE_SHA: ${{ github.sha }}
           GH_TOKEN: ${{ github.token }}
         run: |
           header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
           git -c "http.https://github.com/.extraheader=$header" fetch --no-recurse-submodules --no-tags origin \
-            "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}" "${MERGE_SHA}"
+            "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}" "${MERGE_SHA}"
           git worktree add --detach "$RUNNER_TEMP/pr" "${MERGE_SHA}"
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
-      - run: pip install pyyaml
+      - name: Install PyYAML, pinned by hash
+        run: |
+          cat > "$RUNNER_TEMP/requirements.txt" <<'EOF'
+          PyYAML==6.0.3 \
+              --hash=sha256:41715c910c881bc081f1e8872880d3c650acf13dfa8214bad49ed4cede7c34ea \
+              --hash=sha256:ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc
+          EOF
+          python -m pip install --disable-pip-version-check --no-deps --only-binary=:all: --require-hashes \
+            -r "$RUNNER_TEMP/requirements.txt"
 
-      # pipefail: the tee keeps the gate's output for the arming step, and a signature error
-      # (gate.py exits 1) fails this job too, so nothing is armed.
+      # pipefail: the tee keeps the gate's output, and a signature error (gate.py exits 1) fails
+      # this job too, so nothing is armed. The verdict is the gate's first line, exactly.
       - name: Gate (protected paths and signatures)
+        id: verdict
         env:
           SPACES_TEMPLATE_REPO: ${{ github.event.repository.is_template }}
-          BASE_REF: ${{ github.base_ref }}
-          TEMPLATE_TOKEN: ${{ secrets.TEMPLATE_READ_TOKEN || secrets.BRAIN_READ_TOKEN || secrets.MOUNT_READ_TOKEN }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          TEMPLATE_TOKEN: ${{ secrets.TEMPLATE_READ_TOKEN || secrets.MOUNT_READ_TOKEN || secrets.BRAIN_READ_TOKEN }}
+          # who opened the pull request and from which branch: a release is vouched for by both
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          # the key tie checks the pull request's own commits, not GitHub's unsigned merge of it (gate._key_signed)
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -o pipefail
           mkdir -p "$RUNNER_TEMP/base"
-          git archive "origin/${BASE_REF}" _meta/tools | tar -x -C "$RUNNER_TEMP/base"
-          python "$RUNNER_TEMP/base/_meta/tools/gate.py" "origin/${BASE_REF}" "$RUNNER_TEMP/pr" | tee "$RUNNER_TEMP/gate.txt"
+          git archive "origin/${DEFAULT_BRANCH}" _meta/tools | tar -x -C "$RUNNER_TEMP/base"
+          python -I "$RUNNER_TEMP/base/_meta/tools/gate.py" "origin/${DEFAULT_BRANCH}" "$RUNNER_TEMP/pr" --author "$PR_AUTHOR" --head-ref "$PR_HEAD_REF" | tee "$RUNNER_TEMP/gate.txt"
+          if [ "$(head -n 1 "$RUNNER_TEMP/gate.txt")" = "GATE: auto-mergeable" ]; then
+            echo "verdict=auto-mergeable" >> "$GITHUB_OUTPUT"
+          else
+            echo "verdict=protected" >> "$GITHUB_OUTPUT"
+          fi
 
-      # `checks` is green by now, so gh merges an auto-mergeable pull request at once rather than
-      # arming it. A protected one waits for the owner's click on a Needs you item, and arming
-      # from an earlier push is switched off. The merge method is the first the repository allows:
-      # a merge commit, else squash, else rebase; when the settings cannot be read, each in turn.
-      # GitHub refuses a merge while the base branch moves (pull requests that went green together
-      # land one after another), so a refusal is tried again after a short wait.
+  # The write token, on a runner where nothing else ran: no checkout, no Python, only gh. The merge
+  # is pinned to the head commit `checks` tested (`--match-head-commit`), so a commit pushed after
+  # the verdict is judged by its own run and never merges on this one (and `disarm` switched off any
+  # arming before that run's checks could pass); a newer run for the same pull request cancels this one. `checks` is green by now, so gh merges an auto-mergeable pull request
+  # at once rather than arming it. A protected one waits for the owner's click on a Needs you item,
+  # and arming from an earlier push is switched off. The merge method is the first the repository
+  # allows: a merge commit, else squash, else rebase; when the settings cannot be read, each in turn.
+  # GitHub refuses a merge while the base branch moves (pull requests that went green together land
+  # one after another), so a refusal is tried again after a short wait.
+  arm:
+    needs: gate
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.base_ref == github.event.repository.default_branch
+    concurrency:
+      group: arm-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
       - name: Arm auto-merge, or leave it for the owner
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          VERDICT: ${{ needs.gate.outputs.verdict }}
         run: |
-          if grep -q "GATE: auto-mergeable" "$RUNNER_TEMP/gate.txt"; then
+          if [ "$VERDICT" = "auto-mergeable" ]; then
             allows=$(gh api "repos/$GITHUB_REPOSITORY" \
               --jq '"\(.allow_merge_commit) \(.allow_squash_merge) \(.allow_rebase_merge)"' || true)
             case "$allows" in
@@ -246,7 +548,7 @@ jobs:
             for wait in 0 15 30 60; do
               sleep "$wait"
               for method in $methods; do
-                gh pr merge --auto "--$method" "$PR_URL" && exit 0
+                gh pr merge --auto --match-head-commit "$HEAD_SHA" "--$method" "$PR_URL" && exit 0
               done
             done
             echo "::error::$PR_URL is auto-mergeable but GitHub refused to merge or arm it"

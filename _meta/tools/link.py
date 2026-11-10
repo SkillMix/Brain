@@ -4,18 +4,32 @@ A codebase is linked to a subject on the subject's entry in the registry that ho
 registry.py). `resolve` reads the git remote of a folder (a subfolder or a worktree works too),
 finds the one active link in this space's registry and every mounted one, and prints the
 subject, its parent, its home, the home's audience and left-out kinds, the codebase's readers
-and the subject's status page as JSON. It never touches the network. The first time it meets a
+and the subject's status page as JSON. It touches the network only to verify a stranger's
+repository (below), once per repository. The first time it meets a
 repository nothing links, it scores the repository's owner and name against the subjects this
 space's owner may link: one clear match is linked at once (the undo is logged), a tie becomes one
-Needs-you item, no match leaves it unlinked. Every decision is remembered
-(`_meta/state/links-seen.jsonl`), so no repository is asked about twice; a `yes` to the question
+Needs-you item, no match leaves it unlinked. Only a GitHub repository whose owner this space
+trusts is linked at once: the person's own account, the owner of this space's remote or a
+mount's, an owner one of the links already has, or an owner registered as a subject's
+`match.github` (a trust field: a change waits for the owner's click); a repository on any other
+host is always asked about. Name words prove nothing about who holds a repository, so any other
+owner's match becomes one Needs-you item that names the owner, never a link. Before it asks, the
+agent asks the host (`verify_owner`): when the person's login has push or admin on the
+repository and the addresses of its committers are at the subject's (or its client's) mail
+domain, the question says so. It still asks: a linked codebase's sessions read the subject's
+pages and may write its requirements into that codebase, and its owner chose both the access
+and the committer addresses. After the yes the owner is an owner of a link, so later
+repositories of it link on their own. `repo_owner` steers nothing towards trust: it is a match
+key that attaches nothing. Every decision is
+remembered (`_meta/state/links-seen.jsonl`), so no repository is asked about twice; a `yes` to the question
 (or `edit <subject>` for another) links it at the next resolve, scan or check. One that matched
 nothing leaves no trace and is scored again, so a subject registered later still claims it. A link to a registry
 this space does not hold travels as a registry note (classify.py) and counts as pending until
 that registry has applied it.
 
 `scan` (onboarding, project creation) runs that placement over every repository the person's
-account and this space's organisation list on the host, leaving out the spaces' own repositories.
+account and this space's organisation list on the host, leaving out the spaces' own repositories;
+the host listed those for a trusted owner, so a clear match there is linked at once.
 `check` (the daily chain) keeps the links homed in this space: it follows a renamed repository by
 its name, else its id (the old name still resolves, so old clones keep working, until another repository takes
 that name), marks a lost one (found before) `gone` and
@@ -159,10 +173,13 @@ def _unalias(url: str) -> str:
     return url
 
 
+BREAKS = re.compile(r"[\r\n\x0b\x0c\x1c-\x1e\x85\u2028\u2029]+")
+
+
 def _append(path: Path, line: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8", newline="\n") as handle:
-        handle.write(line.rstrip("\n") + "\n")
+    """One line to a log: a repository name from a remote or a host never starts a line of its
+    own. A JSON row has none: json.dumps escapes them."""
+    pages.append_text(path, BREAKS.sub(" ", str(line)).strip() + "\n")
 
 
 def _seen_rows(root) -> dict:
@@ -266,10 +283,17 @@ def _slug(repo: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", repo_key(repo) or repo).strip("-")
 
 
-def _ask(root: Path, space, repo: str, ids: list) -> None:
-    named = ", ".join(ids[:-1]) + f" or {ids[-1]}"
+def _ask(root: Path, space, repo: str, ids: list, owner: str | None = None, how: str | None = None) -> None:
+    """One Needs-you item for a repository detection will not link alone: a tie, or a match in
+    a repository whose owner this space does not trust (`owner`, named in the question, with
+    what the host said, `how`)."""
+    named = ids[0] if len(ids) == 1 else ", ".join(ids[:-1]) + f" or {ids[-1]}"
+    text = (f"{repo} (owner {owner}, not one of your organisations or a registered client's) could belong to {named}."
+            if owner else f"{repo} could belong to {named}.")
+    if how:
+        text += f" The host says {how}."
     _needs_you(root, {"id": "link-" + _slug(repo), "kind": "question",
-                      "for": space.owner, "text": f"{repo} could belong to {named}.",
+                      "for": space.owner, "text": text,
                       "recommendation": f"yes: link it to {ids[0]} (edit <subject> for another)",
                       "default": "nothing is linked", "depends": 0})
 
@@ -288,11 +312,124 @@ def _needs_you(root: Path, item: dict | None, drop: str | None = None) -> None:
                     encoding="utf-8", newline="\n")
 
 
-def detect(root, repo: str, now=None, id_fn=None) -> dict:
+def _owner_of_remote(path) -> str:
+    try:
+        import onboard
+        return (onboard.git_remote(path) or "").split("/")[0].lower() if path is not None else ""
+    except Exception:
+        return ""
+
+
+def github_owner(repo) -> str:
+    """The owner (lower case) of a GitHub repository reference, else "": a repository on any
+    other host has no owner this space can trust, since its path names an account on that host
+    only (`gitlab.example/lantern/x` is not GitHub's `lantern`)."""
+    key = repo_key(repo) or ""
+    return "" if not key or "://" in key else _parts(key)[0].lower()
+
+
+def trusted_owners(root, space, reg) -> set:
+    """The repository owners (lower case) this space trusts to hold its own codebases: the
+    person's own account, the owner of this space's remote and of each mount's but a corridor's
+    (`Space.is_corridor`), and, read from this space's registry and the brain's only
+    (`Registry.trusted_view`: a corridor's or a project mount's registry is written by others,
+    unchecked), the owner of every link not gone and every `github` match identifier a subject
+    that is not a person registers (a trust field: its change waits for the owner's click, which
+    `repo_owner`'s does not, so it is never read here). Registered identifiers, never name
+    words: anyone can name an account after a client."""
+    root = Path(root)
+    found = {str(access.logins(root, space).get(space.owner) or "").lower(), _owner_of_remote(root)}
+    for mount in space.mounts:
+        name = str(mount.get("name", ""))
+        if space.is_corridor(name) or (name != "brain" and not reg.vouched(name)):
+            continue   # a corridor may sit in the other side's account; an unknown mount may be one
+        found.add(_owner_of_remote(space.mount_root(str(mount.get("name", "")))))
+        found.add(github_owner(mount.get("repo")) if mount.get("repo") else "")
+    trusted = reg.trusted_view().everywhere()   # never a corridor's or a project mount's rows
+    held = {s.id for s in trusted}
+    for found_link in links(root):
+        if not found_link.gone and found_link.subject in held:
+            found.add(github_owner(found_link.repo))
+    for subject in trusted:
+        if subject.kind == "people":
+            continue
+        value = (subject.match or {}).get("github")
+        for one in (value if isinstance(value, list) else [value]):
+            if isinstance(one, str) and one.strip():
+                found.add(one.strip().lower())
+    return {o for o in found if o}
+
+
+VERIFIED_PERMISSIONS = ("admin", "maintain", "write")   # push or admin on the repository
+NOREPLY = re.compile(r"noreply|no-reply", re.I)
+
+
+def _domain_fits(domain: str, wanted) -> str | None:
+    domain = str(domain or "").strip().lower().lstrip("@")
+    for w in wanted:
+        if domain and (domain == w or domain.endswith("." + w)):
+            return w
+    return None
+
+
+def subject_domains(reg, subject) -> list:
+    """The mail domains (`match.domain`, lower case) of the subject and of its client: what a
+    repository's organisation must be verified for, or its committers write from."""
+    out = []
+    for s in [subject, reg.get(subject.client) if subject.client else None]:
+        if s is None:
+            continue
+        got = (s.match or {}).get("domain")
+        out += [str(d).strip().lower().lstrip("@") for d in (got if isinstance(got, list) else [got])
+                if isinstance(d, str) and d.strip()]
+    return sorted(set(out))
+
+
+def verify_owner(repo: str, login: str, domains: list, gh=None) -> str | None:
+    """What the host says for a stranger's repository belonging with a subject, or None: both
+    (1) the person's own login has push or admin on it (`collaborators/<login>/permission`), and
+    (2) every committer address of its recent commits that is not a no-reply one is at one of the
+    subject's mail domains. These are the host's facts, shown in the question; they link nothing
+    alone, since the repository's owner sets both. An organisation's `is_verified` is not read:
+    it says the organisation verified some domain, not that its free-text email or site is one.
+    Any failure to ask the host is None."""
+    gh = gh or _gh
+    key = repo_key(repo) or ""
+    if not login or not domains or not re.fullmatch(r"[\w.-]+/[\w.-]+", key):
+        return None
+
+    def ask(*args):
+        try:
+            code, out, _ = gh(*args)
+        except OSError:
+            return None
+        if code != 0:
+            return None
+        try:
+            return json.loads(out) if out.strip() else None
+        except ValueError:
+            return out.strip() or None
+    permission = ask("api", f"repos/{key}/collaborators/{login}/permission", "--jq", ".permission")
+    if str(permission or "").strip() not in VERIFIED_PERMISSIONS:
+        return None
+    emails = ask("api", f"repos/{key}/commits?per_page=30", "--jq", "[.[].commit.author.email]")
+    found = [str(e) for e in emails if isinstance(e, str) and "@" in e and not NOREPLY.search(e)] \
+        if isinstance(emails, list) else []
+    fits = {_domain_fits(e.rsplit("@", 1)[1], domains) for e in found}
+    if found and None not in fits and len(fits) == 1:
+        return f"{login} can push to it and its committers write from {fits.pop()}"
+    return None
+
+
+def detect(root, repo: str, now=None, id_fn=None, trusted: bool | None = None, verify_fn=None) -> dict:
     """Place a repository nothing links yet: one clear match is linked, a tie is asked once, no
     match leaves it unlinked; a link or a question is a SEEN row. A clear match scores 3, or 2
     for a repository in this space's own organisation (the owner of its remote, when that is not
-    the person's own account), where a name word alone is the company's own naming. A repository already linked (under this name or one
+    the person's own account), where a name word alone is the company's own naming. A clear match
+    in a repository whose owner this space does not trust (`trusted_owners`; `trusted` True says
+    the host listed it for a trusted owner, as `scan` does) is asked about, naming the owner and
+    what the host says of it (`verify_owner`, or `verify_fn` given as `(repo, login, domains) ->
+    how | None`; never asked in a `fixture` space), never linked at once. A repository already linked (under this name or one
     it had) or unlinked is `known`, and nothing is written; so is one asked about, until the
     person answers: `yes` links the recommended subject, `edit <subject>` the one named. One
     that matched nothing leaves no trace, so a subject registered later still claims it."""
@@ -320,12 +457,26 @@ def detect(root, repo: str, now=None, id_fn=None) -> dict:
             return known
         return {"outcome": "linked", "subject": sid, "candidates": [sid]}
     reg = registry.Registry(root, space)
-    scored = [(s, score(repo, s, reg)) for s in reg.everywhere()]
+    scored = [(s, score(repo, s, reg)) for s in reg.trusted_view().everywhere()]   # no corridor row contends
     top = max((n for _, n in scored), default=0)
     org = (onboard.git_remote(root) or "").split("/")[0].lower()
     own = str(access.logins(root, space).get(space.owner) or "").lower()
     need = 2 if org and org != own and _parts(repo)[0] == org else 3
     contenders = [s.id for s, n in sorted(scored, key=lambda p: -p[1]) if n >= need and n >= top - 1]
+    owner = github_owner(repo)   # on another host, nobody's: the person decides
+    if trusted is None or not owner:
+        trusted = bool(owner) and owner in trusted_owners(root, space, reg)
+    how = None
+    if len(contenders) == 1 and not trusted and owner:   # the host's facts, for the person's question
+        verify_fn = verify_fn or (verify_owner if space.mode != "fixture" else None)
+        subject = reg.get(contenders[0])
+        domains = subject_domains(reg, subject) if subject is not None else []
+        how = verify_fn(repo, own, domains) if verify_fn is not None and own and domains else None
+    if len(contenders) == 1 and not trusted:   # a stranger's repository: the person decides, once per owner
+        label = owner or (repo_key(repo) or str(repo)).split("://", 1)[-1].rsplit("/", 1)[0]
+        _ask(root, space, repo, contenders, owner=label or "unknown", how=how)
+        _remember(root, repo, now, "asked", contenders[0])
+        return {"outcome": "asked", "subject": None, "candidates": contenders}
     if len(contenders) == 1:
         sid = contenders[0]
         data = {"linked_by": "detect", "linked": now.date().isoformat()}
@@ -603,7 +754,8 @@ def scan(root, now=None, list_fn=None, id_fn=None) -> dict:
         out["seen"] += 1
         if key in spaces:
             continue
-        outcome = detect(root, repo, now=now, id_fn=id_fn)["outcome"]
+        # the host listed it for the person's own account or this space's organisation
+        outcome = detect(root, repo, now=now, id_fn=id_fn, trusted=True)["outcome"]
         if outcome in ("linked", "asked"):
             out[outcome] += 1
     return out

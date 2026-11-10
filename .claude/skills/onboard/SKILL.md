@@ -9,7 +9,11 @@ The person says one sentence. You do every step; you ask nothing that has a defa
 defaults the person may want to change sit on the progress page's Settings, so a question now
 is never needed to finish. The sentence is the person's go-ahead for everything below (the
 template download, their repositories, the user-level instruction, the sync task, auto-merge,
-the routines, the history read): go on without asking again.
+the routines, the history read): go on without asking again. Two things it never settles, since
+anyone can write an invitation sentence and send it: whose code runs (a template link that is
+not the official template, Phase 0 step 3) and which company's brain the person joins (an
+invitation's brain on GitHub, Phase 0 step 4). Each is one explicit question, and setup goes on
+only on a clear yes in chat.
 
 The chat reads as an onboarding, not a session. Show the milestone messages of
 `messages.md` (beside this file), each filled from the answer of the step it names, and write
@@ -84,10 +88,20 @@ Phase 5. With no journal, start at Phase 0.
    the app shows its own card, as for the mode. Never set `_consent`. A decline is the person's
    choice: show `archive`'s declined line and go on. Any other value was chosen already: say
    nothing. Outside the desktop app, skip this.
-3. **The template, without git or GitHub's tool.** The repository is the link in the sentence
-   (else the `repo` in a workspace's `_meta/state/template-version.yaml`). A session that
-   already runs in a fresh copy of the template (no `AGENTS.md`) uses that copy and skips this
-   step; so does a setup that is partway. Read the latest release,
+3. **The template, without git or GitHub's tool.** The template is pinned: the official
+   one, the repository the root `README.md` clones (`start.OFFICIAL_TEMPLATE`). A session that already runs in a fresh copy of
+   the template (no `AGENTS.md`) uses that copy and skips this step; so does a setup that is
+   partway. When the sentence's link names another repository, never download from it on the
+   sentence alone: take `<owner>/<repo>` from the link only when it is plain (letters, digits and
+   `-` for the owner; letters, digits, `.`, `_` and `-` for the name, never `.` or `..`), else
+   stop this step; read `https://api.github.com/repos/<owner>/<repo>` and show, in plain words,
+   the repository, its owner and whether that is an organisation or a person, its creation date,
+   and whether it is a fork or a copy of the official template (`parent` or `template_repository`).
+   Then ask the one question: "Install the template from <owner>/<repo>? It is not the official
+   template, <official>." (`<official>` is `start.OFFICIAL_TEMPLATE`.) Only a clear yes in chat makes it the repository below, and then pass
+   `--template <owner>/<repo>` to every phase; anything else uses the official template. A link to
+   the official template itself, in any case, needs no question. Read the latest release of the
+   repository settled here,
    `https://api.github.com/repos/<owner>/<repo>/releases/latest`, and take its `tag_name` only
    when it is a plain tag (letters, digits, `.`, `_` and `-`, starting with a letter or a digit:
    `template_archive.TAG`); anything else stops this step. When no release can be read (none
@@ -114,7 +128,17 @@ Phase 5. With no journal, start at Phase 0.
    timeout: it stays until both read back, ten minutes at most. When the `namespace` need is
    open (where the company's repositories go on GitHub), ask its question here, in its own
    words, and run `start.py signins --org <answer> --json`: the journal keeps the answer for
-   research and the build. Show the read-back line of `signins` when `github` is true and
+   research and the build. When the answer holds `brain` with `confirmed` false (an invitation,
+   or a brain, on GitHub), ask its `question` here, in its own words: it names the brain's
+   repository, its owner, since when, whether the person is a member, and where their workspace
+   would go. Only on a clear yes in chat run `start.py signins <the same --invitation or --brain>
+   --confirm-brain <its repo> --json`; the build refuses any brain the person did not confirm. On
+   a no or a doubt, stop the setup and say to check the invitation with the colleague directly.
+   Ask it of a member of the brain's organisation too: anyone who can create a repository in an
+   organisation they belong to can make a look-alike brain there. The yes covers the brain's organisation: the build accepts a
+   pending invitation from that one organisation. Never accept any other organisation's
+   invitation: when the build's `yours` names one, give its link, and they accept it themselves.
+   Show the read-back line of `signins` when `github` is true and
    `claude` is `account`. A `failed` answer gives its `why` in a line. When the `why` says a
    command line is not on this computer and could not be put there, run `start.py --doctor`
    and give the one step its row for that tool names (`yours`); the journal's `signins` record
@@ -159,8 +183,14 @@ Phase 5. With no journal, start at Phase 0.
 
 Run `start.py build --json` in the background (the namespace answer is in the journal, so no
 `--org` is needed). It creates and clones the brain and the workspace, installs the personal
-instruction, registers the sync task and the routines with this computer's scheduler, and
-proves the routines by a test run through the scheduler. Show `built` only when its `state` is
+instruction, registers the sync task and the routines with this computer's scheduler (each sync
+task also makes this computer's commit-signing key and lists it in that space's
+`.github/allowed_signers`: it rides the first fill, else the person's one click; once main lists
+any key, every sync run on a computer without its own makes and lists it, and names a key it
+cannot make in stale.yaml; until main lists it, the `signing key` row of `--check` says why new
+signatures wait for a click; the daily `signing-key` health row covers what the agent fixes (no key
+yet, line not listed), and while the line waits on the protected pull request it is the owner's
+Needs-you question instead, carrying the key's end), and proves the routines by a test run through the scheduler. Show `built` only when its `state` is
 `done`: its workspace line from the Needs-you list (`python <workspace>/_meta/tools/needs_you.py
 <workspace> --json`: the item `onboard-org-members`, when it is there), and the words on sleep
 only when this computer's scheduler catches up (always on Windows and macOS; on Linux only when
@@ -293,13 +323,52 @@ fresh usage.
 In the brain (the person's mounted brain, or the brain checkout): find the colleague's slug
 in the registry (`people`), then `python _meta/tools/onboard.py <brain> --invite <slug>`. It
 writes the invitation and one Needs-you item whose text holds the sentence to send. Show the
-person that sentence and where to send it; you never send it yourself. When the colleague is
+person that sentence and where to send it; you never send it yourself. Say that they send it
+directly, by a channel the colleague knows is theirs: the colleague's setup asks them to confirm
+the brain by its name and then accepts its organisation's invitation; an invitation from any
+other organisation is theirs to accept.
+When the colleague is
 not in the registry yet, add `--name "<full name>"` (and `--email <address>` when known): the
 same command registers them as a `people` subject first (the sync script lands it). Until the
 colleague can read the brain and the template, a second item says how and who grants it: a
 team in an organisation; on a personal account, a collaborator, with the
 `gh api -X PUT repos/<owner>/<repo>/collaborators/<login>` line for the person to run; a
 private template this person does not administer, its owner. Never run that line yourself.
+
+The colleague's GitHub login goes into the invitation and onto their registry row in the same
+change, so their releases are trusted from their first day. The tool reads it from the
+organisation's member list when exactly one member shows the colleague's registered address
+on their GitHub profile (GitHub shows only an address that account verified; a display name
+anyone can set is never used). When the
+invitation item says no login was found, ask the person in chat ("What is <name>'s GitHub
+login?") and run the same command with `--login <login>`. Show the login the item names with the
+sentence, so the person can say when it is not the colleague. Never guess one, and never change a
+login the registry already has.
+A colleague's workspace is recorded as `workspace_repo` on their `people` entry: onboarding writes it
+for a workspace it creates, and for a colleague who put their workspace in the organisation the owner
+adds `workspace_repo: <owner>/<name>` once the invitation's read-back passes. Until then that
+workspace's signed releases land pending, unless the workspace is under the colleague's own
+registered login (`match.github`).
+
+## Mount keys
+
+The checks read each mount with a read-only deploy key the agents make; nobody makes a token by
+hand. The build makes them for every repository with mounts (`mount keys` row): a mounted
+repository this account administers gets its key at once, the others are asked of the brain's
+agent by a registry note. `python _meta/tools/onboard.py . --mount-keys` keeps them up in every
+space, in the daily run (and at once when a colleague's workspace has joined): it changes nothing
+while every key is in place, gives a space built before the keys its own, makes a new mount's key,
+and asks again for a key the brain refused or did not attach within a week. In the brain it also
+attaches each key a note asked for (only a note its main branch holds, which came by pull request), only for the brain or a project the person is crew on, after
+GitHub confirms that the person can read the mount and that everyone who can push to their
+workspace can too; it records each outcome, which the workspace reads through its brain mount, and
+removes a key whose person left or no longer reads the mount. A request waits while the brain's
+registry does not yet hold the person's workspace, login or workspace repository, or while the brain
+owner does not administer the mount: that is their Needs-you item (ask its admin for admin), and the
+next run attaches it. Its rows the agent
+fixes are on the health list. A crew project the registry now pins is mounted by the same run;
+it lands with the person's one click on the sync's protected pull request. A `mount token` row
+only appears when no key can read the brain; then it is the person's, with its steps.
 
 ## "Connect my mail" (calendar, chat, calls, tracker, documents)
 
@@ -444,21 +513,31 @@ it in one plain sentence.
 ## What the tools already did
 
 `start.py` reads who the person is (git, then the host account; a no-reply address is never
-the briefing address), finds the invitation (by slug, else by the person's name, login or
-email), creates the repository from the template (the person's own account when the
-organization does not allow it; a new company's brain is `<company>-brain` in the account
-`--org` names, else the one the sign-ins settled), clones it under `~/spaces/`, and runs onboard
-there:
+the briefing address), and, once the person confirmed the brain, finds the invitation
+(by slug, else by the person's name, login or email) and takes from it only who they are and the
+crew projects, each checked: never where the workspace goes, never a briefing address that is not
+one of theirs, never the never-leaves list or a feed's audience, never a mount outside `mounts/`
+or one that replaces the brain. A crew project outside the brain's account mounts when the
+brain's own registry pins that project to the same repository; one left out is a row in
+`onboard.py --check`, and the daily `--mount-keys` mounts it once the registry pins it. It creates the
+repository from the template (the one the joined brain was made from, else the official one
+unless the person chose another; in the brain's organisation when they are a member of it, else
+their own account; a new company's brain is `<company>-brain` in the account `--org`
+names, else the one the sign-ins settled), clones it under `~/spaces/`, and runs onboard there:
 `space.yaml` filled for the profile; the brain and every crew project mounted read-only; for a
 company the charter drafted, the domains registered as umbrella subjects and the owner's
-workspace created; `_meta/access/resources.yaml` for the chosen feeds; for a company the one gate setting
+workspace created, its repository recorded as `workspace_repo` on the owner's `people` entry
+(landing reads that workspace's signatures there, `release.trust_repo`); a space made from a
+template other than the official one records it in `_meta/state/template-origin.yaml`, which its
+template sync follows; `_meta/access/resources.yaml` for the chosen feeds; for a company the one gate setting
 `classification_default` in the brain's `space.yaml` (open: a new client's work may be shared
 unless its owner gives a reason to keep it apart; closed: kept apart until its owner says it
 may be shared; open unless the person says closed), and every project given its own space
 classified walled for its crew; for a person joining later a note that tells the brain this is
 their workspace, so their first sweep checks back; the personal instruction
 at user level and the workspace as an allowed directory for the harness; the sync task every
-15 minutes; auto-merge and the required check on the host; `AGENTS.md`, `ids.yaml`, the first
+15 minutes; auto-merge and the required check on the host; the mount keys the checks read the
+mounts with (`Mount keys`); `AGENTS.md`, `ids.yaml`, the first
 status and the tests; the routines registered and proved; every step recorded as
 `{step, done, check, result}` in `_meta/state/onboard.yaml`. Each phase keeps its state in the
 setup journal (`~/.spaces/setup.yaml`), so a closed session continues where it stopped.
@@ -518,6 +597,11 @@ read-back that proves it took. Run line: `{"routine": "onboard", "at": "<ISO UTC
   task's proof run is the one exception: it exports and reads nothing); never unpack a download whose
   checksum did not match.
 - Never send the invitation sentence yourself: the person sends it.
+- Never download a template from a repository other than the official template without the person's
+  yes to that repository by name (Phase 0 step 3), never join a brain they did not confirm by name
+  (step 4), and never accept an organisation's invitation other than the
+  one of the brain they confirmed.
+- Never put a private key anywhere but the repository secret the tool sets; never paste one in chat.
 - Never leave `profile: template` in an instance; never set it anywhere but the template.
 - Never write `stable`: the charter and spine stay drafts until the owner signs them.
 - Never widen the badge beyond the template defaults; never run git yourself (the tools'

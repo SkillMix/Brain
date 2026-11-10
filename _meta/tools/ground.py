@@ -1,7 +1,8 @@
 """Ground: the grounding lines every answer ends with (vision section 13, ages in every answer).
 
 For each page an answer rests on: its tier (`signed`, `system`, `pending`, `witness`,
-`reported`, `working`), the layer's scope (`company`, `team`, `mine`), its date, its age in
+`reported`, `working`; `signed` only for a verified signature under knowledge/ or identity/:
+stable, its fingerprint its body's and its signed fields unchanged), the layer's scope (`company`, `team`, `mine`), its date, its age in
 days, and "past window", "confidence low" (four weeks past its window) or "contested"
 where they apply. Then one line with the company view's date (the brain mount's pin) and
 one with the index's age, so an answer never hides how old its ground is.
@@ -42,9 +43,17 @@ def _locate(root: Path, ref: str) -> tuple[Path, Path] | None:
     return None
 
 
-def tier_of(rel: str, fm: dict) -> str:
-    if str(fm.get("status")) == "stable":
-        return "signed"
+def tier_of(rel: str, fm: dict, body: str = "") -> str:
+    """The page's tier. `signed` means a verified signature where sign writes one: under
+    knowledge/ (not knowledge/sources/) or identity/, stable, its fingerprint its body's and its
+    signed fields unchanged (`landing.signed_ok`). A stable stamp anywhere else, or one that does
+    not check, falls through to the tier the page's place gives it, so it counts as working."""
+    signed_zone = (rel.startswith("knowledge/") and not rel.startswith("knowledge/sources/")) \
+        or rel.startswith("identity/")
+    if str(fm.get("status")) == "stable" and signed_zone:
+        import landing   # lazily: landing imports much more than a grounding line needs
+        if landing.signed_ok(fm, body):
+            return "signed"
     if rel.startswith("knowledge/sources/"):
         return "system" if fm.get("source") in ("tracker", "repo", "sent") else "witness"
     if rel.startswith("_inbound/") or fm.get("released_from"):
@@ -71,7 +80,7 @@ def line_for(root: Path, ref: str, now: dt.datetime) -> str:
         return f"- {ref} (not found here or in any mount)"
     base, path = found
     space = spaceyaml.load(base)
-    fm, _ = pages.read(path)
+    fm, body = pages.read(path)
     rel = path.relative_to(base).as_posix()
     stamp = _stamp(fm)
     days = (now - stamp).total_seconds() / 86400 if stamp else None
@@ -87,7 +96,7 @@ def line_for(root: Path, ref: str, now: dt.datetime) -> str:
     date = f"{stamp:%Y-%m-%d}" if stamp else "undated"
     extra = (", " + ", ".join(marks)) if marks else ""
     title = fm.get("title") or path.stem
-    return f"- {title} ({tier_of(rel, fm)}, {SCOPE.get(space.profile, 'mine')}, {date}, {age}{extra})"
+    return f"- {title} ({tier_of(rel, fm, body)}, {SCOPE.get(space.profile, 'mine')}, {date}, {age}{extra})"
 
 
 def pin_date(root: Path) -> str | None:

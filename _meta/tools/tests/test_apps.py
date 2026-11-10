@@ -85,7 +85,8 @@ def test_write_tools_exist_for_the_tracker_kind_only():
     by = {g["app"]: g for g in apps.group([f"mcp__claude_ai_Linear__{t}" for t in linear]
                                           + ["mcp__claude_ai_Notion__notion_fetch", "mcp__claude_ai_Notion__notion_create_pages"])}
     assert by["Linear"]["kinds"] == ["tracker"] and by["Linear"]["send"] == []
-    assert by["Linear"]["write"] == [f"mcp__claude_ai_Linear__{t}" for t in ("save_issue", "save_comment", "create_attachment")]
+    # finding 29: an attachment is no issue or comment, so create_attachment is no write the routines get
+    assert by["Linear"]["write"] == [f"mcp__claude_ai_Linear__{t}" for t in ("save_issue", "save_comment")]
     assert by["Notion"]["kinds"] == ["documents"] and by["Notion"]["write"] == []
 
 

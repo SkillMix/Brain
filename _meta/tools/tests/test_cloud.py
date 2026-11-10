@@ -945,3 +945,20 @@ def test_onboard_moves_the_sweep_on_what_trigger_and_proof_line_wrote(computer):
     assert onboard.cloud_unrefused(computer) == {"sweep": ["tool"]}
     cloud.proof_line(computer, "sweep", **{**every, "network": False}, now=now)
     assert onboard.cloud_unrefused(computer) == {"sweep": ["tool", "network"]}
+
+
+@pytest.mark.parametrize("text", ["sweep: {runs: " + "9" * 5000 + ", since: 2026-01-01}\n",
+                                  "[" * 5000 + "]" * 5000 + "\n"])
+def test_a_fresh_count_that_does_not_read_is_no_count_and_never_stops_a_run(ada, monkeypatch, text):
+    """A FRESH file anyone could push (a 5000-digit int is a ValueError, a deep nest a RecursionError, neither a
+    YAMLError) is no count, on the branch a fresh start reads and in the clone a clean carry clears."""
+    assert cloud._read_fresh(text) == {}
+    in_the_cloud(ada)
+    stub_carry(monkeypatch, conflict=True, undone=True)
+    held(monkeypatch, text)
+    assert "stopped" not in cloud.begin(ada, "sweep", now=NOW)
+    assert fresh_of(ada) == {"sweep": {"runs": 1, "since": pages.iso(NOW)}}
+    next_run()
+    (ada / cloud.FRESH).write_text(text, encoding="utf-8")
+    stub_carry(monkeypatch, carried=True)
+    assert "stopped" not in cloud.begin(ada, "sweep", now=NOW)

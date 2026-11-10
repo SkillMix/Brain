@@ -25,20 +25,51 @@ instructions or git (`PROTECTED_EDITS`), only the built-in tools a routine needs
 `bash_guard.py`, which lets one plain command of those shapes through and nothing the person's own
 settings allow besides; every other tool script in a space is refused by name. Of the connectors it
 may call only what the grant names (`grant`): the read tools of the apps read as work, a tracker's
-writes, and the send tools of the person's own mailbox behind `send_guard.py`, which lets mail go to
-the person alone, once the probe proved it in the shell Claude Code will run it with. Every other
+writes of issues and comments, and the send tools of the person's own mailbox behind `send_guard.py`,
+which lets mail go to the person alone, once the probe proved it in the shell Claude Code will run it with. Every other
 connector tool the probe has ever seen is denied. The profile keeps every hook on
 (`"disableAllHooks": false`).
 
+A signature is a named person's verdict, so a routine never makes one or acts on one in the person's name:
+- No edit or write it makes leaves a page signed (`edit_check`, a PreToolUse hook on every edit): no frontmatter
+  with `status: stable` or a signature field, no change to a page that is signed, and no write to a space's own
+  `log.md`, where sign.py writes its narrative lines. The same hook reads the deny rules again on the path the edit
+  really touches (a link, a junction, a short 8.3 name or another case resolved), and refuses an edit it cannot
+  replay as Claude Code will make it. A page whose frontmatter does not parse is no signed page: a routine may
+  repair it, as long as what the edit leaves parses.
+- No command it runs executes a person's verdict or word (`PERSON_ONLY`, `person_only_check`, a second hook on
+  Bash that reads the words as the shell will): no `sign.py`, no `chain.py virtual` or `--verdicts`, no
+  `route.py answer` or `--out`, no `sign_questions.py answer`, no `status.py close`; of chain.py only its four
+  chains (`sweep`, `daily`, `gate`, `spaces`) are allowed, one rule each. `librarian.py apply` is no person's
+  word: it applies only a change the librarian itself makes on the tree as it is now, move by move checked, and a
+  change of owner still waits for the owners' yes (`librarian.apply`), so a routine applies what a second agent
+  approved.
+- The files only a tool writes (`TOOL_WRITTEN`: the queue, the held and the signals, the requests and answers
+  waiting to leave, the routing, release, request and classification ledgers, the conflict notes sent, the
+  registry, the lessons, the librarian's proposals, the verdict ledgers and the person's verdict store) are denied
+  to its edits; its tools keep writing them, and a cloud run lands them (the verdict store aside: a cloud run
+  never signs, so the sync never lands a change to it from one).
+- Every command it runs sees `SPACES_ROUTINE` (`ROUTINE_MARK`), set in the run's environment and its profile, so a
+  tool can tell a routine from the person (`in_routine`, which also reads a cloud run's marker); no command a
+  routine may run can unset it.
+
+The commands a routine run starts on its own (`claude`, `gh`, `git`, `ps`) are found by `which`: never in the
+current folder or in a space on this machine, where a record could have planted `gh.bat`. On Windows the
+import sets `NoDefaultCurrentDirectoryInExePath`, so no program this process starts by a bare name is looked
+for in the current folder either.
+
     python routine.py <workspace>/_meta/state/routines/<routine>.md
-    python routine.py --probe <workspace>    # what a scheduled run sees, and three checks: ~/.spaces/probe.json
+    python routine.py --probe <workspace>    # what a scheduled run sees, and its checks: ~/.spaces/probe.json
     python routine.py --locked <workspace>   # the run that holds the workspace's lock, or nothing
+    python -I routine.py --edit-guard        # the hook on edits: the event on stdin; exit 0 allows, 2 blocks
+    python -I routine.py --person-only       # the second hook on Bash, the same way
 """
 from __future__ import annotations
 
 import datetime as dt
 import json
 import os
+import posixpath
 import re
 import shutil
 import subprocess
@@ -53,6 +84,12 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import doctor  # noqa: E402
 import spaceyaml  # noqa: E402
+
+# Windows looks for a program started by a bare name (`git`, `gh`, `schtasks`) in the current folder first unless
+# this is set; set here, it holds for every program this process and its children start (finding 10).
+NO_CWD_LOOKUP = "NoDefaultCurrentDirectoryInExePath"
+if os.name == "nt":
+    os.environ.setdefault(NO_CWD_LOOKUP, "1")
 
 # claude -p refuses anything that would ask (section 1); acceptEdits still lets a routine write
 # in its working folders.
@@ -157,8 +194,13 @@ ROUTINE_TOOLS += ("backfill.py",)
 # begin writes a cloud run's marker and its trigger the task a move records, so CLOUD_ONLY are denied however they
 # are spelled, whatever comes before the script and between it and the word.
 ROUTINE_TOOLS += ("cloud.py",)
-ROUTINE_VERBS = {"cloud.py": "proof-line"}
+# Of chain.py a routine runs its four chains alone, one allow rule each: `virtual` signs on a fixture's behalf and
+# `--verdicts` carries a person's answers, so no allow shape reaches them (PERSON_ONLY denies them too).
+ROUTINE_VERBS = {"cloud.py": ("proof-line",), "chain.py": ("sweep", "daily", "gate", "spaces")}
 CLOUD_ONLY = ("begin", "trigger")
+# Of route.py a routine never picks where a pack is written; its `answer` (a routing question answered as the person)
+# is PERSON_ONLY's. The option follows a space, so a subject or a path that holds the word passes.
+ROUTE_NEVER = ("--out",)
 READ_ONLY =("Bash(gh pr view *)", "Bash(gh pr list *)", "Bash(git status *)", "Bash(git log *)",
              "Bash(git diff *)", "Bash(git show *)")
 # The repository feed's reads of GitHub (the sweep skill), through REST as a cloud run must: `gh api` and one word,
@@ -189,12 +231,177 @@ CLOUD_CHAINS = ("sweep",)   # the chain a cloud run is (`cloud.CHAINS`): the dai
 # the same profile and hooks.
 ROUTINE_BUILTINS = ("Bash", "Read", "Edit", "Write", "Glob", "Grep", "ToolSearch", "Task")
 
+# What only a tool writes, and no routine by hand: what leaves and when (the queue, the held, the signals and the
+# ledgers release and route check them against), the gate's and the registry's control state (classifications,
+# registry notes, the registry, the access list, the template's origin), the lessons every brief reads, the
+# librarian's proposals and the verdict ledgers. Python writes are no Edit calls, so the tools keep writing them,
+# in a cloud run too; unlike PROTECTED_EDITS they are landed by every sync (`sync.protected_paths` never reads this
+# list), so only the routine's own edits are refused. Findings 1, 4 and 24.
+TOOL_WRITTEN = ("_outbound/queue/**", "_outbound/held/**", "_outbound/signals/**", "_meta/state/routing.jsonl",
+                "_meta/state/released.jsonl", "_meta/state/queued.jsonl", "_meta/state/classify.jsonl",
+                "_meta/state/registry-notes.jsonl", "_meta/subjects.yaml", "_meta/lessons.md",
+                "_meta/access/resources.yaml", "_meta/state/template-origin.yaml", "_meta/state/librarian/**",
+                "_meta/state/check-verdicts.jsonl", "_meta/state/sign-questions.jsonl")
+# The corridor and the answers: requests and answers waiting to leave and the logs release.ship_requests reads as proof
+# that request.py asked or answered (finding 38), the conflict notes check.py already sent, and the person's verdict
+# store, which sign.py writes and every tool acting on an answer reads (finding 7). Landed by every sync, as above.
+TOOL_WRITTEN += ("_outbound/requests/**", "_outbound/answers/**", "_meta/state/requests.jsonl",
+                 "_meta/state/requests-asked.jsonl", "_meta/state/conflict-notes.jsonl", "_meta/state/verdicts.jsonl")
+# What the agent's own upkeep reads back as fact: the health rows the tools report and retry from (classify's waits,
+# the mount keys'), the brain's key requests and its record of the deploy keys it attached (`onboard`), which a hand
+# edit could otherwise forge or hide. Landed by every sync, as above.
+TOOL_WRITTEN += ("_meta/state/health/**", "_meta/state/private/key-requests/**", "_meta/state/mount-keys-attached.yaml")
+# Rooted at each space: its log, where sign.py writes a narrative line for every verdict and note and the fingerprint
+# lines another space's landing reads, and every other tool its one line. The answers themselves are read from
+# `_meta/state/verdicts.jsonl` (`status.verdicts`), never from this log.
+TOOL_WRITTEN_IN_ROOT = ("log.md",)
+# What Windows runs by its name, or Python at its start (a `.pth` in a site folder) (finding 10). A `.pth` or a
+# `.lnk` is never written anywhere (EXECUTABLE_EVERYWHERE): Python reads a `.pth` from any folder it adds, and a
+# shortcut opens whatever it points at. The others are refused where a program is looked for or the machinery
+# lives (`executable_place`): a space's root (a routine's working folder, which Windows searched first for a bare
+# name), anything under `_meta/`, `.claude/` or `.github/`, and every folder on PATH. A chart's `.js` or a script in
+# a desk folder or an attached codebase is no program anything here starts by its name: `which` never takes one from
+# a space, and on Windows no program is looked for in the current folder (NO_CWD_LOOKUP). Denied by rule
+# (`executable_rules`) and refused again by the edit guard, which ignores case (`edit_check`).
+EXECUTABLE_SUFFIXES = (".exe", ".bat", ".cmd", ".com", ".ps1", ".psm1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh",
+                       ".msc", ".scr", ".pif", ".lnk", ".dll", ".cpl", ".hta", ".msi", ".reg", ".pth")
+EXECUTABLE_EVERYWHERE = (".pth", ".lnk")
+MACHINERY_FOLDERS = ("_meta", ".claude", ".github")   # the folders, at any depth, where no program is written
+# The commands that execute a person's verdict or word, which a routine never runs (finding 5): of each tool, the
+# verbs (a word alone) and the options (a word that starts with one, as argparse takes an abbreviation; an
+# abbreviation of three letters or more counts too). `None` refuses the tool whole. The routines' text deny rules
+# say the same (`PERSON_ONLY_TEXT`), and `person_only_check` reads the words as the shell will, quotes taken off.
+# librarian.py is none of them: its `apply` acts only on a change the librarian derives itself from the tree as it
+# is now (`librarian._stored`), every move checked (`check_moves`, `_check_registry`) and a change of owner turned
+# into the owners' question, so the reviewer's name is no authority to keep from a routine. Its `answer` is an
+# owner's yes, which only sign.py calls, and which refuses itself inside a routine (`librarian.answer`).
+PERSON_ONLY = {"sign.py": None,
+               "chain.py": {"verbs": ("virtual",), "options": ("--verdicts",)},
+               "route.py": {"verbs": ("answer",), "options": ()},
+               "sign_questions.py": {"verbs": ("answer",), "options": ()},
+               "status.py": {"verbs": ("close",), "options": ()},
+               # withdrawing what a person signed or released is their word too (the release skill)
+               "landing.py": {"verbs": ("retract",), "options": ()},
+               "release.py": {"verbs": ("retract", "pull-back"), "options": ()}}
+# The text-only backstop, for Claude Code's own rule match and the Bash guard, and all a cloud task has of this
+# (`cloud.disallowed`: no hook runs there). Each verb follows a space, as ATTENDED_ASK_OPT_IN's do, and a verb is
+# followed by one too or ends the command (`person_only_rules`), so a root or a subject whose path or id holds the
+# word (`/home/ada/virtual/ws`, `--subject answer-desk`) never blocks a chain; an option is a word that starts with
+# it (`--verd`, as argparse takes an abbreviation); a question's answer is the verb with its id after it, so a
+# question's own words still pass. A spliced spelling (`an''swer`, a tab for the space) is the hook's to refuse on
+# the computer (`person_only_check`) and the cloud's own rules' (`cloud.PERSON_ONLY_SPLICE`).
+PERSON_ONLY_TEXT = ("chain.py* virtual ", "chain.py* --verd", "route.py* answer ", "sign_questions.py* answer q-",
+                    "status.py* close ", "landing.py* retract ", "release.py* retract ", "release.py* pull-back ")
+# An attended session runs these commands without a prompt: `submit` in the chat is the person's word for a
+# signature, a question's answer or a close, and a click after it would only repeat it. A person who wants that click
+# anyway adds these `ask` rules to their own `.claude/settings.local.json` (SECURITY.md shows them). Each verb follows a
+# space, so a root whose path holds the word (`/home/ada/virtual/ws`) never meets them, nor does any command a routine
+# prompt names. A quoted or globbed spelling can slip past a text rule, so they are a speed bump, not a boundary.
+# `librarian.py apply` is not among them: the daily chain runs it after a second agent's review, and a routine
+# loads the person's settings.local.json too, where an ask rule would refuse it (no one is there to answer).
+ATTENDED_ASK_OPT_IN = tuple(f"Bash(*_meta/tools/{text}*)"
+                            for text in ("sign.py* apply", "sign.py* --verd", "chain.py* virtual", "chain.py* --verd",
+                                         "route.py* answer", "sign_questions.py* answer q-", "status.py* close ",
+                                         "landing.py* retract ", "release.py* retract ", "release.py* pull-back "))
+
+
+def person_only_rules() -> list:
+    """The deny rules PERSON_ONLY_TEXT gives: `Bash(*_meta/tools/<text>*)` for each, and for a verb that a space
+    follows (`chain.py* virtual `) also the command that ends with the verb (`Bash(*_meta/tools/chain.py* virtual)`)."""
+    rules = [f"Bash(*_meta/tools/{text}*)" for text in PERSON_ONLY_TEXT]
+    rules += [f"Bash(*_meta/tools/{text.rstrip(' ')})" for text in PERSON_ONLY_TEXT if text.endswith(" ")]
+    return rules
+
+
+def executable_rules(roots=(), path_folders=()) -> list:
+    """The deny rules for the programs a routine never writes (EXECUTABLE_SUFFIXES): a `.pth` or `.lnk` at any depth;
+    every other suffix right in each of `roots` (each as `rule_path` spells it, a cloud clone as its absolute POSIX
+    path), anywhere under a MACHINERY_FOLDERS folder, and right in each of `path_folders` (the folders on PATH that
+    lie inside a root: every other one is outside the folders a routine may write in at all)."""
+    rules = [f"Edit(//**/*{suffix})" for suffix in EXECUTABLE_EVERYWHERE]
+    others = [s for s in EXECUTABLE_SUFFIXES if s not in EXECUTABLE_EVERYWHERE]
+    for folder in dict.fromkeys([*roots, *path_folders]):
+        rules += [f"Edit(/{folder}/*{suffix})" for suffix in others]
+    rules += [f"Edit(//**/{name}/**/*{suffix})" for name in MACHINERY_FOLDERS for suffix in others]
+    return rules
+
+
+def _path_folders() -> list:
+    """The folders on PATH, each resolved (an empty or relative entry is the current folder, as Windows reads it)."""
+    out = []
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        entry = entry.strip().strip('"')
+        try:
+            out.append(Path(os.path.abspath(entry or ".")).resolve())
+        except (OSError, RuntimeError, ValueError):
+            continue
+    return list(dict.fromkeys(out))
+
+
+def executable_place(path: Path) -> str | None:
+    """Why a program written at `path` (resolved, or as written) is one a resolver or the machinery could start, or
+    None: it sits right in a space's root (a folder that holds a space.yaml), under a MACHINERY_FOLDERS folder, or
+    right in a folder on PATH."""
+    parent = path.parent
+    try:
+        if (parent / "space.yaml").is_file():
+            return "a space's own folder"
+    except OSError:
+        return "a folder that cannot be read"
+    if any(part.casefold() in MACHINERY_FOLDERS for part in path.parts[:-1]):
+        return "the machinery's folders"
+    try:
+        real = parent.resolve()
+    except (OSError, RuntimeError):
+        return "a folder that cannot be resolved"
+    if real in _path_folders():
+        return "a folder on PATH"
+    return None
+# Every command a routine runs sees this set and not empty (the run's environment names the routine, the profile's
+# `env` says 1): a tool tells a routine from the person by it, and no command shape a routine may run unsets it.
+ROUTINE_MARK = "SPACES_ROUTINE"
+
+
+def in_routine() -> str | None:
+    """Why the process runs inside a routine, or None: ROUTINE_MARK is set (a computer's run), or a cloud run's
+    marker is there (`cloud.state_path`, written by `cloud.py begin` outside every repository, never on a
+    computer). A tool's command that executes a person's verdict or word refuses itself on it (PERSON_ONLY): the
+    profile's hook and rules are the first line, this is the one no spelling of the command gets past. The marker
+    is looked for in the home folder `HOME` names, and on Linux or macOS also in the account's own home and in the
+    cloud's (`cloud.HOME`), so a command that sets `HOME` to another folder does not hide it."""
+    if os.environ.get(ROUTINE_MARK):
+        return f"a routine runs this command ({ROUTINE_MARK} is set)"
+    for places in (_marker_places_set, _marker_places_account):
+        try:
+            if any(place.exists() for place in places()):
+                return "a cloud run runs this command (its marker is there)"
+        except Exception:   # noqa: BLE001 - a marker that cannot be looked for is no marker
+            pass
+    return None
+
+
+def _marker_places_set() -> list:
+    """Where `cloud.py begin` writes a cloud run's marker: under the home folder `HOME` names."""
+    import cloud
+    return [cloud.state_path()]
+
+
+def _marker_places_account() -> list:
+    """Where else a cloud run's marker can be when `HOME` was changed for one command: the account's own home and
+    the cloud's. Nowhere else on Windows, where no cloud run happens."""
+    if os.name == "nt":
+        return []
+    import cloud
+    import pwd
+    return [Path(pwd.getpwuid(os.getuid()).pw_dir) / cloud.STATE, Path(str(cloud.HOME)) / cloud.STATE]
+
 
 # What a routine does not inherit from the session that set it up: another provider, another
 # endpoint, an API key or token. A routine bills the person's claude.ai sign-in, so the sign-in
 # that is checked, and the one that is started, is the one it will find without these.
 STRIPPED_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK",
                 "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_OAUTH_TOKEN")
+STRIPPED_ENV += ("SPACES_LOCAL_CLONES",)   # the tests' switch for cloning a local path: a routine clones GitHub only
 GIT_BASH = "CLAUDE_CODE_GIT_BASH_PATH"
 
 
@@ -224,6 +431,7 @@ def routine_env(env: dict, shell: str = "", windows: bool | None = None) -> dict
     `shell`, the Git Bash the probe proved the send guard in (`grant`'s `shell`), so Claude Code runs the hooks
     in that one and no other."""
     env = clean_env(env)
+    env["PYTHONUTF8"] = "1"   # a record's title in any script prints, never raises on a cp1252 pipe
     windows = os.name == "nt" if windows is None else windows
     if windows and shell:
         env = {key: value for key, value in env.items() if key.upper() != GIT_BASH}
@@ -310,15 +518,79 @@ def _probe_once(claude: str, cwd: Path, extra_dirs, run) -> dict:
     raise ProbeError(f"claude printed no init event (exit {res.returncode}): {said}")
 
 
+def _refused_folders(roots=()) -> tuple:
+    """(the folder no program is taken from, the folders no program below is taken from), each as it resolves
+    (`which`): the current folder itself, as Windows' own lookup would use it, and every space a record can put a
+    file in, below it too: the space around the current folder, the one this tool sits in, and `roots`."""
+    here, trees = [], [Path(__file__).resolve().parents[2], *[Path(r) for r in roots]]
+    try:
+        cwd = Path.cwd()
+        here.append(cwd)
+        import pages
+        outer = pages.space_root_of(cwd)
+        if outer is not None:
+            trees.append(outer)
+    except (OSError, ValueError):
+        pass
+
+    def real(folders) -> list:
+        out = []
+        for folder in folders:
+            try:
+                out.append(folder.resolve())
+            except (OSError, RuntimeError):
+                continue
+        return list(dict.fromkeys(out))
+    return real(here), real(trees)
+
+
+def _outside(path: Path, refused: tuple) -> bool:
+    """Whether `path` lies neither in the refused folder nor below a refused tree (`_refused_folders`)."""
+    here, trees = refused
+    try:
+        real = path.resolve()
+    except (OSError, RuntimeError):
+        return False
+    return real.parent not in here and not any(real == t or real.is_relative_to(t) for t in trees)
+
+
+def which(name: str, roots=()) -> str | None:
+    """A program on PATH, as an absolute path, never one in the current folder or a space (`_refused_folders`):
+    Windows (Python 3.11 and older always, 3.12 and newer unless NO_CWD_LOOKUP is set) puts the current folder first,
+    and an empty or relative PATH entry does the same anywhere. What `shutil.which` finds is kept when it is absolute
+    and outside them; otherwise PATH is walked again, its empty and relative entries left out, with PATHEXT on
+    Windows. None when `shutil.which` finds nothing: then no folder on PATH has it either."""
+    found = shutil.which(name)
+    if not found:
+        return None
+    refused = _refused_folders(roots)
+    if os.path.isabs(found) and _outside(Path(found), refused):
+        return os.path.abspath(found)
+    if os.name == "nt":
+        exts = [e for e in os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(os.pathsep) if e]
+        names = [name] if any(name.lower().endswith(e.lower()) for e in exts) else [name + e for e in exts]
+    else:
+        names = [name]
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        entry = entry.strip().strip('"')
+        if not entry or not os.path.isabs(entry):
+            continue
+        for candidate in (Path(entry) / n for n in names):
+            if candidate.is_file() and os.access(candidate, os.X_OK) and _outside(candidate, refused):
+                return os.path.abspath(candidate)
+    return None
+
+
 def find_claude() -> str | None:
-    """Claude Code's command: on PATH, else where the doctor installed it, else where its own
-    installer puts it."""
-    found = shutil.which("claude")
+    """Claude Code's command: on PATH (`which`: never in the current folder or a space), else where the doctor
+    installed it, else where its own installer puts it."""
+    found = which("claude")
     if found:
         return found
+    refused = _refused_folders()
     for folder in (doctor.tools_home() / "claude", Path.home() / ".local" / "bin", Path.home() / ".claude" / "local"):
         for name in ("claude", "claude.exe"):   # a scheduled task may start without the user's PATH
-            if (folder / name).exists():
+            if (folder / name).exists() and _outside(folder / name, refused):
                 return str(folder / name)
     return None
 
@@ -371,7 +643,8 @@ def process_started(pid: int) -> str | None:
         if Path("/proc/self/stat").exists():
             fields = stat.read_text(encoding="ascii", errors="replace")
             return fields[fields.rindex(")") + 2:].split()[19] or None   # field 22; the name in brackets may hold spaces
-        said = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, timeout=5,
+        ps = which("ps") or "/bin/ps"   # never one in the current folder (an empty PATH entry is that folder)
+        said = subprocess.run([ps, "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, timeout=5,
                               env={**os.environ, "LC_ALL": "C", "TZ": "UTC0"})
         return " ".join(said.stdout.split()) or None if said.returncode == 0 else None
     except (OSError, ValueError, IndexError, subprocess.SubprocessError):
@@ -448,8 +721,9 @@ def routine_settings(workspace, body: str, roots=None, person: str = "", read_to
     denied by name (`ROUTINE_BUILTINS` are the ones it has).
 
     Of the connectors it allows the grant's tools by their exact names, each checked again here:
-    `read_tools` that only read (`reader.is_read_tool`), `write_tools` that create, update or save and
-    do nothing else, and `send_tools` whose name says send, only with a `person` the send guard can
+    `read_tools` that only read (`reader.is_read_tool`), `write_tools` that create, update or save an issue, a
+    ticket, a task or a comment, or move or edit an issue, and do nothing else (`_writes`), and `send_tools` whose
+    name says send, only with a `person` the send guard can
     hold them to and a shell to run it with (`shell`, the one the probe proved; else `hook_shell`): a
     PreToolUse hook on each runs the workspace's `send_guard.py <person>` (`send_guard_command`).
     Every other connector tool it knows of (`known_tools`, else every one the probe has seen) is denied,
@@ -460,6 +734,15 @@ def routine_settings(workspace, body: str, roots=None, person: str = "", read_to
     profile allows by name go through (`--connectors <profile>`), so a tool that appeared after the last probe is
     refused too. Without a command for them, Task is denied and no connector tool is granted. Every hook carries
     its own `timeout` (`GUARD_TIMEOUT`), well above the time each guard gives itself.
+
+    A signature stays the person's (finding 5): a second hook on Bash (`routine.py --person-only`) refuses every
+    command that executes a person's verdict or word (`PERSON_ONLY`), with text deny rules beside it
+    (`PERSON_ONLY_TEXT`); a hook on every edit (`EDIT_MATCHER`, `routine.py --edit-guard`) refuses an edit that
+    would leave a page signed, touch a signed page or write a space's own `log.md` (`edit_check`). Without a command
+    for these hooks, Edit and Write are denied with Bash. The files only a tool writes (`TOOL_WRITTEN`, and `log.md`
+    at each root, `TOOL_WRITTEN_IN_ROOT`) are denied to edits as PROTECTED_EDITS are, and so are the programs where
+    a resolver or the machinery would find one (`executable_rules`). The profile's `env` sets ROUTINE_MARK for every
+    command the run starts (and, on Windows, NO_CWD_LOOKUP).
 
     `extra_allow` adds Bash shapes of the caller's own (`Bash(<pattern>)` on one line; anything else, a rule that
     runs over a line among them, is dropped) right after the tool rules, only while the Bash guard is written: a
@@ -490,10 +773,12 @@ def routine_settings(workspace, body: str, roots=None, person: str = "", read_to
     try:
         bash, task, connectors = (bash_guard_command(profile, script=tools_dir / "bash_guard.py", mode=mode)
                                   for mode in (None, "--task", "--connectors"))
-    except ValueError:   # a path the hook's command cannot carry: no Bash, Task or connector at all, rather than unguarded
-        bash = task = connectors = None
-    shapes = [f"{tool} {ROUTINE_VERBS[tool]}" if tool in ROUTINE_VERBS else tool for tool in ROUTINE_TOOLS
-              if tool != "sync.py"]
+        edits, person_only = (routine_guard_command(mode, script=tools_dir / "routine.py")
+                              for mode in ("--edit-guard", "--person-only"))
+    except ValueError:   # a path the hook's command cannot carry: no Bash, Task, connector or edit at all, rather than unguarded
+        bash = task = connectors = edits = person_only = None
+    shapes = [shape for tool in ROUTINE_TOOLS if tool != "sync.py"
+              for shape in ([f"{tool} {verb}" for verb in ROUTINE_VERBS[tool]] if tool in ROUTINE_VERBS else [tool])]
     allow = [f"Bash({py} _meta/tools/{shape} *)" for py in pys for shape in shapes] if bash else []
     allow += [f"Bash({py} {place}/_meta/tools/{shape} *)"
               for place in places for py in pys for shape in shapes] if bash else []
@@ -506,17 +791,23 @@ def routine_settings(workspace, body: str, roots=None, person: str = "", read_to
               if re.fullmatch(r"Bash\(.+\)", rule) and not re.search(r"[\r\n]", rule)] if bash else []
     others = sorted({p.name for root in [workspace, *roots] for p in (root / "_meta" / "tools").glob("*.py")}
                     - set(ROUTINE_TOOLS))
-    deny = [f"Edit(//**/{pattern})" for pattern in PROTECTED_EDITS]
-    deny += [f"Edit(/{rule_path(root)}/{pattern})" for root in roots for pattern in PROTECTED_IN_ROOT]
+    deny = [f"Edit(//**/{pattern})" for pattern in (*PROTECTED_EDITS, *TOOL_WRITTEN)]
+    deny += [f"Edit(/{rule_path(root)}/{pattern})" for root in roots for pattern in (*PROTECTED_IN_ROOT,
+                                                                                    *TOOL_WRITTEN_IN_ROOT)]
+    inside = [rule_path(f) for f in _path_folders() if any(f == r or f.is_relative_to(r) for r in roots)]
+    deny += executable_rules([rule_path(root) for root in roots], inside)
     deny += [f"Edit(~/{folder}/**)" for folder in (".claude", ".spaces")]
     deny += [f"Bash(*_meta/tools/{tool}*)" for tool in others]
     deny += [f"Bash(*_meta/tools/cloud.py*{verb}*)" for verb in CLOUD_ONLY]
+    deny += [f"Bash(*_meta/tools/route.py* {text}*)" for text in ROUTE_NEVER]
     deny += [f"Bash(*_meta/tools/sync.py*{text}*)" for text in SYNC_NEVER]
+    deny += person_only_rules()
     # `-m` puts the working folder first on the import path, so a planted module would run;
     # `--output` lets a read-only git command write a file.
     deny += ["Bash(python -m *)", "Bash(python3 -m *)", "Bash(git *--output*)", *REST_ONE_WORD]
     deny += [t for t in dict.fromkeys([*reader.DENIED, "WebFetch"])
-             if t not in ROUTINE_BUILTINS or (t in ("Bash", "Task") and not bash)]
+             if t not in ROUTINE_BUILTINS or (t in ("Bash", "Task") and not bash)
+             or (t in ("Edit", "Write") and not edits)]
     read_tools, write_tools, send_tools = (_strings(list(x or [])) for x in (read_tools, write_tools, send_tools))
     given = [*read_tools, *write_tools, *send_tools]
     reads = [t for t in dict.fromkeys(read_tools) if reader.is_read_tool(t)]
@@ -532,12 +823,14 @@ def routine_settings(workspace, body: str, roots=None, person: str = "", read_to
                     if reader.CONNECTOR_TOOL.fullmatch(t) and t not in granted})
     shell_reads = list(READ_ONLY + REST_READS) if bash else []
     data = {"disableAllHooks": False,
-            "permissions": {"allow": list(dict.fromkeys(allow + shell_reads + granted)), "deny": deny}}
+            "permissions": {"allow": list(dict.fromkeys(allow + shell_reads + granted)), "deny": deny},
+            "env": {ROUTINE_MARK: "1", **({NO_CWD_LOOKUP: "1"} if os.name == "nt" else {})}}
     hook = lambda command: {"type": "command", "command": command, "timeout": GUARD_TIMEOUT}   # noqa: E731
-    hooks = [{"matcher": "Bash", "hooks": [hook(bash)]}] if bash else []
+    hooks = [{"matcher": "Bash", "hooks": [hook(bash), hook(person_only)]}] if bash else []
     hooks += [{"matcher": tool, "hooks": [hook(guard)]} for tool in sends]
-    if bash:   # the agents a run starts and the connector tools it calls (Minor 10, 11)
-        hooks += [{"matcher": TASK_MATCHER, "hooks": [hook(task)]}, {"matcher": CONNECTOR_MATCHER, "hooks": [hook(connectors)]}]
+    if bash:   # the agents a run starts and the connector tools it calls (Minor 10, 11), and every edit it makes
+        hooks += [{"matcher": TASK_MATCHER, "hooks": [hook(task)]}, {"matcher": CONNECTOR_MATCHER, "hooks": [hook(connectors)]},
+                  {"matcher": EDIT_MATCHER, "hooks": [hook(edits)]}]
     if hooks:
         data["hooks"] = {"PreToolUse": hooks}
     return data
@@ -550,17 +843,18 @@ def _connector_part(tool) -> str | None:
 
 
 def _writes(tool) -> bool:
-    """A tracker's write: its name creates, updates or saves, and says no other act (delete, move,
-    assign, ...)."""
+    """A tracker's write: its name creates, updates or saves an issue, a ticket, a task or a comment and says
+    nothing else (`apps.tracker_write`: no document, customer, project or diff), and no other act (delete, move,
+    assign, ...). Checked here again, so a verdict or grant written before the rule was narrowed grants no more."""
     import apps
     import reader
     part = _connector_part(tool)
     if part is None:
         return False
     low, words = part.lower(), reader.name_words(part)
-    return (any(w in low for w in apps.WRITE_WORDS)
-            and not any(w in low for w in reader.ACT_WORDS if w not in apps.WRITE_WORDS)
-            and not any(w in words for w in reader.ACT_VERBS))
+    return (apps.tracker_write(part)   # an issue's own verbs (a transition, an edit) only for an issue, it checks
+            and not any(w in low for w in reader.ACT_WORDS if w not in (*apps.WRITE_WORDS, *apps.ADD_VERBS))
+            and not any(w in words for w in reader.ACT_VERBS if w not in (*apps.ISSUE_VERBS, *apps.ADD_VERBS)))
 
 
 def _sends(tool) -> bool:
@@ -659,6 +953,423 @@ def bash_guard_command(profile, python: str | None = None, script=None, mode: st
     return " ".join([head, *words, reader._quoted(profile), "|| exit 2"])
 
 
+def routine_guard_command(mode: str, python: str | None = None, script=None) -> str:
+    """`"<python>" -I "<routine.py>" <mode> || exit 2`, `mode` "--edit-guard" or "--person-only": the hooks this
+    tool answers itself (`guard_main`). ValueError for a path the command cannot quote or a mode that is none."""
+    import reader
+    if mode not in GUARD_MODES:
+        raise ValueError(f"no guard mode {mode!r}")
+    return f"{reader._quoted(python or sys.executable)} -I {reader._quoted(script or Path(__file__).resolve())} {mode} || exit 2"
+
+
+# ----- the guards this tool answers: no signature, no verdict, from a routine ----------------------------------
+EDIT_MATCHER = "Edit|Write|MultiEdit|NotebookEdit"
+GUARD_MODES = ("--edit-guard", "--person-only")
+GUARD_SECONDS = 10   # as the Bash guard: the hook's timeout (GUARD_TIMEOUT) is three times that
+SIGNATURE_KEYS = ("signed_by", "signed_at", "signed_in", "fingerprint")
+EDIT_WHY = ("routines never sign: no edit may leave a page `status: stable` or carrying a signature field, change "
+            "a signed page or write a space's own log.md")
+# Each refusal of the edit guard in its own plain words, so a routine knows what to do instead (finding: one message
+# for every refusal left a routine unable to tell a broken page from a signed one).
+WOULD_SIGN = ("routines never sign: what this edit leaves has a frontmatter with `status: stable` or a signature "
+              "field (signed_by, signed_at, signed_in, fingerprint)")
+SIGNED_PAGE = "routines never sign: this page is signed, and a signed page changes only through the person's sign.py"
+SIGNATURE_LINE_WHY = ("routines never sign: this edit brings a `status: stable` or signature-field line where it can "
+                      "land in the page's frontmatter")
+NO_PARSE = ("what this edit leaves has a frontmatter that does not parse as YAML (an unquoted colon in a value, a "
+            "bracket left open): quote the value or write the whole frontmatter again, so it parses")
+NOT_IN_FILE = ("the old string is not in the file as Claude Code would match it: read the file again and copy the "
+               "text exactly")
+PERSON_WHY = "routines never execute a person's verdict or word: that command is the person's"
+FRONTMATTER = re.compile(r"\A﻿?---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", re.S)
+OPENER = re.compile(r"\A﻿?---[ \t]*\r?\n")   # a frontmatter begun: until a line closes it, all of it may be one
+# A key starts only at a line's start or in a flow mapping (after `{` or `,`), after spaces and any `- `, `? `, tag or
+# anchor; never after a word, so a title "Re: device fingerprint: results" or a summary "Build status: stable" is a
+# value, not a key (finding: such a witness page was refused as signed).
+_KEY_START = r"""(?:^|[{,])[ \t]*(?:(?:[-?]|[&!]\S*)[ \t]+)*["']?"""
+SIGNATURE_LINE = re.compile(rf"""(?im){_KEY_START}(?:signed_by|signed_at|signed_in|fingerprint)["']?\s*:""")
+STABLE_LINE = re.compile(rf"""(?im){_KEY_START}status["']?\s*:\s*["']?stable\b""")
+# The same, as a line of its own: what no new string an edit brings may hold when it can land in the leading
+# frontmatter (`_edited`'s `head`), whatever the guard makes of the file around it. A body line far below the
+# closing `---` ("status: stable release by Friday") is no frontmatter, and passes.
+SIGNATURE_KEY_LINE = re.compile(r"""(?im)^[ \t]*["']?(?:signed_by|signed_at|signed_in|fingerprint)["']?[ \t]*:""")
+STABLE_KEY_LINE = re.compile(r"""(?im)^[ \t]*["']?status["']?[ \t]*:[ \t]*["']?stable\b""")
+# Claude Code matches an old string's straight quotes to a file's curly ones and back (its normalizeQuotes: the four
+# curly quotes as straight ones), one character for one, and then writes the new string's quotes curly to match the
+# file (its preserveQuoteStyle). The guard replays both (`_match`, `_curled`).
+QUOTES = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"'})
+CURLED = str.maketrans({"'": "’", '"': "”"})
+MAX_READINGS = 64   # the ways a MultiEdit can be read once its quotes are normalised: past this it is refused
+MAX_EDITED = 32 * 1024 * 1024   # a file larger than any page: its frontmatter is still read
+UNQUOTED_EXPANDS = set("*?[]{}~")   # outside quotes the shell would turn these into other words
+GLOB_CHARS = set("*?[]")   # what makes a word a pattern of file names
+GUARD_MAX_RAW = 64 * 1024 * 1024   # the most of stdin read: a Write of a large file is a large event
+
+
+def _frontmatter_state(text: str) -> str | None:
+    """"signed" when `text` starts with a frontmatter that a reader would take as signed: `status: stable` or any
+    signature field (SIGNATURE_KEYS); "unparsed" when a frontmatter block does not parse as YAML and none reads as
+    signed; else None. Two blocks are read: the one this guard finds (FRONTMATTER, which also takes a BOM and closes
+    only on a line that is `---` alone) and the one the readers find (`pages.FM_RE`, which closes on the first line
+    that starts with `---`), since a `---x` line makes the two differ and a duplicate key after it would hide the
+    reader's own block. Each is read as text (a quoted key, SIGNATURE_LINE and STABLE_LINE) and, when it parses, as
+    YAML (an escape such as `"st\\x61ble"`, a tag, an alias)."""
+    import pages
+    text = text or ""
+    blocks = [found.group(1) for found in (FRONTMATTER.match(text), pages.FM_RE.match(text)) if found]
+    unparsed = False
+    for block in dict.fromkeys(blocks):
+        if SIGNATURE_LINE.search(block) or STABLE_LINE.search(block):
+            return "signed"
+        try:
+            import yaml as _yaml
+            data = _yaml.safe_load(block)
+        except Exception:   # noqa: BLE001 - a block that does not parse: the text checks above are all it gives
+            unparsed = True
+            continue
+        if isinstance(data, dict) and (str(data.get("status") or "").strip().casefold() == "stable"
+                                       or any(k in data for k in SIGNATURE_KEYS)):
+            return "signed"
+    return "unparsed" if unparsed else None
+
+
+def _signed_frontmatter(text: str, unparsed_signed: bool = True) -> bool:
+    """Whether `text` starts with a frontmatter a reader would take as signed (`_frontmatter_state`). With
+    `unparsed_signed` (the rule for what an edit leaves) a block that does not parse counts as signed, since the
+    guard cannot tell what a reader of a shorter block makes of it; without it (the rule for the file as it is now) a
+    block that does not parse is decided by the text checks alone. A reader cannot take a page as signed from a
+    frontmatter it cannot parse (`pages.split` raises), so such a page is not provably signed, and a routine may
+    repair it into a valid unsigned one."""
+    state = _frontmatter_state(text)
+    return state == "signed" or (unparsed_signed and state == "unparsed")
+
+
+def _head_end(text: str) -> int:
+    """Where the part of `text` that is, or can become, its leading frontmatter ends: the end of the longer of the two
+    blocks `_frontmatter_state` reads; the whole text when a frontmatter is begun and no line closes it yet (any
+    edit below may close it); 0 when it begins none."""
+    import pages
+    ends = [found.end() for found in (FRONTMATTER.match(text), pages.FM_RE.match(text)) if found]
+    if ends:
+        return max(ends)
+    return len(text) if OPENER.match(text) else 0
+
+
+def _current(path: Path, limit: int) -> str | None:
+    """The text of `path`, at most `limit` bytes of it, as UTF-8 with what does not decode replaced; "" when there is
+    no such file; None when it cannot be read (a folder, no access)."""
+    try:
+        with open(path, "rb") as fh:
+            return fh.read(limit).decode("utf-8", errors="replace")
+    except FileNotFoundError:
+        return ""
+    except OSError:
+        return None
+
+
+class Unreadable(ValueError):
+    """An edit whose result this guard cannot tell: it refuses it."""
+
+
+def _match(text: str, old: str) -> tuple:
+    """(the old string as `text` holds it, whether its quotes had to be normalised to find it), as Claude Code finds
+    it: the string itself when it is there, else the same length of `text` where the two read alike with the curly
+    quotes as straight ones (QUOTES). (None, False) when it is not there either way."""
+    if old in text:
+        return old, False
+    at = text.translate(QUOTES).find(old.translate(QUOTES))
+    return (text[at:at + len(old)], True) if at >= 0 else (None, False)
+
+
+def _edited(current: str, tool_input: dict, tool: str) -> tuple:
+    """(the texts the edit can leave, the new strings that can land in the leading frontmatter), as Claude Code makes
+    the edit. A Write leaves its content, and what of it is the leading frontmatter (`_head_end`) is what lands
+    there. An Edit's (or MultiEdit's) replacements are applied in order; a file of CRLF lines is matched as LF ones,
+    and an old string whose quotes differ from the file's is found with them normalised (`_match`), after which the
+    edit can leave the new string as given or with its quotes curled to match the file (both are read, at most
+    MAX_READINGS ways). A new string lands in the frontmatter when its edit is at the start of the text (no old
+    string, or one found at offset 0) or its old string starts inside the part that is or can become the leading
+    frontmatter (`_head_end`); a new string the edit puts below the closing `---` cannot move a key into it. An old
+    string that is not in the text either way raises Unreadable."""
+    if tool == "Write":
+        content = str(tool_input.get("content") or "")
+        return [content], [content[:_head_end(content)]]
+    edits = tool_input.get("edits") if tool == "MultiEdit" else [tool_input]
+    if not isinstance(edits, list):
+        raise Unreadable("no edits to read")
+    readings, head = [current], []
+    for edit in edits:
+        if not isinstance(edit, dict):
+            raise Unreadable("an edit that is no mapping")
+        old, new = str(edit.get("old_string") or ""), str(edit.get("new_string") or "")
+        after = []
+        for text in readings:
+            this_old, this_new = old, new
+            if this_old and this_old not in text and "\r\n" in text:   # Claude Code matches CRLF lines as LF ones
+                text, this_old, this_new = (s.replace("\r\n", "\n") for s in (text, this_old, this_new))
+            if not this_old:
+                after.append(this_new + text)
+                head.append(this_new)
+                continue
+            found, normalised = _match(text, this_old)
+            if found is None:
+                raise Unreadable(NOT_IN_FILE)
+            news = [this_new, this_new.translate(CURLED)] if normalised else [this_new]
+            end, at = _head_end(text), text.find(found)
+            starts = [m.start() for m in re.finditer(re.escape(found), text)] if edit.get("replace_all") else [at]
+            for each in dict.fromkeys(news):
+                after.append(text.replace(found, each) if edit.get("replace_all") else text.replace(found, each, 1))
+                if any(s == 0 or s < end for s in starts):
+                    head.append(each)
+        readings = list(dict.fromkeys(after))
+        if len(readings) > MAX_READINGS:
+            raise Unreadable("an edit that matches only with its quotes normalised, in too many places to read")
+    return readings, head
+
+
+def _glob_rule(pattern: str, anywhere: bool) -> re.Pattern:
+    """A deny rule's path pattern as a regex over a casefolded posix path: `**` any text, `*` any text within one
+    name; `anywhere` for a rule written `//**/<pattern>` (at any depth), else from the start."""
+    body = "".join(".*" if part == "**" else "[^/]*" if part == "*" else re.escape(part.casefold())
+                   for part in re.split(r"(\*\*|\*)", pattern))
+    return re.compile(("(?:^|/)" if anywhere else "^") + body + r"\Z", re.S)
+
+
+def _denied_path(path: Path) -> str | None:
+    """The deny rule an edit of `path` falls under, read on the path as written and on the path the file system
+    resolves (a link, a junction, a short 8.3 name such as `_OUTBO~1`, another case), or None. Claude Code matches
+    its deny rules on the path as written only; this reads them again on what the edit would really touch: the
+    protected and tool-written paths at any depth (PROTECTED_EDITS, TOOL_WRITTEN), the per-root ones under every
+    folder above that holds a space.yaml (PROTECTED_IN_ROOT, TOOL_WRITTEN_IN_ROOT: a space's own `log.md`, not a desk
+    folder's), and `~/.claude`, `~/.spaces`."""
+    seen = [Path(os.path.abspath(path))]
+    try:
+        seen.append(path.resolve())
+    except (OSError, RuntimeError):
+        return "the path cannot be resolved"
+    home = []
+    try:
+        home = [Path.home().resolve() / folder for folder in (".claude", ".spaces")]
+    except (OSError, RuntimeError, KeyError):
+        pass
+    anywhere = [(p, _glob_rule(p, True)) for p in (*PROTECTED_EDITS, *TOOL_WRITTEN)]
+    rooted = [(p, _glob_rule(p, False)) for p in (*PROTECTED_IN_ROOT, *TOOL_WRITTEN_IN_ROOT)]
+    for each in seen:
+        posix = each.as_posix().casefold()
+        hit = next((p for p, rule in anywhere if rule.search(posix)), None)
+        if hit:
+            return hit
+        for folder in home:
+            if each == folder or each.is_relative_to(folder):
+                return f"~/{folder.name}/**"
+        for parent in each.parents:
+            try:
+                if not (parent / "space.yaml").is_file():
+                    continue
+            except OSError:
+                continue
+            rel = each.relative_to(parent).as_posix().casefold()
+            hit = next((p for p, rule in rooted if rule.search(rel)), None)
+            if hit:
+                return hit
+    return None
+
+
+def edit_check(event) -> str | None:
+    """None when an Edit, Write, MultiEdit or NotebookEdit a routine makes leaves no page signed; else why it is
+    refused, in its own plain words. Refused: a target whose name is no plain file name (`pages.name_problem` on each
+    part: a stream after a colon, a trailing dot or space, a device name, which Windows writes as another file); a
+    program (EXECUTABLE_SUFFIXES, in any case): a `.pth` or `.lnk` anywhere, any other where a resolver or the
+    machinery would find it (`executable_place`); each of these on the path as written and on the file it resolves
+    to (a link named `notes.md` that points at a log); a target a deny rule names once its link, junction, short 8.3
+    name or case is resolved (`_denied_path`: a space's own `log.md` among them, where sign.py writes its lines; a
+    desk folder's log.md is a desk note, since an answer counts only from the verdict store); a notebook edit of
+    anything but a `.ipynb`; a target that exists and is signed (`_signed_frontmatter` without `unparsed_signed`: a
+    frontmatter that does not parse is no signed page, and the edit may repair it) or cannot be read; an edit whose
+    old string is not in the file as Claude Code matches it (`_edited`); an edit that can leave a frontmatter a
+    reader would take as signed, or one that does not parse; and a new string with a signature line where it can
+    land in the leading frontmatter."""
+    import pages
+    tool = event.get("tool_name") if isinstance(event, dict) else None
+    tool_input = event.get("tool_input") if isinstance(event, dict) else None
+    if not isinstance(tool, str) or not isinstance(tool_input, dict):
+        return f"{EDIT_WHY}: this request names no edit"
+    target = tool_input.get("file_path") or tool_input.get("notebook_path")
+    if not isinstance(target, str) or not target.strip():
+        return f"{EDIT_WHY}: this request names no file"
+    path = Path(target)
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    parts = path.parts[1:] if path.anchor else path.parts
+    if any(pages.name_problem(part) for part in parts):
+        return "that file name is not a plain one (a stream after a colon, a trailing dot or space, a device name)"
+    try:
+        places = [Path(os.path.abspath(path)), path.resolve()]
+    except (OSError, RuntimeError):
+        return "the path cannot be resolved, so what the edit touches cannot be told"
+    for place in places:
+        suffix = place.suffix.casefold()
+        if suffix in EXECUTABLE_EVERYWHERE:
+            return f"no routine writes a {suffix} file anywhere: Python or Windows would run or follow it"
+        where = executable_place(place) if suffix in EXECUTABLE_SUFFIXES else None
+        if where:
+            return (f"no routine writes a program ({suffix}) in {where}, where it could be started by its name; "
+                    "under work/ or in an attached codebase it may")
+    denied = _denied_path(path)
+    if denied:
+        return (f"routines do not edit {denied}: the machinery, the instructions, or a file only a tool writes "
+                "(its tool writes it, never a routine's edit)")
+    if tool == "NotebookEdit" and not all(p.name.casefold().endswith(".ipynb") for p in places):
+        return "a notebook edit reaches a .ipynb notebook only"
+    current = _current(path, MAX_EDITED)
+    if current is None:
+        return "the file there cannot be read, so whether it is signed cannot be told"
+    if _signed_frontmatter(current, unparsed_signed=False):
+        return SIGNED_PAGE
+    if tool == "NotebookEdit":   # no page: its target was checked above
+        return None
+    if tool not in ("Edit", "Write", "MultiEdit"):
+        return f"{EDIT_WHY}: an edit of a kind this guard does not know"
+    try:
+        readings, head = _edited(current[:MAX_EDITED], tool_input, tool)
+    except Unreadable as exc:
+        return f"{exc}, so what the edit leaves cannot be told"
+    states = {_frontmatter_state(text) for text in readings}
+    if "signed" in states:
+        return WOULD_SIGN
+    if any(SIGNATURE_KEY_LINE.search(new) or STABLE_KEY_LINE.search(new) or _frontmatter_state(new) == "signed"
+           for new in head):
+        return SIGNATURE_LINE_WHY
+    if "unparsed" in states:
+        return NO_PARSE
+    return None
+
+
+def shell_words(command: str) -> list | None:
+    """The words a plain command (`bash_guard.plain`) is to the shell: (word, expands), quotes taken off, `expands`
+    the characters outside quotes that would make the shell turn the word into others (a glob, a brace, a tilde at
+    the start of the word or after a `=` or `:`, where the shell reads one), empty when there are none. None when a
+    quote is left open or a character the Bash guard refuses is there anyway."""
+    words, word, quote, expands, started = [], [], None, "", False
+    for ch in command:
+        if quote:
+            if ch == quote:
+                quote = None
+            elif ch in "\n\r\0" or (quote == '"' and ch in "$`\\"):
+                return None
+            else:
+                word.append(ch)
+            continue
+        if ch in "'\"":
+            quote, started = ch, True
+        elif ch in " \t":
+            if started:
+                words.append(("".join(word), expands))
+            word, expands, started = [], "", False
+        elif ch in ";&|<>()$`\\!\n\r\0":
+            return None
+        else:
+            if ch in UNQUOTED_EXPANDS and (ch != "~" or not word or word[-1] in "=:"):
+                expands += ch
+            word.append(ch)
+            started = True
+    if quote:
+        return None
+    if started:
+        words.append(("".join(word), expands))
+    return words
+
+
+def _tool_name(word: str) -> str | None:
+    """The tool script a command word names, casefolded, when it is one under `_meta/tools/` however the path is
+    spelled (`//`, `./`, `x/..`, backslashes, a trailing dot or space Windows drops), else None."""
+    path = posixpath.normpath(word.replace("\\", "/")).casefold()
+    if "_meta/tools/" not in path:
+        return None
+    return path.rsplit("/", 1)[-1].rstrip(". ")
+
+
+def person_only_check(event) -> str | None:
+    """None when a routine's Bash command executes no person's verdict or word (PERSON_ONLY); else why it is
+    refused (PERSON_WHY). The command is read as the shell reads it (`shell_words`), so a verb spelled with quotes
+    inside it (`ap''ply`) is the verb, and the tool is found however its path is spelled (`_tool_name`); a path under
+    `_meta/tools/` the shell would expand (`rout?.py`), or a tool named by a short 8.3 name (`SIGN_Q~1.PY`), is
+    refused, since it could name any tool (a folder the shell would expand, `_meta/too?s/route.py`, is left to the
+    Bash guard, which runs a tool only by its path written out). For a tool
+    PERSON_ONLY names, refused: the tool whole when it says `None`; any word that is one of its verbs; any word that
+    starts an option of its (`--verd`, as argparse takes an abbreviation of three characters or more, `=` and what
+    follows left off); a bare `--`, which moves the verb past where a text rule or a position looks for it; and, at
+    any position, a word the shell would expand into a verb or an option: one with a brace or a tilde, or a glob
+    with no `/` (a glob that holds one only ever names paths that hold one, as `_meta/state/x/*.yaml`). A word the
+    shell would expand where the verb stands (the two words after the script) or that starts with `-` is refused
+    too. A command this cannot read is refused."""
+    tool_input = event.get("tool_input") if isinstance(event, dict) else None
+    command = tool_input.get("command") if isinstance(tool_input, dict) else None
+    if not isinstance(command, str):
+        return f"{PERSON_WHY}: this request names no command"
+    words = shell_words(command.strip(" \t"))
+    if words is None:
+        return f"{PERSON_WHY}: this command could not be read"
+    for at, (word, spread) in enumerate(words):
+        name = _tool_name(word)
+        if name is not None and (spread or "~" in name):
+            return f"{PERSON_WHY}: a tool's path the shell would expand, or a short 8.3 name, could name any tool"
+        if name not in PERSON_ONLY:
+            continue
+        rule = PERSON_ONLY[name]
+        if rule is None:
+            return PERSON_WHY
+        rest = words[at + 1:]
+        for position, (arg, expands) in enumerate(rest):
+            low = arg.casefold()
+            if low in rule["verbs"]:
+                return PERSON_WHY
+            option = low.split("=", 1)[0]
+            if len(option) >= 3 and option.startswith("--") and any(o.startswith(option) for o in rule["options"]):
+                return PERSON_WHY
+            if arg == "--":
+                return f"{PERSON_WHY}: a bare `--` moves the verb where the guard would not look for it"
+            if expands and ("{" in expands or "~" in expands or (set(expands) & GLOB_CHARS and "/" not in arg)):
+                return f"{PERSON_WHY}: a word the shell would expand could become a verb or an option"
+            if expands and (position < 2 or arg.startswith("-")):
+                return f"{PERSON_WHY}: a word the shell would expand where a verb stands"
+    return None
+
+
+def guard_main(mode: str, raw: bytes) -> int:
+    """One guard hook (`--edit-guard`, `--person-only`): the event on stdin, exit 0 to let it through, 2 to refuse,
+    with why on stderr. Anything it cannot read, and any fault of its own, is a refusal."""
+    why = EDIT_WHY if mode == "--edit-guard" else PERSON_WHY
+    try:
+        if len(raw) > GUARD_MAX_RAW:
+            raise ValueError("a request larger than any routine's")
+        event = json.loads(raw.decode("utf-8"))
+        reason = edit_check(event) if mode == "--edit-guard" else person_only_check(event)
+    except BaseException:   # noqa: BLE001 - whatever went wrong, the call does not go
+        reason = f"{why}: this request could not be read"
+    if reason:
+        print(reason, file=sys.stderr)
+        return 2
+    return 0
+
+
+def _guard_run(mode: str) -> int:
+    """The hook: its own time limit first (as the Bash guard's: after GUARD_SECONDS it refuses and ends, and two
+    seconds later faulthandler ends it even inside one long call), then stdin, then `guard_main`."""
+    import faulthandler
+
+    def expire() -> None:
+        try:
+            print("the check took too long, so the call is refused", file=sys.stderr, flush=True)
+        finally:
+            os._exit(2)
+    timer = threading.Timer(GUARD_SECONDS, expire)
+    timer.daemon = True
+    timer.start()
+    faulthandler.dump_traceback_later(GUARD_SECONDS + 2, exit=True, file=sys.stderr)
+    return guard_main(mode, sys.stdin.buffer.read(GUARD_MAX_RAW + 1))
+
+
 def hook_shell(windows: bool | None = None) -> list | None:
     """The shell Claude Code runs a hook command with: Git Bash on Windows (the one `CLAUDE_CODE_GIT_BASH_PATH`
     names, else the one beside `git`; never a `bash` found on PATH, which can be WSL's and cannot start a
@@ -669,7 +1380,7 @@ def hook_shell(windows: bool | None = None) -> list | None:
     given = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH")
     if given and Path(given).is_file():
         return [given, "-c"]
-    git = shutil.which("git")
+    git = which("git")   # never a git.exe in the current folder or a space
     if git:
         for up in Path(git).parents[1:3]:   # <Git>/cmd/git.exe, <Git>/mingw64/bin/git.exe
             bash = up / "bin" / "bash.exe"
@@ -775,7 +1486,8 @@ def grant(workspace, probe: dict | None = None, shell: str | None = None) -> dic
     probe.json): {"read", "write", "send", "reconnect", "notes", "person", "shell"}.
 
     - An app read as work or mixed gives the read tools its verdict names that the probe lists and that
-      only read, and, for a tracker, the tools that create, update or save (apps.group decides both).
+      only read, and, for a tracker, the tools that create, update or save an issue or a comment, or move or edit
+      an issue, and nothing else (apps.group decides both, `apps.tracker_write`).
       An app no name knows, that setup's sorting step gave a kind (the verdict's `kinds`), gives its
       read tools only, whatever kind it was sorted as.
     - The mail app whose account is the person's own (`owner_email`, `Name <address>` read, without
@@ -1371,7 +2083,7 @@ def refresh_probe(seen: dict) -> None:
     write_probe({**old, **merged(old, seen)})
 
 
-# ----- the probe: what a scheduled run sees, and three checks --------------------------------
+# ----- the probe: what a scheduled run sees, and its checks ----------------------------------
 def _check(name: str, ok: bool, why: str) -> dict:
     return {"name": name, "ok": bool(ok), "why": why}
 
@@ -1530,14 +2242,102 @@ def send_check(got: dict, profiles: list) -> dict:
     return _check(name, True, "the guard refuses a stranger and lets mail to you through")
 
 
+GUARDS_CHECK = "the guards on a routine's edits and commands"
+# What each guard mode is given once, as Claude Code gives a hook its event: one call it must let through and one it
+# must refuse. Nothing is written: the guard only reads.
+GUARD_SAMPLES = {
+    "--edit-guard": ({"tool_name": "Write", "tool_input": {"content": "probe\n"}},
+                     {"tool_name": "Write", "tool_input": {"content": "---\nstatus: stable\n---\nprobe\n"}}),
+    "--person-only": ({"tool_name": "Bash", "tool_input": {"command": "python _meta/tools/status.py ."}},
+                      {"tool_name": "Bash", "tool_input": {"command": "python _meta/tools/sign.py . apply"}}),
+}
+
+
+def _guard_said(command: str, event: dict, shell: list) -> tuple:
+    """(exit code or None, the last line the guard wrote to stderr) of a hook command run as Claude Code runs it."""
+    payload = json.dumps({"hook_event_name": "PreToolUse", **event}).encode("utf-8")
+    try:
+        res = subprocess.run([*shell, command], input=payload, capture_output=True, timeout=HOOK_SECONDS)
+    except (OSError, subprocess.SubprocessError):
+        return None, ""
+    said = [line.strip() for line in res.stderr.decode("utf-8", errors="replace").splitlines() if line.strip()]
+    return res.returncode, (said[-1] if said else "")
+
+
+def guards_check(workspace, profiles: list, shell: list | None) -> dict:
+    """The edit guard and the person-only guard (`--edit-guard`, `--person-only`) run in the exact shell and Python
+    each routine's profile names: every distinct command of theirs is given a harmless call it must let through and
+    one it must refuse (GUARD_SAMPLES). A guard that refuses everything, as one does whose Python cannot import what
+    it needs under `-I` (PyYAML found only in the user's own site-packages), would refuse every edit and command of
+    every routine; the check fails in plain words, naming that Python, so the setup agent can install PyYAML into
+    it. A profile without the guards fails too: its routines could edit or run without them."""
+    probe_file = Path(workspace) / "_meta" / "state" / "private" / ".probe-guard.md"
+    commands = []
+    for _, data in profiles:
+        if data is None:
+            return _check(GUARDS_CHECK, False, "a routine's profile cannot be read, so whether its guards run is not known")
+        found = {mode: [h.get("command") for e in _rules(data)[2] for h in e.get("hooks") or []
+                        if isinstance(h, dict) and isinstance(h.get("command"), str) and f" {mode} " in h["command"]]
+                 for mode in GUARD_MODES}
+        if not all(found.values()):
+            return _check(GUARDS_CHECK, False, "a routine's profile carries no guard on its edits or its commands")
+        commands += [(mode, command) for mode, listed in found.items() for command in listed]
+    if not commands:
+        return _check(GUARDS_CHECK, True, "no routine is rendered yet")
+    if shell is None:
+        return _check(GUARDS_CHECK, False, "this computer has no Git for Windows, which a routine's guards run in")
+    for mode, command in dict.fromkeys(commands):
+        allow, refuse = (json.loads(json.dumps(e)) for e in GUARD_SAMPLES[mode])
+        if mode == "--edit-guard":
+            for event in (allow, refuse):
+                event["tool_input"]["file_path"] = str(probe_file)
+        let, why = _guard_said(command, allow, shell)
+        refused, _ = _guard_said(command, refuse, shell)
+        python = next(iter(re.findall(r'"([^"]+)"', command)), command.split(" ", 1)[0])
+        if let != 0:
+            said = f" (it said: {why[:160]})" if why else ""
+            return _check(GUARDS_CHECK, False,
+                          f"the guard {mode} refused a harmless call{said}, so every routine would be refused each "
+                          f"edit or command: the Python it runs, {python}, must import PyYAML with -I. Run "
+                          f"`python _meta/tools/start.py` again: it builds ~/.spaces/venv with PyYAML and renders the "
+                          f"routines with that Python. Only if start.py finds PyYAML already there, install PyYAML "
+                          f"into {python} itself, not into your own user folder")
+        if refused != 2:
+            return _check(GUARDS_CHECK, False, f"the guard {mode} let through a call it must refuse, so the routines "
+                                               "may not run until it is fixed")
+    return _check(GUARDS_CHECK, True, "the guards let a routine's own work through and refuse a signature")
+
+
+def tracker_notes(view: dict, got: dict) -> list:
+    """One plain line per tracker app the routines may write to: the tools granted (by their names in the app), and
+    the tools the app offers whose names look like a write the tracker rule refused (`apps.tracker_write`), so a
+    refused `update_issue_state` shows here and an agent can add its shape instead of the tracker step failing
+    unseen."""
+    import apps
+    notes = []
+    for app, granted, refused in apps.tracker_tools(_strings(view.get("tools")), view.get("mcp_servers"), got["write"]):
+        line = f"{app}: the tracker step writes with {', '.join(granted) or 'nothing'}"
+        if refused:
+            line += f"; refused, as more than an issue or a comment: {', '.join(refused)}"
+        notes.append(line + ".")
+    return notes
+
+
 GITHUB_CHECK = "work reaches GitHub"
 
 
 def github_check(run=subprocess.run) -> dict:
     """That a run the scheduler starts can use the person's GitHub sign-in (`gh auth status`), as the sync
     task, started the same way, needs to: where the desktop app's sign-in sits where the scheduler cannot
-    see it, the probe says so instead of the sync failing unseen."""
-    gh = shutil.which("gh") or "gh"
+    see it, the probe says so instead of the sync failing unseen. `gh` is the one `which` finds, never a `gh.bat` in
+    the current folder or a space: when the only one PATH has is there, the check fails without starting anything.
+    When PATH has none at all the bare name is tried, which then finds none either (on Windows the current folder is
+    left out, NO_CWD_LOOKUP), and the check says it did not start."""
+    gh = which("gh") or (None if shutil.which("gh") else "gh")
+    if gh is None:
+        return _check(GITHUB_CHECK, False, "GitHub's command line was found only inside a space or the current folder, "
+                                           "where a file can be planted, so it was not run and your work would not "
+                                           "reach GitHub")
     try:
         res = run([gh, "auth", "status", "--hostname", "github.com"], capture_output=True, text=True,
                   encoding="utf-8", errors="replace", timeout=60)
@@ -1559,10 +2359,12 @@ def probe(workspace, run=subprocess.run) -> int:
     true): what a run the scheduler starts sees (`probe_tools`, as a routine starts: in the workspace, every
     other root added, without a key or token). Its tools and servers replace the ones probe.json held, so an
     app that went away is granted no more (Ruling R30); `seen` keeps every connector tool ever listed, for the
-    deny side (`ever_seen`). Then three checks: each app the routines read (`read_checks`), each folder they
-    walk (`folder_check`) and mail only to the person (`send_check`, in the shell `hook_shell` finds). That
+    deny side (`ever_seen`). Then the checks: each app the routines read (`read_checks`), each folder they
+    walk (`folder_check`), mail only to the person (`send_check`, in the shell `hook_shell` finds), the edit and
+    person-only guards in that shell and the Python the profiles name (`guards_check`), and GitHub. That
     shell is written as `hook_shell` once the guard a run carries held in it (`proven_shell`): the one a run
-    pins and the grant's send tools need. Written to probe.json with the grant's notes, `ok` and `stamp`; an
+    pins and the grant's send tools need. Written to probe.json with the grant's notes and a line per tracker
+    (`tracker_notes`: what it may write with, and what was refused), `ok` and `stamp`; an
     app that needs a new sign-in leaves its item on Needs you. When claude cannot be asked, the tools it knew
     stay and `error` says why. 0 when every check passes."""
     workspace = Path(workspace).resolve()
@@ -1596,10 +2398,11 @@ def _probe(workspace: Path, run) -> int:
     got = grant(workspace, view, shell=candidate[0] if candidate else "")
     write_items(workspace, reconnect=got["reconnect"])
     profiles = _profiles(workspace, got, roots, view["seen"] + [t for t in view["tools"] if t not in view["seen"]])
-    checks = [*read_checks(workspace, got, profiles), *[folder_check(r) for r in roots], send_check(got, profiles), reach]
+    checks = [*read_checks(workspace, got, profiles), *[folder_check(r) for r in roots], send_check(got, profiles),
+              guards_check(workspace, profiles, candidate), reach]
     ok = all(c["ok"] for c in checks)
-    write_probe({**view, "checks": checks, "notes": got["notes"], "ok": ok, "stamp": time.time(),
-                 "workspace": str(workspace), "hook_shell": proven_shell(workspace, got)})
+    write_probe({**view, "checks": checks, "notes": [*got["notes"], *tracker_notes(view, got)], "ok": ok,
+                 "stamp": time.time(), "workspace": str(workspace), "hook_shell": proven_shell(workspace, got)})
     return 0 if ok else 1
 
 
@@ -2004,6 +2807,8 @@ def _stopped(why: str) -> dict:
 
 def main(argv=None, run=subprocess.run) -> int:
     argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] and argv[0] in GUARD_MODES:   # a hook: before anything reads a workspace
+        return _guard_run(argv[0])
     if argv[:1] == ["--locked"]:
         held = locked(Path(argv[1]))
         if held:
@@ -2072,8 +2877,8 @@ def _run(workspace: Path, prompt: Path, body: str, name: str, claude: str, fh, r
         res, timed_out = None, False
         try:
             res = run(command(claude, settings, roots), input=body, cwd=str(workspace),
-                      env=routine_env(os.environ, got["shell"]), capture_output=True, text=True, encoding="utf-8",
-                      errors="replace", timeout=3600)
+                      env={**routine_env(os.environ, got["shell"]), ROUTINE_MARK: prompt.stem}, capture_output=True,
+                      text=True, encoding="utf-8", errors="replace", timeout=3600)
         except subprocess.TimeoutExpired:
             timed_out = True
         except OSError as exc:

@@ -215,7 +215,8 @@ def test_every_command_the_routine_prompts_name_fits_the_guard(tmp_path):
         assert named, prompt.name
         for command in named:
             filled = command.replace("<root>", ws.resolve().as_posix()).replace("<file>", "x.json").replace(
-                "<message id>", "m-1").replace("<address>", "ada@example.test")
+                "<message id>", "m-1").replace("<address>", "ada@example.test").replace(
+                "<id>", "lib-1a2b3c4d").replace("<reviewer>", "second agent")   # the librarian's step (round 3)
             assert passes(path, filled), (prompt.name, filled)
 
 
@@ -303,7 +304,7 @@ def test_the_profile_guards_agents_and_connector_tools_with_hooks_that_have_thei
     path = granted_profile(ws, tmp_path)
     data = json.loads(path.read_text(encoding="utf-8"))
     entries = {e["matcher"]: e["hooks"] for e in data["hooks"]["PreToolUse"]}
-    assert list(entries) == ["Bash", GMAIL_SEND, routine.TASK_MATCHER, routine.CONNECTOR_MATCHER]
+    assert list(entries) == ["Bash", GMAIL_SEND, routine.TASK_MATCHER, routine.CONNECTOR_MATCHER, routine.EDIT_MATCHER]
     assert routine.TASK_MATCHER == "Task|Agent" and routine.CONNECTOR_MATCHER == "mcp__.*"
     guard, python = (ws.resolve() / "_meta" / "tools" / "bash_guard.py").as_posix(), Path(sys.executable).as_posix()
     assert entries[routine.TASK_MATCHER][0]["command"] == f'"{python}" -I "{guard}" --task || exit 2'

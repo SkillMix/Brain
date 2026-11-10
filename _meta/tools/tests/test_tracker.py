@@ -74,12 +74,12 @@ def test_the_guarded_template_sync_puts_back_a_change_that_lowers_the_score(tmp_
     (root / "_meta" / "tools" / "sweep.py").write_text("print('v1')\n", encoding="utf-8")
     scores = iter([0, 1])
     monkeypatch.setattr(template_sync, "_failures", lambda root: next(scores))
-    report = template_sync.guarded(root, source=str(tpl))
+    report = template_sync.guarded(root, source=str(tpl), local=True)
     assert report.reverted is True
     assert (root / "_meta" / "tools" / "sweep.py").read_text(encoding="utf-8") == "print('v1')\n"
     scores = iter([1, 1])
     monkeypatch.setattr(template_sync, "_failures", lambda root: next(scores))
-    report = template_sync.guarded(root, source=str(tpl))
+    report = template_sync.guarded(root, source=str(tpl), local=True)
     assert report.reverted is False
     assert (root / "_meta" / "tools" / "sweep.py").read_text(encoding="utf-8") == "print('v2')\n"
 
@@ -99,7 +99,7 @@ def test_only_a_guarded_template_sync_resets_the_weekly_clock(tmp_path, monkeypa
     space = spaceyaml.load(root)
     assert chain._template_sync_due(space, NOW) is True
     monkeypatch.setattr(template_sync, "_failures", lambda root: 0)
-    template_sync.guarded(root, source=str(tpl))
+    template_sync.guarded(root, source=str(tpl), local=True)
     lines = [json.loads(l) for l in runs.read_text(encoding="utf-8").splitlines()]
     assert any((l.get("notes") or {}).get("guarded") for l in lines)
     assert chain._template_sync_due(spaceyaml.load(root), spaceyaml.load(root).now()) is False

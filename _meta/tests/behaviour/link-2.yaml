@@ -1,5 +1,6 @@
 # A codebase with one clear match is linked at once in the registry that holds the subject;
-# the undo goes to the log and the repository is remembered.
+# the undo goes to the log and the repository is remembered. Its owner is registered as the
+# subject's `github` match identifier, so detection trusts it; a stranger's repository is asked.
 name: resolve links a clear match in the workspace's own registry
 command:
 - python
@@ -39,6 +40,8 @@ setup:
         state: active
         owner: Ada Okafor
         home: ada
+        match:
+          github: northwind
       - id: ada
         kind: people
         title: Ada Okafor

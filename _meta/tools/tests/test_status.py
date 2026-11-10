@@ -468,8 +468,7 @@ def test_a_big_project_whose_search_beats_the_walk_gets_one_index_proposal(tmp_p
     status.run(root, now=NOW + dt.timedelta(hours=1))
     items = yaml.safe_load((root / "_inbound" / "needs-you" / "librarian.yaml").read_text(encoding="utf-8"))
     assert [i["id"] for i in items["items"]] == ["index-harbor"]
-    with (root / "log.md").open("a", encoding="utf-8") as fh:
-        fh.write("- 2026-10-12T10:00:00Z yes index-harbor by Ada Okafor\n")
+    status.record_verdict(root, "index-harbor", "Ada Okafor", verb="yes", at="2026-10-12T10:00:00Z")
     status.run(root, now=NOW + dt.timedelta(hours=2))
     cfg = yaml.safe_load((root / "_meta" / "search.yaml").read_text(encoding="utf-8"))
     assert cfg["engine"] == "index"
@@ -492,9 +491,7 @@ def test_a_steered_question_is_proposed_as_a_probe_question(tmp_path):
     probe_items = [i for i in items["items"] if i["id"].startswith("probe-q-")]
     assert len(probe_items) == 1 and "Who runs Harbor?" in probe_items[0]["text"]
     pid = probe_items[0]["id"]
-    with (root / "log.md").open("a", encoding="utf-8") as fh:
-        fh.write(f"- 2026-10-12T10:00:00Z edit {pid} by Ada Okafor\n"
-                 f"- 2026-10-12T10:00:00Z note {pid} by Ada Okafor: Ben Liu; delivery\n")
+    status.record_verdict(root, pid, "Ada Okafor", verb="edit", note="Ben Liu; delivery", at="2026-10-12T10:00:00Z")
     status.run(root, now=NOW + dt.timedelta(hours=1))
     answers = yaml.safe_load((root / "_meta" / "tests" / "answers.yaml").read_text(encoding="utf-8"))
     added = [q for q in answers["questions"] if q["question"] == "Who runs Harbor?"]
@@ -516,9 +513,8 @@ def test_a_probe_fact_no_page_carries_is_asked_again_not_added(tmp_path):
     librarian = root / "_inbound" / "needs-you" / "librarian.yaml"
     pid = [i for i in yaml.safe_load(librarian.read_text(encoding="utf-8"))["items"]
            if i["id"].startswith("probe-q-")][0]["id"]
-    with (root / "log.md").open("a", encoding="utf-8") as fh:
-        fh.write(f"- 2026-10-12T10:00:00Z edit {pid} by Ada Okafor\n"
-                 f"- 2026-10-12T10:00:00Z note {pid} by Ada Okafor: Ben Liu; Ben has led delivery since May\n")
+    status.record_verdict(root, pid, "Ada Okafor", verb="edit", note="Ben Liu; Ben has led delivery since May",
+                          at="2026-10-12T10:00:00Z")
     status.run(root, now=NOW + dt.timedelta(hours=1))
     answers = root / "_meta" / "tests" / "answers.yaml"
     questions = (yaml.safe_load(answers.read_text(encoding="utf-8")) or {}).get("questions") if answers.exists() else []
@@ -527,9 +523,8 @@ def test_a_probe_fact_no_page_carries_is_asked_again_not_added(tmp_path):
     again = [i for i in items if i["id"] == f"{pid}-2"]
     assert again and "Ben has led delivery since May" in again[0]["text"] and "Who runs Harbor?" in again[0]["text"]
     assert not [i for i in items if i["id"] == pid]
-    with (root / "log.md").open("a", encoding="utf-8") as fh:
-        fh.write(f"- 2026-10-12T11:00:00Z edit {pid}-2 by Ada Okafor\n"
-                 f"- 2026-10-12T11:00:00Z note {pid}-2 by Ada Okafor: Ben Liu; delivery\n")
+    status.record_verdict(root, f"{pid}-2", "Ada Okafor", verb="edit", note="Ben Liu; delivery",
+                          at="2026-10-12T11:00:00Z")
     status.run(root, now=NOW + dt.timedelta(hours=2))
     added = [q for q in yaml.safe_load(answers.read_text(encoding="utf-8"))["questions"]
              if q["question"] == "Who runs Harbor?"]

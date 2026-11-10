@@ -83,8 +83,8 @@ personal/  academic/  _scratch/   gitignored in every profile; outside every too
 | `budget` | `{tokens_per_day}`: declared and shown in the health line, not enforced; the shed order is rules.md section 7 |
 | `window_hours` | the release window; 24 is the floor, a person may set longer |
 | `standing_choices` | `[{destination, kind}]`: one kind of record (`mail`, `call`, `message`, `event`, `document`) to one destination at once; set by the person; never applied to calls |
-| `left_out` | whole-word terms that never travel to this space, whatever the release class |
-| `never_leaves` | whole-word terms that never leave this space, by any path, at any badge level; the brain's terms are added to every space's list |
+| `left_out` | categories an agent judges each record against (the router and its second check); never travel to this space, whatever the release class |
+| `never_leaves` | categories an agent judges each record against (the router and its second check); never leave this space, by any path, at any badge level; the brain's are added to every space's list |
 | `agents` | one row per agent: `name`, `acts_for` (a person or `owner`), optionally `space` and a `badge:` that only lowers the space's levels |
 | `protected` | paths whose pull requests wait for the owner's one click instead of merging on green |
 | `sources` | `[{name, adapter, audience}]`: connected systems and who can already read their records (`owner`, `crew`, `everyone` or names) |
@@ -108,7 +108,9 @@ Every `.md` under `knowledge/`, `live/`, `identity/`, `_inbound/candidates/` and
 - on a `stable` page: `signed_by` (a person's name), `signed_at`, `signed_in` (the space it
   was signed in) and `fingerprint`, the sha256 of the normalized body (line endings
   unified, trailing whitespace dropped, one final newline); a body that differs from its
-  fingerprint fails the validator and the merge gate;
+  fingerprint fails the validator and the merge gate; and `signed_fields`, the sha256 of the
+  frontmatter a signature binds (id, type, title, subject, kind, high_stakes, signed_by,
+  signed_at, signed_in); a page whose fields differ fails the validator and the merge gate;
 - `review_every` (days) overrides the type's freshness window: snapshot and status 7,
   process, directive and review 90, concept and entity 180, policy and decision 365; a
   page unanswered four weeks past its window is confidence low, derived from its dates;
@@ -150,12 +152,16 @@ other space may add names to it.
 One list per person. Each routine writes its own file `_inbound/needs-you/<writer>.yaml`,
 a list of `{id, kind, text, recommendation, default, deadline, depends, payload,
 fingerprint}`; `kind` is one of `candidate`, `check`, `leaving`, `request`, `question`,
-`answer`, `reconnect`, `outbox`, `high_stakes`, `sample`, `protected_pr`, `fork_pr`. Candidates and
+`answer`, `reconnect`, `outbox`, `high_stakes`, `sample`, `protected_pr`, `fork_pr`, `security`. A
+`security` item is written only by the sync, the cloud sync and the morning view
+(`needs_you.SECURITY_WRITERS`), and a pull request that adds one waits for the owner's click;
+`security_warning` is a count label in the morning mail, never an item kind. Candidates and
 checks are read from their folders directly; items held in doubt appear as one count line.
 An item may carry `check` (the read-back that proves an owner step done) and `for` (whom it
 is for, when not the space's owner). A personal space's list also shows the items its
 mounted spaces route to its person (a pending landing or a question `for` them, a check
-routed to them first), marked with the space's name: one list per person. Order: deadline
+routed to them first), marked with the space's name, one line each, as a `request`,
+`question`, `check`, `candidate`, `sample` or `reconnect` depending on at most 2: one list per person. Order: deadline
 first (none last), then `depends`, then kind. About seven are shown, the rest counted. The verbs are `yes`, `edit`, `no`, `later`, `always`, in bulk; `submit`
 executes them for the named person.
 
@@ -194,8 +200,10 @@ the destination), content its holder approved (by name on `submit`, or by a stan
 for that destination), retractions and signals. Otherwise after one window (24 hours is the
 floor) and one morning view that listed it: an item no morning view listed does not leave.
 Doubt about the class means the window; doubt about privacy means the item stays home and
-is shown as a count. The destination's `left_out` and the source's `never_leaves` are
-checked on every release, whatever the class. External disclosure is not internal
+is shown as a count. The destination's `left_out` and the source's `never_leaves` are judged
+by the router and its check before an item is queued; at ship time the tools check facts only
+(mode, the secrets scan, the item's id and destination, a subject or a signature logged here).
+External disclosure is not internal
 permission. A pull-back or a failed sample pauses the path that let an item through for
 four weeks.
 
@@ -205,8 +213,10 @@ A release with `released_from` that carries a signature is filed by the destinat
 librarian (`landing.py`): silently into `knowledge/` when it is routine; pending in
 `_inbound/candidates/` with `landing:` (why) and `for:` (whom) when it is high-stakes, from a
 releaser under the trust switch (`_meta/state/trust.yaml`), a change to someone else's signed
-page, one of two releases for one page with different text (`disagrees_with`), or a body that
-does not match its fingerprint; a duplicate is dropped with a line in `log.md`. Silent
+page, one of two releases for one page with different text (`disagrees_with`), a body that
+does not match its fingerprint, a release that names no repository the home knows or whose
+signer's history does not show it, a malformed release, or one aimed outside the pages; a
+duplicate is dropped with a line in `log.md`. Silent
 landings are listed in `_meta/state/landed.jsonl`; the weekly `sample` item draws from them.
 
 ### Procedure pages

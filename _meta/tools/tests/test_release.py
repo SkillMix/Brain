@@ -5,6 +5,7 @@ import subprocess
 
 import yaml
 
+import gate
 import pages
 import release
 import spaceyaml
@@ -158,6 +159,9 @@ def test_signed_page_keeps_its_signature(tmp_path):
           "stage_after": pages.iso(NOW), "listed": False, "evidence": ["m-0001"],
           "from_space": "ada", "kind": "mail"}
     pages.write(ada / "_outbound" / "queue" / "p-0000beef.md", fm, body)
+    # sign.py's line in this space's own history: without it a stable item is held, never shipped
+    with (ada / "log.md").open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write(f"- {pages.iso(NOW)} fingerprint p-0000beef {pages.fingerprint(body)} by Ada Okafor\n")
     report = release.ship(ada, now=NOW, offline_roots={"harbor": harbor})
     assert report.shipped == 1
     (landed_fm, landed_body), = landed(harbor)
@@ -243,7 +247,9 @@ def test_online_destination_goes_through_publish(tmp_path, monkeypatch):
     sweep.run(ada, now=NOW)
     report = release.ship(ada, now=NOW)
     assert report.shipped == 1 and report.signals == 0   # at once: the item, no signal
-    assert calls == [(checkout, "ada", "ada")]
+    # the branch is `release/<slug>-<8 hex>` (release.branch_slug), the shape the gate reads back
+    slug = release.branch_slug(spaceyaml.load(ada))
+    assert calls == [(checkout, slug, "ada")] and gate.RELEASE_BRANCH.match(f"release/{slug}").group(1) == "ada"
     assert len(list((checkout / "_inbound" / "candidates").glob("*.md"))) == 1
     assert not list((checkout / "_inbound" / "signals").glob("*.yaml"))
     assert queue_paths(ada) == []
@@ -346,6 +352,7 @@ def test_secrets_scan_finding_holds_the_item_without_quoting_it(tmp_path):
 def test_destination_checkout_is_cloned_on_first_release(tmp_path, monkeypatch):
     """A destination with a mount that names its repository needs no hand step: the first
     release clones it under the spaces home and publishes through that clone."""
+    monkeypatch.setenv("SPACES_LOCAL_CLONES", "1")   # the bare repositories are local paths
     _, harbor, ada = build(tmp_path, sources=CREW_MAIL)
     git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.test"]
     subprocess.run(git + ["init", "--quiet", "-b", "main"], cwd=harbor, check=True)
@@ -381,6 +388,7 @@ def test_a_release_clone_of_another_repository_is_set_aside(tmp_path, monkeypatc
     """The spaces home keys release clones by space name. A clone left by an older space of the
     same name (a company set up again, a deleted repository) is moved aside and the destination
     cloned fresh, instead of publishing into the wrong repository or failing without a word."""
+    monkeypatch.setenv("SPACES_LOCAL_CLONES", "1")   # the bare repositories are local paths
     _, harbor, ada = build(tmp_path, sources=CREW_MAIL)
     git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.test"]
     subprocess.run(git + ["init", "--quiet", "-b", "main"], cwd=harbor, check=True)
@@ -443,6 +451,7 @@ def test_item_follows_its_subject_to_a_new_home(tmp_path):
 def test_brain_destination_is_cloned_through_the_brain_mount(tmp_path, monkeypatch):
     """Releases to the brain are addressed to the brain's name while its mount is called
     `brain`: the first release still finds the repository and clones it."""
+    monkeypatch.setenv("SPACES_LOCAL_CLONES", "1")   # the bare repositories are local paths
     brain = make_space(tmp_path / "brain", profile="brain", name="lantern", subjects=[
         {"id": "pricing", "kind": "topics", "title": "Pricing", "home": "lantern",
          "match": {"label": "Pricing"}}])

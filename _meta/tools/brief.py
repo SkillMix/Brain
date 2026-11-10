@@ -19,7 +19,10 @@ never signed, disposable). `pack` gathers what to read for it, as JSON:
   `provenance.is_archive_derived` flags; with `--rebuild` the open candidate.
 
 The agent reads every page the pack lists, in full, then writes the brief from
-`_meta/templates/brief.md`. This tool never writes the brief and never runs git.
+`_meta/templates/brief.md`. This tool never writes the brief and never runs git. It writes the
+pack alone, as `<subject>.pack.json` in the briefs folder or at `--out`, which must name a `.json`
+file in that same folder (`pack_path`); a `<root>` without a space.yaml, or an `--out` anywhere
+else or through a link, is refused and nothing is written.
 
     python brief.py <root> pack <subject> [--out <path>] [--rebuild]
     python brief.py <root> path <subject>
@@ -28,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -54,6 +58,27 @@ class BriefError(ValueError):
 
 def brief_path(subject: str) -> Path:
     return BRIEFS / f"{subject}.md"
+
+
+def pack_path(root, out, subject: str) -> Path:
+    """Where `pack` writes its JSON: `--out` when given, else `<briefs>/<subject>.pack.json`. Either way a `.json`
+    file in the briefs folder of this space (`BRIEFS`), never through a link (`pages.confine`): a routine runs this
+    tool, and an output path from its arguments would otherwise write any file, the tools and the instructions
+    included (finding 12). A relative `--out` is read from the current folder, as before. ValueError
+    (`pages.UnsafePath`) for any other place, naming it."""
+    root = Path(root)
+    if not out:
+        return pages.confine(root, (BRIEFS / f"{pages.check_slug(subject, 'subject id')}.pack.json").as_posix(),
+                             zones=(BRIEFS.as_posix(),), guarded=True, what="pack path")
+    given = Path(os.path.abspath(out))
+    base = Path(os.path.abspath(root))
+    try:
+        rel = given.relative_to(base).as_posix()
+    except ValueError:
+        raise pages.UnsafePath(f"--out {ascii(str(out))} is outside the space: a pack goes in {BRIEFS.as_posix()}/") from None
+    if not rel.endswith(".json"):
+        raise pages.UnsafePath(f"--out {ascii(str(out))} is no .json file: a pack is JSON")
+    return pages.confine(root, rel, zones=(BRIEFS.as_posix(),), guarded=True, what="--out")
 
 
 def _subject(reg, text: str):
@@ -259,6 +284,9 @@ def main(argv=None) -> int:
     p_path.add_argument("subject")
     args = ap.parse_args(argv)
     root = Path(args.root)
+    if not (root / "space.yaml").is_file():
+        print(f"brief: {ascii(str(root))} is not a space: it holds no space.yaml")
+        return 2
     try:
         if args.cmd == "path":
             reg = registry_mod.Registry(root, spaceyaml.load(root))
@@ -269,9 +297,12 @@ def main(argv=None) -> int:
         print(f"brief: {exc}")
         return 2
     sid = result["subject"]["entry"]["id"]
-    out = Path(args.out) if args.out else root / BRIEFS / f"{sid}.pack.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(result, indent=2, ensure_ascii=False, default=str), encoding="utf-8", newline="\n")
+    try:
+        out = pack_path(root, args.out, sid)
+        pages.write_text(out, json.dumps(result, indent=2, ensure_ascii=False, default=str), root=root)
+    except ValueError as exc:   # pages.UnsafePath among them: nothing was written
+        print(f"brief: {exc}")
+        return 2
     print(f"{sid}: {len(result['evidence'])} evidence, {len(result['pages'])} signed page(s), "
           f"{len(result['excluded'])} left out; brief {result['brief']['path']} "
           f"({'exists' if result['brief']['exists'] else 'to build'}); pack in {out}")

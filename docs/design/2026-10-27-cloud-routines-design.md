@@ -241,7 +241,8 @@ move records the computer it ran on), and a record without the key lets every co
   rides the computer's own sync pull request, which the computer repairs as it repairs its own.
   When that lands, GitHub marks the cloud request merged, a split push included: the plain part,
   built on main, keeps each adopted head as a parent until main holds it. A conflict the rules
-  cannot resolve is aborted and becomes one Needs-you item.
+  cannot resolve is aborted and said in the sync's output; the next cloud run sets that branch
+  aside and starts fresh from main (decision "A cloud run starts fresh", 2026-11-05).
 - **Spaces not attached.** A space the person owns on this computer that the move did not attach
   is one Needs-you item ("say 'run my routines in the cloud' again to add it"). Its id,
   `cloud-roots-<8 hex>`, is a hash of the spaces it names, so a space made later is asked anew.

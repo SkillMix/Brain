@@ -16,3 +16,63 @@ __pycache__/
 
 # The template's forbidden names list: a CI secret written here for the run, never committed
 _meta/tests/forbidden-names.sha256
+
+# Credential files: never tracked, whatever they hold. The sync script refuses these names on its
+# own too (scan.CREDENTIAL_NAMES), for a space whose .gitignore is older than this list; it also
+# refuses a file named `credentials`, which is not listed here so that a folder of that name stays.
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.kdbx
+*.ppk
+id_rsa
+id_rsa.*
+id_dsa
+id_dsa.*
+id_ecdsa
+id_ecdsa.*
+id_ed25519
+id_ed25519.*
+id_rsa_*
+id_dsa_*
+id_ecdsa_*
+id_ed25519_*
+!*.pub
+.netrc
+_netrc
+.npmrc
+.pypirc
+.git-credentials
+.htpasswd
+client_secret*.json
+*service-account*.json
+*service_account*.json
+*credentials*.json
+token.json
+*.tfvars
+*.env
+.envrc
+.pgpass
+*.p8
+secrets.json
+secrets.yaml
+secrets.yml
+secrets.toml
+.secrets
+kubeconfig
+*.kubeconfig
+# Folders of keys and sign-ins, whatever their files are called (scan.CREDENTIAL_DIRS)
+.ssh/
+.gnupg/
+.aws/
+.azure/
+.kube/
+.docker/

@@ -113,7 +113,8 @@ def test_the_command_line_exits_0_on_a_match_and_1_when_not(tmp_path, capsys):
 def test_the_release_workflow_builds_on_a_tag_with_the_write_token_in_one_job():
     flow = yaml.safe_load(RELEASE.read_text(encoding="utf-8"))
     triggers = flow.get("on", flow.get(True))   # YAML 1.1 reads the key `on` as true
-    assert triggers == {"push": {"tags": ["v*"]}}
+    # only a release name or a release candidate builds, never any `v*` tag
+    assert triggers == {"push": {"tags": ["v[0-9]+.[0-9]+.[0-9]+", "v[0-9]+.[0-9]+.[0-9]+-rc[0-9]+"]}}
     assert flow["permissions"] == {"contents": "read"}
     job = flow["jobs"]["release"]
     assert job["permissions"] == {"contents": "write"}

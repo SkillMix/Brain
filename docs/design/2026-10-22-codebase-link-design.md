@@ -85,7 +85,7 @@ audience.
 | Command | Runs in | Does |
 |---|---|---|
 | `resolve [--cwd]` | any session, on a trigger | Reads the git remote of the folder, finds the subject in this space's registry and every mounted one, prints subject, home, audience, readers and the brief's path as JSON. No network. Exit 3 when unlinked. |
-| `detect` | inside `resolve`, the first time it meets an unlinked repo | Scores the repo's owner and name against subject ids, titles, aliases, clients and existing links. One clear match: link it, log the undo. Several: one Needs-you item with a recommendation. None: nothing, and never asked twice for that repo. |
+| `detect` | inside `resolve`, the first time it meets an unlinked repo | Scores the repo's owner and name against subject ids, titles, aliases, clients and existing links. One clear match links at once only when the repository's owner is trusted (the person's own login, this space's or a mount's remote owner, an owner of an existing link, or a registered `match.github`/`repo_owner` identifier on a subject), and logs the undo; otherwise it asks once, naming the owner. Several: one Needs-you item with a recommendation. None: nothing, and never asked twice for that repo. |
 | `scan` | onboarding, project creation | Lists the repos the person can reach (their account and the workspace organisation) and runs `detect` on each. |
 | `check` | the daily chain | For every link: finds the repo by `repo_id` (updates a renamed or moved name), recomputes `readers` from the platform's collaborators and teams against the subject's audience, repairs what it can. Health line: `links N, wider M, repaired K`. |
 
@@ -239,7 +239,7 @@ the planned extension in 4.9.
 
 | Situation | What happens |
 |---|---|
-| Session in an unlinked repo | `detect` links a clear match at once, or asks once with a recommendation |
+| Session in an unlinked repo | `detect` links a clear match at once when its owner is trusted, else asks once, naming the owner, with a recommendation |
 | Repo renamed or moved | `check` follows `repo_id` and updates the name |
 | Repo deleted or access lost | `check` marks a link it found before `gone` (one it never found, such as a client's private repository, stays); `resolve` treats it as unlinked; no owner alert |
 | New collaborator widens the readers | `check` flips `readers` to `wider`; the stricter rule applies from the next session. Already-written files are not rewritten |
@@ -278,7 +278,8 @@ The scope for later, by what the session starts with:
 On the fixture company, with one linked codebase and one unlinked:
 
 - `resolve` returns the subject in under a second with no network; exit 3 when unlinked.
-- `detect` links a clear match, asks once on a tie, never asks twice.
+- `detect` links a clear match of a trusted owner, asks once on a tie or an untrusted owner, never asks twice;
+  `scan` links at once, because the host listed the repository for a trusted owner.
 - `check` follows a rename by `repo_id`; flips `readers` when a collaborator is added.
 - Behaviour tests: a brainstorm in the codebase reads the brief; a bug fix does not; a session
   with `readers: wider` leaves a planted price and another client's name out of a spec.

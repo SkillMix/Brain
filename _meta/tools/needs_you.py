@@ -4,15 +4,27 @@ Every routine writes its own items into `_inbound/needs-you/<routine>.yaml` (one
 per file). This module gathers them together with the items it derives from the space
 itself: candidates and checks under `_inbound/`, releases leaving within the window,
 high-stakes items, questions, answers that arrived, stale outbox drafts, and the items
-held in doubt as one count. Each item says what it is, what the agent recommends and
+held in doubt as one count. What the agent fixes on its own (a hold it can clear, a release
+that could not land, a repository the brain could not verify yet) is one `health` line that
+says what the agent will do: the person is told, never asked. Each item says what it is, what the agent recommends and
 what happens if nothing is done, and by when. Ordered by deadline, then by how much
 depends on the answer, then by kind. `sign` is the one verb over any item.
+
+Much of an item's text is someone else's: a mail subject, a calendar title, a page another
+space wrote. So `render` puts every item on one line of its own (`untrusted_line`: no line
+break, control character or bidirectional mark) with its links, images and HTML made inert
+(`md_inline`), and a forged line can never pose as a numbered item or a heading. A mounted
+space's items come with the space's name in brackets, one line each, as a `request` or one of
+the few kinds a mount may raise (MOUNT_KINDS), never `security`, and depending on at most
+MOUNT_DEPENDS; in this space a `security` item is read only from the files of the tools that
+raise one (SECURITY_WRITERS), and one anywhere else is a `request` that cannot sort first. A decision candidate nobody checked is never recommended yes.
 
     python needs_you.py [root] [--json] [--limit N] [--once-a-day]
 
 `--once-a-day` shows the list in the first session of the person's day only: it keeps the
 local date it last printed in `_meta/state/private/needs-you-shown` and prints nothing
-again that day.
+again that day. Before it lists, the command pins the verdict cut-over in a space with no
+verdict store yet (`status.pin_cutover`), so the answers given before the store keep counting.
 """
 from __future__ import annotations
 
@@ -32,10 +44,11 @@ import pages  # noqa: E402
 import spaceyaml  # noqa: E402
 
 KIND_ORDER = ["security", "leaving", "high_stakes", "answer", "request", "question", "check", "candidate",
-              "reconnect", "protected_pr", "fork_pr", "outbox", "classification", "doubt", "sample"]
+              "reconnect", "protected_pr", "fork_pr", "outbox", "classification", "doubt", "sample", "health"]
 VERBS_LINE = "Answer with the number and yes, edit, no, later or always; then submit."
 OUTBOX_DAYS = 14
-# A verdict line in log.md, as sign.apply writes it: "- <ISO> <verb> <id> by <name>".
+# A verdict line in log.md, as sign.apply writes it: "- <ISO> <verb> <id> by <name>". Narrative: the
+# answers are read from the verdict store (`status.verdicts`).
 VERDICT_LINE = re.compile(r"^- (\S+) (yes|edit|no|always) (\S+) by ")
 
 CANDIDATES = Path("_inbound") / "candidates"
@@ -48,6 +61,25 @@ HELD = Path("_outbound") / "held"
 OUTBOX = Path("outbox")
 ROUTING_LOG = Path("_meta") / "state" / "routing.jsonl"
 SHOWN = spaceyaml.PRIVATE_STATE / "needs-you-shown"   # the day the list last printed, YYYY-MM-DD
+# The files whose writers raise a `security` item: the morning view (a briefing that reached
+# someone else), the sync and the cloud sync (protected files a run changed). A `security` row
+# in any other file is read as a `request`, so a file an agent or a pull request adds cannot
+# put a forged alarm at the top of the list. Nor can it take the depends that puts an alarm
+# first, or the kind the morning mail counts other security warnings under (SECURITY_COUNTS).
+SECURITY_WRITERS = ("morning-view.yaml", "sync.yaml", "sync-cloud.yaml")
+SECURITY_COUNTS = ("security", "security_warning")
+# What a mounted space's items may be on this person's list. Anything else (`security`,
+# `leaving`, `high_stakes`, `answer`, a kind nobody knows) arrives as a `request`, and none
+# depends on more than MOUNT_DEPENDS, the most the tools' own items ask: 99 stays this space's.
+MOUNT_KINDS = ("request", "question", "check", "candidate", "sample", "reconnect")
+MOUNT_DEPENDS = 2
+MOUNT_TEXT_MAX = 200
+# What the agent works through on its own, one file per tool that writes it (`set_health`): a
+# workspace repository the brain could not verify yet, say. With what is held in
+# `_outbound/held/` for a reason the agent can fix and the releases landing could not file, it
+# makes one `health` line: the person is told, never asked.
+HEALTH = Path("_meta") / "state" / "health"
+HEALTH_SHOWN = 3
 
 
 @dataclass
@@ -106,7 +138,10 @@ def _text(value, fallback: str) -> str:
 
 
 def routine_items(root: Path) -> list:
-    """Items routines wrote into `_inbound/needs-you/*.yaml`, as written."""
+    """Items routines wrote into `_inbound/needs-you/*.yaml`, as written, except that a
+    `security` item counts only from SECURITY_WRITERS' files: elsewhere it is a `request` that
+    depends on at most MOUNT_DEPENDS, and so is a `security_warning` (a mail count, never an item
+    kind) from any file."""
     out = []
     base = Path(root) / NEEDS_YOU
     if not base.is_dir():
@@ -128,11 +163,15 @@ def routine_items(root: Path) -> list:
         for raw in rows or []:
             if not isinstance(raw, dict) or not raw.get("id"):
                 continue
-            out.append(Item(id=str(raw["id"]), kind=_text(raw.get("kind"), "request"),
+            kind = _text(raw.get("kind"), "request")
+            depends = _int(raw.get("depends"))
+            if kind in SECURITY_COUNTS and (kind != "security" or path.name not in SECURITY_WRITERS):
+                kind, depends = "request", min(depends, MOUNT_DEPENDS)
+            out.append(Item(id=str(raw["id"]), kind=kind,
                             text=_text(raw.get("text"), str(raw["id"])),
                             recommendation=_text(raw.get("recommendation"), ""),
                             default=_text(raw.get("default"), ""), deadline=_when(raw.get("deadline")),
-                            depends=_int(raw.get("depends")),
+                            depends=depends,
                             payload=_text(raw.get("payload"), rel),
                             fingerprint=_text(raw.get("fingerprint"), ""), check=_text(raw.get("check"), ""),
                             for_=_text(raw.get("for"), "")))
@@ -140,16 +179,12 @@ def routine_items(root: Path) -> list:
 
 
 def answered_ids(root: Path) -> set:
-    """Ids with a recorded verdict in log.md (anything but `later`): no longer asked."""
-    log = Path(root) / "log.md"
-    if not log.exists():
-        return set()
-    found = set()
-    for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
-        match = VERDICT_LINE.match(line.strip())
-        if match:
-            found.add(match.group(3))
-    return found
+    """Ids with a recorded verdict (anything but `later`): no longer asked. Read from the verdict
+    store sign.py writes (`status.verdicts`), never from a line added to log.md since the store
+    began, where a line someone else wrote could hide an item from the person; the log's lines
+    from before it (the cut-over, `status.pin_cutover`) still count."""
+    import status   # here and not at the top: status imports this module's helpers when it renders
+    return {k for k, v in status.verdicts(root).items() if v.get("verb") and v.get("verb") != "later"}
 
 
 # ----- the kinds -----------------------------------------------------------------
@@ -163,12 +198,29 @@ def _open_questions(root: Path, cid: str, subject) -> int:
     return len(found)
 
 
+UNCHECKED_DECISION = "read it first: nobody checked who decided this"
+
+
+def _candidate_default(fm: dict) -> str:
+    """The recommendation a candidate gets when it names none: yes, except for a decision taken
+    from a record that nobody checked and that does not come from inside the company
+    (`origin.inside`, distill.write_decision): its first line is the sender's own words."""
+    if str(fm.get("type")) != "decision" or fm.get("checked"):
+        return "yes"
+    origin = fm.get("origin") if isinstance(fm.get("origin"), dict) else {}
+    return "yes" if origin.get("inside") is True else UNCHECKED_DECISION
+
+
 def _candidates(root: Path, space: spaceyaml.Space | None = None) -> list:
     import distill   # here and not at the top, as registry and classify are
     out = []
     waiting = {rel for rel, _, _ in waiting_candidates(root, space)}
-    for rel, fm, body in pages_in(root, CANDIDATES):
+    found = list(pages_in(root, CANDIDATES))
+    by_id = {_text(fm.get("id"), Path(rel).stem): fm for rel, fm, _ in found}
+    for rel, fm, body in found:
         if rel in waiting:   # counted on the classification line, never offered for a signature
+            continue
+        if landing_health(fm):   # a release that cannot land as it is: the health line, never a signature
             continue
         title = _text(fm.get("title"), Path(rel).stem)
         cid = _text(fm.get("id"), Path(rel).stem)
@@ -181,6 +233,13 @@ def _candidates(root: Path, space: spaceyaml.Space | None = None) -> list:
         elif fm.get("landing"):  # a release that arrived and waits (landing.py says why)
             who = f", for {fm['for']}" if fm.get("for") else ""
             text = f"{title} from {fm.get('released_from', 'another space')} ({fm['landing']}{who}): sign?"
+            others = fm.get("disagrees_with")
+            for other in others if isinstance(others, list) else []:   # landing.py marks it in frontmatter only
+                o = by_id.get(str(other))
+                if o is None:   # the rival was discarded or filed since: nothing disagrees any more
+                    continue
+                text += (f" {untrusted_line(other, 40)}, released from {untrusted_line(o.get('released_from'), 60)}"
+                         f" by {untrusted_line(o.get('signed_by'), 60)}, says otherwise.")
         else:
             asked = _open_questions(root, cid, subject)
             if asked:
@@ -190,7 +249,8 @@ def _candidates(root: Path, space: spaceyaml.Space | None = None) -> list:
         signed = body if str(fm.get("type")) == "source" else distill.without_evidence(body)
         out.append(Item(id=cid, kind="candidate",
                         text=text,
-                        recommendation=_text(fm.get("recommendation"), "yes"), default="stays a draft",
+                        recommendation=_text(fm.get("recommendation"), _candidate_default(fm)),
+                        default="stays a draft",
                         deadline=_when(fm.get("deadline")), depends=_int(fm.get("depends")),
                         payload=rel, fingerprint=pages.fingerprint(signed)))
     return out
@@ -476,6 +536,96 @@ def _classification(root: Path, space: spaceyaml.Space) -> list:
                  deadline=None, payload=HELD.as_posix() + "/", fingerprint="")]
 
 
+# ----- what the agent fixes on its own: one line, never a question -------------------------------
+# The landing holds that only a bug or an attack produces (landing.AGENT_HOLDS): the agent reports
+# them, the sender sends again, and nothing of them is filed meanwhile.
+LANDING_AGENT_HOLDS = ("pending: malformed release", "pending: bad target", "pending: its id is already",
+                       "pending: another page is at its target", "pending: the page there cannot be read",
+                       "pending: no repository is known here for")
+
+
+def landing_health(fm: dict) -> str:
+    """What the agent does about a release landing held for it (its `health`), or "": only a
+    release whose landing mark is one of LANDING_AGENT_HOLDS and whose `health` is word for word
+    one landing writes (landing.AGENT_WORK, landing.REPO_WORK) counts. So a sender's own `health`
+    hides nothing from the person and never puts its own words on the Needs-you page (landing
+    also removes any `health` a release arrives with)."""
+    import landing   # here and not at the top: landing imports much more than this needs
+    mark = str(fm.get("landing") or "")
+    if not fm.get("released_from") or fm.get("health") not in (landing.AGENT_WORK, landing.REPO_WORK):
+        return ""
+    return fm["health"] if mark.startswith(LANDING_AGENT_HOLDS) else ""
+
+
+def set_health(root, writer: str, rows: list) -> Path | None:
+    """Replace what the tool `writer` reports to the agent: `_meta/state/health/<writer>.yaml`,
+    one row each (`id`, `text`: what is wrong, `agent`: what the agent does next, and any data
+    the tool needs to try again). A writer with nothing left keeps an empty file once it had one."""
+    path = Path(root) / HEALTH / f"{pages.check_name(writer, what='health writer')}.yaml"
+    rows = [dict(r) for r in rows or [] if isinstance(r, dict) and r.get("id")]
+    if not rows and not path.exists():
+        return None
+    text = yaml.safe_dump({"items": rows}, sort_keys=False, allow_unicode=True)
+    if path.is_file() and path.read_text(encoding="utf-8") == text:
+        return path
+    return pages.write_text(path, text, root=root)
+
+
+def health_rows(root, writer: str | None = None) -> list:
+    """Every row the tools report to the agent (`set_health`), or only `writer`'s. An unreadable
+    file is a row of its own: the agent repairs it, the person is never asked."""
+    base = Path(root) / HEALTH
+    out = []
+    for path in sorted(base.glob("*.yaml")) if base.is_dir() else []:
+        if writer is not None and path.stem != writer:
+            continue
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except (OSError, UnicodeError, yaml.YAMLError):
+            out.append({"id": f"health-{path.stem}", "writer": path.stem, "text": f"{path.name} cannot be read",
+                        "agent": "the tool writes it again on its next run"})
+            continue
+        for row in (data.get("items") if isinstance(data, dict) else None) or []:
+            if isinstance(row, dict) and row.get("id"):
+                out.append(dict(row, writer=path.stem))
+    return out
+
+
+def health_work(root) -> list:
+    """(what is wrong, what the agent does) for everything the agent works through on its own:
+    the tools' health rows, items held in `_outbound/held/` for a reason the agent can fix
+    (`release.held_health`), and the releases landing could not file (`landing_health`)."""
+    root = Path(root)
+    # a row's words are data in a file a pull request can reach: one short plain line each
+    out = [(untrusted_line(r.get("text") or r["id"], 160), untrusted_line(r.get("agent") or "", 160))
+           for r in health_rows(root)]
+    try:
+        import release   # here and not at the top: release imports much more than this list needs
+        out += [(untrusted_line(r["text"], 160), untrusted_line(r["agent"], 160)) for r in release.held_health(root)]
+    except Exception as exc:   # never a silent gap: the line says the held items could not be read
+        out.append((f"the held items could not be read ({exc.__class__.__name__})",
+                    "the release run reads them again"))
+    for rel, fm, _ in pages_in(root, CANDIDATES):
+        work = landing_health(fm)
+        if work:
+            out.append((f"a release from {untrusted_line(fm.get('released_from'), 40)} could not land "
+                        f"({untrusted_line(fm.get('landing'), 120)})", work))
+    return out
+
+
+def _health(root: Path) -> list:
+    """One line for everything the agent fixes on its own, with what it does: told, never asked."""
+    work = health_work(root)
+    if not work:
+        return []
+    shown = "; ".join(f"{what} ({does})" if does else what for what, does in work[:HEALTH_SHOWN])
+    more = f"; and {len(work) - HEALTH_SHOWN} more" if len(work) > HEALTH_SHOWN else ""
+    return [Item(id="health", kind="health",
+                 text=f"your agent is working on {len(work)} thing{'s' if len(work) != 1 else ''}: {shown}{more}",
+                 recommendation="nothing: your agent handles these on its next runs",
+                 default="the agent keeps working through them", payload=HEALTH.as_posix() + "/")]
+
+
 # ----- one list per person: items routed to them in the spaces they mount -------------------
 def _names_person(value, person: str) -> bool:
     if not person or value in (None, ""):
@@ -488,33 +638,44 @@ def routed_items(root: Path, space: spaceyaml.Space, person: str) -> list:
     """Items in a mounted space that name this person: a landing pending for them (`for`), a
     check routed to them first, a librarian or question item `for` them; and in a space they
     own, the routine items that name nobody (setup questions, the charter to sign, invitations
-    are for its owner). Shown with the space's name; answered in that space."""
+    are for its owner). Shown with the space's name; answered in that space.
+
+    Another space wrote every word of these, so each text, recommendation, default and
+    read-back is one short line (`untrusted_line`, MOUNT_TEXT_MAX), a routine item's kind is
+    one of MOUNT_KINDS (else `request`) and it depends on at most MOUNT_DEPENDS: a mount can
+    ask, never raise this person's alarms or jump their list."""
     out = []
+
+    def said(value, fallback: str = "") -> str:
+        return untrusted_line(_text(value, fallback), MOUNT_TEXT_MAX)
+
     for mount in space.mounts:
-        name = str(mount.get("name", ""))
-        mroot = space.mount_root(name)
+        raw = str(mount.get("name", ""))
+        name = untrusted_line(raw, 60)   # the label shown; the payload keeps the mount's own name
+        mroot = space.mount_root(raw)
         if mroot is None:
             continue
         for rel, fm, body in pages_in(mroot, CANDIDATES):
-            if _names_person(fm.get("for"), person):
+            if _names_person(fm.get("for"), person) and not landing_health(fm):
                 out.append(Item(id=_text(fm.get("id"), Path(rel).stem), kind="candidate",
-                                text=f"[{name}] {_text(fm.get('title'), Path(rel).stem)} ({fm.get('landing', 'pending')}): sign?",
-                                recommendation=_text(fm.get("recommendation"), "yes"), default="stays pending",
-                                payload=f"{name}:{rel}", fingerprint=pages.fingerprint(body)))
+                                text=f"[{name}] {said(fm.get('title'), Path(rel).stem)} "
+                                     f"({said(fm.get('landing'), 'pending')}): sign?",
+                                recommendation=said(fm.get("recommendation"), "yes"), default="stays pending",
+                                payload=f"{raw}:{rel}", fingerprint=pages.fingerprint(body)))
         for rel, fm, body in pages_in(mroot, CHECKS):
             route = fm.get("route") or []
             if route and _names_person(route[0], person):
                 out.append(Item(id=_text(fm.get("id"), Path(rel).stem), kind="check",
-                                text=f"[{name}] {_text(fm.get('title'), Path(rel).stem)}",
-                                recommendation=_text(fm.get("recommendation"), ""), default="page stays as it is",
-                                payload=f"{name}:{rel}", fingerprint=pages.fingerprint(body)))
+                                text=f"[{name}] {said(fm.get('title'), Path(rel).stem)}",
+                                recommendation=said(fm.get("recommendation")), default="page stays as it is",
+                                payload=f"{raw}:{rel}", fingerprint=pages.fingerprint(body)))
         for rel, fm, body in pages_in(mroot, QUESTIONS):
             if _names_person(fm.get("for"), person):
                 out.append(Item(id=_text(fm.get("id"), Path(rel).stem), kind="question",
-                                text=f"[{name}] {_text(fm.get('question'), _text(fm.get('title'), Path(rel).stem))}",
-                                recommendation=_text(fm.get("recommendation"), ""),
-                                default=_text(fm.get("default"), "the recommendation stands"),
-                                payload=f"{name}:{rel}", fingerprint=pages.fingerprint(body)))
+                                text=f"[{name}] {said(fm.get('question'), _text(fm.get('title'), Path(rel).stem))}",
+                                recommendation=said(fm.get("recommendation")),
+                                default=said(fm.get("default"), "the recommendation stands"),
+                                payload=f"{raw}:{rel}", fingerprint=pages.fingerprint(body)))
         try:
             owns = _names_person(spaceyaml.load(mroot).owner, person)
         except Exception:
@@ -524,8 +685,12 @@ def routed_items(root: Path, space: spaceyaml.Space, person: str) -> list:
             if item.id in answered:
                 continue
             if _names_person(item.for_, person) or (owns and not item.for_):
-                item.text = f"[{name}] {item.text}"
-                item.payload = f"{name}:{item.payload}"
+                item.kind = item.kind if item.kind in MOUNT_KINDS else "request"
+                item.depends = min(item.depends, MOUNT_DEPENDS)
+                item.text = f"[{name}] {said(item.text, item.id)}"
+                item.recommendation, item.default = said(item.recommendation), said(item.default)
+                item.check = said(item.check)
+                item.payload = f"{raw}:{item.payload}"
                 out.append(item)
     return out
 
@@ -544,12 +709,40 @@ FORK_NUMBERS_SHOWN = 10
 _UNSAFE = re.compile(r"[\x00-\x1f\x7f-\x9f​-‏ -‮⁠-⁩﻿]")
 
 
-def untrusted_line(value, limit: int = PR_TITLE_MAX) -> str:
-    """Text someone outside the space chose (a pull request title) as one short plain line:
-    control characters and line breaks become spaces, runs of space collapse, and the result
-    is cut at `limit` characters. It still reaches agents and the page, so keep it short."""
+def untrusted_line(value, limit: int | None = PR_TITLE_MAX) -> str:
+    """Text someone outside the space chose (a pull request title, a mail subject, an item a
+    mounted space wrote) as one short plain line: control characters, line breaks, zero-width
+    and bidirectional marks become spaces, runs of space collapse, and the result is cut at
+    `limit` characters (None: never cut). It still reaches agents and the page, so keep it short."""
     flat = " ".join(_UNSAFE.sub(" ", str(value or "")).split())
-    return flat if len(flat) <= limit else flat[:limit - 3].rstrip() + "..."
+    return flat if limit is None or len(flat) <= limit else flat[:limit - 3].rstrip() + "..."
+
+
+# What turns a line of markdown into something live: an image (`![`), a link target (`](`),
+# and HTML or an autolink (`<`). Escaped with a backslash, they show as the characters they are;
+# a backslash itself is escaped first, so `\<` in the text cannot undo the escape.
+_MD_LIVE = re.compile(r"\\|!(?=\[)|\](?=\()|<")
+
+
+def md_inline(value, limit: int | None = None) -> str:
+    """Text someone else chose, for one line of a markdown page or list: `untrusted_line` (one
+    line, no control character, cut at `limit` when one is given), then with images, links and
+    HTML made inert, so a record's title can neither start a line of its own (a forged item or
+    heading) nor put a tracking image or a disguised link on the person's own page."""
+    return _MD_LIVE.sub(lambda m: "\\" + m.group(0), untrusted_line(value, limit))
+
+
+def utf8_stdio() -> None:
+    """Print any character a record carried. A Windows pipe writes cp1252 by default, and one
+    emoji or Cyrillic subject would raise and print nothing (the session-start list included);
+    UTF-8 with escapes for what still cannot be written never raises."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="backslashreplace")
+            except (ValueError, OSError):   # a stream already in use in another way: leave it
+                pass
 
 
 def _pr_number(pr) -> int | None:
@@ -632,7 +825,7 @@ def collect(root, now: dt.datetime | None = None, online: bool = True, person: s
     items = (_candidates(root, space) + _checks(root) + _queue(root, space, now) + _outbox(root, space, now)
              + _questions(root) + _answers(root)
              + [i for i in routine_items(root) if i.id not in answered] + _classification(root, space)
-             + _doubt(root) + _tracker(root)
+             + _doubt(root) + _tracker(root) + _health(root)
              + (_protected_prs(root) if online else []))
     person = person if person is not None else (space.owner if space.profile == "personal" else "")
     if person:
@@ -641,8 +834,21 @@ def collect(root, now: dt.datetime | None = None, online: bool = True, person: s
     return order(items)
 
 
+def _line(item: Item) -> str:
+    """One item as the one line render and `--doubt` print: its text, what is recommended and
+    what happens if nothing is done, each made safe with `md_inline`."""
+    text = md_inline(item.text)
+    text = text if text.endswith((".", "?", "!")) else text + "."
+    when = pages.iso(item.deadline) if item.deadline else "no deadline"
+    check = md_inline(item.check)
+    return (f"{text} I recommend: {md_inline(item.recommendation) or 'your call'}. "
+            f"If nothing: {md_inline(item.default) or 'nothing changes'} ({when})."
+            + (f" Read-back: {check}." if check else ""))
+
+
 def render(root, now: dt.datetime | None = None, limit: int = 7, items: list | None = None) -> str:
-    """The list as markdown: about `limit` lines, the rest as a count, the five verbs last."""
+    """The list as markdown: about `limit` lines, the rest as a count, the five verbs last. Each
+    item is one line whatever its text holds (`md_inline`), so its number is its own."""
     items = collect(root, now) if items is None else items
     count = len(items)
     lines = [f"# Needs you ({count} item{'s' if count != 1 else ''})", ""]
@@ -650,11 +856,7 @@ def render(root, now: dt.datetime | None = None, limit: int = 7, items: list | N
         lines.append("Nothing needs you.")
         return "\n".join(lines) + "\n"
     for n, item in enumerate(items[:limit], 1):
-        text = item.text if item.text.endswith((".", "?", "!")) else item.text + "."
-        when = pages.iso(item.deadline) if item.deadline else "no deadline"
-        lines.append(f"{n}. {text} I recommend: {item.recommendation or 'your call'}. "
-                     f"If nothing: {item.default or 'nothing changes'} ({when})."
-                     + (f" Read-back: {item.check}." if item.check else ""))
+        lines.append(f"{n}. {_line(item)}")
     if count > limit:
         lines.append(f"and {count - limit} more")
     lines += ["", VERBS_LINE]
@@ -670,14 +872,15 @@ def main(argv=None) -> int:
     ap.add_argument("--once-a-day", action="store_true",
                     help="print only in the day's first session; later calls that day print nothing")
     args = ap.parse_args(argv)
+    utf8_stdio()
     if args.doubt:
         items = doubt_items(args.root)
         if args.json:
             print(json.dumps([i.to_dict() for i in items], indent=2, ensure_ascii=False))
         else:
             for n, item in enumerate(items, 1):
-                print(f"{n}. {item.id}: {item.text} I recommend: {item.recommendation}. "
-                      f"If nothing: {item.default}.")
+                print(f"{n}. {md_inline(item.id)}: {md_inline(item.text)} I recommend: "
+                      f"{md_inline(item.recommendation)}. If nothing: {md_inline(item.default)}.")
             if not items:
                 print("Nothing is held in doubt.")
         return 0
@@ -687,14 +890,16 @@ def main(argv=None) -> int:
         today = spaceyaml.load(args.root).now().astimezone().date().isoformat()   # the person's day
         if shown.is_file() and shown.read_text(encoding="utf-8").strip() == today:
             return 0
+    if (Path(args.root) / "space.yaml").is_file():
+        import status   # the verdict cut-over, before the list reads the answers (`status.pin_cutover`)
+        status.pin_cutover(args.root)
     items = collect(args.root)
     if args.json:
         print(json.dumps([i.to_dict() for i in items], indent=2, ensure_ascii=False))
     else:
         print(render(args.root, limit=args.limit, items=items), end="")
     if once:
-        shown.parent.mkdir(parents=True, exist_ok=True)
-        shown.write_text(today + "\n", encoding="utf-8", newline="\n")
+        pages.write_text(shown, today + "\n", root=args.root)
     return 0
 
 

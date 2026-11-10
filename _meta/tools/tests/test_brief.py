@@ -179,10 +179,12 @@ def test_the_cli_writes_the_pack_and_prints_the_brief_path(tmp_path, capsys):
     pages.write(root / "_meta/state/private/briefs/tidewater.md",
                 {"subject": "tidewater", "built_at": "2026-10-11T09:00:00Z",
                  "updated_at": "2026-10-11T09:00:00Z", "records_read": 3}, "# Tidewater\n")
-    elsewhere = tmp_path / "packs" / "t.json"
+    elsewhere = root / "_meta" / "state" / "private" / "briefs" / "packs" / "t.json"   # --out stays in the briefs folder
     assert brief.main([str(root), "pack", "tidewater", "--out", str(elsewhere)]) == 0
     again = json.loads(elsewhere.read_text(encoding="utf-8"))
     assert again["brief"]["exists"] is True and again["brief"]["records_read"] == 3
+    outside = tmp_path / "packs" / "t.json"   # finding 12: anywhere else is refused, and nothing is written
+    assert brief.main([str(root), "pack", "tidewater", "--out", str(outside)]) == 2 and not outside.exists()
 
     capsys.readouterr()
     assert brief.main([str(root), "path", "tidewater"]) == 0

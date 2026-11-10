@@ -21,7 +21,7 @@ def make_template(root: Path, tool_text="print('v1')\n", skill_text="# sweep v1\
 def test_first_sync_adds_machinery_and_records_provenance(tmp_path):
     tpl = make_template(tmp_path / "tpl")
     space = make_space(tmp_path / "ada")
-    report = template_sync.run(space, source=str(tpl))
+    report = template_sync.run(space, source=str(tpl), local=True)
     assert sorted(report.added) == [".claude/skills/sweep/SKILL.md", "_meta/tools/sweep.py"]
     assert (space / "_meta" / "tools" / "sweep.py").read_text(encoding="utf-8") == "print('v1')\n"
     assert not (space / ".github" / "CODEOWNERS").exists()     # instance-specific, never copied
@@ -33,12 +33,12 @@ def test_first_sync_adds_machinery_and_records_provenance(tmp_path):
 def test_updated_file_is_applied_but_a_local_change_is_kept(tmp_path):
     tpl = make_template(tmp_path / "tpl")
     space = make_space(tmp_path / "ada")
-    template_sync.run(space, source=str(tpl))
+    template_sync.run(space, source=str(tpl), local=True)
     # the space changes its skill; the template changes both files
     (space / ".claude" / "skills" / "sweep" / "SKILL.md").write_text("# sweep, our way\n", encoding="utf-8")
     (tpl / "_meta" / "tools" / "sweep.py").write_text("print('v2')\n", encoding="utf-8")
     (tpl / ".claude" / "skills" / "sweep" / "SKILL.md").write_text("# sweep v2\n", encoding="utf-8")
-    report = template_sync.run(space, source=str(tpl))
+    report = template_sync.run(space, source=str(tpl), local=True)
     assert report.updated == ["_meta/tools/sweep.py"]
     assert report.kept == [".claude/skills/sweep/SKILL.md"]
     assert (space / "_meta" / "tools" / "sweep.py").read_text(encoding="utf-8") == "print('v2')\n"
@@ -50,7 +50,7 @@ def test_updated_file_is_applied_but_a_local_change_is_kept(tmp_path):
 def test_check_changes_nothing(tmp_path):
     tpl = make_template(tmp_path / "tpl")
     space = make_space(tmp_path / "ada")
-    report = template_sync.run(space, source=str(tpl), check=True)
+    report = template_sync.run(space, source=str(tpl), check=True, local=True)
     assert len(report.added) == 2
     assert not (space / "_meta" / "tools" / "sweep.py").exists()
     assert not (space / "_meta" / "state" / "template-version.yaml").exists()
@@ -64,7 +64,7 @@ def test_caches_in_the_template_tree_are_not_machinery(tmp_path):
     (tpl / "_meta" / "tools" / "__pycache__" / "sweep.cpython-312.pyc").write_bytes(b"\x00")
     (tpl / "_meta" / "tools" / "stray.pyc").write_bytes(b"\x00")
     space = make_space(tmp_path / "ada")
-    report = template_sync.run(space, source=str(tpl))
+    report = template_sync.run(space, source=str(tpl), local=True)
     assert sorted(report.added) == [".claude/skills/sweep/SKILL.md", "_meta/tools/sweep.py"]
     assert not (space / "_meta" / "tools" / ".pytest_cache").exists()
     assert not (space / "_meta" / "tools" / "__pycache__").exists()
@@ -83,7 +83,7 @@ def test_a_plugin_folder_and_a_marketplace_file_are_not_machinery(tmp_path):
     space = make_space(tmp_path / "ada")
     (space / ".claude-plugin").mkdir()
     (space / ".claude-plugin" / "marketplace.json").write_text('{"name": "ours"}\n', encoding="utf-8")
-    report = template_sync.run(space, source=str(tpl))
+    report = template_sync.run(space, source=str(tpl), local=True)
     assert sorted(report.added) == [".claude/skills/sweep/SKILL.md", "_meta/tools/sweep.py"]
     assert not (space / "_meta" / "plugins").exists()
     assert (space / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8") == '{"name": "ours"}\n'
@@ -100,7 +100,7 @@ def test_a_space_without_provenance_keeps_its_own_readme_and_gets_no_licence(tmp
     (tpl / "LICENSE").write_text("Template licence\n", encoding="utf-8")
     space = make_space(tmp_path / "scheduler", profile="project")
     (space / "README.md").write_text("# Scheduler app\n", encoding="utf-8")
-    report = template_sync.run(space, source=str(tpl))
+    report = template_sync.run(space, source=str(tpl), local=True)
     assert (space / "README.md").read_text(encoding="utf-8") == "# Scheduler app\n"
     assert not (space / "LICENSE").exists()
     assert "README.md" not in report.updated and "LICENSE" not in report.added
@@ -113,14 +113,14 @@ def test_a_readme_received_from_the_template_still_follows_it(tmp_path):
     (tpl / "README.md").write_text("# v1\n", encoding="utf-8")
     space = make_space(tmp_path / "ada")
     (space / "README.md").unlink(missing_ok=True)
-    template_sync.run(space, source=str(tpl))
+    template_sync.run(space, source=str(tpl), local=True)
     prov_path = space / "_meta" / "state" / "template-version.yaml"
     prov = yaml.safe_load(prov_path.read_text(encoding="utf-8"))
     prov["files"]["README.md"] = template_sync.sha1(tpl / "README.md")
     prov_path.write_text(yaml.safe_dump(prov), encoding="utf-8")
     (space / "README.md").write_text("# v1\n", encoding="utf-8")
     (tpl / "README.md").write_text("# v2\n", encoding="utf-8")
-    report = template_sync.run(space, source=str(tpl))
+    report = template_sync.run(space, source=str(tpl), local=True)
     assert "README.md" in report.updated
     assert (space / "README.md").read_text(encoding="utf-8") == "# v2\n"
 
@@ -167,7 +167,7 @@ def git_template(root: Path) -> Path:
 
 def _yes(root: Path, tag: str, commit: str, by: str = "Ada Okafor") -> None:
     with (root / "log.md").open("a", encoding="utf-8") as fh:
-        fh.write(f"\n- 2026-10-18T09:00:00Z yes template-{tag}-{commit[:8]} by {by}\n")
+        fh.write(f"\n- 2026-10-18T09:00:00Z yes template-{tag}-{commit} by {by}\n")
 
 
 def _items(root: Path) -> list:
@@ -197,7 +197,7 @@ def test_a_newer_release_asks_once_and_a_yes_moves_the_space(tmp_path):
         report = template_sync.run(space, source=tpl.as_uri())
         assert report.note == "v0.1.0 waits for a yes" and not report.added
     items = _items(space)
-    assert [i["id"] for i in items] == [f"template-v0.1.0-{first[:8]}"]
+    assert [i["id"] for i in items] == [f"template-v0.1.0-{first}"]
     assert items[0]["text"] == "Update to v0.1.0? The first release."
     assert not (space / "_meta" / "tools" / "sweep.py").exists()
     _yes(space, "v0.1.0", first)
@@ -213,7 +213,7 @@ def test_a_newer_release_asks_once_and_a_yes_moves_the_space(tmp_path):
     report = template_sync.run(space, source=tpl.as_uri())
     assert report.release == "v0.1.0" and not report.updated
     assert (space / "_meta" / "tools" / "sweep.py").read_text(encoding="utf-8") == "print('v1')\n"
-    assert _items(space)[0]["id"] == f"template-v0.2.0-{second[:8]}"
+    assert _items(space)[0]["id"] == f"template-v0.2.0-{second}"
     assert _items(space)[0]["text"] == "Update to v0.2.0? Faster sweeps. Fewer clicks."
 
 
@@ -252,7 +252,7 @@ def test_template_updates_main_follows_main_as_before(tmp_path):
     assert (space / "_meta" / "tools" / "sweep.py").read_text(encoding="utf-8") == "print('main')\n"
     prov = _prov(space)
     assert prov["commit"] == head and "release" not in prov and "approved" not in prov
-    assert report.note == "" and _items(space) == []
+    assert report.note == template_sync.MAIN_NOTE and "dev-only" in report.note and _items(space) == []
 
 
 def test_a_space_never_moves_backwards(tmp_path):

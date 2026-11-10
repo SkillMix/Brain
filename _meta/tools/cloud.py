@@ -87,6 +87,24 @@ GH_DENY = ("Bash(gh api * *)", "Bash(gh api *\t*)", *routine.GRAPHQL, "Bash(gh p
 GH_OTHERS = ("Bash(git *)", "Bash(gh auth *)", "Bash(gh workflow *)", "Bash(gh run *)", "Bash(gh release *)",
              "Bash(gh secret *)", "Bash(gh variable *)", "Bash(gh issue *)", "Bash(gh gist *)", "Bash(gh label *)",
              "Bash(gh ssh-key *)", "Bash(gh extension *)", "Bash(gh alias *)", "Bash(gh config *)")
+# A cloud task has no hook to read a command as the shell will (`routine.person_only_check`), so a verb a text rule
+# refuses (`routine.PERSON_ONLY_TEXT`) could be spliced past it: `an''swer`, `ap\ply`, `vir${x}tual`, `answe?` or
+# `[a]nswer` beside a planted file, `appl{y,}`, a tab for a space. No command a cloud run gives these tools needs
+# a quote, a backslash, a `$`, a glob (`?`, `[`) or a brace, so any is refused; and a tab beside each verb, since
+# every text rule wants a space before its verb (finding 5). A `*` glob cannot be written as a rule. librarian.py
+# holds no person's verb any more (`routine.PERSON_ONLY`), but no cloud run gives it a command at all, so its line
+# stays and costs nothing.
+PERSON_ONLY_SPLICE = (*(f"{tool}*{sign}" for tool in ("librarian.py", "chain.py", "route.py", "status.py",
+                                                       "landing.py", "release.py")
+                        for sign in ("'", '"', "\\", "$", "?", "[", "{")), "status.py*\tclose", "status.py*close\t",
+                      "sign_questions.py*\tanswer", "sign_questions.py*answer\t", "chain.py*\tvirtual",
+                      "chain.py*virtual\t", "route.py*\tanswer", "route.py*answer\t", "landing.py*\tretract",
+                      "landing.py*retract\t", "release.py*\tretract", "release.py*retract\t",
+                      "release.py*\tpull-back", "release.py*pull-back\t")
+# The run's marker (`STATE`), which `routine.in_routine` looks for so the person-only tools refuse in a cloud run. No
+# shell command a run gives names it (`begin` writes it and the tools read it in Python), so one that does (`rm`,
+# `mv`, `cp`, a redirect) is refused; the Edit rules already cover `~/.spaces/**`.
+MARKER_DENY = ("Bash(*.spaces/routines*)", "Bash(*cloud.json*)")
 # The system's own top-level folders, which no run edits: a `.pth` file or a sitecustomize under /usr would run inside
 # every python3 the tools start. The clones in /home/user, and /tmp, stay open.
 SYSTEM = ("bin", "boot", "dev", "etc", "lib", "lib32", "lib64", "libx32", "media", "mnt", "opt", "proc", "root", "run",
@@ -237,7 +255,7 @@ def _read_fresh(text) -> dict:
     is no count."""
     try:
         data = yaml.safe_load(text) if text else None
-    except yaml.YAMLError:
+    except (yaml.YAMLError, ValueError, RecursionError):   # a 5000-digit int or a deep nest is no YAMLError
         return {}
     out = {}
     for chain, row in (data.items() if isinstance(data, dict) else ()):
@@ -514,8 +532,8 @@ def repositories(workspace: Path, chain: str) -> tuple:
     return spaces, [slug for slug in _unique(codebases) if slug.lower() not in taken]
 
 
-def _identity_rules(workspace: Path, repos: list) -> list:
-    """`identity/**` in every clone, and in every mount of each space's clone (`routine.PROTECTED_IN_ROOT`)."""
+def _clones(workspace: Path, repos: list) -> list:
+    """The space roots a cloud run sees: every clone in /home/user, and every mount of each space's clone."""
     import chain as chains
     import ghrest
     clones = [HOME / slug.split("/")[1] for slug in repos]
@@ -524,13 +542,25 @@ def _identity_rules(workspace: Path, repos: list) -> list:
         if slug:
             clones += [HOME / slug.split("/")[1] / path for path in mount_paths(root)
                        if not PurePosixPath(path).is_absolute()]
-    return [f"Edit(/{clone}/{pattern})" for clone in dict.fromkeys(clones) for pattern in routine.PROTECTED_IN_ROOT]
+    return list(dict.fromkeys(clones))
+
+
+def _identity_rules(workspace: Path, repos: list) -> list:
+    """`identity/**` and `log.md` in every clone, and in every mount of each space's clone (`routine.PROTECTED_IN_ROOT`
+    and `routine.TOOL_WRITTEN_IN_ROOT`)."""
+    return [f"Edit(/{clone}/{pattern})" for clone in _clones(workspace, repos)
+            for pattern in (*routine.PROTECTED_IN_ROOT, *routine.TOOL_WRITTEN_IN_ROOT)]
 
 
 def disallowed(workspace: Path, repos: list, granted: list, known: list, codebases=()) -> list:
     """The task's deny rules (spec 4.7, layer 2), which the platform enforces: an edit to any
-    protected path, the `.git` file in each mount (it names the mount's git folder, whose config a status in the root
-    runs; `.git/**` covers a folder only), the person's identity, any dot-entry of the home folder (`.spaces` and
+    protected path or to a file only a tool writes (`routine.TOOL_WRITTEN`: the queue, the ledgers, the registry,
+    and `log.md` at each root, where sign.py writes its lines) or to a program where a resolver or the machinery
+    would find it (`routine.executable_rules`: a `.pth` or `.lnk` anywhere, any other right in a clone or a mount,
+    or under `_meta/`, `.claude/` or `.github/`; the folders on the cloud's PATH are the system's or the home's
+    dot-entries, denied whole below), the `.git` file in each mount (it names the
+    mount's git folder, whose config a status in the root runs; `.git/**` covers a folder only), the person's
+    identity, any dot-entry of the home folder (`.spaces` and
     `.claude`, and the places Python and git read code or settings from at their start: user site-packages,
     `.gitconfig`, `.config`; no clone's name starts with a dot), or anything under the system's own top-level
     folders (SYSTEM: a `.pth` or a sitecustomize under /usr would run inside every python3 the tools
@@ -538,13 +568,19 @@ def disallowed(workspace: Path, repos: list, granted: list, known: list, codebas
     not use, and the GitHub connector; every connector tool the computer has seen (`known`) that
     this task is not granted, by name, the tools of its own connectors among them, as the computer's profile denies
     them; the shell shapes the computer denies, with the text-only backstops (git, any `gh api` call but one
-    endpoint word, GraphQL, the rest of gh, sync.py as git's merge driver); and any shell command that names the
-    clone of a codebase the task attaches (`codebases`, owner/name; a name a space's clone has is never one): people
-    other than the person can push to one, so no begin and no tool of its own runs from it, or on it."""
+    endpoint word, GraphQL, the rest of gh, sync.py as git's merge driver, and the commands that execute a person's
+    verdict or word, `routine.PERSON_ONLY_TEXT`, with any quote, backslash, `$`, `?`, `[` or `{` in a command of
+    the tools that hold them, `PERSON_ONLY_SPLICE`, and any command that names the run's marker, `MARKER_DENY`;
+    a cloud task carries no hook, so beside these text rules only the
+    tools' own refusal on a cloud run's marker holds them, `routine.in_routine`, and a signature a cloud run writes
+    by hand is the landing's to refuse); and any shell command that
+    names the clone of a codebase the task attaches (`codebases`, owner/name; a name a space's clone has is never
+    one): people other than the person can push to one, so no begin and no tool of its own runs from it, or on it."""
     import chain as chains
     import reader
-    deny = [f"Edit(//**/{pattern})" for pattern in routine.PROTECTED_EDITS]
+    deny = [f"Edit(//**/{pattern})" for pattern in (*routine.PROTECTED_EDITS, *routine.TOOL_WRITTEN)]
     deny += ["Edit(//**/.git)"]
+    deny += routine.executable_rules([str(clone) for clone in _clones(workspace, repos)])
     deny += _identity_rules(workspace, repos)
     deny += [f"Edit(~/{folder}/**)" for folder in (".claude", ".spaces")]
     deny += [f"Edit(/{HOME}/{folder}/**)" for folder in (".claude", ".spaces")]
@@ -557,6 +593,8 @@ def disallowed(workspace: Path, repos: list, granted: list, known: list, codebas
     deny += [f"Bash(*_meta/tools/{tool}*)" for tool in sorted(tools - set(routine.ROUTINE_TOOLS))]
     deny += ["Bash(python -m *)", "Bash(python3 -m *)", "Bash(git *--output*)", *GH_DENY, *GH_OTHERS]
     deny += [f"Bash(*_meta/tools/sync.py*{text}*)" for text in routine.SYNC_NEVER]
+    deny += [*routine.person_only_rules(), *(f"Bash(*_meta/tools/{text}*)" for text in PERSON_ONLY_SPLICE)]
+    deny += list(MARKER_DENY)
     spaces = {slug.split("/")[1] for slug in repos if slug not in codebases}
     for name in dict.fromkeys(slug.split("/")[1] for slug in codebases):
         if name not in spaces:

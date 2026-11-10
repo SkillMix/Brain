@@ -9,11 +9,20 @@ under `routing.informs`, which this space's status page reads). It never decides
 Gates (refused: nothing written, the reason printed): the destination must be the subject's
 home (a client, project or deal not yet classified has none: refused as unclassified); every part must be a verbatim span of the record (whitespace aside); `whole` only when
 everyone on the record is inside the destination's audience (the client's own mail domain
-counts as inside). Then per projection: a never-leaves term in it -> held at home; a left-out
-term of the destination in it -> held; a never-leaves term elsewhere in the record, medium
-confidence, a high-stakes term, the review period (`routing.review_until`), or a journal record
-(link.journal_records) to a home that is not walled with the writer on its crew -> the window;
-low confidence -> a question for the owner, nothing leaves. An owner's answer counts as approval.
+counts as inside); a decision that sends anything out names the second agent that checked it
+(`checked_by`), never the router itself. What a projection says is judged by the router and
+that check against the never-leaves and left-out categories, never matched against words in
+code. The tool forces the window when the decision flags never-leaves material elsewhere in the
+record (`never_leaves`) or a route's `high_stakes`, on medium confidence, in the review period
+(`routing.review_until`), on a first release, or for a journal record (link.journal_records) to
+a home that is not walled with the writer on its crew; low confidence -> a question for the
+owner, nothing leaves. An owner's answer counts as approval, and only for the question this
+tool asked: the question's decision is sealed in routing.jsonl, so a yes never applies a
+question file someone else wrote or changed (a no, which keeps the record here, always applies).
+
+`pending --out` writes the pack only to a `route-*.json` file in the private state folder
+(`_meta/state/private/`, never staged; a bare name lands there): never `.claude/`, `CLAUDE.md`,
+`_meta/tools/`, another tool's state file, or anywhere outside the space.
 
 History (docs/design/2026-10-14-history-backfill-design.md, 4.3): with
 `routing.history_since` set, a record older than `routing.since` is background. It opens no
@@ -32,6 +41,7 @@ import argparse
 import bisect
 import datetime as dt
 import glob
+import hashlib
 import json
 import os
 import sys
@@ -42,6 +52,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import classify  # noqa: E402
 import link  # noqa: E402
+import needs_you  # noqa: E402
 import pages  # noqa: E402
 from provenance import is_archive_derived  # noqa: E402
 import registry  # noqa: E402
@@ -51,6 +62,7 @@ import sweep  # noqa: E402
 
 LOG = Path("_meta") / "state" / "routing.jsonl"
 PACK = spaceyaml.PRIVATE_STATE / "route-pending.json"
+PRIVATE_PACKS = spaceyaml.PRIVATE_STATE   # where `pending --out` may write: never staged, never leaves
 QUESTIONS = Path("_inbound") / "questions"
 SOURCES = Path("knowledge") / "sources"
 LESSONS = Path("_meta") / "lessons.md"
@@ -61,6 +73,9 @@ MAIL_DAYS = 3       # a mail joins an event from its start to three days after
 CONFIDENCE = ("high", "medium", "low")
 TIERS = ("at_once", "window")
 INFORMS = ("open_item", "decision", "person", "page")
+# Names that say the router checked its own decision: a second agent's check names someone else.
+NOT_A_CHECKER = ("router", "the router", "self", "myself", "me", "agent", "the agent", "claude", "same",
+                 "none", "n/a", "-")
 
 
 class RouteError(ValueError):
@@ -460,19 +475,41 @@ def _log(root: Path, row: dict) -> None:
     release.append_line(root / LOG, json.dumps(row, ensure_ascii=False, default=str))
 
 
-def _question(root: Path, decision: dict, fm: dict, path: Path, now: dt.datetime) -> str:
+def _seal(decision) -> str:
+    """The sha256 of a question's decision as its file holds it: what an owner's yes applies."""
+    text = json.dumps(decision if isinstance(decision, dict) else {}, sort_keys=True, ensure_ascii=False,
+                      default=str)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _asked_seal(root: Path, record_id: str) -> str | None:
+    """The seal of the latest question route.py asked about `record_id` (its routing.jsonl row),
+    or None when it asked none with a seal."""
+    seal = None
+    for row in registry._jsonl(root / LOG):
+        if row.get("outcome") == "question" and _same_id(row.get("record"), record_id):
+            seal = row.get("decision_sha") or None
+    return seal
+
+
+def _question(root: Path, decision: dict, fm: dict, path: Path, now: dt.datetime) -> tuple[str, str]:
+    """Write the routing question for the owner; returns its path and the seal of its decision,
+    read back from the file written, so the answer compares like with like."""
     if decision["decision"] == "private":
         plan = "keep it in the workspace"
     else:
         plan = ", ".join(f"{r['space']} ({r['subject']}, {r.get('tier', 'window')})" for r in decision["routes"])
     rel = QUESTIONS / f"route-{sweep.file_name(decision['record'])}.md"
-    qfm = {"id": pages.new_id(), "type": "review", "title": f"Route: {fm.get('title')}", "status": "draft",
+    # the plan first, and the record's title (an outsider's words) quoted as one short plain line
+    title = needs_you.untrusted_line(fm.get("title"), 120)
+    qfm = {"id": pages.new_id(), "type": "review", "title": f"Route: {title}", "status": "draft",
            "generated": pages.generated("route", now), "record": str(decision["record"]),
-           "question": f"Where should '{fm.get('title')}' go? I think: {plan}. Right?",
+           "question": f"Route to {plan}? Record: \"{title}\"",
            "recommendation": f"yes: {plan}", "default": "stays in the workspace",
            "payload": path.relative_to(root).as_posix(), "decision": decision}
-    pages.write(root / rel, qfm, f"# Route: {fm.get('title')}\n\n{decision.get('why', '')}\n")
-    return rel.as_posix()
+    written = pages.write(root / rel, qfm, f"# Route to {plan}\n\nRecord: \"{needs_you.md_inline(title)}\"\n\n"
+                          f"{decision.get('why', '')}\n", root=root)
+    return rel.as_posix(), _seal(pages.read(written)[0].get("decision"))
 
 
 def _withdraw(root: Path, record_id: str, reason: str, why: str, space_name: str | None = None,
@@ -516,9 +553,15 @@ def record(root, decision: dict, now: dt.datetime | None = None, by: str | None 
     if history_low:   # history asks no question: a low-confidence call keeps it here, counted
         decision, asks = dict(decision, decision="private", routes=[]), False
     leaving = [r for r in decision.get("routes") or [] if str(r.get("space")) != space.name]
-    if leaving and not asks and not by and not str(decision.get("checked_by") or "").strip():
-        raise RouteError(f"{rec['record']}: a decision that sends anything out needs a second agent's "
-                         "check first (checked_by)")
+    if leaving and not asks and not by:
+        checker = " ".join(str(decision.get("checked_by") or "").split()).casefold()
+        if not checker:
+            raise RouteError(f"{rec['record']}: a decision that sends anything out needs a second agent's "
+                             "check first (checked_by)")
+        router = {" ".join(str(decision.get(k) or "").split()).casefold() for k in ("by", "routed_by")} - {""}
+        if checker in NOT_A_CHECKER or checker in router:
+            raise RouteError(f"{rec['record']}: checked_by must name the second agent that checked the "
+                             "decision, not the router")
     out = {"queued": [], "held": [], "question": None, "attached": [], "history_low": history_low}
     row = {"at": pages.iso(now), "record": rec["record"], "decision": decision["decision"],
            "confidence": decision["confidence"], "why": decision.get("why", ""), "by": by or "router",
@@ -533,8 +576,8 @@ def record(root, decision: dict, now: dt.datetime | None = None, by: str | None 
     if history_low:
         row["outcome"] = "history_low"
     if asks:
-        out["question"] = _question(root, decision, fm, path, now)
-        _log(root, dict(row, outcome="question"))
+        out["question"], seal = _question(root, decision, fm, path, now)
+        _log(root, dict(row, outcome="question", decision_sha=seal))
         return out
     prior = fm.get("routing") if _decided_for(fm) else {}
     if fm.get("refreshed_at") and not prior:   # a deeper page: its earlier projections still waiting are replaced
@@ -630,12 +673,28 @@ def record(root, decision: dict, now: dt.datetime | None = None, by: str | None 
 
 def answer(root, record_id, yes: bool, by: str, now: dt.datetime | None = None) -> dict:
     """The owner's answer to a routing question: yes applies the proposed routes as approved,
-    no keeps the record in the workspace."""
+    no keeps the record in the workspace. A yes applies only the decision route.py asked about:
+    the question file's decision must match the seal its routing.jsonl row recorded, so a
+    question written or changed by anything else is refused and nothing leaves (a no still
+    applies: keeping the record here is always safe). Refused inside a routine or a cloud run
+    (`routine.in_routine`): the answer is the owner's word, whatever command reached it."""
+    import routine   # here and not at the top: only the person's answer asks it
+    running = routine.in_routine()
+    if running:
+        raise RouteError(f"{record_id}: a routing answer is the owner's word, and {running}; "
+                         "routines never answer (rules.md section 1)")
     root = Path(root)
     qpath = root / QUESTIONS / f"route-{sweep.file_name(record_id)}.md"
     if not qpath.exists():
         raise RouteError(f"{record_id}: no routing question waits")
-    proposed = dict(pages.read(qpath)[0].get("decision") or {})
+    qfm = pages.read(qpath)[0]
+    proposed = dict(qfm.get("decision") or {})
+    if yes:   # the seal of the question asked about this record, for a decision about this record
+        seal = _asked_seal(root, str(record_id))
+        if seal is None or seal != _seal(qfm.get("decision")) or \
+                not _same_id(proposed.get("record", record_id), record_id):
+            raise RouteError(f"{record_id}: the question on disk is not one route.py asked (its decision does "
+                             "not match the seal in routing.jsonl); answer --private, or route the record again")
     if not yes:
         proposed = {"record": str(record_id), "decision": "private", "routes": [],
                     "why": f"{by} kept it in the workspace"}
@@ -649,7 +708,15 @@ def retract(root, record_id, by: str, space: str | None = None, now: dt.datetime
             queued_only: bool = False) -> dict:
     """Undo a routing: projections still queued or held by the router are withdrawn, shipped ones retracted.
     `queued_only` changes a decision that still waits: only the router's queued projections are
-    withdrawn, and nothing that already left (the owner's own releases included) is retracted."""
+    withdrawn, and nothing that already left (the owner's own releases included) is retracted. Without
+    `queued_only` it is refused inside a routine (`routine.in_routine`), before anything is withdrawn: what left
+    is retracted only on the person's word."""
+    if not queued_only:
+        import routine   # here and not at the top: only a full retraction asks it
+        running = routine.in_routine()
+        if running:
+            raise RouteError(f"{record_id}: refused: {running}; a routine retracts only with --queued-only "
+                             "(rules.md section 1)")
     root = Path(root)
     sp = spaceyaml.load(root)
     now = now or sp.now()
@@ -720,7 +787,34 @@ def _decisions_in(path: Path) -> list:
     return data if isinstance(data, list) else [data]
 
 
+def pack_path(root: Path, given: str | None) -> Path:
+    """Where `pending` writes its pack: the private default, or `--out` when it names a
+    `route-*.json` file in the private state folder (a bare file name lands there), which is
+    never staged, holds no file another tool reads under that name, and sits off everything the
+    gate guards (pages.confine: no link on the way, nothing outside the space). A routine runs
+    this tool, and a file it writes is past every edit rule, so anything else is refused
+    (UnsafePath) and nothing is written."""
+    if not given:
+        return pages.confine(root, PACK.as_posix())
+    target = Path(given)
+    if len(target.parts) == 1:   # a bare name: in the private state folder
+        target = Path(root) / PRIVATE_PACKS / target
+    elif not target.is_absolute():
+        target = Path.cwd() / target
+    try:
+        rel = os.path.relpath(os.path.abspath(target), os.path.abspath(root)).replace(os.sep, "/")
+    except ValueError:   # another drive
+        rel = ""
+    if not rel or rel == ".." or rel.startswith("../") or os.path.isabs(rel):
+        raise pages.UnsafePath(f"--out {ascii(given)} is outside the space {ascii(str(root))}")
+    name = rel.rsplit("/", 1)[-1].casefold()
+    if not (name.startswith("route-") and name.endswith(".json")):
+        raise pages.UnsafePath(f"--out {ascii(given)} is not a route-*.json file")
+    return pages.confine(root, rel, zones=(PRIVATE_PACKS.as_posix(),), guarded=True, what="--out")
+
+
 def main(argv=None) -> int:
+    needs_you.utf8_stdio()   # a record's title in any script prints, never raises on a cp1252 pipe
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("root")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -743,10 +837,13 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     root = Path(args.root)
     if args.cmd == "pending":
+        try:
+            out = pack_path(root, args.out)
+        except pages.UnsafePath as exc:
+            print(f"refused: {exc}")
+            return 2
         pack = pending(root, subject=args.subject)
-        out = Path(args.out) if args.out else root / PACK
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(pack, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+        pages.write_text(out, json.dumps(pack, indent=2, ensure_ascii=False, default=str), root=root)
         if pack.get("waits"):
             print(f"no backfill yet: {pack['waits']}")
         print(f"{len(pack['records'])} record(s) wait for a decision; context in {out}")
@@ -788,7 +885,11 @@ def main(argv=None) -> int:
             return 1
         print(f"{args.record_id}: answered")
         return 0
-    result = retract(root, args.record_id, by=args.by, space=args.space, queued_only=args.queued_only)
+    try:
+        result = retract(root, args.record_id, by=args.by, space=args.space, queued_only=args.queued_only)
+    except RouteError as exc:
+        print(f"refused: {exc}")
+        return 1
     print(f"{args.record_id}: withdrawn {len(result['withdrawn'])}, retracted {len(result['retractions'])}")
     return 0
 

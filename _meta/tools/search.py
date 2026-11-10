@@ -25,7 +25,8 @@ parts, read here and in their home; ring 2 is the brain. Every other hit is drop
 `lines` reads the same layers and zones and prints every matching line with its line number
 and `-C` lines of context (2 by default), grouped by file: what an agent reading the evidence
 needs, in one call. It runs on ripgrep when `rg` is installed, else on plain Python with the
-same output. The text is literal and case-insensitive; `--regex` makes it a pattern. At most
+same output; ripgrep is taken from PATH by its absolute path only, never from the current
+folder or a space (`routine.which`). The text is literal and case-insensitive; `--regex` makes it a pattern. At most
 `--max` files (30) and ten matches a file are shown, and what is left out is counted.
 
     python search.py [root] query [--for <subject>] <text>
@@ -38,7 +39,6 @@ import base64
 import importlib
 import json
 import re
-import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -189,7 +189,10 @@ class Found:
 
 
 def _ripgrep():
-    return shutil.which("rg")
+    """ripgrep's absolute path, or None: never an `rg.bat` in the current folder or in a space, where a record
+    could have planted one (`routine.which`; finding 10)."""
+    import routine
+    return routine.which("rg")
 
 
 def _cut(line: str) -> str:

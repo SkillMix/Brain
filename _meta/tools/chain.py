@@ -2,8 +2,8 @@
 
 Three times a day the sweep chain: `transcripts.scan` (a personal space with a transcripts
 folder) → `sweep.run` → `distill.run` → `check.run`. Once a day
-the daily chain: `status.run` (with landing at the home) → `release.ship` (only items
-already listed) → `outbox_reconcile.run` (where an outbox exists) → `morning_view.run` →
+the daily chain: `status.run` (with landing at the home) → `onboard.keys_upkeep` (a live space
+on GitHub that mounts one, or the brain) → `release.ship` (only items already listed) → `outbox_reconcile.run` (where an outbox exists) → `morning_view.run` →
 the answer and leak tests when their files exist. A step that fails
 is recorded as `{"step", "error"}` and the next step runs on yesterday's output; a tool
 that is not present yet is skipped with a note. Every chain run appends one run line to
@@ -23,14 +23,18 @@ nothing and exits 0 when this computer may run the chains now, else one sentence
 
 The virtual clock walks `SPACE_NOW` forward over a number of scaled days (`time_scale`
 from the first root's space.yaml), runs the sweep chain for every root at every step and
-the daily chain once per day, and can apply a fixture's verdicts after a given day.
-`SPACE_NOW` is restored afterwards.
+the daily chain once per day. `SPACE_NOW` is restored afterwards. It runs only over spaces
+in `mode: fixture` (an invented company, `onboard --fixture`): on a real space it would move
+the clock past release windows. In process, onboarding's fixture can also apply that company's
+verdicts after a given day; the command line cannot, so no command a routine may run signs a
+page in a person's name. Inside a routine or a cloud run (`routine.in_routine`) the command line
+refuses the virtual clock, and the function refuses to apply verdicts.
 
     python chain.py sweep [root] [--cloud]
     python chain.py daily [root] [--person <name>] [--shadow] [--offline name=path ...] [--cloud]
     python chain.py gate [workspace]
     python chain.py virtual --days N --roots a b c [--steps 3] [--persons a=Ada ...]
-                            [--offline name=path ...] [--verdicts verdicts.yaml --after-day N]
+                            [--offline name=path ...]          (fixture spaces only)
 """
 from __future__ import annotations
 
@@ -82,6 +86,7 @@ def _plain(value):
 
 
 def _step(ctx: dict, step: str, module_name: str, fn_name: str, *args, **kwargs):
+    """Run one step, record its report or its error; the chain goes on either way."""
     module = _module(module_name)
     fn = getattr(module, fn_name, None) if module is not None else None
     if fn is None:
@@ -114,8 +119,7 @@ def _stale_step(ctx: dict, step: str, failed: bool) -> None:
         data.setdefault(step, ctx["at"])
     elif data.pop(step, None) is None:
         return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(data, sort_keys=True), encoding="utf-8", newline="\n")
+    pages.write_text(path, yaml.safe_dump(data, sort_keys=True), root=ctx["root"])
 
 
 def _context(routine: str, root: Path, now: dt.datetime) -> dict:
@@ -138,8 +142,7 @@ def _mark_stale(space: spaceyaml.Space, ctx: dict, now: dt.datetime) -> None:
         elif result is not None:
             data.pop(step, None)
     if data or path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(yaml.safe_dump(data, sort_keys=True), encoding="utf-8", newline="\n")
+        pages.write_text(path, yaml.safe_dump(data, sort_keys=True), root=space.root)
 
 
 def _template_sync_due(space: spaceyaml.Space, now: dt.datetime) -> bool:
@@ -180,10 +183,7 @@ def _run_line(space: spaceyaml.Space, ctx: dict, now: dt.datetime) -> None:
         notes.append("skipped: " + "; ".join(ctx["skipped"]))
     line = {"routine": ctx["routine"], "at": pages.iso(now), "space": space.name,
             "cost_tokens": 0, "notes": " | ".join(notes) or "ok"}
-    path = space.root / RUNS_LOG
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8", newline="\n") as handle:
-        handle.write(json.dumps(line, ensure_ascii=False) + "\n")
+    pages.append_text(space.root / RUNS_LOG, json.dumps(line, ensure_ascii=False) + "\n", root=space.root)
 
 
 NOT_STARTED = "{} not started"   # the sync script's entry for a chain its scheduler never started
@@ -197,7 +197,7 @@ def _started(space: spaceyaml.Space, routine: str) -> None:
     except (OSError, yaml.YAMLError):
         return   # the chain runs on; the run's own bookkeeping at the end still has its say
     if isinstance(data, dict) and data.pop(NOT_STARTED.format(routine), None) is not None:
-        path.write_text(yaml.safe_dump(data, sort_keys=True), encoding="utf-8", newline="\n")
+        pages.write_text(path, yaml.safe_dump(data, sort_keys=True), root=space.root)
 
 
 # ----- the two chains ----------------------------------------------------------------
@@ -232,8 +232,8 @@ def sweep_chain(root, now: dt.datetime | None = None, cloud: bool = False) -> di
 
 def daily(root, person: str | None = None, now: dt.datetime | None = None, shadow: bool = False,
           offline_roots: dict | None = None, cloud: bool = False) -> dict:
-    """status → access → link check → requests → release (listed items only) → outbox reconcile
-    → morning view → answer and leak tests.
+    """status → access → mount keys → crew logins → link check → requests → release (listed items only) → outbox
+    reconcile → morning view → answer and leak tests.
 
     In a cloud run (`cloud`) the computer's sync keeps four steps. Template sync stays there
     because the machinery it changes needs the person's click, and a cloud run never lands a
@@ -250,6 +250,10 @@ def daily(root, person: str | None = None, now: dt.datetime | None = None, shado
         _step(ctx, "template_sync", "template_sync", "guarded", root)
     _step(ctx, "status", "status", "run", root, now=now)
     _step(ctx, "access", "access", "run", root, now=now)   # readers on the host against the audience
+    if _mount_keys_due(space, root, cloud):   # the checks' read-only mount keys, made, attached and removed
+        _step(ctx, "mount_keys", "onboard", "keys_upkeep", root)
+    if not cloud and space.profile == "project" and str(person).casefold() == str(space.owner).casefold():
+        _step(ctx, "crew_logins", "mint", "logins_upkeep", root)   # a later crew login, for the owner's click
     _step(ctx, "link_check", "link", "check", root, now=now,   # the codebases linked to subjects homed here
           graphql=not cloud)
     if not cloud:
@@ -265,6 +269,19 @@ def daily(root, person: str | None = None, now: dt.datetime | None = None, shado
         _step(ctx, "leaks", "tests_run", "leaks", root, roots=offline_roots, now=now)
     _run_line(space, ctx, now)
     return ctx
+
+
+def _mount_keys_due(space: spaceyaml.Space, root: Path, cloud: bool) -> bool:
+    """Whether the daily keeps this space's mount keys (`onboard.keys_upkeep`): on the computer, for a live space
+    on GitHub that mounts a space or is the brain (which attaches its colleagues' keys). A fixture, a copy with
+    no repository on GitHub and a cloud run never ask the host for keys."""
+    if cloud or space.mode != "live" or not ((root / ".gitmodules").exists() or space.profile == "brain"):
+        return False
+    onboard = _module("onboard")
+    try:
+        return bool(onboard is not None and onboard.space_repo(root))
+    except Exception:
+        return False
 
 
 # ----- the gate ----------------------------------------------------------------------
@@ -345,6 +362,12 @@ def virtual(roots: list, days: int, steps_per_day: int = 3, persons: dict | None
             verdicts: dict | None = None, by: dict | None = None, inject=None) -> dict:
     """Walk SPACE_NOW over `days` scaled days, running both chains for every root.
 
+    Every root must be a fixture space (`mode: fixture`), else ValueError and nothing runs: the
+    walk moves a space's clock days ahead, and `verdicts` sign pages in a person's name with no
+    read-back, which only an invented company may have done to it. Inside a routine or a cloud
+    run (`routine.in_routine`) a walk that would apply `verdicts` is refused too: they are a
+    person's answers, even an invented one's.
+
     `inject(day, at)`, when given, is called at the start of each scaled day (day 1-based)
     so a test can let late records arrive after earlier days were signed."""
     roots = [Path(r) for r in roots]
@@ -352,6 +375,13 @@ def virtual(roots: list, days: int, steps_per_day: int = 3, persons: dict | None
         raise ValueError("virtual needs at least one root")
     if days < 1 or steps_per_day < 1:
         raise ValueError("days and steps_per_day must be 1 or more")
+    if verdicts:
+        _person_only("a walk that applies verdicts")
+    for root in roots:
+        space = _load(root)
+        if space is None or space.mode != "fixture":
+            raise ValueError(f"chain.virtual runs only over fixture spaces; {pages._shown(str(root))} is "
+                             f"{'no space' if space is None else 'in mode ' + repr(space.mode)}")
     first = spaceyaml.load(roots[0])
     scaled_day = first.scale(24)
     step_length = scaled_day / steps_per_day
@@ -408,6 +438,14 @@ def virtual(roots: list, days: int, steps_per_day: int = 3, persons: dict | None
             os.environ["SPACE_NOW"] = saved
     result["end"] = pages.iso(at)
     return result
+
+
+def _person_only(what: str) -> None:
+    """ValueError when this process runs inside a routine or a cloud run (`routine.in_routine`)."""
+    import routine   # here and not at the top: routine reads this module's spaces
+    running = routine.in_routine()
+    if running:
+        raise ValueError(f"{what} is the person's to start, and {running}")
 
 
 def _verdict(value) -> tuple:
@@ -506,9 +544,11 @@ def main(argv=None) -> int:
     virt.add_argument("--steps", type=int, default=3)
     virt.add_argument("--persons", nargs="*", default=[], metavar="root=Name")
     virt.add_argument("--offline", nargs="*", default=[], metavar="name=path")
-    virt.add_argument("--verdicts")
-    virt.add_argument("--after-day", type=int, dest="after_day")
+    # No --verdicts here: signing belongs to sign.py with its read-back, and onboarding's fixture
+    # applies its verdicts in process. A routine's allowed `chain.py` command can never sign.
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    import needs_you   # here and not at the top: its helpers are the CLI's alone
+    needs_you.utf8_stdio()
 
     offline = {k: Path(v) for k, v in _pairs(getattr(args, "offline", [])).items()} or None
     if args.command == "gate":
@@ -526,11 +566,13 @@ def main(argv=None) -> int:
         result = daily(Path(args.root), args.person, shadow=args.shadow, offline_roots=offline,
                        cloud=args.cloud)
     else:
-        roots = [Path(r) for r in args.roots]
-        verdicts = load_verdicts(args.verdicts, roots) if args.verdicts else None
-        result = virtual(roots, args.days, steps_per_day=args.steps, persons=_pairs(args.persons),
-                         offline_roots=offline, verdicts_after_day=args.after_day,
-                         verdicts=verdicts)
+        try:   # the virtual clock is a person's run over an invented company: never a routine's
+            _person_only("the virtual clock")
+            result = virtual([Path(r) for r in args.roots], args.days, steps_per_day=args.steps,
+                             persons=_pairs(args.persons), offline_roots=offline)
+        except ValueError as exc:
+            print(f"refused: {exc}", file=sys.stderr)
+            return 2
     summary = {k: v for k, v in result.items() if k != "steps"}
     print(json.dumps(summary, indent=2, default=str))
     return 1 if result.get("errors") else 0

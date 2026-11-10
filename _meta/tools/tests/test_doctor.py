@@ -132,12 +132,14 @@ def test_git_identity_and_credentials_come_from_the_host_account(tmp_path):
     assert ["gh", "auth", "setup-git"] in fake.calls
 
 
-def test_a_pending_organization_invitation_is_accepted_and_missing_access_names_who_grants_it(tmp_path):
+def test_a_pending_organization_invitation_is_the_persons_to_accept_and_missing_access_names_who_grants_it(tmp_path):
     fake = Fake(tmp_path, {"gh api user/memberships/orgs/lantern-org": (0, "pending"),
                            "gh api repos/lantern-org/brain": (1, "")})
     found = rows(fake, orgs=["lantern-org"], repos=["lantern-org/brain"])
-    assert found["organization lantern-org"].ok
-    assert ["gh", "api", "--method", "PATCH", "user/memberships/orgs/lantern-org", "-f", "state=active"] in fake.calls
+    member = found["organization lantern-org"]
+    # never accepted for the person: anyone can invite a login to an organization they made
+    assert not member.ok and "accept its invitation yourself" in member.yours
+    assert not [c for c in fake.calls if "PATCH" in c or "--method" in c]
     access = found["access lantern-org/brain"]
     assert not access.ok and "read access" in access.yours and "lantern-org/brain" in access.check
 
@@ -419,6 +421,10 @@ def test_start_runs_the_doctor_first_and_stops_at_what_is_the_persons(tmp_path, 
         doctor.Row("github sign-in", False, "not signed in", "gh auth status", yours="sign in: `! gh auth login --web`")])
     report = start.start(tpl, invitation="lantern-org/brain:ada", template="lantern-org/brain-template",
                          home=tmp_path / "home", user_instructions=tmp_path / "CLAUDE.md")
+    assert seen["orgs"] == []   # no membership is looked at before the person confirmed the brain
+    report = start.start(tpl, invitation="lantern-org/brain:ada", template="lantern-org/brain-template",
+                         home=tmp_path / "home", user_instructions=tmp_path / "CLAUDE.md",
+                         confirmed_brain="lantern-org/brain")
     row = next(s for s in report.steps if s.name == "doctor: github sign-in")
     assert row.needs_owner and not row.done and "gh auth login" in row.result
     assert not any(s.name.startswith("create") for s in report.steps)
@@ -454,7 +460,7 @@ def test_without_the_venv_module_uv_makes_the_venv(tmp_path):
 
     def run(argv, **kw):
         calls.append([str(a) for a in argv])
-        refused = "--user" in argv or argv[1:3] == ["-m", "venv"]
+        refused = "--user" in argv or argv[1:4] == ["-I", "-m", "venv"]
         return subprocess.CompletedProcess(argv, 1 if refused else 0, "", "")
     uv_dir = tmp_path / "tools" / "uv"
     venv = tmp_path / "venv"

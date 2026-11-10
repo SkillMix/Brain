@@ -125,8 +125,8 @@ def test_five_of_a_class_become_one_proposal_and_always_writes_the_choice(tmp_pa
     release.ship(roots["chloe"], now=NOW + 5 * H, offline_roots=roots)
     report = request.answer(roots["harbor"], now=NOW + 6 * H, offline_roots=roots)
     assert report.proposals == ["rq-propose-chloe-detail"]
-    with (roots["harbor"] / "log.md").open("a", encoding="utf-8") as fh:
-        fh.write(f"- {pages.iso(NOW + 7 * H)} yes rq-propose-chloe-detail by Ben Liu\n")
+    import status
+    status.record_verdict(roots["harbor"], "rq-propose-chloe-detail", "Ben Liu", verb="yes", at=NOW + 7 * H)
     request.answer(roots["harbor"], now=NOW + 7 * H, offline_roots=roots)
     assert {"from": "chloe", "class": "detail", "answer": "at_once"} in spaceyaml.load(roots["harbor"]).request_choices
 
