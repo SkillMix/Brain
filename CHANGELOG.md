@@ -19,6 +19,13 @@ the shape and ships its migration. Each choice behind a change has a line in
 
 ### Fixed
 
+- **The apps step and the routines see the connected apps again.** Unless `MCP_CONNECTION_NONBLOCKING`
+  is `false`, Claude's command line connects a person's apps in the background, and on Claude Code
+  2.1.312 its first event lists none of them: the apps step answered "No app is connected to Claude
+  yet." on an account with six, and a routine was granted no app's tools. A desktop session sets the
+  variable to `true` for the runs it starts, so setup's own runs took that value. Every run that
+  setup and the routines start (the readers, the probe, the sign-ins, a routine) now sets it to
+  `false`, whatever the caller's environment said, so the run waits for the apps and lists them.
 - **A cloud sweep no longer stops for good on a branch that will not merge.** When the last
   cloud run's branch conflicted with main (two candidate pages rewritten on both sides was
   enough), every later run stopped at its first step and the computer's sync would not adopt
