@@ -7,6 +7,26 @@ the shape and ships its migration. Each choice behind a change has a line in
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-11-15
+
+The template is hardened before it goes public: a release can no longer write outside its place,
+your answers live where routines cannot write them, and every path made from data is checked. The
+apps step and the routines see your connected apps again.
+
+### Security
+
+- **A red-team pass before the template goes public.** Its fixes: one path check for every path
+  made from data, so a released page or a file move cannot write outside its place; the person's
+  answers in `_meta/state/verdicts.jsonl`, which routines cannot write, with every earlier answer
+  kept by a one-time cut-over; the person's verbs refuse inside a routine; queue files, clone
+  addresses and template sources are validated between spaces; a withdrawal of a signed page waits
+  for its owner; and the secrets scan covers more formats.
+- **Template sync follows the template a space was made from.** Without `template:` in
+  `space.yaml` or `_meta/state/template-origin.yaml`, the source is the template GitHub recorded
+  when the space's repository was made, else the official one, never what the provenance says. A
+  space whose record names an earlier copy of the template sets `template: owner/name` once; the
+  sync stops and says so until it does.
+
 ### Added
 
 - **Search shows the matching lines.** `search.py lines "<term>"` prints every matching line with
