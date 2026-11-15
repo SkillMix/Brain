@@ -412,18 +412,22 @@ SESSION_PREFIXES = ("CLAUDE_CODE_", "CLAUDE_AGENT_SDK_")
 KEPT_ENV = (GIT_BASH, "CLAUDE_CONFIG_DIR")   # what every caller needs: the Git Bash Claude Code runs hooks in, the config
 # the client certificate a company network may require (mTLS): without it no run reaches the API at all (NB-4)
 KEPT_ENV += ("CLAUDE_CODE_CLIENT_CERT", "CLAUDE_CODE_CLIENT_KEY", "CLAUDE_CODE_CLIENT_KEY_PASSPHRASE")
+# Set in every run, over the caller's value (a desktop session's is `true`): unless it is `false`, `claude -p` connects
+# the connected apps in the background and its init lists none, so the probe saw no app and a routine was granted none.
+FORCED_ENV = {"MCP_CONNECTION_NONBLOCKING": "false"}
 
 
 def clean_env(env: dict) -> dict:
     """A copy of the environment as a routine sees it: without STRIPPED_ENV (keys, tokens, another provider) and without
-    the session's own variables (SESSION_ENV, and every name starting with SESSION_PREFIXES), but with KEPT_ENV.
-    Every run setup and the routines start goes through it: readers, the probe, the sign-ins and `routine_env`."""
+    the session's own variables (SESSION_ENV, and every name starting with SESSION_PREFIXES), but with KEPT_ENV, and
+    with FORCED_ENV set. Every run setup and the routines start goes through it: readers, the probe, the sign-ins and
+    `routine_env`."""
     def dropped(key: str) -> bool:
         name = key.upper()   # Windows ignores case
         if name in KEPT_ENV:
             return False
-        return name in STRIPPED_ENV or name in SESSION_ENV or name.startswith(SESSION_PREFIXES)
-    return {key: value for key, value in env.items() if not dropped(key)}
+        return name in STRIPPED_ENV or name in SESSION_ENV or name.startswith(SESSION_PREFIXES) or name in FORCED_ENV
+    return {**{key: value for key, value in env.items() if not dropped(key)}, **FORCED_ENV}
 
 
 def routine_env(env: dict, shell: str = "", windows: bool | None = None) -> dict:

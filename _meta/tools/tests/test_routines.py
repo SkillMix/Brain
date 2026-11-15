@@ -1043,7 +1043,7 @@ def test_a_routine_does_not_inherit_the_sessions_keys_tokens_or_provider():
            "CLAUDE_CODE_USE_BEDROCK": "1", "CLAUDE_CODE_USE_VERTEX": "1", "CLAUDE_CODE_USE_FOUNDRY": "1",
            "CLAUDE_CODE_OAUTH_TOKEN": "o", "CLAUDE_CONFIG_DIR": "/home/ada/.claude", "anthropic_api_key": "lower"}
     clean = routine.clean_env(env)
-    assert set(clean) == {"PATH", "CLAUDE_CONFIG_DIR"}   # the person's own configuration stays; Windows ignores case
+    assert set(clean) == {"PATH", "CLAUDE_CONFIG_DIR", *routine.FORCED_ENV}   # the person's own configuration stays; Windows ignores case
     assert len(env) == 10 and env["ANTHROPIC_API_KEY"] == "k"   # a copy: the caller's environment is not touched
 
 
@@ -2434,7 +2434,7 @@ def test_the_probe_writes_the_shell_it_proved_the_guard_in_and_a_run_pins_it(tmp
 
 def test_routine_env_pins_the_proven_bash_on_windows_only():
     env = {"PATH": "/bin", "Claude_Code_Git_Bash_Path": "C:/Other/bash.exe", "ANTHROPIC_API_KEY": "k"}
-    utf8 = {"PYTHONUTF8": "1"}   # every routine's Python prints any character a record carried
+    utf8 = {"PYTHONUTF8": "1", **routine.FORCED_ENV}   # every routine's Python prints any character a record carried
     assert routine.routine_env(env, "C:/Git/bin/bash.exe", windows=True) == {"PATH": "/bin", **utf8,
                                                                          "CLAUDE_CODE_GIT_BASH_PATH": "C:/Git/bin/bash.exe"}
     assert routine.routine_env(env, "/bin/sh", windows=False) == {"PATH": "/bin", **utf8,
@@ -3027,12 +3027,15 @@ def test_a_pause_twice_beside_a_claim_twice_or_a_pause_that_is_no_moment_is_stil
 def test_setup_and_reader_runs_drop_the_desktop_sessions_own_claude_variables():
     """A run started from the desktop session gets none of that session's own settings (its effort, entry point,
     child-session and SDK variables), so setup's runs are the runs the routines and cli-facts saw; Git Bash's path and
-    the person's configuration folder stay (R45, I-3; dry run B M-5). Every caller goes through `clean_env`."""
+    the person's configuration folder stay (R45, I-3; dry run B M-5), and the run waits for the connected apps whatever
+    the session set. Every caller goes through `clean_env`."""
     env = {"PATH": "/bin", "CLAUDECODE": "1", "CLAUDE_EFFORT": "xhigh", "CLAUDE_CODE_ENTRYPOINT": "claude-desktop",
            "CLAUDE_CODE_CHILD_SESSION": "1", "claude_code_sse_port": "4000", "CLAUDE_AGENT_SDK_VERSION": "0.2",
            "CLAUDE_CODE_GIT_BASH_PATH": "C:/Git/bin/bash.exe", "CLAUDE_CONFIG_DIR": "/home/ada/.claude",
-           "CLAUDE_CODE_OAUTH_TOKEN": "o", "CLAUDEX": "kept"}
-    assert set(routine.clean_env(env)) == {"PATH", "CLAUDE_CODE_GIT_BASH_PATH", "CLAUDE_CONFIG_DIR", "CLAUDEX"}
+           "CLAUDE_CODE_OAUTH_TOKEN": "o", "CLAUDEX": "kept", "mcp_connection_nonblocking": "true"}
+    clean = routine.clean_env(env)
+    assert set(clean) == {"PATH", "CLAUDE_CODE_GIT_BASH_PATH", "CLAUDE_CONFIG_DIR", "CLAUDEX", "MCP_CONNECTION_NONBLOCKING"}
+    assert clean["MCP_CONNECTION_NONBLOCKING"] == "false"   # the run waits for the connected apps, so its init lists them
     pinned = routine.routine_env(env, shell="C:/Program Files/Git/bin/bash.exe", windows=True)
     assert pinned["CLAUDE_CODE_GIT_BASH_PATH"] == "C:/Program Files/Git/bin/bash.exe" and "CLAUDE_EFFORT" not in pinned
 
@@ -3042,7 +3045,8 @@ def test_a_client_certificate_the_network_asks_for_stays_in_every_run():
     with it, and then no run reaches the API at all; those three names stay, beside Git Bash and the config."""
     mtls = {"CLAUDE_CODE_CLIENT_CERT": "/etc/ada.pem", "CLAUDE_CODE_CLIENT_KEY": "/etc/ada.key",
             "CLAUDE_CODE_CLIENT_KEY_PASSPHRASE": "p"}
-    assert routine.clean_env({"PATH": "/bin", "CLAUDE_CODE_ENTRYPOINT": "claude-desktop", **mtls}) == {"PATH": "/bin", **mtls}
+    assert routine.clean_env({"PATH": "/bin", "CLAUDE_CODE_ENTRYPOINT": "claude-desktop", **mtls}) == {"PATH": "/bin", **mtls,
+                                                                                                      **routine.FORCED_ENV}
 
 
 
