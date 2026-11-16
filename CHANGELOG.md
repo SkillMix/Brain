@@ -7,6 +7,20 @@ the shape and ships its migration. Each choice behind a change has a line in
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-11-16
+
+Spaces made from the template before it moved keep their updates: template sync no longer follows
+a template GitHub records as archived, so they follow the official template, without a
+`template:` line. Take this release rather than 0.3.3.
+
+### Fixed
+
+- **An archived template is no template to follow.** GitHub records the template a repository
+  was made from by repository, and reports it under its current name: after the move every space
+  made before it names the archive, and 0.3.3's sync stopped there. Template sync and onboarding
+  now read the record with its archived flag and treat an archived template as none, so the
+  space follows `template:` in `space.yaml`, its recorded origin, or the official template.
+
 ## [0.3.3] - 2026-11-15
 
 The template is hardened before it goes public: a release can no longer write outside its place,
