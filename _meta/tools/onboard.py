@@ -243,9 +243,10 @@ def template_repo(root, offline=False) -> str | None:
     remote = git_remote(root)
     if remote and not offline:
         try:
-            res = run_cmd(["gh", "api", f"repos/{remote}", "-q", ".template_repository.full_name"])
-            parent = (res.stdout or "").strip()
-            if res.returncode == 0 and parent and parent != "null":
+            import template_sync   # an archived template counts as none (template_sync.made_from)
+            res = run_cmd(["gh", "api", f"repos/{remote}", "-q", template_sync.TEMPLATE_RECORD])
+            parent, _, state = (res.stdout or "").strip().partition(" ")
+            if res.returncode == 0 and parent and parent != "null" and state != "archived":
                 return parent
         except Exception:
             pass

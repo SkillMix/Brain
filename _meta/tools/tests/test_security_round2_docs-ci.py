@@ -44,7 +44,7 @@ def _remote(space: Path, url: str) -> None:
 
 
 class FakeGh:
-    """`gh api repos/<x> -q .template_repository.full_name`, answering `answer` (or failing)."""
+    """`gh api repos/<x> -q <template_sync.TEMPLATE_RECORD>`, answering `answer` (or failing)."""
 
     def __init__(self, answer: str | None):
         self.answer, self.calls = answer, []
@@ -88,6 +88,15 @@ def test_the_template_github_recorded_is_followed(tmp_path, monkeypatch):
     # a repository made from no template follows the official one
     monkeypatch.setattr(template_sync.subprocess, "run", FakeGh("null"))
     assert template_sync.template_source(space, None) == template_sync.OFFICIAL_TEMPLATE
+    # ...and so does one made from a template since archived (a template that moved leaves one behind)
+    gh = FakeGh("lantern/brain-template archived")
+    monkeypatch.setattr(template_sync.subprocess, "run", gh)
+    assert template_sync.template_source(space, None) == template_sync.OFFICIAL_TEMPLATE
+    assert gh.calls[0][3:] == ["-q", template_sync.TEMPLATE_RECORD]
+    # its provenance, written when it followed that template under its old name, is not refused
+    (space / PROV).write_text(yaml.safe_dump({"repo": template_sync.OFFICIAL_TEMPLATE, "files": {}}), encoding="utf-8")
+    assert template_sync.template_source(space, None) == template_sync.OFFICIAL_TEMPLATE
+    (space / PROV).unlink()
     # GitHub cannot be asked: the sync stops rather than offer the official release
     monkeypatch.setattr(template_sync.subprocess, "run", FakeGh(None))
     with pytest.raises(template_sync.TemplateRefused, match="GitHub did not say"):

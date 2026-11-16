@@ -235,17 +235,23 @@ def _github_remote(root: Path) -> str | None:
     return None
 
 
+# GitHub's record of the template a repository was made from: "owner/name", "owner/name archived" or "null".
+TEMPLATE_RECORD = '.template_repository | if . then .full_name + (if .archived then " archived" else "" end) else "null" end'
+
+
 def made_from(root: Path) -> str | None:
     """The template GitHub recorded when this space's repository was created from one (`gh repo create
     --template`, onboarding's way), or None when it was not, or its origin is not on GitHub. The
-    platform writes that record once and no run can change it. A GitHub origin whose record cannot
-    be read stops the sync rather than falling back to the official template, which would offer a
-    space made from another template the wrong release."""
+    platform writes that record once and no run can change it, and it follows a renamed template to
+    its new name. An archived template counts as none: it is a template's former home or a dead one,
+    and has no release to offer. A GitHub origin whose record cannot be read stops the sync rather
+    than falling back to the official template, which would offer a space made from another
+    template the wrong release."""
     remote = _github_remote(root)
     if remote is None:
         return None
     try:
-        res = subprocess.run(["gh", "api", f"repos/{remote}", "-q", ".template_repository.full_name"],
+        res = subprocess.run(["gh", "api", f"repos/{remote}", "-q", TEMPLATE_RECORD],
                              capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.SubprocessError) as exc:
         res = subprocess.CompletedProcess([], 1, "", str(exc))
@@ -254,8 +260,8 @@ def made_from(root: Path) -> str | None:
         raise GitHubUnanswered(f"template sync: GitHub did not say which template {remote} was made from "
                               f"({said}); nothing was synced. Record it as `template: owner/name` in "
                               "space.yaml, or sign in with gh and run again")
-    found = (res.stdout or "").strip()
-    return repo_name(found) if found and found != "null" else None
+    found, _, state = (res.stdout or "").strip().partition(" ")
+    return repo_name(found) if found and found != "null" and state != "archived" else None
 
 
 def _is_folder(source: str) -> bool:
