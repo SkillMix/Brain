@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 600" width="1200" height="600" role="img" aria-labelledby="title desc" font-family="system-ui, sans-serif" text-anchor="middle">
+  <title id="title">How a company brain fits together</title>
+  <desc id="desc">Each person's mail, chat, calls, calendar and documents go into their own private workspace. A gate decides what may travel from a workspace to a walled project space or to the company brain. Nothing is signed or sent without a person's yes.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8a8680"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="600" rx="18" fill="#0d0d0f"/>
+
+  <!-- the three columns -->
+  <g fill="#de3a3c">
+    <rect x="40" y="40" width="26" height="3"/>
+    <rect x="430" y="40" width="26" height="3"/>
+    <rect x="910" y="40" width="26" height="3"/>
+  </g>
+  <g fill="#8a8680" font-size="13" font-weight="600" letter-spacing="2" text-anchor="start">
+    <text x="40" y="67">SOURCES</text>
+    <text x="430" y="67">WORKSPACES</text>
+    <text x="910" y="67">PROJECTS AND THE BRAIN</text>
+  </g>
+
+  <!-- arrows, under the boxes and the gate -->
+  <g fill="none" stroke="#8a8680" stroke-width="1.5" marker-end="url(#arrow)">
+    <path d="M270,175 L422,175"/>
+    <path d="M270,405 L422,405"/>
+    <path d="M690,175 L902,175"/>
+    <path d="M690,205 C760,205 760,350 820,350 L902,350"/>
+    <path d="M690,405 L902,405"/>
+  </g>
+  <g fill="#aaa6a1" font-size="14">
+    <text x="346" y="162">records in,</text>
+    <text x="346" y="199">each with its source</text>
+    <text x="346" y="392">records in</text>
+    <text x="834" y="162">project facts</text>
+    <text x="858" y="337">facts released</text>
+    <text x="834" y="392">facts released</text>
+  </g>
+
+  <!-- the gate: every arrow out of a workspace crosses it -->
+  <path d="M759,110 L759,462" stroke="#de3a3c" stroke-width="1.5" stroke-dasharray="4 6"/>
+  <g fill="#2a1416" stroke="#f2615b" stroke-width="1.5">
+    <rect x="-8" y="-8" width="16" height="16" transform="translate(759,175) rotate(45)"/>
+    <rect x="-8" y="-8" width="16" height="16" transform="translate(759,277.5) rotate(45)"/>
+    <rect x="-8" y="-8" width="16" height="16" transform="translate(759,405) rotate(45)"/>
+  </g>
+  <text x="759" y="491" fill="#f5f3f1" font-size="17" font-weight="600">The gate</text>
+  <text x="759" y="513" fill="#aaa6a1" font-size="14">an agent decides what may travel, a second agent checks</text>
+
+  <!-- sources -->
+  <g fill="#151518" stroke="#2b2b31" stroke-width="1.5">
+    <rect x="40" y="115" width="230" height="120" rx="12"/>
+    <rect x="40" y="357" width="230" height="96" rx="12"/>
+  </g>
+  <text x="155" y="163" fill="#f5f3f1" font-size="19" font-weight="600">Your sources</text>
+  <text x="155" y="189" fill="#aaa6a1" font-size="15">mail, chat, calls,</text>
+  <text x="155" y="209" fill="#aaa6a1" font-size="15">calendar, documents</text>
+  <text x="155" y="399" fill="#f5f3f1" font-size="19" font-weight="600">A colleague's sources</text>
+  <text x="155" y="424" fill="#aaa6a1" font-size="15">their own mail, chat, calls</text>
+
+  <!-- workspaces -->
+  <rect x="430" y="115" width="260" height="120" rx="12" fill="#1d1d21" stroke="#f2615b" stroke-width="1.5"/>
+  <rect x="430" y="357" width="260" height="96" rx="12" fill="#151518" stroke="#2b2b31" stroke-width="1.5"/>
+  <text x="560" y="161" fill="#f5f3f1" font-size="22" font-weight="600">Your workspace</text>
+  <text x="560" y="188" fill="#aaa6a1" font-size="15">a private git repository</text>
+  <text x="560" y="208" fill="#aaa6a1" font-size="15">only you read it</text>
+  <text x="560" y="399" fill="#f5f3f1" font-size="19" font-weight="600">A colleague's workspace</text>
+  <text x="560" y="424" fill="#aaa6a1" font-size="15">only they read it</text>
+
+  <!-- projects and the brain -->
+  <rect x="910" y="127" width="250" height="96" rx="12" fill="#151518" stroke="#2b2b31" stroke-width="1.5"/>
+  <rect x="910" y="315" width="250" height="130" rx="12" fill="#2a1416" stroke="#f2615b" stroke-width="1.5"/>
+  <text x="1035" y="170" fill="#f5f3f1" font-size="19" font-weight="600">Walled project space</text>
+  <text x="1035" y="196" fill="#aaa6a1" font-size="15">only its crew reads it</text>
+  <text x="1035" y="366" fill="#f5f3f1" font-size="24" font-weight="600">Company brain</text>
+  <text x="1035" y="394" fill="#d8d5d1" font-size="15">everyone reads it</text>
+  <text x="1035" y="416" fill="#aaa6a1" font-size="14">mounted read-only in every space</text>
+
+  <!-- what never happens without a person -->
+  <path d="M40,542 L1160,542" stroke="#2b2b31"/>
+  <circle cx="404" cy="568" r="9" fill="#de3a3c"/>
+  <path d="M399.5,568 L403,571.5 L409,564.5" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="612" y="573" fill="#f5f3f1" font-size="16" font-weight="600">Nothing is signed or sent without a person's yes</text>
+</svg>
