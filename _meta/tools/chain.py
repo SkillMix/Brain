@@ -60,6 +60,8 @@ LEAKS_PATH = Path("_meta") / "tests" / "leaks.yaml"
 # While the routines run in the cloud, the computer's sync scans the transcripts, the sweep chain's first
 # step, at most this often: the session files are on the computer, and the cloud sweep never reads them.
 TRANSCRIPTS_HOURS = 6
+# When no agent started the daily chain, the sync runs its steps that need no model at most this often
+MODEL_FREE_HOURS = 24
 
 
 # ----- steps -------------------------------------------------------------------------
@@ -232,7 +234,7 @@ def sweep_chain(root, now: dt.datetime | None = None, cloud: bool = False) -> di
 
 
 def daily(root, person: str | None = None, now: dt.datetime | None = None, shadow: bool = False,
-          offline_roots: dict | None = None, cloud: bool = False) -> dict:
+          offline_roots: dict | None = None, cloud: bool = False, model_free: bool = False) -> dict:
     """status → access → mount keys → crew logins → link check → requests → release (listed items only) → outbox
     reconcile → morning view → answer and leak tests.
 
@@ -240,14 +242,21 @@ def daily(root, person: str | None = None, now: dt.datetime | None = None, shado
     because the machinery it changes needs the person's click, and a cloud run never lands a
     protected change. The two request steps and the release leg stay there so that two writers
     never answer or ship the same item. The outbox is the cloud sweep's, and the link check runs
-    without GraphQL, which a cloud run refuses."""
+    without GraphQL, which a cloud run refuses.
+
+    `model_free` is the sync's own run of these steps when no agent started the daily
+    (`sync.Run.model_free_daily`): every step but two needs no model. It leaves out the morning
+    view, since nobody received a briefing and a window item ships only once one listed it, and
+    template sync, which waits for the person. Its run line says `daily_model_free` and the
+    `daily not started` entry stays, so the health line still says no agent ran the daily."""
     root = Path(root)
     space = spaceyaml.load(root)
     now = now or space.now()
     person = person or space.owner
-    ctx = _context("daily", root, now)
-    _started(space, "daily")
-    if not cloud and _template_sync_due(space, now):
+    ctx = _context("daily_model_free" if model_free else "daily", root, now)
+    if not model_free:
+        _started(space, "daily")
+    if not cloud and not model_free and _template_sync_due(space, now):
         _step(ctx, "template_sync", "template_sync", "guarded", root)
     _step(ctx, "status", "status", "run", root, now=now)
     _step(ctx, "access", "access", "run", root, now=now)   # readers on the host against the audience
@@ -263,7 +272,8 @@ def daily(root, person: str | None = None, now: dt.datetime | None = None, shado
         _step(ctx, "release", "release", "ship", root, now=now, offline_roots=offline_roots)
         if (root / "outbox").is_dir():
             _step(ctx, "outbox_reconcile", "outbox_reconcile", "run", root, now=now)
-    _step(ctx, "morning_view", "morning_view", "run", root, person, now=now, shadow=shadow)
+    if not model_free:
+        _step(ctx, "morning_view", "morning_view", "run", root, person, now=now, shadow=shadow)
     if (root / ANSWERS_PATH).exists():
         _step(ctx, "answers", "tests_run", "answers", root, now=now, roots=offline_roots)
     if (root / LEAKS_PATH).exists():

@@ -10,7 +10,9 @@ One routine owns structure. It acts on the mechanical and asks on the human.
 ## When
 
 - Scheduled: once a day (`routines.daily`), first step of the daily chain (status, then
-  release, then morning view).
+  release, then morning view). When no agent started the daily, the sync runs status itself,
+  once a day, without the model: pages, landing and the id index stay current, and what the
+  librarian proposes waits for the next run with an agent.
 - On request: "what is going on with X?" (run it, then read `live/subjects/<id>.md`); after
   a desk folder appears or a subject changes kind.
 

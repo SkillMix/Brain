@@ -29,6 +29,10 @@ routines only edit files. Each run:
      A conflict where origin holds only an earlier copy of this checkout's own change keeps ours
      (the rebuilt commits of step 6 share no history with it); any other conflict is
      aborted and recorded
+  5m. when stale.yaml says `daily not started`: run the daily chain's steps that need no model
+     (`model_free_daily`: status with landing and the id index, access, requests, release, the
+     tests; no morning view and no template sync), at most once a day and only on the computer
+     that runs the daily; the entry stays until an agent's own daily runs
   5a. when there is something to publish: run the answer tests; a question that fails is set
      aside (`held: {since, by: sync, missing}` in answers.yaml, named in the run line) so it
      cannot turn the pull request red and hold every other change back, and one the sync set
@@ -2185,6 +2189,57 @@ class Run:
         self.leg_state(transcripts=pages.iso(now))
         return transcripts.scan(self.root, now)
 
+    def model_free_daily(self, now: dt.datetime) -> bool:
+        """The daily chain's steps that need no model, run here when no agent started the daily: status with
+        landing, the librarian's proposals and the id index, access, requests, the release of what an earlier
+        briefing listed, the answer and leak tests (`chain.daily(model_free=True)`: no morning view, no template
+        sync). An agent that is signed out or out of allowance starts nothing, and the daily was the only caller
+        of all of these. It runs when stale.yaml says `daily not started` (`not_started` wrote it, and this run
+        leaves it: the entry goes when an agent's daily runs), at most every `chain.MODEL_FREE_HOURS`, and only
+        where the daily itself would run (`chain.gate`: this computer, not paused; a space whose owner's
+        workspace is not on this computer is its owner's). The clock is the run's own line in runs.jsonl
+        (`daily_model_free`), which needs no file outside the repository and travels with it; a run that fails
+        before the chain wrote one gets a line here, so it is said once and tried again a day later, not every
+        15 minutes. It runs also when this run could not merge main: the pages and the filing are this
+        checkout's own. What it wrote is committed with this run, or with the next once the files are old
+        enough. Never in the way of landing: a failure is said in the run line. True when it ran."""
+        import chain
+        import yaml
+        try:
+            data = yaml.safe_load((self.root / chain.STALE).read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError):
+            return False
+        if not isinstance(data, dict) or chain.NOT_STARTED.format("daily") not in data:
+            return False
+        try:
+            lines = (self.root / RUNS_PATH).read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            lines = []
+        for raw in lines:
+            if '"daily_model_free"' not in raw:
+                continue
+            try:
+                then = pages.parse_iso(json.loads(raw)["at"])
+            except (ValueError, KeyError, TypeError):
+                continue
+            if then <= now and now - then < self.space.scale(chain.MODEL_FREE_HOURS):
+                return False
+        try:
+            workspace = self.workspace()
+            if workspace is None or chain.gate(workspace, now=now, chain="daily"):
+                return False
+            done = chain.daily(self.root, now=now, model_free=True)
+        except Exception as exc:
+            self.error(f"the daily's steps without the model failed: {type(exc).__name__}")
+            self.append_line({"routine": "daily_model_free", "at": pages.iso(now), "space": self.space.name,
+                              "cost_tokens": 0, "notes": f"failed: {type(exc).__name__}"})
+            return False
+        self.notes["model_free"] = True
+        if done.get("errors"):
+            self.notes["model_free_errors"] = sorted(e["step"] for e in done["errors"])
+        self.stage_and_commit()
+        return True
+
     def adopt_cloud(self, now: dt.datetime) -> list:
         """The `cloud/<chain>` pull requests of this repository that nothing will merge, merged into this
         checkout with the merge rules (`adopt`), so that they ride this computer's own sync pull request, which
@@ -3451,6 +3506,8 @@ def sync_once(args) -> int:
                     print(f"sync: {CANNOT_SIGN} ({why}); its commits land unsigned, a signature waits for the click")
             if leg:
                 run.computer_leg(run.now)
+            if not args.only and not run.dry:
+                run.model_free_daily(run.now)
             if not args.only:
                 run.set_aside_tests()
                 if not run.dry and not args.no_push:
