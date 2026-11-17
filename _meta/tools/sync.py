@@ -94,7 +94,8 @@ a private zone, a mount or a nested checkout, or any pin, even one staged by for
 starts runs with a mount's own file monitor off (`monitor_off`), a command a mount's git config
 could name. A line the secret scan hits is replaced by `[a line held back: <kind>]` (a private key
 from its BEGIN line to its END line) and the page lands, since the clone is thrown away; a file over
-1 MB, not text, or that would not read with its lines held back is named in the run line. After the
+1 MB (the tools' own logs, CLOUD_LOGS, at any size the scan reads whole: a run line must land), not
+text, or that would not read with its lines held back is named in the run line. After the
 merge of main and the answer tests (steps 5 and 5a), the push goes to `cloud/<chain>`, leased to the
 head the carry saw; refused, it carries again and pushes once more. Run lines, marks and stale.yaml
 alone open no pull request until the branch's oldest commit main lacks is QUIET_HOURS old, unless
@@ -219,6 +220,11 @@ CLOUD_QUIET = ("_meta/state/runs.jsonl", "_meta/state/stale.yaml", "_meta/state/
 LFS_POINTER = b"version https://git-lfs.github.com/spec/v1"   # a Git LFS pointer's first line
 LFS_OID = re.compile(rb"(?m)^oid sha256:([0-9a-f]{64})$")
 CLOUD_MAX_BYTES = 1_000_000   # a file larger than this, or not text, is named in the run line and never landed
+# The tools' own append-only logs grow by a line with every run and pass that size for good one day: held back,
+# a cloud run's own run line and the router's log would never land again, and the health signals would say the
+# cloud is not running. They land at any size the secret scan still reads whole (`scan.SCAN_MAX_BYTES`, 25 MB:
+# years of run lines; past it a log is held again, and it is time to start a new one).
+CLOUD_LOGS = ("_meta/state/*.jsonl", "log.md")
 CLOUD_ITEMS = Path("_inbound") / "needs-you" / "sync-cloud.yaml"
 CLOUD_REMERGE = 3   # merges of main while the pull request conflicts with it, before it is left open
 POLL_SECONDS, WAIT_MINUTES = 20, 9   # how often a cloud run reads its pull request, and for how long at most
@@ -934,7 +940,7 @@ class Run:
                 self.left_out.add(rel)
             elif rel in self.held or path.is_dir():
                 continue
-            elif os.path.lexists(path) and not self.landable_text(path):
+            elif os.path.lexists(path) and not self.landable_text(path) and self.log_text(rel) is None:
                 if rel not in self.held:
                     print(f"left out: {rel} is over 1 MB or not text")
                 self.held.add(rel)
@@ -1011,6 +1017,24 @@ class Run:
             return False
         return scan.text_of(path) is not None
 
+    def log_text(self, rel: str) -> str | None:
+        """The text of one of the tools' own logs (CLOUD_LOGS) at any size the secret scan reads whole, where
+        `scan.text_of` stops at 1 MB; None for any other file, and for a log that is a link, larger still or
+        not UTF-8 text. A cloud run lands such a log (`keep_out`) and holds its lines back like any other
+        file's (`hold_lines`)."""
+        path = self.root / rel
+        # fnmatch's * crosses a /: a log is a file of that folder itself, never one further down
+        if not any(fnmatch.fnmatchcase(rel, rule) and rel.count("/") == rule.count("/") for rule in CLOUD_LOGS) \
+                or pages.is_link(path):
+            return None
+        try:
+            if not path.is_file() or path.stat().st_size > scan.SCAN_MAX_BYTES:
+                return None
+            data = path.read_bytes()
+            return None if b"\0" in data[:scan.SNIFF_BYTES] else data.decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+
     def hold_lines(self, rels: list[str]) -> int:
         """In a cloud run, each line of `rels` the secret scan hits is replaced, in the file, by `[a line
         held back: <kind>]`, so the page lands without it: a computer leaves such a file local, and the
@@ -1023,7 +1047,8 @@ class Run:
         count = 0
         for rel in rels:
             path = self.root / rel
-            text = None if path.is_symlink() else scan.text_of(path)   # a link lands as its target's name
+            # a link lands as its target's name; a log past the text reader's size is read here
+            text = None if path.is_symlink() else (scan.text_of(path) or self.log_text(rel))
             if text is None:
                 continue
             kinds = held_lines(text, rel)

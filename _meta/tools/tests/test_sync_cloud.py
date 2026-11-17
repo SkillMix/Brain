@@ -355,6 +355,32 @@ def test_a_held_line_keeps_its_indent_and_yaml_still_reads(repo, monkeypatch):
     assert TOKEN in (repo / links).read_text(encoding="utf-8")   # left as it was, in the clone
 
 
+def test_a_run_log_past_the_size_cap_still_lands_so_the_runs_own_line_does(repo, monkeypatch):
+    old = json.dumps({"routine": "sweep", "at": "2026-01-01T00:00:00Z", "space": "ada", "cost_tokens": 0,
+                      "notes": "x" * 200}) + "\n"
+    decided = json.dumps({"at": "2026-01-01T00:00:00Z", "record": "m-1", "decision": "private"}) + "\n"
+    routing = repo / "_meta" / "state" / "routing.jsonl"
+    write(repo / RUNS, old)
+    write(routing, decided)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "the logs, as every space tracks them")
+    git(repo, "push", "-q", "origin", "main")
+    begin(repo)
+    write(repo / RUNS, old * (sync.CLOUD_MAX_BYTES // len(old) + 2))   # a year of run lines: over the cap
+    write(routing, decided * (sync.CLOUD_MAX_BYTES // len(decided) + 2) + f"note: {TOKEN}\n")
+    write(repo / "_meta" / "state" / "deeper" / "export.jsonl", old * (sync.CLOUD_MAX_BYTES // len(old) + 2))
+    write(repo / "work" / "notes.md", "# Notes\n\nline two\n")
+    code, _ = land(repo, monkeypatch, CloudGh(Path()), "--no-push")
+    assert code == 0
+    assert sorted(git(repo, "show", "--name-only", "--format=", "HEAD").stdout.split()) == [
+        "_meta/state/routing.jsonl", RUNS, "work/notes.md"]
+    line = line_at(repo, "HEAD")   # the cloud run's own line landed with its commit
+    assert line["routine"] == "sync" and line["cloud"] == "sweep"
+    assert line["notes"]["held"] == ["_meta/state/deeper/export.jsonl"]   # a large file further down is no log
+    landed = shown(repo, "HEAD", "_meta/state/routing.jsonl")   # a large log is scanned like any other file
+    assert TOKEN not in landed and landed.splitlines()[-1] == "[a line held back: github_token]"
+
+
 def test_a_large_file_is_named_not_landed(repo, monkeypatch):
     begin(repo)
     write(repo / "work" / "big.md", "x" * (sync.CLOUD_MAX_BYTES + 1))
