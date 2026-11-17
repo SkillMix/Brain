@@ -3,7 +3,8 @@
 The one tool that runs git. The OS scheduler runs it every 15 minutes; sessions and
 routines only edit files. Each run:
 
-  1. take `.git/sync.lock`; skip if another run holds it or git is mid-operation
+  1. take `.git/sync.lock`; skip if another run holds it or git is mid-operation (a merge, a rebase
+     or an index lock; one left behind for BEHIND_HOURS is one Needs-you item, `left_behind`)
   1a. name in stale.yaml each chain whose scheduler stopped starting it and each stage whose last
      run is past its window (`not_started`: `<chain> not started`, `<stage> stale`); while
      the routines run in the cloud, after step 5 instead (the computer's leg, below)
@@ -31,7 +32,9 @@ routines only edit files. Each run:
      and an item under _inbound/ or _outbound/ that one side deleted stays deleted (`resolve`).
      A conflict where origin holds only an earlier copy of this checkout's own change keeps ours
      (the rebuilt commits of step 6 share no history with it); any other conflict is
-     aborted and recorded
+     aborted and recorded. A fetch that fails, a merge that stops or a run that dies, for
+     BEHIND_HOURS and BEHIND_RUNS runs in a row, is one Needs-you item, with since when and what
+     is in the way (`behind_health`)
   5m. when stale.yaml says `daily not started`: run the daily chain's steps that need no model
      (`model_free_daily`: status with landing and the id index, access, requests, release, the
      tests; no morning view and no template sync), at most once a day and only on the computer
@@ -234,6 +237,12 @@ ADOPTED = "sync-adopted"   # in the git dir: the cloud heads merged here (`adopt
 LEG_STATE = "sync-leg-{}.json"   # under ~/.spaces/, beside the progress page: the leg's clocks for one space
 HEALTH_STATE = "sync-health-{}.json"   # beside it: what the sync keeps about itself on this computer (`health_state`)
 SYNC_ITEMS = Path("_inbound") / "needs-you" / "sync.yaml"   # the leg's items on Needs you
+# A failed fetch and a merge that stops are tried again on the next run, and a run is skipped while git is
+# mid-operation: right for an hour, and silent for good when the cause stays. Once the same cause has kept this
+# computer from bringing main in for BEHIND_HOURS, it is one Needs-you item (`behind_item`).
+BEHIND_HOURS = 24
+BEHIND_RUNS = 4   # and this many runs in a row: one failed run after a weekend asleep is no alarm
+BEHIND_ITEM = "sync-behind-"
 # What the sync left on this computer, why and since when (`Run.left_local_health`): in the private zone, never staged
 LEFT_LOCAL = spaceyaml.PRIVATE_STATE / "left-local.json"
 LEFT_LOCAL_DAYS = 7   # a path left local this long becomes one Needs-you item
@@ -689,6 +698,61 @@ def items_in(path: Path) -> list:
         data = {}
     rows = data.get("items") if isinstance(data, dict) else None
     return [i for i in rows if isinstance(i, dict)] if isinstance(rows, list) else []
+
+
+def behind_item(root: Path, cause: str | None, since: str = "", detail: str = "") -> None:
+    """The item that says this computer cannot bring main in, in the sync's own Needs-you file: `cause` is
+    "fetch", "merge", "run" (the run itself fails), or the name of the git operation a skipped run found
+    (`in_progress`); `since` when it began, `detail` what a merge stops on or how the run fails. None takes
+    every such item out: a run brought main in. The id holds
+    the cause and the day it began, so one incident the person answered is not asked again and the same cause
+    another day is a new item. The file is written only when that changes it."""
+    import needs_you
+    path = Path(root) / SYNC_ITEMS
+    before = items_in(path)
+    items = [i for i in before if not str(i.get("id", "")).startswith(BEHIND_ITEM)]
+    if cause:
+        day = since[:10] or "an earlier run"
+        apart = "so nothing from main arrives here and nothing from here lands"
+        if cause == "fetch":
+            text = f"This computer has not reached the repository since {day}: every fetch fails, {apart}."
+            advice = "yes: an agent checks the connection and the sign-in of git and gh on this computer"
+            default = "the sync tries again every run; this computer stays apart from main until a fetch works"
+        elif cause == "merge":
+            text = (f"This computer has not merged main since {day}: the merge stops on "
+                    f"{detail or 'a change git cannot merge'}, so nothing from main arrives here.")
+            advice = "yes: an agent shows you both versions of each file and settles them with you"
+            default = "the sync tries again every run; this computer stays apart from main until the merge goes through"
+        elif cause == "run":
+            text = (f"The sync has failed on every run since {day} ({detail or 'an error'}), so what is written "
+                    "here may not land and nothing from main arrives.")
+            advice = "yes: an agent reads the sync's run lines and says what stops it"
+            default = "the sync tries again every run and fails the same way"
+        else:
+            text = (f"The sync has skipped every run since {day}: git says an operation is in progress ({cause}), "
+                    f"and one that lasts a day was left behind, {apart}.")
+            advice = ("yes: an agent checks that no git command is running and says which file is in the way; it "
+                      "removes nothing without your word")
+            default = "every run is skipped until the file is gone"
+        item_id = BEHIND_ITEM + "-".join(part for part in (re.sub(r"[^a-z0-9]+", "-", cause.lower()).strip("-") or "git",
+                                                           since[:10].replace("-", "")) if part)
+        if item_id not in needs_you.answered_ids(root):
+            items.append({"id": item_id, "kind": "request", "text": text, "recommendation": advice,
+                          "default": default, "depends": 1})
+    items_out(path, items, before)
+
+
+def left_behind(root: Path, gdir: Path, name: str) -> None:
+    """A run skipped because git is mid-operation (`in_progress`) is right while a commit or a merge runs, and
+    wrong for good when the marker was left by one that died: every later run is skipped, and nothing says so.
+    Once the marker is BEHIND_HOURS old, by its own time, the item says it (`behind_item`). Never in the way
+    of the next run: a failure here is said on the console only."""
+    try:
+        made = (gdir / name).stat().st_mtime
+        if time.time() - made >= spaceyaml.load(root).scale(BEHIND_HOURS).total_seconds():
+            behind_item(root, name, pages.iso(dt.datetime.fromtimestamp(made, dt.timezone.utc)))
+    except Exception as exc:
+        print(f"sync: the item for the operation left behind was not written ({type(exc).__name__})")
 
 
 def items_out(path: Path, items: list, before: list) -> bool:
@@ -1573,6 +1637,7 @@ class Run:
         if git(self.root, "fetch", "--quiet", "--prune", "--no-recurse-submodules", "origin").returncode != 0:
             self.error("fetch failed")
             self.behind = True
+            self.apart = ("fetch", "")
             return
         if not self.has_origin_main():
             return
@@ -1580,6 +1645,7 @@ class Run:
         links_before = tracked_links(self.root)
         done = git(self.root, "merge", "--no-edit", "origin/main")
         if done.returncode != 0 and not self.settle():
+            self.apart = ("merge", ", ".join(self.conflicted()[:5]))
             git(self.root, "merge", "--abort")
             self.behind = True
             self.notes["conflict"] = True
@@ -1590,6 +1656,7 @@ class Run:
             # a link merged in points this computer's next write or read anywhere: undone, and said
             undone = git(self.root, "reset", "-q", "--keep", before).returncode == 0
             self.behind = True
+            self.apart = ("merge", f"{len(brought)} symbolic link(s) that main brings in")
             self.notes["links"] = len(brought)
             print(f"merge: origin/main brings in {len(brought)} symbolic link(s); "
                   + ("the merge was undone" if undone else "the merge could not be undone"))
@@ -1605,6 +1672,32 @@ class Run:
             return
         if git(self.root, "rev-parse", "HEAD").stdout.strip() != before:
             print("merge: origin/main brought in")
+
+    def behind_health(self) -> None:
+        """At the end of a run: when the fetch failed, the merge stopped or was undone, or the run itself died
+        (`self.apart`), since when the same cause has lasted and for how many runs in a row goes on this
+        computer's own clock (`health_state`; where that file cannot be written the clock starts again every
+        run and nothing is ever said). Once that is BEHIND_HOURS and BEHIND_RUNS, the cause is one Needs-you item
+        (`behind_item`): a single failed run after days asleep is not. A run that brought main in clears the
+        clock and takes the item out, one left by a git operation that was in the way included. Only a whole
+        run on the computer writes it."""
+        if self.dry or self.cloud or getattr(self.args, "only", None):
+            return
+        cause, detail = getattr(self, "apart", None) or (None, "")
+        if cause is None:
+            self.health_state(behind=None)
+            behind_item(self.root, None)
+            return
+        was = self.health_state().get("behind")
+        was = was if isinstance(was, dict) and was.get("cause") == cause and was.get("since") else {}
+        since, runs = str(was.get("since") or pages.iso(self.now)), int(was.get("runs") or 0) + 1
+        self.health_state(behind={"cause": cause, "since": since, "runs": runs})
+        try:
+            aged = self.now - pages.parse_iso(since) >= self.space.scale(BEHIND_HOURS)
+        except (TypeError, ValueError, OverflowError):
+            aged = False
+        if aged and runs >= BEHIND_RUNS:
+            behind_item(self.root, cause, since, detail)
 
     def merge_rules(self) -> None:
         """The rules of `MERGE_RULES` in this space's own git (`info/attributes`, which outranks .gitattributes):
@@ -3665,6 +3758,8 @@ def sync_once(args) -> int:
     busy = in_progress(gdir)
     if busy:
         print(f"sync: skipped, git is mid-operation ({busy})")
+        if not args.dry_run and not args.cloud and not args.only:
+            left_behind(root, gdir, busy)
         return SKIPPED
     run = Run(root, gdir, args)
     if not run.lock():
@@ -3708,7 +3803,12 @@ def sync_once(args) -> int:
             run.left_local_health()
     except Exception as exc:  # unexpected: record, never lose the lock
         run.error(f"{type(exc).__name__}: {str(exc)[:200]}")
+        run.apart = getattr(run, "apart", None) or ("run", type(exc).__name__)
     finally:
+        try:   # said on Needs you once the same cause has kept this computer apart for a day (`behind_health`)
+            run.behind_health()
+        except Exception as exc:
+            run.error(f"behind check: {type(exc).__name__}")
         if not run.dry and not args.cloud:   # a cloud run's line went into its commit (`cloud_line`)
             run.record()
         run.unlock()

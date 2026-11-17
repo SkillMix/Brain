@@ -15,6 +15,10 @@ on disk. A cloud sweep run starts it once at its end, for each of its spaces.
   timer on a Linux that has a user session, else a cron line), one task per checkout on the machine.
   All but cron run a start missed while the machine slept as soon as it wakes.
 - By hand, only when the person asks to land now or asks why something did not land.
+- A fetch that fails, a merge that stops, a run that dies and a run skipped because git is
+  mid-operation are tried again on the next run. Once the same cause has lasted a day, over at
+  least four runs in a row, it is one item on Needs you, with since when and what is in the way
+  (the files of a merge, the name of a lock left behind). It goes when a run brings main in again.
 - The sync is also the alarm for everything else, since the OS runs it whatever the agents do. A
   chain that did not start, a stage whose last run is past its window (sweep, distill and the
   router after twice the sweep's longest gap; status and release after two days) and a mount
