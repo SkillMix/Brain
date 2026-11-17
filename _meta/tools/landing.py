@@ -859,6 +859,7 @@ def verified(fm: dict, cache: dict, space=None, reg=None) -> bool | str:
 
 def land(root, space: spaceyaml.Space | None = None, reg=None, now: dt.datetime | None = None) -> LandingReport:
     root = Path(root)
+    pages.refuse_copy(root)
     space = space or spaceyaml.load(root)
     now = now or space.now()
     import classify   # registry notes first: what lands below reads the registry as they left it
@@ -1205,6 +1206,7 @@ def retract(root, page_id: str, by: str, why: str = "", now: dt.datetime | None 
     if running:
         raise ValueError(f"refused: {running}; a routine never withdraws what a person signed or released (rules.md section 1)")
     root = Path(root)
+    pages.refuse_copy(root)
     space = spaceyaml.load(root)
     now = now or space.now()
     if not str(by or "").strip():

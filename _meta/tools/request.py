@@ -282,6 +282,7 @@ def readable_here(space: spaceyaml.Space, home: str | None) -> bool:
 def ask(root, subject: str, cls: str, question: str, narrowest: str = "", asked_by: str = "",
         now: dt.datetime | None = None, force: bool = False, readdressed_from: list | None = None) -> Path | None:
     root = Path(root)
+    pages.refuse_copy(root)
     space = spaceyaml.load(root)
     now = now or space.now()
     reg = registry_mod.Registry(root, space)
@@ -358,6 +359,7 @@ def collect(root, now: dt.datetime | None = None, offline_roots: dict | None = N
     """Land arrived answers as dated evidence; re-address a request whose subject's home moved
     (`_readdress`); mark expired requests; tell the person."""
     root = Path(root)
+    pages.refuse_copy(root)
     space = spaceyaml.load(root)
     now = now or space.now()
     report = Report()
@@ -517,6 +519,7 @@ def _answer_digest(path: Path) -> str:
 def answer(root, now: dt.datetime | None = None, offline_roots: dict | None = None) -> Report:
     """The channel step: answer from standing choices, list the remainder, expire, propose."""
     root = Path(root)
+    pages.refuse_copy(root)
     holder = spaceyaml.load(root)
     now = now or holder.now()
     report = Report()

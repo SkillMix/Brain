@@ -283,6 +283,8 @@ A tool is conformant when it:
 - never writes `status: stable` except while executing a named person's verdict whose
   fingerprint matches the text that lands;
 - never runs git: the sync script commits, the platform merges;
+- never writes inside a mount, or any other copy of another space: a verdict on another space's
+  item is given in that space's own checkout;
 - respects the badge: nothing above `propose` for `send_outward` and `spend`; a release
   only through the queue, by class, after the window and the morning view when it widens;
 - appends one run line per run and leaves yesterday's output, labelled, when it fails;

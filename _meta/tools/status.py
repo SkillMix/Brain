@@ -1574,6 +1574,8 @@ def _weekly_probe(root: Path, space, now) -> bool:
 # ----- the run ----------------------------------------------------------------
 def run(root, now=None, check: bool = False) -> StatusReport:
     root = Path(root)
+    if not check:
+        pages.refuse_copy(root)
     space = spaceyaml.load(root)
     now = now or space.now()
     report = StatusReport()

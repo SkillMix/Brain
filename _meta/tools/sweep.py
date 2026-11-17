@@ -641,6 +641,8 @@ def signal_for(subject_id: str, destination: str, now: dt.datetime) -> dict:
 # ----- the run -------------------------------------------------------------------
 def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepReport:
     root = Path(root)
+    if not dry_run:
+        pages.refuse_copy(root)
     space = spaceyaml.load(root)
     now = now or space.now()
     reg = registry.Registry(root, space)

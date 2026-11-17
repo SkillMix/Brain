@@ -1658,6 +1658,7 @@ def _verdicts(root) -> dict:
 def apply_verdicts(root, now=None) -> dict:
     """Act on the person's answers to this tool's items; answered items leave the file (a
     planned space stays until it exists, so a yes can make it now)."""
+    pages.refuse_copy(root)
     root, space, reg, now = _load(root, now)
     given = _verdicts(root)
     out = {"applied": 0, "dropped": 0, "errors": []}

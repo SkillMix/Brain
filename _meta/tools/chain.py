@@ -33,6 +33,7 @@ refuses the virtual clock, and the function refuses to apply verdicts.
     python chain.py sweep [root] [--cloud]
     python chain.py daily [root] [--person <name>] [--shadow] [--offline name=path ...] [--cloud]
     python chain.py gate [workspace]
+    python chain.py checkout <root> <mount>    this machine's own checkout of a space <root> mounts
     python chain.py virtual --days N --roots a b c [--steps 3] [--persons a=Ada ...]
                             [--offline name=path ...]          (fixture spaces only)
 """
@@ -492,6 +493,33 @@ def _pairs(values) -> dict:
 PROFILE_ORDER = {"personal": 0, "project": 1, "channel": 2, "brain": 3}
 
 
+def _machine_roots() -> list:
+    """The folders `~/.spaces/spaces.yaml` lists: every checkout on this machine with a sync task."""
+    path = Path.home() / ".spaces" / "spaces.yaml"
+    try:
+        rows = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("spaces") or []
+    except (OSError, ValueError):
+        rows = []
+    return [Path(str(row.get("root") or "")) for row in rows if isinstance(row, dict)]
+
+
+def checkout_of(root, mount: str) -> Path | None:
+    """This machine's own checkout of the space that `root` mounts as `mount`, or None. A mount is a
+    read-only copy (`pages.copy_of`), so a verdict on one of its items is given in that checkout;
+    with none on this machine it becomes a request to that space."""
+    try:
+        name = spaceyaml.load(spaceyaml.load(root).mount_root(mount)).name
+    except Exception:   # no such mount here, or one that is not on disk
+        return None
+    for other in _machine_roots():
+        try:
+            if spaceyaml.load(other).name == name and pages.copy_of(other) is None:
+                return other.resolve()
+        except Exception:
+            continue
+    return None
+
+
 def spaces_on_machine(workspace, person: str | None = None) -> list:
     """The roots the person's chains run over: their workspace first, then every space on this
     machine with a sync task (`~/.spaces/spaces.yaml`) that they own, projects before
@@ -499,14 +527,8 @@ def spaces_on_machine(workspace, person: str | None = None) -> list:
     its owner's machine, so a space's chain runs in one place."""
     workspace = Path(workspace).resolve()
     person = person or spaceyaml.load(workspace).owner
-    path = Path.home() / ".spaces" / "spaces.yaml"
-    try:
-        rows = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("spaces") or []
-    except (OSError, ValueError):
-        rows = []
     found = []
-    for row in rows:
-        root = Path(str(row.get("root") or ""))
+    for root in _machine_roots():
         if not (root / "space.yaml").exists() or root.resolve() == workspace:
             continue
         try:
@@ -538,6 +560,9 @@ def main(argv=None) -> int:
     places = sub.add_parser("spaces")
     places.add_argument("root", nargs="?", default=".")
     places.add_argument("--person")
+    real = sub.add_parser("checkout")
+    real.add_argument("root")
+    real.add_argument("mount")
     virt = sub.add_parser("virtual")
     virt.add_argument("--days", type=int, required=True)
     virt.add_argument("--roots", nargs="+", required=True)
@@ -559,6 +584,14 @@ def main(argv=None) -> int:
     if args.command == "spaces":
         for root in spaces_on_machine(Path(args.root), args.person):
             print(root.as_posix())
+        return 0
+    if args.command == "checkout":
+        found = checkout_of(Path(args.root), args.mount)
+        if found is None:
+            print(f"this computer has no checkout of {pages._shown(args.mount)}: nothing is answered in the "
+                  "mount; ask that space instead (request.py ask)", file=sys.stderr)
+            return 1
+        print(found.as_posix())
         return 0
     if args.command == "sweep":
         result = sweep_chain(Path(args.root), cloud=args.cloud)

@@ -557,6 +557,7 @@ def run(root, now: dt.datetime | None = None, rebuild: bool = False,
     """One distill pass. `rebuild` writes each subject candidate from scratch; with a
     `subject_id` only that subject's candidate is rebuilt and the watermark stays."""
     root = Path(root)
+    pages.refuse_copy(root)
     space = spaceyaml.load(root)
     now = now or space.now()
     reg = registry_mod.Registry(root, space)
@@ -755,6 +756,7 @@ def verify_body(root, fm: dict, body: str, offset: int = 0) -> list:
 
 def checked(root, candidate, by: str, now: dt.datetime | None = None) -> list:
     """Stamp `checked: {by, at}` on a clean candidate; the problems, and no stamp, otherwise."""
+    pages.refuse_copy(root)
     problems = verify(root, candidate)
     if problems:
         return problems
