@@ -287,7 +287,8 @@ A tool is conformant when it:
   item is given in that space's own checkout;
 - respects the badge: nothing above `propose` for `send_outward` and `spend`; a release
   only through the queue, by class, after the window and the morning view when it widens;
-- appends one run line per run and leaves yesterday's output, labelled, when it fails;
+- appends one run line per run and leaves yesterday's output, labelled, when it fails; a stage
+  whose last run is past its window is named in `_meta/state/stale.yaml` and on Needs you;
 - passes `validate.py` on what it wrote and keeps the answer and leak tests green;
 - works from the files alone, on any harness; a connector, a search engine or a tracker is an
   adapter outside the shape (files in, files out).

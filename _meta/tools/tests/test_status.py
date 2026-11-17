@@ -335,7 +335,7 @@ def test_health_lines(tmp_path):
     text = (root / "live" / "health.md").read_text(encoding="utf-8")
     line = ("- ada: runs 2 in 24h, cost 1234 tokens, checker hit rate 0.50, held in doubt 1, "
             "open questions 1, candidates 1, probe none yet, capture rate n/a, "
-            "requests asked 0 answered 0 expired 0, index none, links 0")
+            "requests asked 0 answered 0 expired 0, index none, links 0, last ran: sweep 10-12, status 10-12")
     assert line in text
     assert ("- brain: runs 0 in 24h, cost 0 tokens, checker hit rate n/a, held in doubt 0, "
             "open questions 0, candidates 0, probe none yet, requests asked 0 answered 0 expired 0, "
