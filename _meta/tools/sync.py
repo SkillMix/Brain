@@ -173,7 +173,7 @@ BATCH_HOURS = 1   # journal lines and run logs alone go out at most this often
 RUNS_PATH = Path("_meta") / "state" / "runs.jsonl"
 RUN_LOGS = {"_meta/state/tests.jsonl", "_meta/state/probe.jsonl"}
 NOTABLE = ("committed", "pins", "conflict", "scan_hits", "errors", "held_tests", "restored_tests",
-           "healing", "healed", "pr_red", "adopted")
+           "healing", "healed", "pr_red", "adopted", "gap_hours")
 HEAL_STATE = "sync-heal.json"   # in the git dir: the repair waiting to be seen merged
 HEAL_RERUNS = 3   # reruns of one sync pull request's failed checks a day, at most
 CHAINS = {"sweep_chain": "sweep-chain", "daily": "daily-chain"}   # run line routine: its routine prompt
@@ -1316,6 +1316,7 @@ class Run:
             done = git(self.root, "submodule", "update", "--remote", "--", sub)
             if done.returncode != 0:
                 self.error(f"pins: update of {sub} failed")
+                held.append(sub)
                 continue
             after = git(self.root / sub, "rev-parse", "HEAD").stdout.strip()
             if after != before:
@@ -1327,20 +1328,24 @@ class Run:
             self.pins_held(held)
 
     def sync_gap(self) -> None:
-        """The sync's own last run, kept on this computer's clock (`leg_state`): when the run before this one
-        was more than SYNC_GAP_HOURS ago (the computer slept, or its scheduler stopped starting the sync), the
-        run line says for how many hours, as `gap_hours`. Only a whole run on the computer counts."""
+        """The sync's own last run, kept on this computer's clock (`leg_state`, one small file outside the
+        repository written every run): when the run before this one was more than SYNC_GAP_HOURS ago (the
+        computer slept, or its scheduler stopped starting the sync), this run writes a line that says for how
+        many hours, as `gap_hours`. No item: a laptop that slept would raise one every morning. Only a whole
+        run on the computer counts."""
         ago = self.since("sync", self.now)
         if ago is not None and ago > self.space.scale(SYNC_GAP_HOURS):
             self.notes["gap_hours"] = round(ago.total_seconds() / 3600)
         self.leg_state(sync=pages.iso(self.now))
 
     def pins_held(self, held: list) -> None:
-        """The mounts this run could not move because something wrote into them (`advance_pins`): named in the
-        run line, each with since when, on this computer's own clock (`leg_state`). One held for PIN_DAYS is a
-        stale stage, `<mount> pin stale` in stale.yaml, which the health line and the stale item show: a copy
-        that stopped following its space is still read as if it were current. The entry goes when the mount
-        moves again. stale.yaml is written only when that changes it."""
+        """The mounts this run could not move, because something wrote into them or their update failed
+        (`advance_pins`): named in the run line, each with since when, on this computer's own clock
+        (`leg_state`; where that file cannot be written the clock starts again every run and no mount is ever
+        called stale). One held for PIN_DAYS is a stale stage, `<mount> pin stale` in stale.yaml, which the
+        health line and the stale item show: a copy that stopped following its space is still read as if it
+        were current. The entry goes when the mount moves again. stale.yaml is written only when that changes
+        it."""
         import chain
         import yaml
         before = self.leg_state().get("pins_held")
@@ -1373,8 +1378,10 @@ class Run:
         stage past its window (`not_started`), a mount held for a week (`pins_held`). The health line and the
         briefing show stale.yaml too, but the daily chain writes both, and it is the first thing to stop: this
         item is the sync's own, and the session start reads it. The run line names them as `stale`. The item's
-        id is the set of names, so a set is asked once, and the item goes when nothing is late. While the
-        routines are paused nothing is asked: the person stopped them. Only a whole run on the computer writes it."""
+        id is the set of names with since when each is late, so one incident is asked once, the same stage late
+        again later is a new item (Needs you hides an id that has an answer), and the item goes when nothing is
+        late. While the routines are paused nothing is asked: the person stopped them. Only a whole run on the
+        computer writes it."""
         if self.dry or self.cloud or getattr(self.args, "only", None):
             return
         import chain
@@ -1397,7 +1404,8 @@ class Run:
         asking = bool(late) and not paused
         if not asking and not any(str(i.get("id", "")).startswith(STALE_ITEM) for i in items_in(self.root / SYNC_ITEMS)):
             return
-        item_id = STALE_ITEM + hashlib.sha256("\n".join(sorted(late)).encode("utf-8")).hexdigest()[:8]
+        incident = "\n".join(f"{key} {when}" for key, when in sorted(late.items()))
+        item_id = STALE_ITEM + hashlib.sha256(incident.encode("utf-8")).hexdigest()[:8]
         names = ", ".join(f"{key.removesuffix(ends[0]).removesuffix(ends[1])} (last {when[:10]})"
                           for key, when in sorted(late.items()))
         item = {"id": item_id, "kind": "request",

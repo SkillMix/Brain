@@ -117,6 +117,25 @@ def test_a_stale_stage_is_one_item_on_needs_you_and_in_the_run_line_until_it_run
     assert stale(repo) == {} and asked(repo) == [] and "stale" not in run_lines(repo)[-1]["notes"]
 
 
+def test_a_stage_that_is_late_again_after_its_item_was_answered_is_asked_again(repo, monkeypatch):
+    clock(monkeypatch, NOW)
+    line(repo, "status", NOW - 72 * HOUR)
+    line(repo, "daily", NOW - HOUR)
+    assert run(repo) == 0
+    (first,) = asked(repo)
+    status.record_verdict(repo, first.id, "Ada Okafor", verb="yes", at=pages.iso(NOW))
+    clock(monkeypatch, NOW + dt.timedelta(minutes=15))
+    assert run(repo) == 0 and asked(repo) == []          # answered, and still the same incident: not asked again
+    line(repo, "status", NOW + dt.timedelta(minutes=20))   # it ran again: the incident is over
+    clock(monkeypatch, NOW + dt.timedelta(minutes=30))
+    assert run(repo) == 0 and asked(repo) == [] and stale(repo) == {}
+    line(repo, "daily", NOW + 99 * HOUR)
+    clock(monkeypatch, NOW + 100 * HOUR)                 # weeks later it stops again: a new item
+    assert run(repo) == 0
+    (again,) = asked(repo)
+    assert again.id != first.id and "status" in again.text
+
+
 def test_a_chain_that_did_not_start_is_on_the_same_item_and_a_pause_asks_nothing(repo, monkeypatch):
     clock(monkeypatch, NOW)
     monkeypatch.setattr(routine, "this_machine", lambda: "m-desktop")
