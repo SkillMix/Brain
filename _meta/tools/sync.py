@@ -226,6 +226,7 @@ POLL_SECONDS, WAIT_MINUTES = 20, 9   # how often a cloud run reads its pull requ
 ADOPT_MINUTES = 30   # a cloud pull request open this long, in conflict or red, is merged here: its run waits less
 ADOPTED = "sync-adopted"   # in the git dir: the cloud heads merged here (`adopt`) that main does not hold yet
 LEG_STATE = "sync-leg-{}.json"   # under ~/.spaces/, beside the progress page: the leg's clocks for one space
+HEALTH_STATE = "sync-health-{}.json"   # beside it: what the sync keeps about itself on this computer (`health_state`)
 SYNC_ITEMS = Path("_inbound") / "needs-you" / "sync.yaml"   # the leg's items on Needs you
 # What the sync left on this computer, why and since when (`Run.left_local_health`): in the private zone, never staged
 LEFT_LOCAL = spaceyaml.PRIVATE_STATE / "left-local.json"
@@ -1328,30 +1329,33 @@ class Run:
             self.pins_held(held)
 
     def sync_gap(self) -> None:
-        """The sync's own last run, kept on this computer's clock (`leg_state`, one small file outside the
+        """The sync's own last run, kept on this computer's clock (`health_state`, one small file outside the
         repository written every run): when the run before this one was more than SYNC_GAP_HOURS ago (the
         computer slept, or its scheduler stopped starting the sync), this run writes a line that says for how
         many hours, as `gap_hours`. No item: a laptop that slept would raise one every morning. Only a whole
         run on the computer counts."""
-        ago = self.since("sync", self.now)
+        try:
+            ago = self.now - pages.parse_iso(self.health_state().get("sync"))
+        except (TypeError, ValueError, OverflowError):
+            ago = None
         if ago is not None and ago > self.space.scale(SYNC_GAP_HOURS):
             self.notes["gap_hours"] = round(ago.total_seconds() / 3600)
-        self.leg_state(sync=pages.iso(self.now))
+        self.health_state(sync=pages.iso(self.now))
 
     def pins_held(self, held: list) -> None:
         """The mounts this run could not move, because something wrote into them or their update failed
         (`advance_pins`): named in the run line, each with since when, on this computer's own clock
-        (`leg_state`; where that file cannot be written the clock starts again every run and no mount is ever
+        (`health_state`; where that file cannot be written the clock starts again every run and no mount is ever
         called stale). One held for PIN_DAYS is a stale stage, `<mount> pin stale` in stale.yaml, which the
         health line and the stale item show: a copy that stopped following its space is still read as if it
         were current. The entry goes when the mount moves again. stale.yaml is written only when that changes
         it."""
         import chain
         import yaml
-        before = self.leg_state().get("pins_held")
+        before = self.health_state().get("pins_held")
         before = before if isinstance(before, dict) else {}
         since = {sub: str(before.get(sub) or pages.iso(self.now)) for sub in held}
-        self.leg_state(pins_held=since or None)
+        self.health_state(pins_held=since or None)
         if since:
             self.notes["pins_held"] = sorted(since)
         late = {}
@@ -2292,11 +2296,19 @@ class Run:
     def leg_state(self, **changes) -> dict:
         """The leg's clocks for this space, kept on this computer, never in the repository
         (`~/.spaces/sync-leg-<space>.json`, beside the progress page): when it last scanned the transcripts
-        (`transcripts`), last ran at all (`sync`), and since when it could not move each mount (`pins_held`).
-        `changes` set those keys (None takes one out); the
+        (`transcripts`). `changes` set those keys (None takes one out); the
         file is written only when that changes it, and one that cannot be written leaves the step to run
         again next time."""
-        path = Path.home() / ".spaces" / LEG_STATE.format(self.space.name)
+        return self.kept(LEG_STATE, **changes)
+
+    def health_state(self, **changes) -> dict:
+        """What the sync keeps about itself on this computer, never in the repository
+        (`~/.spaces/sync-health-<space>.json`, beside the leg's clocks): when it last ran (`sync`) and since
+        when it could not move each mount (`pins_held`). Kept as `leg_state` keeps its own."""
+        return self.kept(HEALTH_STATE, **changes)
+
+    def kept(self, name: str, **changes) -> dict:
+        path = Path.home() / ".spaces" / name.format(self.space.name)
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
