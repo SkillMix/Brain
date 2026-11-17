@@ -158,7 +158,8 @@ fingerprint}`; `kind` is one of `candidate`, `check`, `leaving`, `request`, `que
 `security_warning` is a count label in the morning mail, never an item kind. Candidates and
 checks are read from their folders directly; items held in doubt appear as one count line.
 An item may carry `check` (the read-back that proves an owner step done) and `for` (whom it
-is for, when not the space's owner). A personal space's list also shows the items its
+is for, when not the space's owner). An id that has an answer is not shown again, so a writer whose
+item can come back gives each occurrence an id of its own (`needs_you.recurring_id`). A personal space's list also shows the items its
 mounted spaces route to its person (a pending landing or a question `for` them, a check
 routed to them first), marked with the space's name, one line each, as a `request`,
 `question`, `check`, `candidate`, `sample` or `reconnect` depending on at most 2: one list per person. Order: deadline
