@@ -15,6 +15,11 @@ on disk. A cloud sweep run starts it once at its end, for each of its spaces.
   timer on a Linux that has a user session, else a cron line), one task per checkout on the machine.
   All but cron run a start missed while the machine slept as soon as it wakes.
 - By hand, only when the person asks to land now or asks why something did not land.
+- When no agent started the daily chain (Claude signed out, or out of allowance), the scheduled
+  sync runs the daily chain itself, once a day, without the two steps that need a person: no
+  morning view (no briefing goes out, so no window item is listed) and no template sync. Status
+  with landing and the id index, access, the mount keys, the link check, requests, release and
+  the tests all run. The health line keeps saying `daily not started`.
 - In a cloud sweep run: once at its end for each of its spaces, the workspace last, whether
   or not the run wrote in it, as the cloud prompt says (`_meta/templates/cloud/sweep-chain.md`);
   a proof run lands its workspace alone, like any other landing: a protected file left out

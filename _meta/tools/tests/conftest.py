@@ -45,6 +45,22 @@ def _machine_home(tmp_path, monkeypatch):
         monkeypatch.delenv(name)
 
 
+@pytest.fixture
+def model_free_runs():
+    """Asked for by a test of the sync's own run of the daily chain (`sync.Run.model_free_daily`)."""
+    return True
+
+
+@pytest.fixture(autouse=True)
+def _no_daily_by_the_way(request, monkeypatch):
+    """A sync run in a test runs the daily chain itself only in a test that asks for it (`model_free_runs`).
+    The run lines the fixtures write are dated in the past, so to the real clock each is a daily that did not
+    start, and a test of something else would run a whole daily chain, the real tools included."""
+    if "model_free_runs" not in request.fixturenames:
+        import sync
+        monkeypatch.setattr(sync.Run, "model_free_daily", lambda self, now: False)
+
+
 def write_page(root: Path, rel: str, body: str = "Body.\n", **fm) -> Path:
     data = {"id": fm.pop("id", pages.new_id()), "type": fm.pop("type", "concept"),
             "title": fm.pop("title", rel), "status": fm.pop("status", "draft"),
