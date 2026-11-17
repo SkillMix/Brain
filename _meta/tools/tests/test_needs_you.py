@@ -325,16 +325,28 @@ def repo_space(tmp_path):
     return root
 
 
-def fake_gh(monkeypatch, prs=None, seen=None, code=0, stderr=""):
+def fake_gh(monkeypatch, prs=None, seen=None, code=0, stderr="", states=None, failed=()):
     """`gh` as ghrest.runner gives it: `GET repos/ada/ada-space/pulls` answers `prs` through REST,
-    or fails with `code` and `stderr`; `prs` None is a computer without gh."""
+    or fails with `code` and `stderr`; `prs` None is a computer without gh. One pull request read by
+    its number answers GitHub's word on merging it (`states`: number -> mergeable_state, `clean` when
+    not named), and the checks of its head have failed for the numbers in `failed`."""
     def gh(*args):
         if seen is not None:
             seen.append(args)
         if prs is None:
             return None
-        assert args == ("api", "repos/ada/ada-space/pulls?state=open&per_page=100")
-        out = json.dumps(prs) if code == 0 else ""
+        one = re.fullmatch(r"repos/ada/ada-space/pulls/(\d+)", args[1])
+        runs = re.fullmatch(r"repos/ada/ada-space/commits/sha(\d+)/check-runs\?per_page=100", args[1])
+        if one:
+            number = int(one.group(1))
+            out = json.dumps({"state": "open", "merged": False, "head": {"sha": f"sha{number}"},
+                              "mergeable_state": (states or {}).get(number, "clean")})
+        elif runs:
+            out = json.dumps({"check_runs": [{"name": "checks", "conclusion": "failure" if int(runs.group(1)) in failed
+                                              else "success", "html_url": "https://example.invalid/run"}]})
+        else:
+            assert args == ("api", "repos/ada/ada-space/pulls?state=open&per_page=100")
+            out = json.dumps(prs) if code == 0 else ""
         return subprocess.CompletedProcess(["gh", *args], code, stdout=out, stderr=stderr)
     monkeypatch.setattr(needs_you.ghrest, "runner", lambda cwd: gh)
 
@@ -358,6 +370,49 @@ def test_protected_pull_requests_come_from_rest(tmp_path, monkeypatch):
     items = needs_you._protected_prs(root)
     assert [i.id for i in items] == ["pr-5", "pr-forks"]
     assert seen == [("api", "repos/ada/ada-space/pulls?state=open&per_page=100")]
+    seen.clear()
+    assert [i.id for i in needs_you._protected_prs(root, why=True)] == ["pr-5", "pr-forks"]
+    # for the person's list: one more read, of the pull request offered for merging, never an armed one or a fork's
+    assert seen == [("api", "repos/ada/ada-space/pulls?state=open&per_page=100"),
+                    ("api", "repos/ada/ada-space/pulls/5")]
+
+
+def test_a_pull_request_that_cannot_be_merged_says_why_before_the_click(tmp_path, monkeypatch):
+    root = repo_space(tmp_path)
+    fake_gh(monkeypatch, [pr(7, "Change the rules", False), pr(8, "Newer tools", False), pr(9, "A new page", False),
+                          pr(10, "Ready", False), pr(11, "Not worked out yet", False)],
+            states={7: "dirty", 8: "blocked", 9: "blocked", 11: None}, failed=(8,))
+    items = {i.id: i for i in needs_you._protected_prs(root, why=True)}
+    assert items["pr-7"].text == ("pull request 7 waits for your merge and cannot be merged yet "
+                                  "(it conflicts with main): Change the rules")
+    assert "cannot be merged yet (its checks failed): Newer tools" in items["pr-8"].text
+    assert ("cannot be merged yet (GitHub blocks it: a required check or review is missing): A new page"
+            in items["pr-9"].text)
+    assert items["pr-7"].recommendation.startswith("ask an agent to make it mergeable")
+    for ready in ("pr-10", "pr-11"):   # GitHub would merge it, or has not said: as before
+        assert "cannot" not in items[ready].text
+        assert items[ready].recommendation == "merge it if the change is yours or you have read it"
+
+
+def test_the_command_line_says_why_and_a_routines_list_reads_nothing_more(tmp_path, monkeypatch, capsys):
+    root = repo_space(tmp_path)
+    seen = []
+    fake_gh(monkeypatch, [pr(7, "Change the rules", False)], seen, states={7: "dirty"})
+    quiet = needs_you.collect(root, now=NOW)   # as the morning view and the sync collect it
+    assert "cannot" not in quiet[0].text and len(seen) == 1
+    assert needs_you.main([str(root)]) == 0
+    assert "pull request 7 waits for your merge and cannot be merged yet (it conflicts with main)" in capsys.readouterr().out
+
+
+def test_only_the_first_few_waiting_pull_requests_are_read_one_by_one(tmp_path, monkeypatch):
+    root = repo_space(tmp_path)
+    seen = []
+    many = needs_you.PR_STATES_READ + 3
+    fake_gh(monkeypatch, [pr(n, f"Change {n}", False) for n in range(1, many + 1)], seen,
+            states={n: "dirty" for n in range(1, many + 1)})
+    items = needs_you._protected_prs(root, why=True)
+    assert len(items) == many and len(seen) == 1 + needs_you.PR_STATES_READ
+    assert "conflicts with main" in items[0].text and "cannot" not in items[-1].text   # listed all the same
 
 
 def test_pull_requests_that_cannot_be_read_say_so(tmp_path, monkeypatch):

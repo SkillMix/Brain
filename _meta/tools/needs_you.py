@@ -778,11 +778,34 @@ def _pr_number(pr) -> int | None:
     return number if number > 0 else None
 
 
-def _protected_prs(root: Path) -> list:
+PR_STATES_READ = 10   # the pull requests whose state is read, each one or two calls: the rest are listed as before
+
+
+def _cannot_merge(gh, slug: str, number: int) -> str:
+    """Why GitHub would refuse to merge an open pull request now, in a few words; "" when it would merge it,
+    or cannot say (it has not worked it out yet, or the call failed). The person is asked to merge with one
+    click: a click GitHub refuses should not be the first they hear of a conflict or a failed check."""
+    state = ghrest.pull_state(gh, slug, number) or {}
+    told = state.get("mergeable_state")
+    if told == "dirty":
+        return "it conflicts with main"
+    if told == "behind":
+        return "it is behind main"
+    if told == "blocked":   # a required check that failed or still runs, or a review GitHub asks for
+        sha = state.get("head_sha")
+        return ("its checks failed" if sha and ghrest.failed_checks(gh, slug, sha)
+                else "GitHub blocks it: a required check or review is missing")
+    return ""
+
+
+def _protected_prs(root: Path, why: bool = False) -> list:
     """Open pull requests on this repository that auto-merge did not arm: protected paths wait
     for the owner's one click (rules.md section 8). A pull request from a fork is never offered
     for merging: its checks ran the fork's own workflow and its title is a stranger's text, so
-    all of them become one line with their numbers and no titles. They are read through REST
+    all of them become one line with their numbers and no titles. With `why` (the command line, where the
+    person reads the list and clicks), one that is offered for merging and that GitHub would refuse to merge
+    now says so (`_cannot_merge`: a conflict with main, a failed or missing check), one more read per such
+    pull request, for PR_STATES_READ of them at most; a routine's list makes no such read. They are read through REST
     (ghrest), which a cloud run allows. Silent when this is not a repository with an origin, or
     when there is no `gh` at all where this runs: the one `gh` call goes through a wrapper that
     notes whether gh ran, so a call that ran and failed (signed out, offline, refused) is told
@@ -817,9 +840,15 @@ def _protected_prs(root: Path) -> list:
             continue
         if pr.get("auto_merge"):
             continue
+        # said before the title, which is the author's text; read for the first few only
+        reason = _cannot_merge(asked, slug, number) if why and len(out) < PR_STATES_READ else ""
         out.append(Item(id=f"pr-{number}", kind="protected_pr",
-                        text=f"pull request {number} waits for your merge: {untrusted_line(pr.get('title'))}",
-                        recommendation="merge it if the change is yours or you have read it",
+                        text=(f"pull request {number} waits for your merge"
+                              + (f" and cannot be merged yet ({reason})" if reason else "")
+                              + f": {untrusted_line(pr.get('title'))}"),
+                        recommendation=("ask an agent to make it mergeable (bring main in, or fix what the checks "
+                                        "say), then merge it if the change is yours or you have read it" if reason
+                                        else "merge it if the change is yours or you have read it"),
                         default="it waits", depends=2, payload=str(pr.get("url", ""))))
     if forks:
         forks.sort()
@@ -840,7 +869,8 @@ def fork_pr_count(items: list) -> int:
     return sum(len([p for p in i.payload.split(",") if p]) for i in items if i.kind == "fork_pr")
 
 
-def collect(root, now: dt.datetime | None = None, online: bool = True, person: str | None = None) -> list:
+def collect(root, now: dt.datetime | None = None, online: bool = True, person: str | None = None,
+            why: bool = False) -> list:
     """Every item that needs a person in this space, in the order to show them; in a personal
     space, also the items routed to its person in the spaces it mounts (one list per person)."""
     root = Path(root)
@@ -851,7 +881,7 @@ def collect(root, now: dt.datetime | None = None, online: bool = True, person: s
              + _questions(root) + _answers(root)
              + [i for i in routine_items(root) if i.id not in answered] + _classification(root, space)
              + _doubt(root) + _tracker(root) + _health(root)
-             + (_protected_prs(root) if online else []))
+             + (_protected_prs(root, why) if online else []))
     person = person if person is not None else (space.owner if space.profile == "personal" else "")
     if person:
         seen = {i.id for i in items}
@@ -918,7 +948,7 @@ def main(argv=None) -> int:
     if (Path(args.root) / "space.yaml").is_file():
         import status   # the verdict cut-over, before the list reads the answers (`status.pin_cutover`)
         status.pin_cutover(args.root)
-    items = collect(args.root)
+    items = collect(args.root, why=True)   # the person reads this list: a pull request says why it cannot merge
     if args.json:
         print(json.dumps([i.to_dict() for i in items], indent=2, ensure_ascii=False))
     else:
