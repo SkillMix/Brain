@@ -659,6 +659,7 @@ def conflict_notes(root: Path, space, reg, moved: dict, now) -> int:
 # ----- the run -----------------------------------------------------------------
 def run(root, now: dt.datetime | None = None) -> CheckReport:
     root = Path(root)
+    pages.refuse_copy(root)
     space = spaceyaml.load(root)
     now = now or space.now()
     reg = registry_mod.Registry(root, space)

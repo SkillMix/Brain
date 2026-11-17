@@ -839,6 +839,7 @@ def _propose(root: Path, change: Change, now, report: Report, space=None) -> Non
 def run(root, now=None, land_it: bool = False, scorer=None, runner=None) -> Report:
     """The mechanical duties applied (each verified), the judgment ones proposed."""
     root = Path(root)
+    pages.refuse_copy(root)
     space = spaceyaml.load(root)
     now = now or space.now()
     report = Report()
@@ -923,6 +924,7 @@ def apply(root, key: str, reviewed_by: str, now=None, land_it: bool = False, sco
     mechanical moves are made at once inside a routine (`run`), so a routine applies a proposal
     too, after a second agent's review (the daily chain): a stale or hand-written proposal is
     refused there as anywhere. An owner's yes (`answer`) stays the person's."""
+    pages.refuse_copy(root)
     root = Path(root)
     who = str(reviewed_by or "").strip()
     if not who:
@@ -964,6 +966,7 @@ def answer(root, key: str, by: str, now=None) -> str:
     """The owner's yes to an ownership question (`librarian-<key>.md`): make the asked change,
     only when it is still the change the librarian makes on the current tree (`_stored`). Refused
     inside a routine or a cloud run (`routine.in_routine`), as `apply` is."""
+    pages.refuse_copy(root)
     _person_only("an owner's yes")
     root = Path(root)
     try:

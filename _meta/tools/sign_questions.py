@@ -201,6 +201,7 @@ def needs_recheck(root, subject: str, grouped: dict | None = None) -> bool:
 
 # ----- writing: one appended line per event ------------------------------------------------
 def _append(root, event: dict) -> None:
+    pages.refuse_copy(root)
     path = Path(root) / LEDGER
     path.parent.mkdir(parents=True, exist_ok=True)
     glue = ""

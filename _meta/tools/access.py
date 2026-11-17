@@ -119,7 +119,9 @@ def check(root, readers_fn=readers) -> AccessReport:
 
 
 def write_needs_you(root, report: AccessReport) -> None:
+    import pages
     root = Path(root)
+    pages.refuse_copy(root)
     space = spaceyaml.load(root)
     items = []
     for login in report.extra:

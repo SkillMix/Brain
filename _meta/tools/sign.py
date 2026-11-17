@@ -914,6 +914,7 @@ def apply(root, verdicts: dict, by: str, now: dt.datetime | None = None,
         raise ValueError(f"a signature is a named person's, and {running}; routines never sign "
                          "(rules.md section 1, hard rule 3)")
     root = Path(root)
+    pages.refuse_copy(root)   # before any item is read: a verdict belongs in the space's own checkout
     wanted = {}
     for item_id, verdict in (verdicts or {}).items():
         verb, note, pin = _split(verdict)
@@ -1013,6 +1014,11 @@ def main(argv=None) -> int:
     if not argv:
         print(__doc__)
         return 2
+    try:   # a read-back as well: a read-back on a copy leads to an apply on it
+        pages.refuse_copy(root)
+    except pages.UnsafePath as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     command = argv.pop(0)
     if command == "read-back":
         ap = argparse.ArgumentParser(prog="sign.py read-back")

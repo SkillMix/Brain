@@ -25,6 +25,9 @@ paths reach the tools from data: a feed record, a queue file, another space's re
   written. The root is the one a caller gives, else the outermost folder above the path
   that holds a space.yaml. A repository can carry a link, and a write through one lands
   outside the space (`~/.ssh/authorized_keys`).
+- `copy_of`/`refuse_copy` tell a read-only copy of another space from a checkout: a mount, or a
+  nested git folder nobody listed. `write`, `write_text` and `append_text` never write into one,
+  and a tool that writes by other means asks `refuse_copy` of its root first. Reading one is fine.
 
 `UnsafePath` is a `ValueError`, so a caller that refuses bad data on `ValueError` refuses
 an unsafe path the same way. A refused path is never written.
@@ -33,6 +36,7 @@ from __future__ import annotations
 
 import datetime as dt
 import errno
+import functools
 import hashlib
 import os
 import re
@@ -397,6 +401,91 @@ def space_root_of(path) -> Path | None:
     return found
 
 
+def _stamp(path: Path):
+    try:
+        st = os.stat(path)
+    except (OSError, ValueError):
+        return None
+    return st.st_mtime_ns, st.st_size
+
+
+@functools.lru_cache(maxsize=64)
+def _copies(space: str, marker, modules) -> tuple:
+    """((folder, name), ...): the copies of other spaces the space at `space` holds, by its
+    .gitmodules and by `mounts:` in its space.yaml (placed as `spaceyaml.Space.mount_root` places
+    them). `marker` and `modules` are the two files' time and size: a changed file is read again."""
+    root, found = Path(space), {}
+    try:
+        text = (root / ".gitmodules").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        text = ""
+    for rel in re.findall(r"^\s*path\s*=\s*(.+?)\s*$", text, re.M):
+        found[(root / rel).resolve()] = PurePath(rel).name
+    try:
+        data = yaml.safe_load((root / SPACE_MARKER).read_text(encoding="utf-8"))
+    except (OSError, ValueError, yaml.YAMLError):
+        data = None
+    for mount in (data.get("mounts") or []) if isinstance(data, dict) else []:
+        if isinstance(mount, dict) and mount.get("name"):
+            name = str(mount["name"])
+            rel = str(mount.get("path") or ("brain" if name == "brain" else f"mounts/{name}"))
+            found[(root / rel).resolve()] = name
+    return tuple(found.items())
+
+
+def copy_of(path) -> str | None:
+    """The name of the space `path` is in a read-only copy of, or None.
+
+    A folder that a space above it lists, as a mount in its space.yaml or as a path in its
+    .gitmodules, is a copy, and so is everything under it: the name is the mount's. Else the
+    nearest folder at or above `path` that holds a `.git` decides: a `.git` file whose gitdir
+    has no `commondir` is a submodule nobody listed, a copy too (its folder's name); a session's
+    worktree always has a `commondir`, and a `.git` folder is a checkout of its own. A mount kept
+    outside the space that lists it (a checkout beside it) is no copy: only spaces above are asked.
+
+    Git fetches a copy and nothing commits what is written there, so a write into one never
+    reaches the space it belongs to and stops the copy from following that space."""
+    path = Path(path).resolve()
+    for space in path.parents:
+        marker = _stamp(space / SPACE_MARKER)
+        if marker is None:
+            continue
+        for folder, name in _copies(str(space), marker, _stamp(space / ".gitmodules")):
+            if path == folder or folder in path.parents:
+                return name
+    for folder in (path, *path.parents):
+        git = folder / ".git"
+        try:
+            mode = os.lstat(git).st_mode
+        except (OSError, ValueError):
+            continue
+        if stat.S_ISREG(mode):
+            # shortcut: a clone made with `git clone --separate-git-dir` reads as a copy too; tell
+            # the two apart when someone sets a space up that way
+            try:
+                line = git.read_text(encoding="utf-8", errors="replace").strip()
+            except OSError:
+                line = ""
+            if line.startswith("gitdir:"):
+                gitdir = Path(line[len("gitdir:"):].strip())
+                gitdir = gitdir if gitdir.is_absolute() else folder / gitdir
+                if gitdir.is_dir() and not (gitdir / "commondir").exists():
+                    return folder.name
+        return None
+    return None
+
+
+def refuse_copy(path) -> None:
+    """UnsafePath when `path` is in a read-only copy of another space (`copy_of`). The writers of
+    this module ask it of every destination; a tool that also writes by other means (a raw file
+    write, a move, a delete) asks it of its root before it starts. A verdict on another space's
+    item is given in that space's own checkout."""
+    name = copy_of(path)
+    if name:
+        raise UnsafePath(f"{_shown(str(path))} is in a read-only copy of {_shown(name)}: nothing is "
+                         "written there; work in that space's own checkout (`chain.py checkout` finds it)")
+
+
 def check_no_links(path, *, root=None) -> Path:
     """`path` when nothing between root and it is a link, else UnsafePath.
 
@@ -404,7 +493,9 @@ def check_no_links(path, *, root=None) -> Path:
     space.yaml. Refused: a path outside root, a `..` below root, a link (or junction) at
     the path or at any folder between root and it that exists, and a path that resolves
     outside root. A link at root or above it is the person's own setup and is allowed.
-    With no root given and no space.yaml above the path, only the path itself is checked."""
+    With no root given and no space.yaml above the path, only the path itself is checked.
+    It asks nothing about copies: reading a mount's files behind this check is fine, and the
+    writers ask `refuse_copy` themselves."""
     path = Path(path)
     dest = path.absolute()
     base = Path(root).absolute() if root is not None else space_root_of(dest)
@@ -448,10 +539,12 @@ def _open_no_follow(path: Path, append: bool, newline: str | None):
 
 
 def write_text(path, text: str, *, root=None, newline: str | None = "\n") -> Path:
-    """Write text to a file, creating its folders, never through a link (`check_no_links`):
-    a link in the way raises UnsafePath and nothing is written."""
+    """Write text to a file, creating its folders, never through a link (`check_no_links`)
+    and never into a read-only copy of another space (`refuse_copy`), whatever root the caller
+    names: either raises UnsafePath and nothing is written."""
     path = Path(path)
     check_no_links(path, root=root)
+    refuse_copy(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with _open_no_follow(path, append=False, newline=newline) as handle:
         handle.write(text)
@@ -459,9 +552,11 @@ def write_text(path, text: str, *, root=None, newline: str | None = "\n") -> Pat
 
 
 def append_text(path, text: str, *, root=None, newline: str | None = "\n") -> Path:
-    """Append text to a file (a log line, a run line), never through a link, as `write_text`."""
+    """Append text to a file (a log line, a run line), never through a link and never into a
+    read-only copy of another space, as `write_text`."""
     path = Path(path)
     check_no_links(path, root=root)
+    refuse_copy(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with _open_no_follow(path, append=True, newline=newline) as handle:
         handle.write(text)

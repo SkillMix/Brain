@@ -536,6 +536,7 @@ def _withdraw(root: Path, record_id: str, reason: str, why: str, space_name: str
 def record(root, decision: dict, now: dt.datetime | None = None, by: str | None = None) -> dict:
     """Validate and apply one decision; `by` is a person answering a question (their approval)."""
     root = Path(root)
+    pages.refuse_copy(root)
     space = spaceyaml.load(root)
     now = now or space.now()
     if not space.routing_on:
@@ -678,6 +679,7 @@ def answer(root, record_id, yes: bool, by: str, now: dt.datetime | None = None) 
     question written or changed by anything else is refused and nothing leaves (a no still
     applies: keeping the record here is always safe). Refused inside a routine or a cloud run
     (`routine.in_routine`): the answer is the owner's word, whatever command reached it."""
+    pages.refuse_copy(root)
     import routine   # here and not at the top: only the person's answer asks it
     running = routine.in_routine()
     if running:
@@ -711,6 +713,7 @@ def retract(root, record_id, by: str, space: str | None = None, now: dt.datetime
     withdrawn, and nothing that already left (the owner's own releases included) is retracted. Without
     `queued_only` it is refused inside a routine (`routine.in_routine`), before anything is withdrawn: what left
     is retracted only on the person's word."""
+    pages.refuse_copy(root)
     if not queued_only:
         import routine   # here and not at the top: only a full retraction asks it
         running = routine.in_routine()

@@ -189,6 +189,7 @@ def _rows(root: Path) -> list | None:
 
 def scan(root, now: dt.datetime | None = None) -> dict:
     root = Path(root)
+    pages.refuse_copy(root)
     space = spaceyaml.load(root)
     now = now or space.now()
     cfg = settings(space)
