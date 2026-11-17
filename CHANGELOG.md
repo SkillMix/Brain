@@ -7,6 +7,56 @@ the shape and ships its migration. Each choice behind a change has a line in
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-11-17
+
+A space now tells you when part of it has stopped: a routine that did not run in time, a computer
+that cannot bring main in and a mount that fell behind each become one item on Needs you. Status
+and filing go on when no agent starts the daily, and no tool writes into a mount any more.
+
+### Added
+
+- **The flow runs without the model.** When no agent started the daily chain (Claude signed out,
+  or out of allowance), the sync, which the OS runs every 15 minutes, runs the daily's steps that
+  need no model itself, once a day: status with landing and the id index, access, the link check,
+  requests, release, the tests. No morning view, so no window item is listed and none ships on a
+  briefing nobody received; no template sync. The health line keeps saying `daily not started`,
+  and what the librarian proposes waits for a run with an agent.
+- **A stage that stopped is said by the sync.** Every stage has a last run (`sync.last_ran`), the
+  health line dates each, and a stage past its window is `<stage> stale` in
+  `_meta/state/stale.yaml` beside a chain that did not start: sweep, distill and the router after
+  twice the sweep's longest gap, status and release after two days, a mount the sync could not move
+  for a week. One item on Needs you names everything that is late, and the sync's run line carries
+  it (`stale`, `pins_held`, `gap_hours`). While the routines are paused nothing is asked.
+- **A computer that cannot bring main in says so.** A fetch that fails, a merge that stops, a run
+  that dies and a run skipped because git is mid-operation were retried silently for good. Once the
+  same cause has lasted a day it is one item on Needs you, with since when and what is in the way.
+- **`chain.py checkout <root> <mount>`** prints this computer's own checkout of a mounted space.
+
+### Fixed
+
+- **A mount is read-only to every tool.** A tool run with a mount as its root wrote drafts and
+  verdicts that nothing ever committed, and the changed copy stopped following its space. The page
+  writers now refuse every destination inside a copy of another space (a mount a space lists, or a
+  nested git folder nobody listed), and the tools that write by other means refuse one as their
+  root. A mount kept outside the space that lists it is a checkout of its own. Reading a mount is
+  unchanged. The sign skill says where an item of another space is answered.
+- **A cloud run lands the tools' own logs past 1 MB.** The run log and the router's log pass that
+  size for good one day; from then on a cloud run's own run line never landed and the health
+  signals said the cloud was not running.
+- **An answered item that comes back is shown again.** The routines' sign-in and reconnect items
+  had one fixed id each, and Needs you hides an id that has an answer: a second loss of the sign-in
+  was never shown. Each occurrence now has an id of its own.
+- **A pull request that waits for your merge says why it cannot be merged**: a conflict with main,
+  a failed check or a check that has not passed yet, before you click.
+
+### After the update
+
+- A mount that holds local changes is named in the sync's run line (`pins_held`) from the first
+  run, and after a week on Needs you. Nothing cleans it for you: look at what was written there
+  before you reset it, since a verdict given in a mount was never recorded in its space.
+- The first sync may put one item on Needs you for what has been late for a while. That is the
+  alarm working, not a new fault.
+
 ## [0.3.4] - 2026-11-16
 
 Spaces made from the template before it moved keep their updates: template sync no longer follows
