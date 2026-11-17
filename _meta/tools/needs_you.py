@@ -187,6 +187,31 @@ def answered_ids(root: Path) -> set:
     return {k for k, v in status.verdicts(root).items() if v.get("verb") and v.get("verb") != "later"}
 
 
+RAISED_AGAIN = re.compile(r"-\d{8}T\d{4}(-\d+)?")   # what `recurring_id` adds to an id that has an answer
+
+
+def recurring_id(root, base: str, now: dt.datetime, answered: set | None = None) -> str:
+    """The id for an item its writer raises now: `base` until `base` has an answer, then
+    `base-<yyyymmddThhmm>`, with a count after it when that one has an answer too (twice in a minute, or a
+    clock that stands still). This list hides every id with an answer (`answered_ids`, passed as `answered`
+    by a writer that read them already), so an item that can come back (a sign-in lost again, an app
+    disconnected again) is named per occurrence, or its second occurrence is never shown. A writer asks it
+    when it raises the item anew, not while the item stays in its file."""
+    answered = answered_ids(Path(root)) if answered is None else answered
+    base = str(base)
+    if base not in answered:
+        return base
+    stamped = f"{base}-{now:%Y%m%dT%H%M}"
+    count = next(n for n in range(1, len(answered) + 3) if (stamped if n == 1 else f"{stamped}-{n}") not in answered)
+    return stamped if count == 1 else f"{stamped}-{count}"
+
+
+def same_item(item_id, base: str) -> bool:
+    """Whether `item_id` is `base` or a later occurrence of it (`recurring_id`)."""
+    item_id = str(item_id or "")
+    return item_id == base or (item_id.startswith(base) and bool(RAISED_AGAIN.fullmatch(item_id[len(base):])))
+
+
 # ----- the kinds -----------------------------------------------------------------
 def _open_questions(root: Path, cid: str, subject) -> int:
     """How many questions to the person are open for a candidate: its subject's, because distill

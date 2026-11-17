@@ -1583,7 +1583,11 @@ def _reconnect_item(app: str) -> dict:
 
 def write_items(workspace, claude_signin: bool | None = None, reconnect: list | None = None) -> None:
     """The routines' own items, without the model: Claude's sign-in (True asks, False withdraws, None
-    leaves it as it is) and one reconnect item per app in `reconnect` (None leaves them)."""
+    leaves it as it is) and one reconnect item per app in `reconnect` (None leaves them). An item that is
+    asked again after it was withdrawn, or that is still true after the person's yes (the yes did not bring
+    the sign-in back), is a new occurrence under an id of its own (`needs_you.recurring_id`): Needs you hides
+    an id that has an answer. One that waits unanswered stays as it is, and so does one the person answered
+    no or later: their word stands until the item was withdrawn once."""
     path = Path(workspace) / ITEMS
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
@@ -1592,14 +1596,31 @@ def write_items(workspace, claude_signin: bool | None = None, reconnect: list | 
     rows = data.get("items") if isinstance(data, dict) else None
     before = [i for i in rows if isinstance(i, dict)] if isinstance(rows, list) else []
     items = list(before)
-    if claude_signin and not any(i.get("id") == SIGNIN_ID for i in items):
-        items.insert(0, _signin_item())
+    import needs_you   # here and not at the top: only the two items that can come back ask it
+    answered, done, moment = set(), set(), None
+    if claude_signin or reconnect:   # one read of the answers, and only when something is asked
+        import status
+        given = status.verdicts(Path(workspace))
+        answered = {k for k, v in given.items() if v.get("verb") and v.get("verb") != "later"}
+        done = {k for k, v in given.items() if v.get("verb") in ("yes", "always")}   # "I did it"
+        try:
+            moment = spaceyaml.load(workspace).now()
+        except Exception:   # no space.yaml to read a clock from: the computer's own
+            moment = dt.datetime.now(dt.timezone.utc)
+
+    def occurrence(base: str, fresh: dict) -> dict:
+        waits = next((i for i in items if needs_you.same_item(i.get("id"), base) and i.get("id") not in done), None)
+        return waits or dict(fresh, id=needs_you.recurring_id(workspace, base, moment, answered))
+
+    if claude_signin:
+        signin = occurrence(SIGNIN_ID, _signin_item())
+        if signin not in items:
+            items = [signin] + [i for i in items if not needs_you.same_item(i.get("id"), SIGNIN_ID)]
     elif claude_signin is False:
-        items = [i for i in items if i.get("id") != SIGNIN_ID]
+        items = [i for i in items if not needs_you.same_item(i.get("id"), SIGNIN_ID)]
     if reconnect is not None:
-        old = {i.get("id"): i for i in items if str(i.get("id", "")).startswith(RECONNECT_PREFIX)}
-        items = [i for i in items if i.get("id") not in old] + [old.get(_reconnect_id(a)) or _reconnect_item(a)
-                                                                for a in dict.fromkeys(reconnect)]
+        apps = [occurrence(_reconnect_id(a), _reconnect_item(a)) for a in dict.fromkeys(reconnect)]
+        items = [i for i in items if not str(i.get("id", "")).startswith(RECONNECT_PREFIX)] + apps
     if items != before or (not path.exists() and items):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(yaml.safe_dump({"items": items}, sort_keys=False, allow_unicode=True, width=100),
