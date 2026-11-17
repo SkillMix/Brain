@@ -68,6 +68,7 @@ def scan(root) -> list:
 
 def build(root) -> list:
     root = Path(root)
+    pages.refuse_copy(root)
     rows = scan(root)
     space = spaceyaml.load(root)
     text = yaml.safe_dump({"built_at": pages.iso(space.now()), "decisions": rows}, sort_keys=False,

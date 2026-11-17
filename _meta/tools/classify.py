@@ -1381,6 +1381,7 @@ def _items(root: Path) -> list:
 
 def _save_items(root: Path, items: list) -> None:
     import yaml
+    pages.refuse_copy(root)
     path = root / ITEMS
     if not items and not path.exists():
         return
@@ -1401,6 +1402,7 @@ def _put_item(root: Path, item: dict) -> bool:
 
 def _propose(root: Path, item_id: str, data: dict) -> Path:
     import yaml
+    pages.refuse_copy(root)
     path = root / PROPOSALS / f"{item_id}.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8", newline="\n")
@@ -1561,6 +1563,7 @@ def _decide_entry(root, space, reg, subject, c, to_ask, proposals, now) -> dict:
 
 def pending(root, now=None) -> dict:
     """Everything this space's agent has to do for the gate, written to the private pack."""
+    pages.refuse_copy(root)
     root, space, reg, now = _load(root, now)
     announce(root, now)
     mine = _mine(space, reg)

@@ -301,6 +301,7 @@ def _ask(root: Path, space, repo: str, ids: list, owner: str | None = None, how:
 def _needs_you(root: Path, item: dict | None, drop: str | None = None) -> None:
     """Add or replace one item (by id) in this space's links Needs-you file, or `drop` one."""
     import yaml
+    pages.refuse_copy(root)
     path = root / NEEDS_YOU
     if item is None and not path.exists():
         return
@@ -774,6 +775,7 @@ def check(root, now=None, lookup_fn=None, readers_fn=None, graphql: bool = True)
     import classify
     import status
     root = Path(root)
+    pages.refuse_copy(root)
     space = spaceyaml.load(root)
     now = now or space.now()
     today = now.date().isoformat()

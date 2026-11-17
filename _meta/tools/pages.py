@@ -26,8 +26,8 @@ paths reach the tools from data: a feed record, a queue file, another space's re
   that holds a space.yaml. A repository can carry a link, and a write through one lands
   outside the space (`~/.ssh/authorized_keys`).
 - `copy_of`/`refuse_copy` tell a read-only copy of another space from a checkout: a mount, or a
-  nested git folder nobody listed. No write lands in one (`check_no_links` asks), and a tool
-  that writes asks it of its root before it reads anything.
+  nested git folder nobody listed. `write`, `write_text` and `append_text` never write into one,
+  and a tool that writes by other means asks `refuse_copy` of its root first. Reading one is fine.
 
 `UnsafePath` is a `ValueError`, so a caller that refuses bad data on `ValueError` refuses
 an unsafe path the same way. A refused path is never written.
@@ -476,9 +476,10 @@ def copy_of(path) -> str | None:
 
 
 def refuse_copy(path) -> None:
-    """UnsafePath when `path` is in a read-only copy of another space (`copy_of`). Every write asks
-    (`check_no_links`), and a tool that writes asks it of its root first, before it reads anything:
-    a verdict on another space's item is given in that space's own checkout."""
+    """UnsafePath when `path` is in a read-only copy of another space (`copy_of`). The writers of
+    this module ask it of every destination; a tool that also writes by other means (a raw file
+    write, a move, a delete) asks it of its root before it starts. A verdict on another space's
+    item is given in that space's own checkout."""
     name = copy_of(path)
     if name:
         raise UnsafePath(f"{_shown(str(path))} is in a read-only copy of {_shown(name)}: nothing is "
@@ -493,14 +494,14 @@ def check_no_links(path, *, root=None) -> Path:
     the path or at any folder between root and it that exists, and a path that resolves
     outside root. A link at root or above it is the person's own setup and is allowed.
     With no root given and no space.yaml above the path, only the path itself is checked.
-    Whatever the root, a path in a read-only copy of another space is refused (`refuse_copy`)."""
+    It asks nothing about copies: reading a mount's files behind this check is fine, and the
+    writers ask `refuse_copy` themselves."""
     path = Path(path)
     dest = path.absolute()
     base = Path(root).absolute() if root is not None else space_root_of(dest)
     if base is None:
         if is_link(dest):
             raise UnsafePath(f"{_shown(str(path))} is a link; nothing is written through one")
-        refuse_copy(dest)
         return path
     if dest != base and base not in dest.parents:
         raise UnsafePath(f"{_shown(str(path))} is outside {_shown(str(base))}")
@@ -519,7 +520,6 @@ def check_no_links(path, *, root=None) -> Path:
     base_real, dest_real = base.resolve(), dest.resolve()
     if dest_real != base_real and base_real not in dest_real.parents:
         raise UnsafePath(f"{_shown(str(path))} resolves outside {_shown(str(base))}")
-    refuse_copy(dest)
     return path
 
 
@@ -539,10 +539,12 @@ def _open_no_follow(path: Path, append: bool, newline: str | None):
 
 
 def write_text(path, text: str, *, root=None, newline: str | None = "\n") -> Path:
-    """Write text to a file, creating its folders, never through a link (`check_no_links`):
-    a link in the way raises UnsafePath and nothing is written."""
+    """Write text to a file, creating its folders, never through a link (`check_no_links`)
+    and never into a read-only copy of another space (`refuse_copy`), whatever root the caller
+    names: either raises UnsafePath and nothing is written."""
     path = Path(path)
     check_no_links(path, root=root)
+    refuse_copy(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with _open_no_follow(path, append=False, newline=newline) as handle:
         handle.write(text)
@@ -550,9 +552,11 @@ def write_text(path, text: str, *, root=None, newline: str | None = "\n") -> Pat
 
 
 def append_text(path, text: str, *, root=None, newline: str | None = "\n") -> Path:
-    """Append text to a file (a log line, a run line), never through a link, as `write_text`."""
+    """Append text to a file (a log line, a run line), never through a link and never into a
+    read-only copy of another space, as `write_text`."""
     path = Path(path)
     check_no_links(path, root=root)
+    refuse_copy(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with _open_no_follow(path, append=True, newline=newline) as handle:
         handle.write(text)

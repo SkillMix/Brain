@@ -2,7 +2,7 @@
 .gitmodules above it lists) and a nested git folder nobody listed are copies: git fetches them and
 nothing commits what a tool writes there, so a verdict written into one never reaches its space
 and the copy stops following it. Every page write under a copy and every writer run with a copy as
-its root is refused before anything is written."""
+its root is refused before anything is written. Reading a copy stays as it was."""
 from __future__ import annotations
 
 import subprocess
@@ -11,20 +11,31 @@ from pathlib import Path
 import pytest
 import yaml
 
+import access
 import chain
 import check
 import classify
+import decisions
 import distill
 import landing
 import librarian
+import link
+import morning_view
+import needs_you
 import onboard
 import pages
+import questions_log
+import registry
 import request
 import route
 import sign
 import sign_questions
+import spaceyaml
 import status
 import sweep
+import template_sync
+import tests_run
+import transcripts
 from conftest import NOW, make_space, mount_brain
 
 GIT = ["git", "-c", "protocol.file.allow=always", "-c", "commit.gpgsign=false", "-c", "user.name=t",
@@ -71,6 +82,20 @@ def test_no_page_is_written_inside_a_mount(tmp_path):
             write()
     assert snapshot(ada) == before
     assert pages.copy_of(copy) == "brain" and pages.copy_of(copy / "knowledge") == "brain"
+
+
+def test_reading_a_mount_stays_as_it_was_so_an_item_answered_there_is_not_asked_again(tmp_path):
+    ada = make_space(tmp_path / "ada", name="ada")
+    copy = make_space(ada / "brain", profile="brain", name="lantern", owner="Ada Okafor")
+    (copy / "_inbound/needs-you/onboard.yaml").write_text(yaml.safe_dump({"items": [
+        {"id": "onboard-identity", "kind": "question", "text": "The identity is drafted: sign it"},
+        {"id": "onboard-domains", "kind": "question", "text": "Which domains?"}]}), encoding="utf-8")
+    # answered in that space's own checkout, and fetched with the rest
+    status.record_verdict(copy, "onboard-domains", "Ada Okafor", verb="yes", at="2026-10-12T09:00:00Z")
+    lists(ada)
+    assert status._store(copy)[1] == "present" and "onboard-domains" in needs_you.answered_ids(copy)
+    mine = {i.id: i for i in needs_you.collect(ada, now=NOW, online=False)}
+    assert "onboard-domains" not in mine and mine["onboard-identity"].text.startswith("[brain]")
 
 
 def test_a_mount_at_a_path_of_its_own_and_one_only_gitmodules_lists_are_copies(tmp_path):
@@ -136,6 +161,23 @@ WRITERS = {
     "librarian.apply": lambda root: librarian.apply(root, "k-1", "Ben Liu", now=NOW),
     "librarian.answer": lambda root: librarian.answer(root, "k-1", "Ada Okafor", now=NOW),
     "classify.apply_verdicts": lambda root: classify.apply_verdicts(root, now=NOW),
+    # the tools that write files by other means than the page writers
+    "registry.save": lambda root: registry.Registry(root, spaceyaml.load(root)).save(),
+    "classify.pending": lambda root: classify.pending(root, now=NOW),
+    "classify._save_items": lambda root: classify._save_items(root, []),
+    "classify._propose": lambda root: classify._propose(root, "c-1", {}),
+    "questions_log.append": lambda root: questions_log.append(root, "Where does Harbor stand?", "harbor",
+                                                              "signed", [], now=NOW),
+    "decisions.build": lambda root: decisions.build(root),
+    "transcripts.scan": lambda root: transcripts.scan(root, now=NOW),
+    "link.check": lambda root: link.check(root, now=NOW),
+    "link._needs_you": lambda root: link._needs_you(root, None),
+    "access.write_needs_you": lambda root: access.write_needs_you(root, access.AccessReport()),
+    "tests_run.set_aside": lambda root: tests_run.set_aside(root, now=NOW),
+    "tests_run.hold": lambda root: tests_run.hold(root, {"Where does Harbor stand?": ["3 November"]}, "sync", now=NOW),
+    "tests_run.probe": lambda root: tests_run.probe(root, now=NOW),
+    "morning_view.run": lambda root: morning_view.run(root, "Ada Okafor", now=NOW),
+    "template_sync._copy": lambda root: template_sync._copy(root / "space.yaml", root / "rules.md", root),
     "sign_questions.ask": lambda root: sign_questions.ask(root, "harbor", "p-00000101", "Is the date final?", "the page says so",
                                                          "yes", [], "Ada Okafor", NOW),
 }
@@ -179,3 +221,22 @@ def test_the_checkout_where_a_mounted_spaces_item_is_answered(tmp_path, capsys):
     assert chain.checkout_of(ada, "harbor") is None   # no such mount here
     assert chain.main(["checkout", str(ada), "brain"]) == 0
     assert capsys.readouterr().out.strip() == real.resolve().as_posix()
+
+
+def test_a_mount_kept_beside_its_space_is_the_checkout_itself(tmp_path):
+    ben = make_space(tmp_path / "ben", name="ben")
+    beside = make_space(tmp_path / "company", profile="brain", name="lantern")   # on no list of this machine
+    mount_brain(ben, beside)
+    assert chain.checkout_of(ben, "brain") == beside.resolve()
+
+
+def test_two_spaces_of_one_name_are_told_apart_by_the_repository_the_mount_names(tmp_path):
+    ada, copy = mounted(tmp_path)
+    lists(ada, repo="lantern-works/brain")
+    for folder, origin in (("old", "https://github.com/lantern-archive/brain.git"),
+                           ("live", "https://github.com/Lantern-Works/brain.git")):
+        root = make_space(tmp_path / folder, profile="brain", name="lantern")
+        git(root, "init", "-q", "--initial-branch=main")
+        git(root, "remote", "add", "origin", origin)
+        onboard.remember_space(root)
+    assert chain.checkout_of(ada, "brain") == (tmp_path / "live").resolve()

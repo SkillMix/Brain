@@ -335,6 +335,7 @@ def set_aside(root, now: dt.datetime | None = None, path=None) -> tuple[list, li
     someone else placed stays theirs. Returns (set aside, brought back) as question texts."""
     import yaml
     root = Path(root)
+    pages.refuse_copy(root)
     space = spaceyaml.load(root)
     now = now or space.now()
     path = Path(path) if path else root / ANSWERS_PATH
@@ -385,6 +386,7 @@ def hold(root, failures: dict, by: str, now: dt.datetime | None = None, path=Non
     who held them. Returns the questions set aside."""
     import yaml
     root = Path(root)
+    pages.refuse_copy(root)
     now = now or spaceyaml.load(root).now()
     path = Path(path) if path else root / ANSWERS_PATH
     if not failures or not path.exists():
@@ -413,6 +415,7 @@ class ProbeReport:
 def probe(root, path=None, now: dt.datetime | None = None, roots: dict | None = None) -> ProbeReport:
     """Every answer question by every method: recall per method and per kind of question."""
     root = Path(root)
+    pages.refuse_copy(root)
     space = spaceyaml.load(root)
     now = now or space.now()
     path = Path(path) if path else root / ANSWERS_PATH

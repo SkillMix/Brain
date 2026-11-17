@@ -632,6 +632,7 @@ def _copy(src: Path, dst: Path, root: Path) -> None:
         raise pages.UnsafePath(f"{src.name} is a link in the template; nothing is copied from one")
     data = src.read_bytes()
     pages.check_no_links(dst, root=root)
+    pages.refuse_copy(dst)   # a mount takes its space's own template, in that space's checkout
     dst.parent.mkdir(parents=True, exist_ok=True)
     pages.check_no_links(dst, root=root)   # again, now that the folders exist
     with open(dst, "wb") as handle:

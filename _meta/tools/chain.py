@@ -506,17 +506,30 @@ def _machine_roots() -> list:
 def checkout_of(root, mount: str) -> Path | None:
     """This machine's own checkout of the space that `root` mounts as `mount`, or None. A mount is a
     read-only copy (`pages.copy_of`), so a verdict on one of its items is given in that checkout;
-    with none on this machine it becomes a request to that space."""
+    with none on this machine it goes to that space as a request. A mount kept outside the space
+    that lists it is that checkout. Else it is the space of that name on the machine's list, and
+    of the same repository when the mount names one and the checkout has an origin: two spaces
+    can carry one name."""
     try:
-        name = spaceyaml.load(spaceyaml.load(root).mount_root(mount)).name
+        space = spaceyaml.load(root)
+        copy = space.mount_root(mount)
+        name = spaceyaml.load(copy).name
     except Exception:   # no such mount here, or one that is not on disk
         return None
+    if pages.copy_of(copy) is None:
+        return copy.resolve()
+    import ghrest
+    wanted = next((str(m.get("repo") or "") for m in space.mounts if m.get("name") == mount), "")
     for other in _machine_roots():
         try:
-            if spaceyaml.load(other).name == name and pages.copy_of(other) is None:
-                return other.resolve()
+            if spaceyaml.load(other).name != name or pages.copy_of(other) is not None:
+                continue
         except Exception:
             continue
+        slug = ghrest.repo_slug(other) if wanted else None
+        if slug and slug.casefold() != wanted.casefold():
+            continue
+        return other.resolve()
     return None
 
 
@@ -589,7 +602,7 @@ def main(argv=None) -> int:
         found = checkout_of(Path(args.root), args.mount)
         if found is None:
             print(f"this computer has no checkout of {pages._shown(args.mount)}: nothing is answered in the "
-                  "mount; ask that space instead (request.py ask)", file=sys.stderr)
+                  "mount. The answer goes to that space as a request (the sign skill says how)", file=sys.stderr)
             return 1
         print(found.as_posix())
         return 0

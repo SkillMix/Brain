@@ -126,15 +126,21 @@ back; you do the research, the write-ups and every bit of the filing.
 
 ## An item of another space
 
-A line that starts with `[<space>]` belongs to a space this one mounts. The mount is a read-only
-copy: git fetches it and nothing commits what is written there, so every tool refuses it as its
-root ("is in a read-only copy of ..."). Answer the item in that space's own checkout:
+A line that starts with a name in brackets, `[<mount>]`, belongs to a space this one mounts. The
+mount is a read-only copy: git fetches it and nothing commits what is written there, so the
+tools refuse to write in it ("is in a read-only copy of ..."). Answer the item in that space's
+own checkout:
 
-- `python _meta/tools/chain.py checkout <root> <space>` prints that checkout on this computer.
+- `python _meta/tools/chain.py checkout <root> <mount>` prints that checkout on this computer.
   Read the item back and apply it with that folder as the root, like any other item.
-- When it prints none, nothing is signed here. Send the person's answer to that space as a
-  request (the `request` skill) and tell them the item waits there: it stays on the list until
-  that space applies it.
+- When it prints none, nothing is signed here: a signature is made in the signer's own
+  checkout of that space. The person's answer goes there as a request, in their words:
+  `python _meta/tools/request.py <root> ask --subject <the item's subject> --class detail
+  --question "<name> answers <verb> to <item id>: <their words>" --asked-by "<name>" --force`
+  (`--force` because the space is mounted here, so nothing would be asked otherwise). That
+  space's person sees it on their Needs you and applies it there. An item with no subject has
+  no request to carry it: tell the person on which computer it waits. Either way it stays on
+  this list until that space applies it.
 
 ## What the tool already did
 

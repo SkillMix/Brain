@@ -69,6 +69,7 @@ def append(root, question: str, subject, tier: str, pages, needed_steering: bool
            answered_by_request: bool = False, now: dt.datetime | None = None) -> dict:
     """Record one answered question; returns the entry written."""
     root = Path(root)
+    pages_mod.refuse_copy(root)
     now = now or spaceyaml.load(root).now()
     entry = {"at": pages_mod.iso(now), "question": str(question).strip(), "subject": subject,
              "tier": tier, "pages": [str(p) for p in (pages or [])],

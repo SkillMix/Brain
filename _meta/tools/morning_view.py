@@ -593,6 +593,7 @@ def _count_kind(item) -> str:
 def run(root, person: str, now: dt.datetime | None = None, shadow: bool = False,
         limit: int = 7) -> MorningReport:
     root = Path(root)
+    pages.refuse_copy(root)
     space = spaceyaml.load(root)
     now = now or space.now()
     shadow = bool(shadow) or space.mode == "shadow"

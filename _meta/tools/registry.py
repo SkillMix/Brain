@@ -470,6 +470,8 @@ class Registry:
             self.ancestor_homes.get(sid) == self.space.name
 
     def save(self) -> None:
+        import pages
+        pages.refuse_copy(self.path)   # a mount's registry is that space's to write
         data = {"subjects": [s.to_dict() for s in self.subjects.values()]}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True, width=100),
