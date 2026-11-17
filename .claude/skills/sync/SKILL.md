@@ -15,6 +15,13 @@ on disk. A cloud sweep run starts it once at its end, for each of its spaces.
   timer on a Linux that has a user session, else a cron line), one task per checkout on the machine.
   All but cron run a start missed while the machine slept as soon as it wakes.
 - By hand, only when the person asks to land now or asks why something did not land.
+- The sync is also the alarm for everything else, since the OS runs it whatever the agents do. A
+  chain that did not start, a stage whose last run is past its window (sweep, distill and the
+  router after twice the sweep's longest gap; status and release after two days) and a mount
+  with local changes, or one whose update fails, for a week are named in `_meta/state/stale.yaml`,
+  in the run line (`stale`, `pins_held`) and as one item on Needs you. While the routines are
+  paused it asks nothing. A run that comes more than two hours after the one before says so in
+  its run line (`gap_hours`).
 - When no agent started the daily chain (Claude signed out, or out of allowance), the scheduled
   sync runs the daily chain itself, once a day, without the two steps that need a person: no
   morning view (no briefing goes out, so no window item is listed) and no template sync. Status

@@ -703,6 +703,9 @@ def _librarian_cell(root) -> list:
             + ([f"librarian unreadable {unreadable}"] if unreadable else []))
 
 
+LAST_RAN = ("sweep", "distill", "route", "status", "release", "sync")   # the stages the health line dates
+
+
 def _health_line(space, name: str, root, now) -> str:
     if root is None:
         return f"- {name}: not mounted here"
@@ -728,6 +731,10 @@ def _health_line(space, name: str, root, now) -> str:
         elif stale:
             extras.append("stale: " + ", ".join(f"{k} since {str(v)[:10]}" for k, v in sorted(stale.items(), key=lambda kv: str(kv[0]))))
     extras += _librarian_cell(root)
+    import sync   # the last run of each stage, from the run lines and the router's log
+    ran = sync.last_ran(Path(root))
+    if any(name in ran for name in LAST_RAN):
+        extras.append("last ran: " + ", ".join(f"{name} {ran[name]:%m-%d}" for name in LAST_RAN if name in ran))
     runs, cost = 0, 0
     for run in _jsonl(root / "_meta" / "state" / "runs.jsonl"):
         try:

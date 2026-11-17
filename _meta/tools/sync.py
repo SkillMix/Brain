@@ -4,7 +4,8 @@ The one tool that runs git. The OS scheduler runs it every 15 minutes; sessions 
 routines only edit files. Each run:
 
   1. take `.git/sync.lock`; skip if another run holds it or git is mid-operation
-  1a. name in stale.yaml each chain whose scheduler stopped starting it (`not_started`); while
+  1a. name in stale.yaml each chain whose scheduler stopped starting it and each stage whose last
+     run is past its window (`not_started`: `<chain> not started`, `<stage> stale`); while
      the routines run in the cloud, after step 5 instead (the computer's leg, below)
   2. stage tracked changes and settled untracked text files, never under personal/,
      academic/, _scratch/, _meta/state/private/, _meta/state/feed/ or inside a mount, and never
@@ -18,7 +19,9 @@ routines only edit files. Each run:
      could not read whole and a credential file staged by hand included (count recorded,
      never the match); commit `chore: sync`. Every commit the sync makes outside a merge scans
      the index again first (`commit`), so a file staged by hand meanwhile is judged too
-  4. advance the pin of every clean mount to its remote branch; commit `chore: pins`
+  4. advance the pin of every clean mount to its remote branch; commit `chore: pins`. A mount with
+     local changes is left alone and named in the run line (`pins_held`); one held for PIN_DAYS is
+     `<mount> pin stale` in stale.yaml
   5. fetch origin and merge origin/main in (append-only files by union, and the record of which
      computer runs the routines: `MERGE_RULES` is written into the space's own git first, so a
      space whose .gitattributes is older has it too). The rules settle what GitHub's own merge
@@ -33,6 +36,8 @@ routines only edit files. Each run:
      (`model_free_daily`: status with landing and the id index, access, requests, release, the
      tests; no morning view and no template sync), at most once a day and only on the computer
      that runs the daily; the entry stays until an agent's own daily runs
+  5s. one Needs-you item for everything stale.yaml says did not run in time (`stale_item`), named
+     in the run line as `stale`; none while the routines are paused
   5a. when there is something to publish: run the answer tests; a question that fails is set
      aside (`held: {since, by: sync, missing}` in answers.yaml, named in the run line) so it
      cannot turn the pull request red and hold every other change back, and one the sync set
@@ -168,10 +173,21 @@ BATCH_HOURS = 1   # journal lines and run logs alone go out at most this often
 RUNS_PATH = Path("_meta") / "state" / "runs.jsonl"
 RUN_LOGS = {"_meta/state/tests.jsonl", "_meta/state/probe.jsonl"}
 NOTABLE = ("committed", "pins", "conflict", "scan_hits", "errors", "held_tests", "restored_tests",
-           "healing", "healed", "pr_red", "adopted")
+           "healing", "healed", "pr_red", "adopted", "gap_hours")
 HEAL_STATE = "sync-heal.json"   # in the git dir: the repair waiting to be seen merged
 HEAL_RERUNS = 3   # reruns of one sync pull request's failed checks a day, at most
 CHAINS = {"sweep_chain": "sweep-chain", "daily": "daily-chain"}   # run line routine: its routine prompt
+# A stage that ran here and then stopped is named in stale.yaml as `<stage> stale` (`not_started`), since its last
+# run: the sweep chain's stages once that is older than twice the longest gap in the sweep's schedule, as a chain
+# that did not start is; status (landing runs inside it) and release after STAGE_HOURS. A mount the sync could not
+# move for PIN_DAYS is `<mount> pin stale` (`pins_held`). One Needs-you item names them all (`stale_item`).
+SWEEP_STAGES = ("sweep", "distill", "route")
+STAGE_HOURS = {"status": 48, "release": 48}
+STAGE_STALE = "{} stale"
+PIN_DAYS = 7
+SYNC_GAP_HOURS = 2   # the sync cannot be late while it runs: the next run says how long it had stopped (`sync_gap`)
+STALE_ITEM = "sync-stale-"
+ROUTE_WAITS = "route waits"   # in `last_ran`: since when records wait for the router
 
 
 # Written into every space's own git, whatever its .gitattributes says. The record of who runs the routines merges by
@@ -210,6 +226,7 @@ POLL_SECONDS, WAIT_MINUTES = 20, 9   # how often a cloud run reads its pull requ
 ADOPT_MINUTES = 30   # a cloud pull request open this long, in conflict or red, is merged here: its run waits less
 ADOPTED = "sync-adopted"   # in the git dir: the cloud heads merged here (`adopt`) that main does not hold yet
 LEG_STATE = "sync-leg-{}.json"   # under ~/.spaces/, beside the progress page: the leg's clocks for one space
+HEALTH_STATE = "sync-health-{}.json"   # beside it: what the sync keeps about itself on this computer (`health_state`)
 SYNC_ITEMS = Path("_inbound") / "needs-you" / "sync.yaml"   # the leg's items on Needs you
 # What the sync left on this computer, why and since when (`Run.left_local_health`): in the private zone, never staged
 LEFT_LOCAL = spaceyaml.PRIVATE_STATE / "left-local.json"
@@ -444,12 +461,52 @@ def in_progress(gdir: Path) -> str | None:
     return next((name for name in IN_PROGRESS if (gdir / name).exists()), None)
 
 
+def last_ran(root: Path, cloud: bool = False) -> dict:
+    """{name: when it last ran} for every routine with a run line in `_meta/state/runs.jsonl` (a chain, a stage
+    of one, the sync itself), and `route` from the router's own log, routing.jsonl, since it writes no run line.
+    `cloud` reads the run lines the fetched `cloud/<chain>` branches hold as well. ROUTE_WAITS is what the router
+    is judged by, when records wait for it: the oldest sweep since its last decision that wrote a witness page.
+    With none it is absent, so a quiet weekend with nothing to route is not a router that stopped."""
+    root = Path(root)
+    path = root / RUNS_PATH
+    texts = [path.read_text(encoding="utf-8", errors="replace")] if path.exists() else []
+    for name in CLOUD_CHAINS if cloud else ():
+        held = git(root, "show", f"refs/remotes/origin/cloud/{name}:{RUNS_PATH.as_posix()}")
+        texts += [held.stdout] if held.returncode == 0 else []
+    last, fed = {}, []
+    for raw in (line for text in texts for line in text.splitlines()):
+        try:
+            row = json.loads(raw)
+            name, at = str(row["routine"]), pages.parse_iso(row["at"])
+            last[name] = max(at, last.get(name, at))
+            if name == "sweep" and isinstance(row.get("notes"), dict) and row["notes"].get("witness"):
+                fed.append(at)
+        except (ValueError, KeyError, TypeError, AttributeError):
+            continue
+    try:
+        rows = (root / "_meta" / "state" / "routing.jsonl").read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        rows = []
+    for raw in rows:
+        try:
+            at = pages.parse_iso(json.loads(raw)["at"])
+            last["route"] = max(at, last.get("route", at))
+        except (ValueError, KeyError, TypeError, AttributeError):
+            continue
+    waiting = [at for at in fed if at > last["route"]] if "route" in last else []
+    if waiting:
+        last[ROUTE_WAITS] = min(waiting)
+    return last
+
+
 def not_started(root: Path, now: dt.datetime | None = None, cloud: bool = False) -> bool:
     """A chain its agent scheduler never starts writes nothing, so only this script, which the OS
     runs whatever that scheduler does, can notice. A chain whose last run line (for one that never
     ran, the onboarding) is older than twice the longest gap in its routine's schedule is named
     in stale.yaml as `<routine> not started` since then, for the health line; the entry goes when
-    the chain runs. Written only when it changes. True when it wrote. While the routines run in the
+    the chain runs. A stage that ran here once and whose last run is past its window is named
+    `<stage> stale` the same way (SWEEP_STAGES, STAGE_HOURS; the router only where `routing:` is
+    on, and only while records wait for it). Written only when it changes. True when it wrote. While the routines run in the
     cloud the sync asks it after merging main in (`Run.computer_leg`), so the cloud's run lines are
     read first, and `cloud` reads those its `cloud/<chain>` branches hold as well, as the fetch
     left them: a quiet run's lines wait there, with no pull request, for up to QUIET_HOURS."""
@@ -459,25 +516,12 @@ def not_started(root: Path, now: dt.datetime | None = None, cloud: bool = False)
     import yaml
     space = spaceyaml.load(root)
     now = now or space.now()
-    last: dict = {}
-    path = root / RUNS_PATH
-    texts = [path.read_text(encoding="utf-8", errors="replace")] if path.exists() else []
-    for name in CLOUD_CHAINS if cloud else ():
-        held = git(root, "show", f"refs/remotes/origin/cloud/{name}:{RUNS_PATH.as_posix()}")
-        texts += [held.stdout] if held.returncode == 0 else []
-    for raw in (line for text in texts for line in text.splitlines()):
-        try:
-            row = json.loads(raw)
-            if row.get("routine") in CHAINS:
-                at = pages.parse_iso(row["at"])
-                last[row["routine"]] = max(at, last.get(row["routine"], at))
-        except (ValueError, KeyError, TypeError, AttributeError):
-            continue
+    last = last_ran(root, cloud=cloud)
     try:   # a space no onboarding made was promised no schedule
         onboarded = pages.parse_iso(onboard.read_yaml(root / "_meta" / "state" / "onboard.yaml", {})["at"])
     except (KeyError, TypeError, ValueError, OSError, yaml.YAMLError):
         onboarded = None
-    schedules = dict(onboarding_page._routines(root))
+    schedules, sweep_hours = dict(onboarding_page._routines(root)), 0
     stale_path = root / chain.STALE
     data = (yaml.safe_load(stale_path.read_text(encoding="utf-8")) or {}) if stale_path.exists() else {}
     want = dict(data)
@@ -487,6 +531,15 @@ def not_started(root: Path, now: dt.datetime | None = None, cloud: bool = False)
         # the longest wait between two starts, the night included: once a day waits 24 hours
         gap = max(b - a for a, b in zip(times, times[1:] + [times[0] + 24 * 60])) if times else 0
         if since is not None and gap and now - since > space.scale(2 * gap / 60):
+            want[key] = pages.iso(since)
+        else:
+            want.pop(key, None)
+        if routine == "sweep_chain":
+            sweep_hours = 2 * gap / 60
+    for stage in (*SWEEP_STAGES, *STAGE_HOURS):
+        key, hours = STAGE_STALE.format(stage), STAGE_HOURS.get(stage, sweep_hours)
+        since = last.get(stage) if stage != "route" else last.get(ROUTE_WAITS) if space.routing_on else None
+        if since is not None and hours and now - since > space.scale(hours):
             want[key] = pages.iso(since)
         else:
             want.pop(key, None)
@@ -1249,12 +1302,13 @@ class Run:
 
     # ----- pins ----------------------------------------------------------------
     def advance_pins(self) -> None:
-        moved = []
+        moved, held = [], []
         for sub in self.submodules():
             if not (self.root / sub / ".git").exists():
                 continue
             if git(self.root / sub, "status", "--porcelain").stdout.strip():
                 print(f"pins: {sub} has local changes, left alone")
+                held.append(sub)
                 continue
             if self.dry:
                 print(f"would advance the pin of {sub}")
@@ -1263,6 +1317,7 @@ class Run:
             done = git(self.root, "submodule", "update", "--remote", "--", sub)
             if done.returncode != 0:
                 self.error(f"pins: update of {sub} failed")
+                held.append(sub)
                 continue
             after = git(self.root / sub, "rev-parse", "HEAD").stdout.strip()
             if after != before:
@@ -1270,6 +1325,103 @@ class Run:
                 moved.append(sub)
         if moved and self.commit("chore: pins"):
             self.notes["pins"] = moved
+        if not self.dry:
+            self.pins_held(held)
+
+    def sync_gap(self) -> None:
+        """The sync's own last run, kept on this computer's clock (`health_state`, one small file outside the
+        repository written every run): when the run before this one was more than SYNC_GAP_HOURS ago (the
+        computer slept, or its scheduler stopped starting the sync), this run writes a line that says for how
+        many hours, as `gap_hours`. No item: a laptop that slept would raise one every morning. Only a whole
+        run on the computer counts."""
+        try:
+            ago = self.now - pages.parse_iso(self.health_state().get("sync"))
+        except (TypeError, ValueError, OverflowError):
+            ago = None
+        if ago is not None and ago > self.space.scale(SYNC_GAP_HOURS):
+            self.notes["gap_hours"] = round(ago.total_seconds() / 3600)
+        self.health_state(sync=pages.iso(self.now))
+
+    def pins_held(self, held: list) -> None:
+        """The mounts this run could not move, because something wrote into them or their update failed
+        (`advance_pins`): named in the run line, each with since when, on this computer's own clock
+        (`health_state`; where that file cannot be written the clock starts again every run and no mount is ever
+        called stale). One held for PIN_DAYS is a stale stage, `<mount> pin stale` in stale.yaml, which the
+        health line and the stale item show: a copy that stopped following its space is still read as if it
+        were current. The entry goes when the mount moves again. stale.yaml is written only when that changes
+        it."""
+        import chain
+        import yaml
+        before = self.health_state().get("pins_held")
+        before = before if isinstance(before, dict) else {}
+        since = {sub: str(before.get(sub) or pages.iso(self.now)) for sub in held}
+        self.health_state(pins_held=since or None)
+        if since:
+            self.notes["pins_held"] = sorted(since)
+        late = {}
+        for sub, at in since.items():
+            try:
+                if self.now - pages.parse_iso(at) >= self.space.scale(PIN_DAYS * 24):
+                    late[STAGE_STALE.format(f"{sub} pin")] = at
+            except (TypeError, ValueError, OverflowError):
+                continue
+        path = self.root / chain.STALE
+        try:
+            data = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}) if path.exists() else {}
+        except (OSError, yaml.YAMLError):
+            return
+        if not isinstance(data, dict):
+            return
+        want = {**{k: v for k, v in data.items() if not str(k).endswith(STAGE_STALE.format("pin"))}, **late}
+        if want != data:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(yaml.safe_dump(want, sort_keys=True), encoding="utf-8", newline="\n")
+
+    def stale_item(self) -> None:
+        """One Needs-you item for everything stale.yaml says did not run in time: a chain that did not start, a
+        stage past its window (`not_started`), a mount held for a week (`pins_held`). The health line and the
+        briefing show stale.yaml too, but the daily chain writes both, and it is the first thing to stop: this
+        item is the sync's own, and the session start reads it. The run line names them as `stale`. The item's
+        id is the set of names with since when each is late, so one incident is asked once, the same stage late
+        again later is a new item (Needs you hides an id that has an answer), and the item goes when nothing is
+        late. While the routines are paused nothing is asked: the person stopped them. Only a whole run on the
+        computer writes it."""
+        if self.dry or self.cloud or getattr(self.args, "only", None):
+            return
+        import chain
+        import routine
+        import yaml
+        try:
+            data = yaml.safe_load((self.root / chain.STALE).read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError):
+            data = {}
+        ends = (chain.NOT_STARTED.format(""), STAGE_STALE.format(""))
+        late = {str(k): str(v) for k, v in data.items() if str(k).endswith(ends)} if isinstance(data, dict) else {}
+        if late:
+            self.notes["stale"] = sorted(late)
+        try:
+            workspace = self.workspace()
+            record = routine.host(workspace) if workspace is not None else None
+            paused = bool(record) and not record.get("unclear") and routine.paused_until(record, self.now) is not None
+        except Exception:
+            paused = False
+        asking = bool(late) and not paused
+        if not asking and not any(str(i.get("id", "")).startswith(STALE_ITEM) for i in items_in(self.root / SYNC_ITEMS)):
+            return
+        incident = "\n".join(f"{key} {when}" for key, when in sorted(late.items()))
+        item_id = STALE_ITEM + hashlib.sha256(incident.encode("utf-8")).hexdigest()[:8]
+        names = ", ".join(f"{key.removesuffix(ends[0]).removesuffix(ends[1])} (last {when[:10]})"
+                          for key, when in sorted(late.items()))
+        item = {"id": item_id, "kind": "request",
+                "text": (f"Part of this space did not run in time: {names}. The agent that runs your routines may "
+                         "be signed out, out of allowance or no longer scheduled; a `pin` is a mounted space's copy "
+                         "that something wrote into, so it stopped following its space."),
+                "recommendation": ("yes: open a session and ask why your routines stopped; the agent reads the "
+                                   "run lines and the scheduler and says what to do"),
+                "default": ("they stay as they are: the sync keeps status and filing going without the model, "
+                            "and the briefing and new drafts wait"), "depends": 1}
+        self.leg_items([item] if asking else [],
+                       lambda other: other.startswith(STALE_ITEM) and (other != item_id or not asking))
 
     # ----- merge in, publish -----------------------------------------------------
     def set_aside_tests(self) -> None:
@@ -2147,7 +2299,16 @@ class Run:
         (`transcripts`). `changes` set those keys (None takes one out); the
         file is written only when that changes it, and one that cannot be written leaves the step to run
         again next time."""
-        path = Path.home() / ".spaces" / LEG_STATE.format(self.space.name)
+        return self.kept(LEG_STATE, **changes)
+
+    def health_state(self, **changes) -> dict:
+        """What the sync keeps about itself on this computer, never in the repository
+        (`~/.spaces/sync-health-<space>.json`, beside the leg's clocks): when it last ran (`sync`) and since
+        when it could not move each mount (`pins_held`). Kept as `leg_state` keeps its own."""
+        return self.kept(HEALTH_STATE, **changes)
+
+    def kept(self, name: str, **changes) -> dict:
+        path = Path.home() / ".spaces" / name.format(self.space.name)
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -2237,6 +2398,9 @@ class Run:
         self.notes["model_free"] = True
         if done.get("errors"):
             self.notes["model_free_errors"] = sorted(e["step"] for e in done["errors"])
+        leg = self.cloud_host() is not None
+        if not (leg and self.behind):   # as the first reading was made: status just ran, so it is not stale
+            self.watch_chains(cloud=leg)
         self.stage_and_commit()
         return True
 
@@ -3487,6 +3651,8 @@ def sync_once(args) -> int:
         else:
             # while the routines run in the cloud, the computer's leg runs after the merge, `not_started` with it
             leg = not args.only and not run.dry and run.cloud_host() is not None
+            if not args.only and not run.dry:
+                run.sync_gap()
             if not args.only and not run.dry and not leg:
                 run.watch_chains()
             if args.release_leg and not args.only:
@@ -3508,6 +3674,7 @@ def sync_once(args) -> int:
                 run.computer_leg(run.now)
             if not args.only and not run.dry:
                 run.model_free_daily(run.now)
+                run.stale_item()
             if not args.only:
                 run.set_aside_tests()
                 if not run.dry and not args.no_push:
