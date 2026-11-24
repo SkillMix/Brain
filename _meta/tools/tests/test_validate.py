@@ -142,3 +142,18 @@ def test_journal_with_ref_lines_validates(tmp_path):
                     "- ref: https://github.com/northwind/harbor-voice/pull/7\n- lesson: retry webhooks with backoff\n"
                     "- from: beacon-app\n- subject: harbor-voice-agent\n", encoding="utf-8")
     assert errors(root) == []
+
+
+def test_a_link_to_a_page_newer_than_the_saved_id_index_passes(tmp_path):
+    # Seen live: a sweep made a decision draft and a subject draft that links to it in the same
+    # run; only the daily status step rebuilds the saved index, so the check stayed red for days.
+    import ids
+    root = make_space(tmp_path / "ada")
+    write_page(root, "knowledge/topics/a/one.md", id="p-00000021", title="One")
+    ids.build(root)
+    write_page(root, "_inbound/candidates/decision.md", id="p-00000022", type="decision", title="New")
+    write_page(root, "_inbound/candidates/subject.md", id="p-00000023", title="Subject",
+               body="Decided: [new](id:p-00000022). Gone: [x](id:p-0000dead).\n")
+    errs = errors(root)
+    assert not any("p-00000022" in e for e in errs), errs
+    assert any("p-0000dead" in e for e in errs), errs

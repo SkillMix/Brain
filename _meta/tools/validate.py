@@ -319,6 +319,8 @@ def validate(root, template: bool = False) -> list:
     # id links: this space and every mount on disk. While a mount is absent, a link found
     # nowhere may point into it, so it is a warning that names the absent mounts, not an error.
     known = dict(_ids_of(root))
+    for pid, rel in seen_ids.items():   # a page on disk counts, however old the saved index is
+        known.setdefault(pid, rel)
     for mount_root in space.ancestor_roots():
         for pid, rel in _ids_of(mount_root).items():
             known.setdefault(pid, rel)
