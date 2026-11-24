@@ -290,3 +290,29 @@ def test_a_signer_history_that_cannot_be_read_still_waits_pending(tmp_path, monk
     signer_gh(monkeypatch, 1, stderr="gh: Not Found (HTTP 404)\n")
     assert landing.land(root, now=NOW).pending == ["p-0000a302"]
     assert "signer's history" in pages.read(path)[0]["landing"]
+
+
+def test_a_page_released_again_passes_the_check_and_lands_over_the_old(tmp_path, monkeypatch):
+    # Seen live: a signed page released a second time failed the destination's check as a
+    # duplicate id (the landed copy in knowledge/ and the waiting one in candidates/), so the
+    # release never reached landing, which is built to update the page in place.
+    root = harbor_space(tmp_path)
+    released(root, "p-0000a0e1", "Harbor goes live on 3 November.\n")
+    vouch(monkeypatch, root)
+    assert landing.land(root, now=NOW).silent == ["p-0000a0e1"]
+    later = NOW + dt.timedelta(days=2)
+    released(root, "p-0000a0e1", "Harbor goes live on 10 November.\n", signed_at=pages.iso(later),
+             released_at=pages.iso(later))
+    assert errors(root) == []
+    vouch(monkeypatch, root)
+    assert landing.land(root, now=later).silent == ["p-0000a0e1"]
+    _, body = pages.read(root / "knowledge/projects/harbor/p-0000a0e1.md")
+    assert "10 November" in body
+    assert errors(root) == []
+
+
+def test_another_page_with_a_landed_id_still_fails_the_check(tmp_path):
+    root = harbor_space(tmp_path)
+    write_page(root, "knowledge/projects/harbor/brief.md", id="p-0000a0e2", title="Brief")
+    write_page(root, "_inbound/candidates/other.md", id="p-0000a0e2", title="Other")
+    assert any("p-0000a0e2" in e and "already used" in e for e in errors(root))
