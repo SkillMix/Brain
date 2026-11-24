@@ -134,7 +134,10 @@ def _check_page(root: Path, path: Path, space: spaceyaml.Space, seen_ids: dict, 
         if not pages.ID_RE.match(pid):
             errs.append(f"{rel}: id `{pid}` is not `p-` plus 8 hex")
         elif pid in seen_ids:
-            errs.append(f"{rel}: id `{pid}` already used by {seen_ids[pid]}")
+            # a release of a page landed here is its next version: landing updates it in place
+            if not (fm.get("released_from") and rel.startswith("_inbound/candidates/")
+                    and seen_ids[pid].startswith("knowledge/")):
+                errs.append(f"{rel}: id `{pid}` already used by {seen_ids[pid]}")
         else:
             seen_ids[pid] = rel
     ptype = str(fm.get("type") or "")
