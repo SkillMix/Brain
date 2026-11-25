@@ -634,3 +634,96 @@ def test_a_record_withdrawn_at_home_is_no_longer_evidence(tmp_path):
     harbor, _, item_id = _shipped_and_landed(tmp_path)
     landing.retract(harbor, item_id, by="Ben Liu", now=NOW + dt.timedelta(hours=1))
     assert item_id not in _evidence_ids(harbor)
+
+
+def _online_harbor(tmp_path, monkeypatch, states):
+    """ada with a release clone of harbor; publish opens pull request #41, and its state is read
+    from `states` (one answer per question)."""
+    _, harbor, ada = build(tmp_path, sources=CREW_MAIL)
+    spaces_home = tmp_path / "spaces-home"
+    checkout = spaces_home / "harbor"
+    (checkout / ".git").mkdir(parents=True)
+    (checkout / "space.yaml").write_text((harbor / "space.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setenv("SPACES_HOME", str(spaces_home))
+    monkeypatch.setattr(release, "publish", lambda checkout_path, slug, source, write: (write(), 41)[1])
+    asked = []
+    monkeypatch.setattr(release, "pr_state", lambda checkout_path, number: asked.append(number) or states.pop(0))
+    return ada, asked
+
+
+def _released_lines(root):
+    path = root / "_meta" / "state" / "released.jsonl"
+    return path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+
+
+def test_a_release_counts_as_released_only_once_its_pull_request_merged(tmp_path, monkeypatch):
+    # Seen live: a release was logged as released once its pull request existed; the pull request
+    # failed its checks and never carried the pages, and the owner's space believed they shipped.
+    ada, asked = _online_harbor(tmp_path, monkeypatch, ["OPEN", "MERGED"])
+    write_feed(ada, [record()])
+    sweep.run(ada, now=NOW)
+    (item_id,) = [pages.read(p)[0]["id"] for p in queue_paths(ada)]
+    release.ship(ada, now=NOW)
+    assert queue_paths(ada) == [] and _released_lines(ada) == []
+    log = (ada / "log.md").read_text(encoding="utf-8")
+    assert f"sent {item_id} to harbor in pull request #41" in log and f"released {item_id}" not in log
+    assert (ada / "_outbound" / "sent" / f"{item_id}.md").exists()
+    release.ship(ada, now=NOW + dt.timedelta(minutes=15))   # still open: it waits
+    assert _released_lines(ada) == [] and asked == [41]
+    release.ship(ada, now=NOW + dt.timedelta(minutes=30))   # merged: now it is released
+    (line,) = _released_lines(ada)
+    assert json.loads(line)["id"] == item_id and json.loads(line)["destination"] == "harbor"
+    assert f"released {item_id} to harbor" in (ada / "log.md").read_text(encoding="utf-8")
+    assert not (ada / "_outbound" / "sent" / f"{item_id}.md").exists()
+
+
+def test_a_release_whose_pull_request_closed_unmerged_comes_back_to_its_owner(tmp_path, monkeypatch):
+    ada, _ = _online_harbor(tmp_path, monkeypatch, ["CLOSED"])
+    write_feed(ada, [record()])
+    sweep.run(ada, now=NOW)
+    (item_id,) = [pages.read(p)[0]["id"] for p in queue_paths(ada)]
+    release.ship(ada, now=NOW)
+    release.ship(ada, now=NOW + dt.timedelta(minutes=15))
+    assert _released_lines(ada) == [] and not list((ada / "_outbound" / "sent").glob("*.md"))
+    (fm, _), = held_items(ada)
+    assert fm["id"] == item_id and fm["reason"] == "not landed" and "#41" in fm["why"]
+    assert not any(k in fm for k in ("sent_at", "sent_to", "pull_request"))
+    rows = release.held_health(ada)
+    assert any(r["id"] == item_id and "did not land" in r["text"] for r in rows), rows
+    assert release.requeue(ada, item_id) == ada / "_outbound" / "queue" / f"{item_id}.md"
+
+
+def test_a_release_still_unmerged_after_a_day_is_on_the_health_line(tmp_path, monkeypatch):
+    ada, _ = _online_harbor(tmp_path, monkeypatch, ["OPEN"])
+    write_feed(ada, [record()])
+    sweep.run(ada, now=NOW)
+    (item_id,) = [pages.read(p)[0]["id"] for p in queue_paths(ada)]
+    release.ship(ada, now=NOW)
+    assert release.held_health(ada, now=NOW + dt.timedelta(hours=2)) == []
+    rows = release.held_health(ada, now=NOW + dt.timedelta(days=2))
+    assert any(r["id"] == item_id and "#41" in r["text"] and "not merged" in r["text"] for r in rows), rows
+
+
+def test_an_item_still_in_its_pull_request_can_be_retracted(tmp_path, monkeypatch):
+    ada, _ = _online_harbor(tmp_path, monkeypatch, ["OPEN", "OPEN"])
+    write_feed(ada, [record()])
+    sweep.run(ada, now=NOW)
+    (item_id,) = [pages.read(p)[0]["id"] for p in queue_paths(ada)]
+    release.ship(ada, now=NOW)
+    assert release.released_record(ada, item_id)["destination"] == "harbor"
+    release.retract(ada, item_id, now=NOW)
+    (fm, _), = [pages.read(p) for p in queue_paths(ada)]
+    assert fm["class"] == "retraction" and fm["retracts"] == item_id and fm["destination"] == "harbor"
+
+
+def test_an_item_sent_without_a_pull_request_number_comes_back_to_its_owner(tmp_path, monkeypatch):
+    ada, asked = _online_harbor(tmp_path, monkeypatch, [])
+    monkeypatch.setattr(release, "publish", lambda checkout_path, slug, source, write: (write(), None)[1])
+    write_feed(ada, [record()])
+    sweep.run(ada, now=NOW)
+    (item_id,) = [pages.read(p)[0]["id"] for p in queue_paths(ada)]
+    release.ship(ada, now=NOW)
+    release.ship(ada, now=NOW + dt.timedelta(minutes=15))
+    assert asked == [] and not list((ada / "_outbound" / "sent").glob("*.md"))
+    (fm, _), = held_items(ada)
+    assert fm["id"] == item_id and fm["reason"] == "not landed" and "number" in fm["why"]
