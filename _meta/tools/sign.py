@@ -251,6 +251,16 @@ def read_back(root, selection, bodies: dict | None = None) -> str:
     parts = []
     for item_id in selection:
         entry = found.get(str(item_id))
+        left = None
+        if entry is None:
+            import release   # an item that already left: a no retracts it there (`_one`)
+            left = release.released_record(root, str(item_id))
+        if entry is None and left:
+            where = needs_you.untrusted_line(left.get("destination"), 60)
+            parts.append(f"## {item_id}: left for {where}"
+                         + (f" on {needs_you.untrusted_line(left['at'], 20)[:10]}" if left.get("at") else "")
+                         + f"\na no retracts it: {where} withdraws it\n")
+            continue
         if entry is None:
             parts.append(f"## {item_id}: not found\n")
             continue
