@@ -64,3 +64,37 @@ def test_cold_start_confirms_from_the_archive_in_batches(tmp_path):
     assert order, "the confirmations reach Needs you"
     again = cold_start.run(root, conf, archive=archive)
     assert again["written"] == [] and len(again["kept"]) == 33
+
+
+def test_an_identity_confirmation_is_a_question_with_the_archive_and_no_candidate(tmp_path):
+    # sign lands pages only under knowledge/, and identity/ is guarded: a candidate for it could never
+    # be signed and turned the check red, so the question carries the archive and names the page
+    root = make_space(tmp_path / "brain", profile="brain", name="brain")
+    archive = tmp_path / "archive"
+    (archive / "identity").mkdir(parents=True)
+    (archive / "identity" / "values.md").write_text("---\ntitle: Values\n---\nWe say what we do not know.\n",
+                                                    encoding="utf-8")
+    conf = tmp_path / "confirmations.yaml"
+    conf.write_text(yaml.safe_dump({"batches": [{"name": "identity", "depends": 3, "confirmations": [
+        {"id": "values", "think": "Honesty about what we do not know is a value.",
+         "based_on": "archive/identity/values.md", "candidate": "identity/values.md"}]}]}), encoding="utf-8")
+    out = cold_start.run(root, conf, archive=archive, label="old-brain")
+    assert out["errors"] == [], out["errors"]
+    assert not list((root / "_inbound" / "candidates").glob("cold-start-*.md"))
+    fm, body = pages.read(root / "_inbound" / "questions" / "cold-start-values.md")
+    assert fm["payload"] == "identity/values.md"
+    assert "We say what we do not know." in body
+    assert "edit `identity/values.md` yourself" in body
+    assert fm["question"].endswith("If yes, edit identity/values.md yourself."), "Needs you shows only this line"
+    assert [e for e in validate.validate(root) if not e.startswith("warning:")] == []
+
+
+def test_an_older_identity_candidate_is_refused_with_what_to_do(tmp_path):
+    # a space where an older cold start already drafted one: the check says how to clear it
+    root = make_space(tmp_path / "brain", profile="brain", name="brain")
+    pages.write(root / "_inbound" / "candidates" / "cold-start-values.md",
+                {"id": pages.new_id(), "type": "concept", "title": "Values", "status": "draft",
+                 "generated": pages.generated("cold-start", NOW), "kind": "identity",
+                 "target": "identity/values.md"}, "# Values\n")
+    errors = [e for e in validate.validate(root) if "cold-start-values" in e]
+    assert len(errors) == 1 and "move this draft out of _inbound/candidates/" in errors[0], errors

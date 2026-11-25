@@ -101,7 +101,9 @@ def _candidate_problems(root: Path, path: Path, fm: dict, space: spaceyaml.Space
     try:
         rel = sign.check_target(sign.target_of(fm, path, space.now()), record=False)
     except pages.UnsafePath as exc:
-        return [f"bad target: {exc}"]
+        hint = ("; identity pages are edited by hand: move this draft out of _inbound/candidates/ "
+                "and edit identity/ yourself") if str(fm.get("target") or "").startswith("identity/") else ""
+        return [f"bad target: {exc}{hint}"]
     reason = pages.guarded_reason(rel)
     if reason:
         out.append(f"bad target: {ascii(rel)[:90]} {reason}")

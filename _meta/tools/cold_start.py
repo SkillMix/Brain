@@ -9,9 +9,11 @@ into this space, as drafts:
   on Y. Right?", with a recommendation, its batch and how much depends on it; batches over
   25 are split, the most depended-on first;
 - one candidate per active subject the confirmation names (`candidate:
-  knowledge/<kind>/<id>/` or `knowledge/<kind>/<all>/`), or an identity page
-  (`identity/<name>.md`), whose body quotes the archived page as unsigned evidence with an
-  `archive:<label>/<path>` pointer.
+  knowledge/<kind>/<id>/` or `knowledge/<kind>/<all>/`), whose body quotes the archived page
+  as unsigned evidence with an `archive:<label>/<path>` pointer. An identity page
+  (`identity/<name>.md`) gets no candidate: sign lands pages only under `knowledge/` and the
+  gate guards `identity/`, so its question names the page and quotes the archive, and the
+  person edits the page by hand.
 
 Re-runnable: a file that exists is kept.
 
@@ -58,10 +60,6 @@ def archive_text(archive: Path | None, ref: str) -> str:
 def targets(conf: dict, reg) -> list:
     """(candidate relpath, extra frontmatter, title) for one confirmation."""
     target = str(conf.get("candidate") or "none")
-    if target.startswith("identity/"):
-        stem = Path(target).stem
-        return [(f"_inbound/candidates/cold-start-{stem}.md",
-                 {"type": "concept", "kind": "identity", "target": target}, stem.replace("-", " ").title())]
     match = re.match(r"knowledge/([a-z0-9-]+)/([^/]+)/?", target)
     if not match:
         return []
@@ -113,13 +111,23 @@ def run(root, confirmations, archive=None, label: str = "archive", dry_run: bool
             refs = ARCHIVE_REF.findall(based)
             evidence = [f"archive:{label}/{r.removeprefix('archive/')}" for r in refs]
             planned = targets(conf, reg)
+            identity = str(conf.get("candidate") or "")
+            identity = identity if identity.startswith("identity/") else ""
+            question = f"# Confirm: {conf['id']}\n\n{think}\n\nBased on: {based}\n"
+            if identity:   # no candidate (see the module's docstring): the question carries the archive
+                question += f"\nIf this is right, edit `{identity}` yourself: no tool writes there.\n"
+                for ref in refs:
+                    text = archive_text(archive, ref)
+                    if text:
+                        question += f"\n## From the archive: {ref}\n\n{text}"
             put(f"_inbound/questions/cold-start-{conf['id']}.md",
                 {"id": pages.new_id(), "type": "review", "title": f"Confirm: {conf['id']}", "status": "draft",
-                 "generated": pages.generated("cold-start", now), "question": f"I think: {think} Based on {based}. Right?",
+                 "generated": pages.generated("cold-start", now), "question": f"I think: {think} Based on {based}. Right?"
+                 + (f" If yes, edit {identity} yourself." if identity else ""),
                  "recommendation": "yes", "default": "stays a draft until you answer", "depends": depends,
-                 "batch": batch.get("name"), "payload": planned[0][0] if planned else "_meta/subjects.yaml",
+                 "batch": batch.get("name"), "payload": identity or (planned[0][0] if planned else "_meta/subjects.yaml"),
                  "evidence": evidence},
-                f"# Confirm: {conf['id']}\n\n{think}\n\nBased on: {based}\n")
+                question)
             for rel, extra, title in planned:
                 body = [f"# {title}", "", "## Proposed", think, "", "## Evidence (archive, unsigned)", f"- {based}"]
                 for ref in refs:
