@@ -7,6 +7,41 @@ the shape and ships its migration. Each choice behind a change has a line in
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-11-24
+
+What you release now arrives, or comes back to you: a release counts as released only once its
+pull request merged, and a page released again lands over the old one. Needs you shows what is
+waiting for you, and a no says what else it does before you give it.
+
+### Fixed
+
+- **A new draft that links another new draft no longer turns the sync check red.** The check
+  trusted only the saved id index, which only the daily status step rebuilds. The ids of the pages
+  it has just read on disk now count too. A link to an id found neither on disk nor in the saved index still fails.
+- **A page released again passes the destination's check.** The landed page and its new release
+  counted as two pages with one id, so the release never reached landing, which updates the page
+  in place.
+- **A release counts as released only once its pull request merged.** An item sent in a pull
+  request waits in `_outbound/sent/` until it merged; closed without merging, it is held as
+  `not landed` for its owner, and one still unmerged a day later is on the health line.
+- **A home's own entry for a subject keeps the brain's owner and classification.** An entry with
+  only names (aliases, match) hid them, so the subject looked unclassified in its own home and its
+  drafts dropped out of the sign tool.
+- **At `propose`, Needs you lists every queue item that waits for your yes**, at-once items
+  included, and says "waits for your yes" where it said "leaves".
+- **Many plain drafts fold into one line.** More than ten drafts with no deadline and no
+  high-stakes flag become "drafts to sign when you have time: N"; `needs_you.py --drafts` opens it.
+- **A no that pauses a release path says so** on Needs you and in the read-back, and the apply
+  report names the path it paused.
+- **An edit on a record is refused, and the read-back says so.** It was filed unchanged without a
+  word.
+- **The read-back of an item that already left says a no retracts it there.**
+
+### Tests
+
+- Proof for two earlier fixes: a release run builds on an open release pull request (0.3.3), and
+  the sign read-back prints any character on a cp1252 pipe (0.3.3).
+
 ## [0.3.5] - 2026-11-17
 
 A space now tells you when part of it has stopped: a routine that did not run in time, a computer
