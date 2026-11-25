@@ -113,6 +113,7 @@ class ApplyReport:
     skipped: list = field(default_factory=list)
     retracted: list = field(default_factory=list)
     refused: list = field(default_factory=list)   # {"id", "why"}: not what was read back
+    paused: list = field(default_factory=list)    # {"id", "path"}: a release path a no paused for four weeks
 
 
 @dataclass
@@ -265,6 +266,8 @@ def read_back(root, selection, bodies: dict | None = None) -> str:
         destination = entry.fm.get("destination")
         if destination:
             lines.append(f"it will go to {needs_you.untrusted_line(destination, 120)}")
+        if entry.kind in ("leaving", "high_stakes") and needs_you.pause_note(entry.fm):
+            lines.append(needs_you.pause_note(entry.fm))
         decision = entry.fm.get("decision")
         if entry.fm.get("type") == "review" and isinstance(decision, dict) and "routes" in decision:
             routes = [r for r in decision.get("routes") or [] if isinstance(r, dict)]
@@ -657,7 +660,9 @@ def _queue_item(root, space, entry: Found, item_id, verb, note, by, now, report:
         path.unlink()
         if fm.get("path") and not str(fm["path"]).startswith("approved:"):
             import release   # the path that let it through pauses for four weeks
-            release.pause(root, fm["path"], now, "pulled back", item_id, space)
+            row = release.pause(root, fm["path"], now, "pulled back", item_id, space)
+            if row:
+                report.paused.append({"id": item_id, "path": row["path"]})
         report.discarded.append(item_id)
         return
     if verb == "later":
