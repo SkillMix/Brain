@@ -156,7 +156,8 @@ fingerprint}`; `kind` is one of `candidate`, `check`, `leaving`, `request`, `que
 `security` item is written only by the sync, the cloud sync and the morning view
 (`needs_you.SECURITY_WRITERS`), and a pull request that adds one waits for the owner's click;
 `security_warning` is a count label in the morning mail, never an item kind. Candidates and
-checks are read from their folders directly; items held in doubt appear as one count line.
+checks are read from their folders directly; items held in doubt appear as one count line, and
+so do plain drafts (no deadline, no high-stakes flag) when there are more than ten.
 An item may carry `check` (the read-back that proves an owner step done) and `for` (whom it
 is for, when not the space's owner). An id that has an answer is not shown again, so a writer whose
 item can come back gives each occurrence an id of its own (`needs_you.recurring_id`). A personal space's list also shows the items its

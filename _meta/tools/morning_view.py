@@ -602,6 +602,8 @@ def run(root, person: str, now: dt.datetime | None = None, shadow: bool = False,
     counts.pop("", None)   # a security item another space raised is never counted
     if "doubt" in counts:  # one list line, but the mail counts the held pages
         counts["doubt"] = needs_you.doubt_count(root)
+    if any(item.id == "drafts" for item in items):   # one line for many drafts; the mail counts each
+        counts["candidate"] += len(needs_you.draft_items(root, space)) - 1
     if "classification" in counts:   # one line too; the mail counts what waits
         counts["classification"] = sum(needs_you.classification_waits(root, space).values())
     if "fork_pr" in counts:   # one line for every pull request from a fork; the mail counts them

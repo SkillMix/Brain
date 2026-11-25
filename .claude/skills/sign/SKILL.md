@@ -22,7 +22,10 @@ back; you do the research, the write-ups and every bit of the filing.
    "(2 questions)". The line "held in doubt: N" opens on demand:
    `python _meta/tools/needs_you.py <root> --doubt` lists each held page with its reason and
    recommendation; its id takes the same verbs (yes releases it, no keeps it home for good,
-   `edit <subject>` names the one subject it is about, always adds the standing choice). The
+   `edit <subject>` names the one subject it is about, always adds the standing choice). More
+   than ten plain drafts (no deadline, no high-stakes flag, not a release waiting for a
+   person) fold into the line "drafts to sign when you have time: N"; `--drafts` opens it, and
+   each draft takes the verbs by its own id. The
    line "M wait for a classification (names)" is counted, never offered: held projections,
    records whose route was refused and candidates about a client, project or deal nobody has
    classified yet. Its recommendation says who classifies each; once classified, the held ones

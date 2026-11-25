@@ -533,6 +533,35 @@ def doubt_items(root) -> list:
     return out
 
 
+FOLD_DRAFTS_OVER = 10   # more plain drafts than this fold into one line
+
+
+def _plain_draft(item: Item, fm: dict) -> bool:
+    """A draft nothing presses: no deadline, no high-stakes flag, not a release waiting for a
+    person, not a review batch. Many of them fold into one count line (`_fold_drafts`)."""
+    return (item.kind == "candidate" and item.deadline is None and not fm.get("high_stakes")
+            and not fm.get("landing") and not fm.get("review_batch"))
+
+
+def draft_items(root, space: spaceyaml.Space | None = None) -> list:
+    """The drafts line opened: one item per plain draft, each signed by its own id as ever."""
+    fms = {rel: fm for rel, fm, _ in pages_in(Path(root), CANDIDATES)}
+    return [i for i in _candidates(Path(root), space) if _plain_draft(i, fms.get(i.payload, {}))]
+
+
+def _fold_drafts(root: Path, items: list) -> list:
+    """More plain drafts than a list shows become one line, so what needs the person is seen."""
+    fms = {rel: fm for rel, fm, _ in pages_in(root, CANDIDATES)}
+    plain = [i for i in items if _plain_draft(i, fms.get(i.payload, {}))]
+    if len(plain) <= FOLD_DRAFTS_OVER:
+        return items
+    return [i for i in items if i not in plain] + [Item(
+        id="drafts", kind="candidate", text=f"drafts to sign when you have time: {len(plain)} "
+                                            "(open them: needs_you.py --drafts)",
+        recommendation="open them when you have time", default="they stay drafts", deadline=None,
+        payload=CANDIDATES.as_posix() + "/", fingerprint="")]
+
+
 def _doubt(root: Path) -> list:
     count = len(doubt_pages(root))
     if not count:
@@ -889,7 +918,8 @@ def collect(root, now: dt.datetime | None = None, online: bool = True, person: s
     space = spaceyaml.load(root)
     now = now or space.now()
     answered = answered_ids(root)
-    items = (_candidates(root, space) + _checks(root) + _queue(root, space, now) + _outbox(root, space, now)
+    items = (_fold_drafts(root, _candidates(root, space)) + _checks(root) + _queue(root, space, now)
+             + _outbox(root, space, now)
              + _questions(root) + _answers(root)
              + [i for i in routine_items(root) if i.id not in answered] + _classification(root, space)
              + _doubt(root) + _tracker(root) + _health(root)
@@ -936,12 +966,13 @@ def main(argv=None) -> int:
     ap.add_argument("--json", action="store_true", help="print the items as JSON instead of markdown")
     ap.add_argument("--limit", type=int, default=7, help="lines to show before `and N more`")
     ap.add_argument("--doubt", action="store_true", help="open the held-in-doubt line: one item each")
+    ap.add_argument("--drafts", action="store_true", help="open the drafts line: one item per plain draft")
     ap.add_argument("--once-a-day", action="store_true",
                     help="print only in the day's first session; later calls that day print nothing")
     args = ap.parse_args(argv)
     utf8_stdio()
-    if args.doubt:
-        items = doubt_items(args.root)
+    if args.doubt or args.drafts:
+        items = doubt_items(args.root) if args.doubt else draft_items(args.root)
         if args.json:
             print(json.dumps([i.to_dict() for i in items], indent=2, ensure_ascii=False))
         else:
@@ -949,7 +980,7 @@ def main(argv=None) -> int:
                 print(f"{n}. {md_inline(item.id)}: {md_inline(item.text)} I recommend: "
                       f"{md_inline(item.recommendation)}. If nothing: {md_inline(item.default)}.")
             if not items:
-                print("Nothing is held in doubt.")
+                print("Nothing is held in doubt." if args.doubt else "No drafts wait.")
         return 0
     once = args.once_a_day and not args.json
     if once:
