@@ -595,3 +595,20 @@ def test_a_read_back_says_when_a_write_up_is_not_used(tmp_path):   # final revie
     text = sign.read_back(root, ["p-00000401"], bodies={"p-00000401": "Harbor is at 20%.\n"})
     assert "the write-up is not used for this item" in text and "(your edit)" not in text
     assert "Harbor is at 20%." not in text and "I think 20%" in text
+
+
+def test_an_edit_on_a_record_is_refused_and_says_so(tmp_path):
+    # Seen live: an edit on a record was filed as the record's own text, and the edit was dropped
+    # without a word. A record is evidence of what was said: it is filed as it is, or not at all.
+    root = make_space(tmp_path / "ada")
+    write_page(root, "_inbound/candidates/p-0000ec01.md", id="p-0000ec01", type="source", title="Mail",
+               body="Harbor goes live on 3 November.\n", at="2026-10-10T09:00:00Z", evidence=["m-1"])
+    said = sign.read_back(root, ["p-0000ec01"], bodies={"p-0000ec01": "Harbor goes live on 4 November.\n"})
+    assert "a record cannot be edited" in said
+    report = sign.apply(root, {"p-0000ec01": ("edit", "Harbor goes live on 4 November.\n")}, by="Ada Okafor", now=NOW)
+    assert report.refused and "a record cannot be edited" in report.refused[0]["why"]
+    assert (root / "_inbound/candidates/p-0000ec01.md").exists()
+    assert not list((root / "knowledge" / "sources").rglob("p-0000ec01.md"))
+    report = sign.apply(root, {"p-0000ec01": "yes"}, by="Ada Okafor", now=NOW)
+    (filed,) = list((root / "knowledge" / "sources").rglob("p-0000ec01.md"))
+    assert "3 November" in filed.read_text(encoding="utf-8")
