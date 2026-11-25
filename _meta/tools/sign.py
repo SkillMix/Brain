@@ -191,6 +191,14 @@ def _pinned(entry: Found) -> bool:
         entry.kind in ("leaving", "high_stakes") and bool(entry.fm.get("fingerprint"))))
 
 
+RECORD_EDIT = "a record cannot be edited: it is filed as it is (yes) or not at all (no)"
+
+
+def _record(entry: Found) -> bool:
+    """A record waiting to be filed as evidence: what was said, so its text never changes."""
+    return entry.kind == "candidate" and str(entry.fm.get("type")) == "source"
+
+
 def _takes_edit(entry: Found) -> bool:
     """An item whose edit becomes the text that lands (or leaves)."""
     return entry.path is not None and (_page_candidate(entry)
@@ -250,7 +258,8 @@ def read_back(root, selection, bodies: dict | None = None) -> str:
         given = bool(edit and edit.strip())
         edited = given and _takes_edit(entry)
         # a check or a doubt item: its edit is a note, never its text
-        unused = ["the write-up is not used for this item"] if given and not edited else []
+        unused = [RECORD_EDIT if _record(entry) else "the write-up is not used for this item"] \
+            if given and not edited else []
         if entry.kind == "first_release":   # as its Needs-you line: the first N items since ...
             n, sid = len(entry.members), str(item_id).removeprefix("first-")
             lines = [f"## {item_id}: the first {n} item{'s' if n != 1 else ''} since {sid} was classified "
@@ -994,6 +1003,8 @@ def _one(root: Path, space, found: dict, item_id: str, verb: str, note: str, pin
         report.skipped.append(item_id)
         return
     why = _refusal(entry, verb, note, pin, require_pin)
+    if not why and verb == "edit" and note.strip() and _record(entry):
+        why = RECORD_EDIT
     if not why and verb in ("yes", "always") and _outside_decision(entry.fm):
         why = "an outside sender's decision: check it first"
     if not why and _page_candidate(entry) and verb in PINNED_VERBS:
