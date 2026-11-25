@@ -39,6 +39,7 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import authority  # noqa: E402
 import ghrest  # noqa: E402
 import pages  # noqa: E402
 import spaceyaml  # noqa: E402
@@ -313,7 +314,9 @@ def _first_releases(root: Path, space: spaceyaml.Space, groups: dict) -> list:
                         text=f"{_subject_title(root, space, sid)}: the first {n} item{'s' if n != 1 else ''} "
                              f"since it was classified company leave for {', '.join(dests)} at "
                              f"{pages.iso(earliest) if earliest else 'the end of the window'}",
-                        recommendation="yes", default="leaves", deadline=earliest,
+                        recommendation="yes", deadline=earliest,
+                        default="waits for your yes" if any(not fm.get("approved_by") for fm in group)
+                        and not authority.allows(space, "release", "after_window") else "leaves",
                         payload=QUEUE.as_posix() + "/", fingerprint=""))
     return out
 
@@ -337,13 +340,22 @@ def _queue(root: Path, space: spaceyaml.Space, now: dt.datetime) -> list:
             out.append(Item(kind="high_stakes", text=f"{title} for {destination}: high stakes",
                             recommendation=_text(fm.get("recommendation"), "yes"),
                             default="waits for the domain owner", deadline=None, **common))
-        elif fm.get("class") == "window" and stage_after is not None and stage_after <= horizon:
-            reason = _text(fm.get("why"), "")   # the router's reason it waits, when it gave one
+            continue
+        reason = _text(fm.get("why"), "")   # the router's reason it waits, when it gave one
+        reason = f" ({reason})" if reason else ""
+        # at `propose` nothing leaves without a person's yes (release.py), whatever its class
+        waits = (not fm.get("approved_by") and fm.get("class") not in ("retraction", "signal")
+                 and not authority.allows(space, "release", "after_window"))
+        if fm.get("class") == "window" and stage_after is not None and stage_after <= horizon:
             out.append(Item(kind="leaving",
-                            text=f"{title} leaves for {destination} at {pages.iso(stage_after)}"
-                                 + (f" ({reason})" if reason else ""),
-                            recommendation=_text(fm.get("recommendation"), "yes"), default="leaves",
+                            text=f"{title} leaves for {destination} at {pages.iso(stage_after)}" + reason,
+                            recommendation=_text(fm.get("recommendation"), "yes"),
+                            default="waits for your yes" if waits else "leaves",
                             deadline=stage_after, **common))
+        elif waits:
+            out.append(Item(kind="leaving", text=f"{title} waits for your yes to leave for {destination}" + reason,
+                            recommendation=_text(fm.get("recommendation"), "yes"),
+                            default="waits for your yes", deadline=None, **common))
     return out + _first_releases(root, space, firsts)
 
 

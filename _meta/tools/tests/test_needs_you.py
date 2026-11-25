@@ -507,3 +507,34 @@ def test_once_a_day(tmp_path, capsys, monkeypatch):
     monkeypatch.setenv("SPACE_NOW", "2026-10-23T08:00:00Z")
     assert needs_you.main([str(ws), "--once-a-day"]) == 0 and capsys.readouterr().out.startswith("# Needs you")
     assert needs_you.main([str(ws)]) == 0 and capsys.readouterr().out.startswith("# Needs you")   # no flag: always
+
+
+def test_at_propose_every_queue_item_without_a_yes_is_listed_and_says_it_waits(tmp_path):
+    # Seen live: with release at `propose`, an at-once item was on no list and waited for good, and
+    # window items said they would leave by default while they waited for a yes.
+    root = make_space(tmp_path / "ada", authority={"release": "propose"})
+    queue_item(root, "p-00000211", "Soon", NOW + dt.timedelta(hours=10))
+    queue_item(root, "p-00000212", "Far away", NOW + dt.timedelta(hours=40))
+    queue_item(root, "p-00000213", "At once", NOW - dt.timedelta(hours=1), **{"class": "at_once"})
+    queue_item(root, "p-00000214", "Approved", NOW + dt.timedelta(hours=10), approved_by="Ada Okafor")
+    items = {i.id: i for i in needs_you.collect(root, now=NOW) if i.kind == "leaving"}
+    assert set(items) == {"p-00000211", "p-00000212", "p-00000213", "p-00000214"}
+    assert {i.id for i in items.values() if i.default == "waits for your yes"} == {"p-00000211", "p-00000212",
+                                                                                  "p-00000213"}
+    assert items["p-00000214"].default == "leaves"
+    assert items["p-00000213"].text == "At once waits for your yes to leave for harbor"
+
+
+def test_after_window_a_listed_window_item_still_leaves_by_default(tmp_path):
+    root = make_space(tmp_path / "ada", authority={"release": "after_window"})
+    queue_item(root, "p-00000221", "Soon", NOW + dt.timedelta(hours=10))
+    queue_item(root, "p-00000222", "At once", NOW - dt.timedelta(hours=1), **{"class": "at_once"})
+    items = [i for i in needs_you.collect(root, now=NOW) if i.kind == "leaving"]
+    assert [(i.id, i.default) for i in items] == [("p-00000221", "leaves")]
+
+
+def test_at_propose_a_first_release_line_says_it_waits_too(tmp_path):
+    root = make_space(tmp_path / "ada", authority={"release": "propose"})
+    queue_item(root, "p-00000215", "First", NOW + dt.timedelta(hours=10), first_release="harbor")
+    (item,) = [i for i in needs_you.collect(root, now=NOW) if i.id == "first-harbor"]
+    assert item.default == "waits for your yes"
