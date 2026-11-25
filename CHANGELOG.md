@@ -7,6 +7,22 @@ the shape and ships its migration. Each choice behind a change has a line in
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-11-25
+
+A space that starts from an old archive (the cold start) no longer drafts identity pages that
+turn your space's check red. It asks you instead, quotes the archive and names the page you edit
+by hand. If your space still holds such a draft, the check now tells you how to clear it.
+
+### Fixed
+
+- **An identity confirmation from the cold start is a question, not a candidate.** Since 0.3.3
+  sign lands pages only under `knowledge/` and the gate guards `identity/`, so a candidate for
+  `identity/<name>.md` could never be signed and the check called it a bad target, which turned
+  your space's required check red. The question now names the page, quotes the archive and says to
+  edit the page yourself; the line Needs you shows says so too.
+- **An older identity draft gets a check message that says what to do**: move it out of
+  `_inbound/candidates/` and edit `identity/` yourself.
+
 ## [0.3.6] - 2026-11-24
 
 What you release now arrives, or comes back to you: a release counts as released only once its
