@@ -607,3 +607,16 @@ def test_a_reply_with_a_numeric_id_is_read_once(tmp_path):
     feed(root, [dict(mail("x", OWNER, f"1 yes\n> reference {ref}"), id=4242)])
     assert len(reply.run(root, now=NOW)) == 1
     assert reply.run(root, now=NOW) == [] and len(seen_rows(root)) == 1
+
+
+def test_the_sign_read_back_prints_cyrillic_and_emoji_on_a_cp1252_pipe(tmp_path):
+    # Seen live on Windows: the read-back crashed when its output was redirected (fixed in 0.3.3).
+    root = make_space(tmp_path / "ada")
+    write_page(root, "_inbound/candidates/p-0000cc01.md", id="p-0000cc01", type="entity", title="Счёт 🎉",
+               body="Счёт за ноябрь 🎉\n", subject="harbor", kind="projects",
+               target="knowledge/projects/harbor/harbor.md")
+    env = {**os.environ, "PYTHONIOENCODING": "cp1252", "PYTHONUTF8": "0"}
+    done = subprocess.run([sys.executable, str(TOOLS / "sign.py"), str(root), "read-back", "p-0000cc01"],
+                          capture_output=True, env=env, timeout=120)
+    assert done.returncode == 0, done.stderr.decode("utf-8", "replace")
+    assert "Счёт за ноябрь 🎉" in done.stdout.decode("utf-8")
