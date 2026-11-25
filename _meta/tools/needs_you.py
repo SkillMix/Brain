@@ -321,6 +321,13 @@ def _first_releases(root: Path, space: spaceyaml.Space, groups: dict) -> list:
     return out
 
 
+def pause_note(fm: dict) -> str:
+    """What a no on a queue item also does (sign.py, release.pause): the path that let it through
+    pauses for four weeks. "" for an item a person approved, whose no pauses nothing."""
+    path = str(fm.get("path") or "")
+    return f"a no pauses {untrusted_line(path, 80)} for four weeks" if path and not path.startswith("approved:") else ""
+
+
 def _queue(root: Path, space: spaceyaml.Space, now: dt.datetime) -> list:
     out = []
     firsts: dict = {}
@@ -334,10 +341,12 @@ def _queue(root: Path, space: spaceyaml.Space, now: dt.datetime) -> list:
         stage_after = _when(fm.get("stage_after"))
         common = dict(id=_text(fm.get("id"), Path(rel).stem), depends=_int(fm.get("depends")),
                       payload=rel, fingerprint=pages.fingerprint(body))
+        pause = pause_note(fm)
+        pause = f"; {pause}" if pause else ""
         if fm.get("high_stakes"):
             if fm.get("approved_by"):   # its person said yes: never asked twice (approved_leaving)
                 continue
-            out.append(Item(kind="high_stakes", text=f"{title} for {destination}: high stakes",
+            out.append(Item(kind="high_stakes", text=f"{title} for {destination}: high stakes" + pause,
                             recommendation=_text(fm.get("recommendation"), "yes"),
                             default="waits for the domain owner", deadline=None, **common))
             continue
@@ -348,12 +357,13 @@ def _queue(root: Path, space: spaceyaml.Space, now: dt.datetime) -> list:
                  and not authority.allows(space, "release", "after_window"))
         if fm.get("class") == "window" and stage_after is not None and stage_after <= horizon:
             out.append(Item(kind="leaving",
-                            text=f"{title} leaves for {destination} at {pages.iso(stage_after)}" + reason,
+                            text=f"{title} leaves for {destination} at {pages.iso(stage_after)}" + reason + pause,
                             recommendation=_text(fm.get("recommendation"), "yes"),
                             default="waits for your yes" if waits else "leaves",
                             deadline=stage_after, **common))
         elif waits:
-            out.append(Item(kind="leaving", text=f"{title} waits for your yes to leave for {destination}" + reason,
+            out.append(Item(kind="leaving",
+                            text=f"{title} waits for your yes to leave for {destination}" + reason + pause,
                             recommendation=_text(fm.get("recommendation"), "yes"),
                             default="waits for your yes", deadline=None, **common))
     return out + _first_releases(root, space, firsts)

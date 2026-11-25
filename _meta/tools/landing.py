@@ -1144,7 +1144,8 @@ def sample_item(root, space=None, reg=None, now: dt.datetime | None = None, give
     lines = "; ".join(f"{n}) {p['title']} from {p['from']}" for n, p in enumerate(picked, 1))
     owner = domain_owner(reg, space, picked[0].get("subject"))
     return {"id": item_id, "kind": "sample",
-            "text": f"Check what arrived without asking you this week, for {owner}: {lines}",
+            "text": f"Check what arrived without asking you this week, for {owner}: {lines}; a no pauses, "
+                    "for four weeks, the path that let each failed one through",
             "recommendation": "yes if each reads right; no with the numbers that did not (no: 2)",
             "default": "counted as fine", "depends": 0, "for": owner,
             "payload": json.dumps(picked)}
