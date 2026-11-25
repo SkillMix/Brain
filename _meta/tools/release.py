@@ -31,7 +31,10 @@ and the owners and crew of the page's own subject and its umbrellas when it is h
 `fields`) line in this space's own log.md; otherwise it goes back to be signed again. A
 release clone is made only from `https://github.com/<owner>/<name>` (a mount's repository
 or a registry subject's `match.repo`), with git told to speak https alone; a local path is
-cloned only when `SPACES_LOCAL_CLONES=1` is set (the tests and offline fixtures). Shipped
+cloned only when `SPACES_LOCAL_CLONES=1` is set (the tests and offline fixtures). An item
+sent in a pull request waits in `_outbound/sent/<id>.md` until that pull request merged
+(`confirm_sent`, every ship): only then is it released, and a pull request closed without
+merging holds it, `not landed`, for its owner. Released
 items are remembered in `_meta/state/released.jsonl` (append-only) so `retract` can find
 them. Routines never write `status: stable` and delete only their own queue files.
 
@@ -89,6 +92,8 @@ except ImportError:  # pragma: no cover
 
 QUEUE = Path("_outbound") / "queue"
 HELD = Path("_outbound") / "held"
+SENT = Path("_outbound") / "sent"   # left in a release pull request that has not merged yet
+SENT_KEYS = ("sent_at", "sent_to", "pull_request")
 SIGNALS = Path("_outbound") / "signals"
 LANDING = Path("_inbound") / "candidates"
 SIGNAL_LANDING = Path("_inbound") / "signals"
@@ -136,6 +141,7 @@ class ShipReport:
     failed: int = 0       # queue items whose online publish failed; they stay queued
     requests: int = 0     # requests and answers carried through a corridor
     unreadable: int = 0   # files in the queue that cannot be read: they never ship, the rest still do
+    awaiting: int = 0     # sent in a release pull request that has not merged yet (`_outbound/sent/`)
 
 
 # ----- shared helpers (sweep.py imports these) -----------------------------
@@ -552,6 +558,9 @@ def _hold_work(fm: dict) -> tuple[str, str]:
     if reason == "signature":
         return ("held: its signature is not in this space's history",
                 "the release run puts it back on the list to sign again once no draft of that name waits")
+    if reason == "not landed":
+        return (f"did not land: {why}",
+                f"read why the destination's checks refused it, fix that, then {requeue_cmd}")
     if reason == "no subject":
         return ("held: it names no subject", f"nothing lets it go without one: {aside}")
     if reason in ("unrecorded", "bad id", "corridor"):
@@ -559,11 +568,26 @@ def _hold_work(fm: dict) -> tuple[str, str]:
     return (f"held: {reason or 'no reason'}", "read it and act on it (the release skill)")
 
 
-def held_health(root) -> list:
+def held_health(root, now: dt.datetime | None = None) -> list:
     """The items held in `_outbound/held/` for a reason the agent can act on, each as a row for
     the health line (`needs_you.health_work`): what is wrong and what the agent does next. Never
-    silent: every hold that is not a person's or the gate's is one row."""
+    silent: every hold that is not a person's or the gate's is one row, and so is every item
+    whose release pull request has not merged a day after it was sent."""
     out = []
+    now = now or dt.datetime.now(dt.timezone.utc)
+    for path in sorted((Path(root) / SENT).glob("*.md")):
+        try:
+            fm, _ = _read_own(path)
+            late = now - pages.parse_iso(fm.get("sent_at")) > dt.timedelta(days=1)
+        except (*UNREADABLE, TypeError, ValueError):
+            late = True
+            fm = {}
+        if late:
+            title = " ".join(str(fm.get("title") or path.stem).split())[:80]
+            out.append({"id": str(fm.get("id") or path.stem),
+                        "text": f"{title} sent to {fm.get('sent_to')} in pull request #{fm.get('pull_request')} "
+                                f"on {str(fm.get('sent_at'))[:10]}, not merged yet",
+                        "agent": "read the pull request's checks and fix what the destination refused"})
     for path in sorted((Path(root) / HELD).glob("*.md")):
         try:
             fm, _ = _read_own(path)
@@ -620,7 +644,8 @@ def requeue(root, item_id: str, body_file=None, now: dt.datetime | None = None) 
                              f"{REDACTED}; export the record again and route it again otherwise")
         body = redacted
         done_with = Path(body_file)
-    elif fm.get("kept") or reason in PERSON_HOLDS or reason not in ("scan", "destination", "signature") or refused:
+    elif fm.get("kept") or reason in PERSON_HOLDS or reason not in ("scan", "destination", "signature", "not landed") \
+            or refused:
         raise ValueError(f"{item_id} is held for {reason or 'no reason'}: not one the agent puts back as it is")
     clean = {k: v for k, v in fm.items() if k not in ("reason", "why", "refused_id")}
     if reason == "signature":
@@ -902,8 +927,9 @@ def mark_retracted(dest_root: Path, item_id: str) -> bool:
     return target.exists()
 
 
-def publish(checkout: Path, slug: str, source: str, write) -> bool:
+def publish(checkout: Path, slug: str, source: str, write) -> int | None:
     """The online leg: refresh the checkout, let `write()` add files, land them as a PR.
+    Returns the pull request's number, None when gh did not say it.
 
     Tests monkeypatch this function; everything that touches git or GitHub is here.
     """
@@ -927,11 +953,67 @@ def publish(checkout: Path, slug: str, source: str, write) -> bool:
     subprocess.run(git + ["add", "--", "_inbound"], check=True)
     subprocess.run(git + ["commit", "-q", "-m", "chore: release"], check=True)
     subprocess.run(git + ["push", "-u", "origin", branch, "--force-with-lease"], check=True)
-    if not open_prs:
-        subprocess.run(["gh", "pr", "create", "--base", "main", "--head", branch, "--title",
-                        "chore: release", "--body", f"Released by {source}."],
-                       cwd=str(checkout), check=True)
-    return True
+    if open_prs:
+        number = open_prs[0].get("number") if isinstance(open_prs[0], dict) else None
+    else:
+        made = subprocess.run(["gh", "pr", "create", "--base", "main", "--head", branch, "--title",
+                               "chore: release", "--body", f"Released by {source}."],
+                              cwd=str(checkout), check=True, capture_output=True, text=True)
+        found = re.search(r"/pull/(\d+)", made.stdout or "")
+        number = int(found.group(1)) if found else None
+    return number if isinstance(number, int) and not isinstance(number, bool) else None
+
+
+def pr_state(checkout: Path, number: int) -> str | None:
+    """MERGED, CLOSED or OPEN for a release pull request; None when gh cannot say. Tests
+    monkeypatch it."""
+    try:
+        done = subprocess.run(["gh", "pr", "view", str(int(number)), "--json", "state", "-q", ".state"],
+                              cwd=str(checkout), check=False, capture_output=True, text=True)
+    except (OSError, TypeError, ValueError):
+        return None
+    state = (done.stdout or "").strip()
+    return state if done.returncode == 0 and state in ("MERGED", "CLOSED", "OPEN") else None
+
+
+def _record_released(root: Path, fm: dict, destination: str, now: dt.datetime) -> None:
+    append_line(root / "log.md",
+                f"- {pages.iso(now)} released {fm['id']} to {destination} ({fm.get('class')})"
+                + (f" via {fm['path']}" if fm.get("path") else ""))
+    append_line(root / RELEASED, json.dumps({
+        "id": fm["id"], "at": pages.iso(now), "destination": destination,
+        "class": fm.get("class"), "subject": fm.get("subject"),
+        "evidence": list(fm.get("evidence") or []), "kind": fm.get("kind"),
+        "path": fm.get("path")}))
+
+
+def confirm_sent(root: Path, now: dt.datetime, report: ShipReport) -> None:
+    """Each item sent in a release pull request: released once that pull request merged, held
+    for its owner (`not landed`) once it closed without merging, else it waits. A destination
+    with no release clone here, or a pull request gh cannot read, waits too."""
+    for path in sorted((root / SENT).glob("*.md")):
+        try:
+            fm, body = _read_own(path)
+        except UNREADABLE:
+            continue
+        destination, number = str(fm.get("sent_to") or ""), fm.get("pull_request")
+        checkout = checkout_of(destination) if pages.is_slug(destination) else None
+        state = pr_state(checkout, number) if checkout is not None and isinstance(number, int) else None
+        item = {k: v for k, v in fm.items() if k not in SENT_KEYS}
+        if state == "MERGED":
+            _record_released(root, item, destination, now)
+            path.unlink()
+        elif state == "CLOSED" or not isinstance(number, int):
+            why = (f"its release pull request #{number} to {destination} closed without merging"
+                   if isinstance(number, int) else
+                   f"gh did not say the number of its release pull request to {destination}, so nothing can "
+                   "tell whether it merged; if the destination holds it, nothing is to do")
+            hold(root, item, body, "not landed", why)
+            path.unlink()
+            append_line(root / "log.md", f"- {pages.iso(now)} {item['id']} did not land: {why}")
+            report.held += 1
+        else:
+            report.awaiting += 1
 
 
 # ----- ship ----------------------------------------------------------------------
@@ -1236,6 +1318,8 @@ def ship(root, now: dt.datetime | None = None,
 
 def _ship_batches(root: Path, space, now: dt.datetime, offline_roots: dict, report: ShipReport,
                   notes_only: bool = False) -> ShipReport:
+    if not notes_only:
+        confirm_sent(root, now, report)
     batches: dict = {}
     for path, fm, body in [] if notes_only else _ready_items(root, now, report, space):
         batches.setdefault(fm["destination"], ([], []))[0].append((path, fm, body))
@@ -1337,28 +1421,30 @@ def _ship_batches(root: Path, space, now: dt.datetime, offline_roots: dict, repo
                                  root=dest_root)
 
         try:
-            if checkout is not None:
-                publish(checkout, branch_slug(space), space.name, write)
-            else:
+            number = publish(checkout, branch_slug(space), space.name, write) if checkout is not None else None
+            if checkout is None:
                 write()
         except (subprocess.CalledProcessError, OSError, pages.UnsafePath) as exc:
             report.failed += len(outgoing_items)
             print(f"release: {destination}: publish failed ({exc.__class__.__name__})",
                   file=sys.stderr)
             continue
-        for path, fm, _ in outgoing_items:
-            path.unlink()
+        for path, fm, body in outgoing_items:
             report.shipped += 1
             report.destinations[destination] = report.destinations.get(destination, 0) + 1
             report.retracted += fm.get("class") == "retraction"
-            append_line(root / "log.md",
-                        f"- {pages.iso(now)} released {fm['id']} to {destination} ({fm.get('class')})"
-                        + (f" via {fm['path']}" if fm.get("path") else ""))
-            append_line(root / RELEASED, json.dumps({
-                "id": fm["id"], "at": pages.iso(now), "destination": destination,
-                "class": fm.get("class"), "subject": fm.get("subject"),
-                "evidence": list(fm.get("evidence") or []), "kind": fm.get("kind"),
-                "path": fm.get("path")}))
+            if checkout is None:   # written straight into the destination: it is there
+                path.unlink()
+                _record_released(root, fm, destination, now)
+                continue
+            # in a pull request: released only once it merged (confirm_sent)
+            target = pages.confine(root, f"{SENT.as_posix()}/{fm['id']}.md", zones=(SENT.as_posix(),))
+            pages.write(target, dict(fm, sent_at=pages.iso(now), sent_to=destination,
+                                     pull_request=number if isinstance(number, int) else None), body, root=root)
+            path.unlink()
+            report.awaiting += 1
+            append_line(root / "log.md", f"- {pages.iso(now)} sent {fm['id']} to {destination} in pull request "
+                                         f"#{number if isinstance(number, int) else '?'}; released once it merges")
         for path, _ in outgoing_signals:
             path.unlink()
             report.signals += 1
@@ -1369,7 +1455,7 @@ def _ship_batches(root: Path, space, now: dt.datetime, offline_roots: dict, repo
              "skipped_unlisted": report.skipped_unlisted, "waiting": report.waiting,
              "requeued": report.requeued,
              "unreachable": report.unreachable, "rerouted": report.rerouted, "failed": report.failed,
-             "destinations": report.destinations}
+             "awaiting_merge": report.awaiting, "destinations": report.destinations}
     if report.unreadable:   # files that cannot be read: they never ship, and the run line says so
         notes["unreadable"] = report.unreadable
     append_run_line(root, "release", now, space, 0, notes)
@@ -1564,6 +1650,14 @@ def released_record(root: Path, item_id: str) -> dict | None:
         pattern = re.compile(r"released " + re.escape(item_id) + r" to (\S+) \((\w+)\)")
         for match in filter(None, map(pattern.search, log.read_text(encoding="utf-8").splitlines())):
             found = {"id": item_id, "destination": match.group(1), "class": match.group(2)}
+    if found is None and pages.is_page_id(item_id) and (root / SENT / f"{item_id}.md").is_file():
+        try:   # it left in a pull request that has not merged yet: a retraction rides the same branch
+            fm, _ = _read_own(root / SENT / f"{item_id}.md")
+        except UNREADABLE:
+            return None
+        if pages.is_slug(fm.get("sent_to")):
+            found = {"id": item_id, "destination": str(fm["sent_to"]), "class": fm.get("class"),
+                     "subject": fm.get("subject"), "path": fm.get("path"), "awaiting_merge": True}
     return found
 
 
