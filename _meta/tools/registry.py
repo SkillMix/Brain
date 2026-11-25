@@ -194,10 +194,11 @@ class Subject:
     added_by: str | None = None
     extra: dict = field(default_factory=dict)
     space: str = ""  # which space's registry holds it ("" for this one)
+    inherited: dict = field(default_factory=dict)   # what the brain's entry filled in: never saved here
 
     @classmethod
     def from_dict(cls, data: dict, space: str = "") -> "Subject":
-        known = {f for f in cls.__dataclass_fields__ if f not in ("extra", "space")}
+        known = {f for f in cls.__dataclass_fields__ if f not in ("extra", "space", "inherited")}
         kwargs = {k: v for k, v in data.items() if k in known}
         extra = {k: v for k, v in data.items() if k not in known}
         kwargs.setdefault("title", kwargs.get("id", ""))
@@ -212,7 +213,7 @@ class Subject:
         out = {"id": self.id, "kind": self.kind, "title": self.title, "state": self.state}
         for key in ("part_of", "owner", "home"):
             value = getattr(self, key)
-            if value:
+            if value and not (key in self.inherited and self.inherited[key] == value):
                 out[key] = value
         if self.period:
             out["period"] = dict(self.period) if isinstance(self.period, dict) else self.period
@@ -231,7 +232,7 @@ class Subject:
         for key in ("added", "added_by"):
             if getattr(self, key):
                 out[key] = getattr(self, key)
-        out.update(self.extra)
+        out.update({k: v for k, v in self.extra.items() if not (k in self.inherited and self.inherited[k] == v)})
         return out
 
     def names(self) -> list:
@@ -352,6 +353,19 @@ def _add_names(base: Subject, entry: dict) -> None:
         base.match[key] = merged if len(merged) > 1 else merged[0]
 
 
+def _inherit(local: Subject, entry: dict) -> None:
+    """A space's own entry for a subject the brain also holds (a home keeps its names there) takes
+    what it leaves out, the owner and the classification, from the brain's entry: the brain's
+    changes wait for their owner's click, so it is the one a trust decision reads. Kept in
+    `inherited`, so `save` never writes a copy that could go stale."""
+    owner, classification = entry.get("owner"), entry.get("classification")
+    if not local.owner and owner:
+        local.owner = local.inherited["owner"] = str(owner)
+    if "classification" not in local.extra and isinstance(classification, dict):
+        local.extra["classification"] = copy.deepcopy(classification)
+        local.inherited["classification"] = copy.deepcopy(classification)
+
+
 def _word_in(text: str, needle: str) -> bool:
     if len(needle) < 3:
         return False
@@ -420,6 +434,9 @@ class Registry:
             # keyed on the name this space mounted it under, never on what the mount's space.yaml
             # calls itself. A trust decision never reads them (`trusted_view`).
             for mount_name, entry in later:
+                local = self.subjects.get(str(entry["id"]))
+                if mount_name == "brain" and local is not None:
+                    _inherit(local, entry)
                 base = self.ancestors.get(str(entry["id"]))
                 if base is not None and base.home and base.home == mount_name:
                     if base.space == "brain" and base.id not in self._brain_names:

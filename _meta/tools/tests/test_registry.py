@@ -246,3 +246,45 @@ def test_a_linked_repository_belongs_to_its_subject_alone(tmp_path):
     reg = registry.Registry(root)
     assert [s.id for s in reg.match({"kind": "change", "identifiers": {"repo": "northwind/harbor-voice"}})] == [
         "harbor-voice-agent"]
+
+
+def test_a_homes_own_names_entry_keeps_the_brains_owner_and_classification(tmp_path):
+    # Seen live: a subject's home kept its own entry for the subject with names only (aliases,
+    # match); it shadowed the brain's entry, so the subject looked unclassified there and every
+    # draft about it dropped out of the sign tool.
+    import classify
+    import needs_you
+    import sign
+    from conftest import write_page
+    walled = {"class": "walled", "state": "settled", "home": "acme", "crew": ["ben-liu"],
+              "reason": "given its own space", "decided_by": "Ben Liu", "at": "2026-10-01T09:00:00Z"}
+    brain = make_space(tmp_path / "brain", profile="brain", subjects=[
+        {"id": "ben-liu", "kind": "people", "title": "Ben Liu", "workspace": "ben"},
+        {"id": "acme-voice", "kind": "projects", "owner": "Ben Liu", "home": "acme", "classification": walled}])
+    acme = make_space(tmp_path / "acme", profile="project", name="acme", owner="Ben Liu", subjects=[
+        {"id": "acme-voice", "kind": "projects", "aliases": ["Voice agent"], "match": {"keywords": ["voice"]}}])
+    mount_brain(acme, brain)
+    reg = registry.Registry(acme)
+    assert reg.get("acme-voice").aliases == ["Voice agent"]
+    assert reg.classification("acme-voice")["class"] == "walled"
+    assert classify.subject_owner(reg, "acme-voice") == "Ben Liu"
+    write_page(acme, "_inbound/candidates/acme-voice.md", id="p-0000ac01", title="Voice agent",
+               subject="acme-voice", kind="projects")
+    assert needs_you.waiting_candidates(acme) == []
+    assert "not found" not in sign.read_back(acme, ["p-0000ac01"])
+    reg.save()   # what came from the brain is never written into the home's own registry
+    (saved,) = yaml.safe_load((acme / "_meta" / "subjects.yaml").read_text(encoding="utf-8"))["subjects"]
+    assert "owner" not in saved and "classification" not in saved and saved["aliases"] == ["Voice agent"]
+
+
+def test_a_local_owner_and_classification_still_win_over_the_brains(tmp_path):
+    brain = make_space(tmp_path / "brain", profile="brain", subjects=[
+        {"id": "acme-voice", "kind": "projects", "owner": "Ben Liu"}])
+    acme = make_space(tmp_path / "acme", profile="project", name="acme", owner="Ben Liu", subjects=[
+        {"id": "acme-voice", "kind": "projects", "owner": "Ada Okafor"}])
+    mount_brain(acme, brain)
+    reg = registry.Registry(acme)
+    assert reg.get("acme-voice").owner == "Ada Okafor"
+    reg.save()
+    (saved,) = yaml.safe_load((acme / "_meta" / "subjects.yaml").read_text(encoding="utf-8"))["subjects"]
+    assert saved["owner"] == "Ada Okafor"
