@@ -20,6 +20,8 @@ Deterministic from files: an adapter exports records to `_meta/state/feed/<sourc
    person releases it (a standing choice {destination, kind} makes yes the recommendation, never
    the answer). The person's own journal note pointing into code linked to its subject
    (link.journal_records) leaves after the window: at once only when the router judged it (D8).
+   A day's digest of the person's notes (`kind: digest`) never leaves here: only as the parts
+   the router cut (route.py).
    A content-free
    signal goes to the subject's home for every attached record queued for the window (one that
    leaves at once arrives itself). A record matching several
@@ -775,6 +777,9 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
         report.attached += 1
         home = reg.home_of(subject.id)
         if not home or home == space.name:
+            continue
+        if record.get("kind") == "digest":   # a day's notes: only the parts a router cut and a second agent checked
+            report.plan.append(f"keep {shown}: a digest leaves only through the router")
             continue
         if home_reads(dest_space_of(home), record):
             report.plan.append(f"keep {record['id']}: {home} reads that source itself")

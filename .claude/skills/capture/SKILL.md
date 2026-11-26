@@ -40,6 +40,8 @@ No tool. The instruction gives `<space root>`; then:
    codebase always makes one entry: what it is, why, and the pointer. When another subject's
    material helped (ring 3, read only because the person named it), the entry gains
    `lesson: <the general point>` and `from: <that subject>` instead of any of its detail.
+   An entry about a project or client homed elsewhere may reach that home in the day's digest
+   (the route skill); one the person wants kept here gains a line `private: yes`.
    Read the file first; append; never rewrite what is there.
 3. A question answered with more than one lookup: its answer and sources as one entry, plus
    the question log entry (the query skill).

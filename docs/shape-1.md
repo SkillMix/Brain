@@ -205,7 +205,8 @@ Doubt about the class means the window; doubt about privacy means the item stays
 is shown as a count. The destination's `left_out` and the source's `never_leaves` are judged
 by the router and its check before an item is queued; at ship time the tools check facts only
 (mode, the secrets scan, the item's id and destination, a subject or a signature logged here).
-External disclosure is not internal
+A day's daily notes about a project or client leave only as one digest the router cut into
+verbatim parts, after the window, and never for a deal. External disclosure is not internal
 permission. A pull-back or a failed sample pauses the path that let an item through for
 four weeks.
 

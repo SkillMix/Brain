@@ -45,7 +45,10 @@ Entries point into a codebase with a `ref:` line: `owner/repo:path@commit`, `own
 or a pull request URL. In a personal space, an entry about a subject homed elsewhere that points
 into a codebase linked to that subject (or its parent) becomes a `journal` feed record, pointers
 first; the sweep sends it to the home after the window, the router at once when the home is
-walled and its crew includes the writer (D8). Every other entry stays home.
+walled and its crew includes the writer (D8). With the router on, the other entries of a whole
+day about a project or client homed elsewhere (never a deal or a part of one) become one digest
+record for that day, which the router sends only as verbatim parts after the window. An entry
+with a `private:` line never travels, and every other entry stays home.
 
     python link.py <root> resolve [--cwd DIR]   the link as JSON; exit 3 when there is none
     python link.py <root> link <repo> <subject>  link a codebase detection cannot place (owner/name,
@@ -79,6 +82,8 @@ REF_LINE = re.compile(r"^\s*(?:[-*]\s*)?ref:\s*`?(\S+?)`?\s*$", re.I | re.M)
 # a lesson's other subject, on its own line or after the lesson: ring 3, never travels (distill reads it too)
 FROM_LINE = re.compile(r"(?:^\s*(?:[-*]\s*)?|[\s;,(])from:\s*`?([\w-]*)", re.I | re.M)
 STRUCTURED = re.compile(r"^\s*(?:[-*]\s*)?(?:subject|ref|lesson|from):.*$", re.I | re.M)   # an entry ends here
+PRIVATE_LINE = re.compile(r"^\s*(?:[-*]\s*)?private:", re.I | re.M)   # an entry that never travels
+DIGEST = "digest"   # the kind of a day's digest row: the router sends it only as parts, after the window
 REF_PR = re.compile(r"^https?://github\.com/([\w.-]+/[\w.-]+)/pull/\d+/?$", re.I)
 REF_AT = re.compile(r"^([A-Za-z0-9][\w-]*/[\w.-]+?)(?::([^@\s]+))?@([\w.-]+)$")
 LOCAL = re.compile(r"^(?:[a-z]:|[\\/.~]|file:)", re.I)   # a folder, not a repository
@@ -957,7 +962,25 @@ def _ref_link(root, ref: str, subjects) -> Link | None:
                  and "://" in (repo_key(l.repo) or "") and _parts(l.repo) == _parts(name)), None)
 
 
-def journal_records(root) -> int:
+def digestible(reg, sid: str) -> bool:
+    """A subject whose day of notes may travel as a digest: a project or a client, never a deal
+    or a part of one (for a deal the positioning is the work, and no rule may carry it)."""
+    subject = reg.get(sid)
+    return subject is not None and subject.kind in ("projects", "clients") \
+        and not any(s.kind == "deals" for s in reg.ancestors_of(sid))
+
+
+def _travels(entry) -> str:
+    """The lines of an entry that may travel: up to its last structured line, without its
+    pointers, its lessons and their `from:`."""
+    import distill
+    last = list(STRUCTURED.finditer(entry.body))
+    body = entry.body[:last[-1].end()] if last else entry.body
+    return "\n".join(line for line in body.splitlines() if not REF_LINE.match(line)
+                     and not FROM_LINE.search(line) and not distill.LESSON_LINE.match(line)).strip()
+
+
+def journal_records(root, now=None) -> int:
     """Append a `journal` feed row for each journal entry about a subject homed elsewhere that
     carries a `ref:` into a codebase linked to that subject or its parent; the rows appended.
     Personal spaces only; an entry already in the feed is not written again. Only those pointers
@@ -967,7 +990,14 @@ def journal_records(root) -> int:
     `from:` lines (a lesson from another subject, ring 3; D5, D6: distill takes the lesson to the
     brain through the scrub and a signer) and whatever follows the entry's last `subject:`,
     `ref:`, `lesson:` or `from:` line. A row is `admitted`: the sweep takes it however old its
-    heading time, since an entry can be written or become eligible after a newer one was swept."""
+    heading time, since an entry can be written or become eligible after a newer one was swept.
+    An entry with a `private:` line never travels.
+
+    With the router on, each whole day before today (the note's own date) also gets one row per
+    project or client homed elsewhere (`digestible`): the day's other entries about it, each under
+    a heading with its entry id, as `kind: digest`, id `journal-digest-<date>-<subject>`, written
+    once. The router sends it only as verbatim parts, after the window (route.py); without the
+    router none is written, and the sweep keeps one home."""
     import distill
     root = Path(root)
     space = spaceyaml.load(root)
@@ -975,12 +1005,15 @@ def journal_records(root) -> int:
         return 0
     reg = registry.Registry(root, space)
     have = {str(row.get("id")) for row in registry._jsonl(root / JOURNAL_FEED)}
+    today = (now or space.now()).astimezone().date().isoformat()
+    days: dict = {}   # (day, subject) -> the entries for its digest
     written = 0
     for entry in distill.journal_evidence(root):
         sid = entry.subjects[0]
         subject = reg.get(sid)
         home = reg.home_of(sid)
-        if entry.record in have or subject is None or not home or home == space.name:
+        if entry.record in have or subject is None or not home or home == space.name \
+                or PRIVATE_LINE.search(entry.body):
             continue
         refs = []
         for ref in refs_in(entry.body):
@@ -990,17 +1023,27 @@ def journal_records(root) -> int:
             key = repo_key(found.repo) or ""   # on another host: its URL, which no GitHub link is made of
             refs.append(key + ref[len(ref_repo(ref)):] if "://" in key and REF_AT.match(ref) else ref)
         if not refs:
+            day = distill.JOURNAL_FILE.search(entry.rel).group(1)
+            if space.routing_on and day < today and digestible(reg, sid):
+                days.setdefault((day, sid), []).append(entry)
             continue
-        last = list(STRUCTURED.finditer(entry.body))
-        body = entry.body[:last[-1].end()] if last else entry.body
-        rest = "\n".join(line for line in body.splitlines() if not REF_LINE.match(line)
-                         and not FROM_LINE.search(line) and not distill.LESSON_LINE.match(line)).strip()
+        rest = _travels(entry)
         text = "\n".join(f"ref: {r}" for r in refs) + ("\n\n" + rest if rest else "") + "\n"
         _append(root / JOURNAL_FEED, json.dumps({
             "id": entry.record, "source": "journal", "kind": "document", "at": pages.iso(entry.at),
             "subject": entry.title, "text": text, "audience": "owner", "from": space.owner,
             "identifiers": {"subject": sid}, "admitted": True}, ensure_ascii=False))
         have.add(entry.record)
+        written += 1
+    for (day, sid), entries in sorted(days.items()):
+        rid = f"journal-digest-{day}-{sid}"
+        if rid in have:
+            continue
+        text = "\n\n".join(f"### {e.record}: {e.title}\n\n{_travels(e)}" for e in entries) + "\n"
+        _append(root / JOURNAL_FEED, json.dumps({
+            "id": rid, "source": "journal", "kind": DIGEST, "at": pages.iso(max(e.at for e in entries)),
+            "subject": f"Notes of {day}: {reg.get(sid).title or sid}", "text": text, "audience": "owner",
+            "from": space.owner, "identifiers": {"subject": sid}, "admitted": True}, ensure_ascii=False))
         written += 1
     return written
 
