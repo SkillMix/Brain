@@ -472,7 +472,7 @@ def test_a_big_project_whose_search_beats_the_walk_gets_one_index_proposal(tmp_p
     status.run(root, now=NOW + dt.timedelta(hours=2))
     cfg = yaml.safe_load((root / "_meta" / "search.yaml").read_text(encoding="utf-8"))
     assert cfg["engine"] == "index"
-    assert (root / "_meta" / "state" / "search-index.json").exists()
+    assert (root / "_meta" / "state" / "private" / "search-index.json").exists()
     items = yaml.safe_load((root / "_inbound" / "needs-you" / "librarian.yaml").read_text(encoding="utf-8"))
     assert items["items"] == []
     assert "index index" in (root / "live" / "health.md").read_text(encoding="utf-8")

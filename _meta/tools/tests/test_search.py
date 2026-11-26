@@ -49,7 +49,7 @@ def test_index_engine_builds_queries_and_prunes(tmp_path):
                       subject="harbor", body="Harbor migration dry run on the 14th.\n")
     (root / "_meta" / "search.yaml").write_text(yaml.safe_dump({"engine": "index"}), encoding="utf-8")
     built = search.build(root)
-    assert built["files"] >= 1 and (root / "_meta" / "state" / "search-index.json").exists()
+    assert built["files"] >= 1 and (root / "_meta" / "state" / "private" / "search-index.json").exists()
     assert [h.subject for h in search.query(root, "migration")] == ["harbor"]
     page.unlink()
     dropped = search.prune(root)
@@ -171,13 +171,13 @@ def test_lines_take_the_text_literally_unless_asked_for_a_pattern(tmp_path, back
 
 
 def test_lines_read_only_the_zones_a_search_reads(tmp_path, backend):
-    root = make_space(tmp_path / "ada")                              # a personal space also reads work/
+    root = make_space(tmp_path / "ada")                              # a personal space also reads work/ and journal/
     for rel in ("knowledge/topics/t/a.md", "live/subjects/t.md", "work/topics/t/plan.md",
                 ".claude/worktrees/old-session/knowledge/topics/t/a.md", "personal/diary.md",
                 "journal/2026/10/2026-10-29.md", "knowledge/topics/t/data.txt", "knowledge/.git/x.md"):
         put(root, rel, "the needle is here\n")
     assert {f.path for f in search.lines(root, "needle")} == {
-        "knowledge/topics/t/a.md", "live/subjects/t.md", "work/topics/t/plan.md"}
+        "knowledge/topics/t/a.md", "live/subjects/t.md", "work/topics/t/plan.md", "journal/2026/10/2026-10-29.md"}
 
 
 def test_lines_keep_ten_matches_a_file_and_count_the_rest(tmp_path, backend):
@@ -226,19 +226,19 @@ def test_lines_on_the_command_line(tmp_path, backend, capsys):
     root = lined_space(tmp_path)
     assert search.main([str(root), "lines", "--context", "0", "pilot"]) == 0
     assert capsys.readouterr().out.splitlines() == [
-        "knowledge/projects/harbor/notes.md [harbor]",
+        "knowledge/projects/harbor/notes.md [harbor] (working)",
         "  3: Harbor PILOT goes live on 3 November.",
         "  --",
         "  8: The pilot ends in May.",
-        "brain:knowledge/domains/sales/pipeline.md [sales]",
+        "brain:knowledge/domains/sales/pipeline.md [sales] (working)",
         "  2: The pilot budget is 40k."]
     assert search.main([str(root), "lines", "-C", "1", "--max", "1", "budget is"]) == 0
     assert capsys.readouterr().out.splitlines() == [
-        "brain:knowledge/domains/sales/pipeline.md [sales]", "  1- Intro", "  2: The pilot budget is 40k.",
+        "brain:knowledge/domains/sales/pipeline.md [sales] (working)", "  1- Intro", "  2: The pilot budget is 40k.",
         "  3- End"]
     assert search.main([str(root), "lines", "--max", "1", "--regex", "pilot|budget"]) == 0
     out = capsys.readouterr().out.splitlines()
-    assert out[0] == "knowledge/projects/harbor/notes.md [harbor]" and not any(o.startswith("brain:") for o in out)
+    assert out[0] == "knowledge/projects/harbor/notes.md [harbor] (working)" and not any(o.startswith("brain:") for o in out)
     assert out[-1] == "1 more file matches: narrow the text, or pass --max"
     assert search.main([str(root), "lines", "nothing like this"]) == 1
     assert search.main([str(root), "lines", "--regex", "(unclosed"]) == 2
@@ -367,3 +367,67 @@ def test_lines_for_subject_read_no_front_matter_that_cannot_name_the_ring(tmp_pa
     paths = {f.path for f in search.lines(ws, "webhook", for_subject="harbor-voice-agent") if not f.layer}
     assert "knowledge/sources/2026/10/call.md" in paths and "knowledge/sources/2026/10/other.md" not in paths
     assert "other.md" not in read                                        # beacon-app names no ring subject
+
+
+def test_a_personal_space_also_searches_its_notes_drafts_and_briefs_every_hit_with_its_tier(tmp_path, capsys):
+    brain = make_space(tmp_path / "brain", profile="brain")
+    write_page(brain, "knowledge/topics/lessons/kiln.md", body="Fire the kiln slowly.\n")
+    (brain / "journal").mkdir(exist_ok=True)
+    (brain / "journal" / "2026-10-12.md").write_text("## 09:00Z — kiln\nA kiln note in a mount.\n", encoding="utf-8")
+    write_page(brain, "_inbound/candidates/kiln-draft.md", body="A kiln draft in a mount.\n")
+    other = make_space(tmp_path / "ben")   # a personal space mounted here: its own zones are its own
+    (other / "journal").mkdir(exist_ok=True)
+    (other / "journal" / "2026-10-12.md").write_text("## 09:00Z — kiln\nBen's kiln note.\n", encoding="utf-8")
+    root = make_space(tmp_path / "ada")
+    mount_brain(root, brain)
+    from test_link import mount
+    mount(root, "ben", other)
+    note = root / "journal" / "2026" / "10" / "2026-10-12.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    note.write_text("## 09:00Z — Lantern Works\nThe kiln order moved to Friday.\n", encoding="utf-8")
+    write_page(root, "_inbound/candidates/kiln-order.md", type="decision", title="Kiln order",
+               body="The kiln order moves to Friday.\n")
+    brief = root / "_meta" / "state" / "private" / "briefs" / "lantern-works.md"
+    brief.parent.mkdir(parents=True, exist_ok=True)
+    brief.write_text("Lantern Works wants the kiln by Friday.\n", encoding="utf-8")
+
+    hits = {(h.layer, h.path): h.tier for h in search.query(root, "kiln")}
+    assert hits[("", "journal/2026/10/2026-10-12.md")] == "working"
+    assert hits[("", "_inbound/candidates/kiln-order.md")] == "pending"
+    assert hits[("", "_meta/state/private/briefs/lantern-works.md")] == "working"
+    assert hits[("brain", "knowledge/topics/lessons/kiln.md")] == "working"
+    # a mount keeps its own zones: its notes and drafts are not read from here
+    assert ("brain", "journal/2026-10-12.md") not in hits
+    assert ("brain", "_inbound/candidates/kiln-draft.md") not in hits
+    assert not any(layer == "ben" for layer, _ in hits)
+
+    found = {(f.layer, f.path): f.tier for f in search.tiered(root, search.lines(root, "kiln"))}
+    assert found == hits
+
+    assert search.main([str(root), "query", "kiln"]) == 0
+    assert "_inbound/candidates/kiln-order.md [-] (pending)" in capsys.readouterr().out
+    assert search.main([str(root), "lines", "kiln"]) == 0
+    assert "journal/2026/10/2026-10-12.md [-] (working)" in capsys.readouterr().out
+
+
+def test_a_project_space_searches_only_its_sources(tmp_path):
+    root = make_space(tmp_path / "harbor", profile="project")
+    write_page(root, "_inbound/candidates/kiln-order.md", body="The kiln order moves to Friday.\n")
+    assert search.query(root, "kiln") == []
+
+
+def test_a_codebase_search_never_reads_the_private_notes_or_briefs(tmp_path):
+    ws = ringed_workspace(tmp_path)
+    note = ws / "journal" / "2026" / "10" / "2026-10-12.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    note.write_text("## 09:00Z — webhook\nThe webhook client is unhappy.\nsubject: harbor-voice-agent\n",
+                    encoding="utf-8")
+    write_page(ws, "_meta/state/private/briefs/harbor-voice-agent.md", subject="harbor-voice-agent",
+               body="Sensitive: the webhook budget.\n")
+    everywhere = {h.path for h in search.query(ws, "webhook") if not h.layer}
+    assert {"journal/2026/10/2026-10-12.md", "_meta/state/private/briefs/harbor-voice-agent.md"} <= everywhere
+    for found in (search.query(ws, "webhook", for_subject="harbor-voice-agent"),
+                  search.lines(ws, "webhook", for_subject="harbor-voice-agent")):
+        paths = {f.path for f in found if not f.layer}
+        assert "knowledge/projects/harbor-voice-agent/notes.md" in paths
+        assert not any(p.startswith(("journal/", "_meta/state/private/")) for p in paths)

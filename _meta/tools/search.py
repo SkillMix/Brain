@@ -1,8 +1,10 @@
 """Search: the second path to a subject, plain by default, an index only when chosen (shape 1).
 
 Walking needs no tools; search is faster when it runs. Every space can search its own
-`knowledge/` and `live/` (and a personal space its `work/`) and each mount's `knowledge/`
-and `live/` with plain text; a hit expands to its subject. The engine file
+`knowledge/` and `live/` (and a personal space its `work/`, its daily notes in `journal/`, its
+drafts in `_inbound/candidates/` and its private briefs in `_meta/state/private/briefs/`) and
+each mount's own zones (`knowledge/` and `live/` unless its engine file says more) with plain
+text; a hit expands to its subject and shows its tier (`ground.tier_of`). The engine file
 `_meta/search.yaml` says whether anything more runs:
 
     engine: none            # none | index | <adapter>: an index is disposable, rebuilt from git
@@ -13,7 +15,8 @@ and `live/` with plain text; a hit expands to its subject. The engine file
     atoms: off              #   `measured: [{feature, gain, at}]` records it
     measured: []
 
-`engine: index` keeps `_meta/state/search-index.json` (term -> files) for this space's own
+`engine: index` keeps `_meta/state/private/search-index.json` (term -> files; never staged, as it
+holds words of the private briefs) for this space's own
 audience only; `prune` drops entries whose files moved or vanished. Another engine is an
 adapter module `search_<engine>.py` beside this one with `query(root, text)`, `build(root)`
 and `prune(root)`; when it is absent the plain search answers.
@@ -47,15 +50,19 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ground  # noqa: E402
 import pages  # noqa: E402
 import registry  # noqa: E402
 import spaceyaml  # noqa: E402
 
 CONFIG = Path("_meta") / "search.yaml"
-INDEX = Path("_meta") / "state" / "search-index.json"
+INDEX = Path("_meta") / "state" / "private" / "search-index.json"
 DEFAULTS = {"engine": "none", "version": None, "sources": ["knowledge", "live"], "freshness_hours": 24,
             "link_step": "off", "atoms": "off", "measured": []}
 EXTRAS = ("link_step", "atoms")
+# A personal space's own layer: where its knowledge is written before anyone signs it.
+PERSONAL_ZONES = ("work", "journal", "_inbound/candidates", "_meta/state/private/briefs")
+PRIVATE_NOTES = ("journal/", "_meta/state/private/")   # ring 3 for a linked codebase: never in its search
 SKIP_PARTS = {".git", "__pycache__", ".pytest_cache"}
 WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{1,}")
 
@@ -66,9 +73,11 @@ class Hit:
     path: str       # relative to that layer's root
     subject: str    # the subject the hit expands to ("" when none)
     line: str       # the first matching line
+    tier: str = ""  # signed, system, pending, witness, reported or working (`ground.tier_of`)
 
     def to_dict(self) -> dict:
-        return {"layer": self.layer, "path": self.path, "subject": self.subject, "line": self.line}
+        return {"layer": self.layer, "path": self.path, "subject": self.subject, "line": self.line,
+                "tier": self.tier}
 
 
 def _on(value) -> bool:
@@ -116,9 +125,18 @@ def subject_of(rel: str) -> str:
 
 def _zones(space: spaceyaml.Space, own: bool) -> list:
     zones = list(config(space.root).get("sources") or DEFAULTS["sources"])
-    if own and space.profile == "personal" and "work" not in zones:
-        zones.append("work")
+    if own and space.profile == "personal":
+        zones += [z for z in PERSONAL_ZONES if z not in zones]
     return zones
+
+
+def tier(base: Path, rel: str) -> str:
+    """The tier of a hit's file (`ground.tier_of`); front matter that does not parse counts as none."""
+    try:
+        fm, body = pages.read(base / rel)
+    except Exception:
+        fm, body = {}, ""
+    return ground.tier_of(rel, fm if isinstance(fm, dict) else {}, body)
 
 
 def _files(root: Path, zones: list):
@@ -186,6 +204,7 @@ class Found:
     subject: str
     lines: list     # (line number, text, is a match), in order, context merged
     more: int = 0   # matches past the first PER_FILE
+    tier: str = ""
 
 
 def _ripgrep():
@@ -297,6 +316,16 @@ def lines(root, text: str, context: int = 2, for_subject: str | None = None, reg
     return found
 
 
+def tiered(root, found: list) -> list:
+    """Each hit's tier, read for these hits only: a search reads no front matter it does not show."""
+    root = Path(root)
+    space = spaceyaml.load(root)
+    for f in found:
+        base = root if not f.layer else space.mount_root(f.layer)
+        f.tier = tier(base, f.path) if base is not None else ""
+    return found
+
+
 # ----- the built-in index engine ---------------------------------------------------
 def _terms(text: str) -> set:
     return {w.lower() for w in WORD.findall(text)}
@@ -396,6 +425,8 @@ def _in_rings(root, sid: str):
     def keep(hit: Hit) -> bool:
         if hit.layer:
             return hit.layer in kept
+        if hit.path.startswith(PRIVATE_NOTES):
+            return False
         if hit.subject in ring:
             return True
         try:   # front matter that names no ring subject cannot route to it: no YAML to parse then
@@ -415,10 +446,14 @@ def _in_rings(root, sid: str):
 def query(root, text: str, limit: int = 50, for_subject: str | None = None) -> list:
     """The space's search: its engine when one runs, the plain search otherwise and always for
     the mounts (each mount keeps its own engine for its own audience). With `for_subject`, only
-    the hits in its rings 1 and 2 (`_in_rings`)."""
+    the hits in its rings 1 and 2 (`_in_rings`). Each hit carries its tier."""
+    return tiered(root, _hits(root, text, limit, for_subject))
+
+
+def _hits(root, text: str, limit: int = 50, for_subject: str | None = None) -> list:
     if for_subject:
         keep = _in_rings(root, for_subject)
-        return [h for h in query(root, text, sys.maxsize) if keep(h)][:limit]
+        return [h for h in _hits(root, text, sys.maxsize) if keep(h)][:limit]
     root = Path(root)
     cfg = config(root)
     engine = cfg["engine"]
@@ -483,8 +518,8 @@ def _print_lines(root: Path, rest: list) -> int:
     except ValueError as exc:
         print(f"search: {exc}", file=sys.stderr)
         return 2
-    for f in found[:shown]:
-        print(f"{f.layer}:{f.path}" if f.layer else f.path, f"[{f.subject or '-'}]")
+    for f in tiered(root, found[:shown]):
+        print(f"{f.layer}:{f.path}" if f.layer else f.path, f"[{f.subject or '-'}]", f"({f.tier})")
         before = None
         for number, text, match in f.lines:
             if before is not None and number > before + 1:
@@ -527,7 +562,7 @@ def main(argv=None) -> int:
     hits = query(root, " ".join(rest), for_subject=for_subject)
     for hit in hits:
         where = f"{hit.layer}:{hit.path}" if hit.layer else hit.path
-        print(f"{where} [{hit.subject or '-'}] {hit.line}")
+        print(f"{where} [{hit.subject or '-'}] ({hit.tier}) {hit.line}")
     return 0 if hits else 1
 
 

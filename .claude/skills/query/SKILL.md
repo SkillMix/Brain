@@ -39,8 +39,12 @@ Any knowledge question: "what did we decide about X", "what is going on with Har
    tier `pending`). "Status of <project>" on a first day reads exactly these.
 5. Search as the second path: `python _meta/tools/search.py <root> query "<term>"` (plain
    text over this space and every mount, or the space's index when `_meta/search.yaml`
-   turned one on); each hit names its layer and subject: expand it to the hub, the status
-   page and every layer above it.
+   turned one on); each hit names its layer, its subject and its tier: expand it to the hub,
+   the status page and every layer above it. In a personal space search also reads the daily
+   notes (`journal/`), the drafts (`_inbound/candidates/`, tier `pending`) and the private
+   briefs (`_meta/state/private/briefs/`); a note or a brief is `working`, context for the
+   owner and never a source for anything that leaves the space; a codebase search (`--for`)
+   never reads them. A mount keeps its own zones.
    To read what the evidence says, use
    `python _meta/tools/search.py <root> lines [-C <n>] [--regex] [--for <subject>] "<term>"`:
    every matching line with its line number and two lines around it (`-C` for more), grouped
@@ -49,8 +53,7 @@ Any knowledge question: "what did we decide about X", "what is going on with Har
    `--regex "(?-i:\bIT\b)"`. It runs on ripgrep when it is installed. Search those folders with
    this tool only: never from the space's root (`grep -r` there also reads every session
    worktree under `.claude/worktrees/`, a copy of the whole space each) and never file by file
-   (a loop that opens one file per command costs seconds a file on Windows). A folder it does
-   not read, such as `journal/` or `_inbound/candidates/`, you search by naming that folder.
+   (a loop that opens one file per command costs seconds a file on Windows).
    For work in a linked codebase (`link.py resolve` named the subject), search with
    `python _meta/tools/search.py <root> query --for <subject> "<term>"`: rings 1 and 2 only,
    meaning the subject, its parents and its parts (here and in their home) and the brain.
