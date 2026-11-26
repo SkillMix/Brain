@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ground  # noqa: E402
 import ids  # noqa: E402
 import pages  # noqa: E402
 import registry as registry_mod  # noqa: E402
@@ -329,7 +330,7 @@ def collect(root: Path, space, reg, now) -> dict:
             add(sid, "pending", "team", title, at, rel, pid, body, "open")
             add(sid, "reported", "team", title, at, rel, pid, body)
         else:
-            add(sid, "pending", scope, title, at, rel, pid, body, "open")
+            add(sid, ground.label(rel, fm, body, root), scope, title, at, rel, pid, body, "open")
     for kind in space.kinds:
         base = root / "knowledge" / kind
         for path, fm, body in _read_pages(base):
@@ -473,15 +474,20 @@ def _direction(fm: dict, own) -> str:
 
 
 def _open_text(evs: list) -> str:
-    """Open items by direction, then what waits for a signature."""
+    """Open items by direction, then what waits for a signature, then the checked drafts that
+    are read as knowledge with their label (`ground.readable`)."""
     parts = []
     for direction in DIRECTIONS:
         lines = _newest(e for e in evs if e.section == "open" and e.direction == direction)
         if lines:
             parts.append(f"### {direction[0].upper()}{direction[1:]}\n\n" + _lines(lines))
     pending = _newest(e for e in evs if e.section == "open" and not e.direction)
-    if pending:
-        parts.append("### Waiting for a signature\n\n" + _lines(pending))
+    checked = [e for e in pending if e.tier.endswith(ground.CHECKED)]
+    waiting = [e for e in pending if e not in checked]
+    if waiting:
+        parts.append("### Waiting for a signature\n\n" + _lines(waiting))
+    if checked:
+        parts.append("### Checked, not signed\n\n" + _lines(checked))
     return "\n\n".join(parts) or "- none"
 
 
