@@ -481,6 +481,34 @@ def test_what_a_route_informs_elsewhere_stays_on_the_page_under_routing(tmp_path
     assert not list((root / "_inbound" / "candidates").glob("*forty-leads*.md"))
 
 
+def test_each_sentence_carries_its_kind_and_both_labels(tmp_path):
+    """The router says what a sentence is and whether it binds; a second agent says it too."""
+    root, _, _ = space_set(tmp_path)
+    captured(root)
+    informs = [{"kind": "event", "text": "Kickoff call held", "binds": False, "binds_second": False},
+               {"kind": "commitment", "text": "We send the first list by Friday", "binds": True,
+                "binds_second": True},
+               {"kind": "fact", "text": "The first list holds forty leads", "binds": False, "binds_second": False},
+               {"kind": "position", "text": "Chloe prefers a short pilot", "binds": False, "binds_second": True},
+               {"kind": "open_item", "text": "Send the first list", "direction": "we owe"}]
+    route.record(root, decision(routes=route_with(informs=informs)), now=NOW)
+    (fm, _), = queued(root)
+    assert [(i["kind"], i.get("binds"), i.get("binds_second")) for i in fm["informs"]] == [
+        ("event", False, False), ("commitment", True, True), ("fact", False, False),
+        ("position", False, True), ("open_item", None, None)]
+
+
+@pytest.mark.parametrize("label", [{"binds": "no"}, {"binds_second": "false"}, {"binds": None},
+                                   {"binds": True, "binds_second": 0}])
+def test_a_label_that_is_not_true_or_false_is_refused(tmp_path, label):
+    root, _, _ = space_set(tmp_path)
+    captured(root)
+    informs = [dict({"kind": "decision", "text": "The first list holds forty leads"}, **label)]
+    with pytest.raises(route.RouteError, match="binds"):
+        route.record(root, decision(routes=route_with(informs=informs)), now=NOW)
+    assert queued(root) == [] and not (root / route.LOG).exists()
+
+
 def test_after_a_retraction_a_corrected_decision_can_be_recorded(tmp_path):
     root, _, _ = space_set(tmp_path)
     captured(root)

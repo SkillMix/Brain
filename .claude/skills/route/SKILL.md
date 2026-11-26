@@ -77,8 +77,10 @@ routes:
       - text: <a passage or transcript segment copied exactly, whole lines>
         note: <optional: why this part is here, one line; it travels, so never name what you left out>
     informs:
-      - kind: open_item | decision | person | page
+      - kind: open_item | decision | commitment | event | fact | position | person | page
         text: <one line>
+        binds: true | false          # decision to position: does it bind the company (your label)
+        binds_second: true | false   # the same question, answered by a second agent on its own
         owner: <name>            # open items, when known
         due: <YYYY-MM-DD>        # when the record says
         direction: we owe | waiting on them | internal
@@ -146,6 +148,20 @@ routes:
   line leaves the page. When the record settles an item, set `closes:` to that id on what settled
   it (a decision, or the next open item); the item moves to recently closed. An id with a
   `.<n>` names one item of several from one record; a bare id names all of them.
+- **What a sentence is.** Each sentence you take from a record is an `open_item`, or one of
+  five: a `decision` (the company chose), a `commitment` (we promised something), an `event`
+  (what happened, and when), a `fact` or a `position` (someone's view). Each of the five gets
+  `binds`. It binds when it sets or changes a rule, policy or standing practice of the company;
+  or promises something to a client or a third party; or defines a product, a scope, a contract
+  or a legal position; or decides about staffing, roles or a named person; or widens who may
+  see something. It does not bind when it is a dated record of what happened, what a client
+  chose for its own side, a technical choice that promises nothing new, or a plain fact. When
+  you are unsure, it binds. Then a second agent (a fresh subagent given the record and your
+  sentences without your labels) answers the same question for each and you write its answer
+  as `binds_second`; never copy one label into the other. Both are recorded; the tool refuses a
+  label that is not true or false. Decisions and commitments become decision drafts, and a
+  draft leaves Needs you only when both labels say false. Events become lines on the subject's
+  timeline. Facts and positions make no draft.
 - **Obligations.** A record that shows an obligation on a client, project or deal (a
   confidentiality agreement, named people only, a data processing agreement, any other limit on
   who may see the work) is reported whatever you route:
@@ -154,7 +170,7 @@ routes:
   classification until its owner settles it again.
 - **History** (`history: true`: before `routing.since`). Background only: route it to the
   subject's home for its timeline, or keep it private. Never an `open_item` (the tool refuses
-  one); `closes`, decisions (dated, historical) and people are fine. Low confidence on history
+  one); `closes`, decisions (dated, historical), events and people are fine. Low confidence on history
   is recorded as private, never a question. When it contradicts a recent record or a signed
   page, recent wins: say so in `why`.
 

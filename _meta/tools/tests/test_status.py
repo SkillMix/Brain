@@ -227,6 +227,27 @@ def test_distill_takes_no_decision_from_a_routing_decisions_informs(tmp_path):
     assert not list((root / "_inbound" / "candidates").glob("*forty-leads*.md"))
 
 
+def test_the_timeline_shows_the_routers_events_in_place_of_the_record_title(tmp_path):
+    """An event the router read in a record is the timeline line; a record without one keeps its title."""
+    root = make_space(tmp_path / "ada", subjects=[HARBOR, BEACON])
+    witness(root, "m-1", "harbor", "2026-10-10T08:00:00Z", title="Re: Fwd: notes",
+            informs=[{"kind": "event", "text": "Kickoff call held with Chloe", "binds": False, "binds_second": False},
+                     {"kind": "event", "text": "Beacon venue visited", "subject": "beacon"},
+                     {"kind": "fact", "text": "Harbor has two sites"}])
+    witness(root, "m-2", "harbor", "2026-10-11T08:00:00Z", title="Scope confirmed")
+    witness(root, "m-3", None, "2026-10-11T09:00:00Z", title="Venue mail",
+            routing={"decision": "route", "routes": ["brain/beacon"],
+                     "informs": [{"subject": "beacon", "kind": "event", "text": "Beacon venue booked"}]})
+    status.run(root, now=NOW)
+    harbor = pages.read(root / "live" / "subjects" / "harbor.md")[1].split("## Timeline")[1].split("##")[0]
+    assert "- Kickoff call held with Chloe (witness, mine, 2026-10-10" in harbor
+    assert "- Scope confirmed (witness, mine, 2026-10-11" in harbor
+    assert "Re: Fwd: notes" not in harbor and "Beacon venue" not in harbor and "two sites" not in harbor
+    beacon = pages.read(root / "live" / "subjects" / "beacon.md")[1].split("## Timeline")[1].split("##")[0]
+    assert "- Beacon venue booked (witness, mine, 2026-10-11" in beacon and "Venue mail" not in beacon
+    assert errors(root) == []
+
+
 def test_a_record_dated_ahead_is_coming_up_not_history(tmp_path):
     """A calendar event is captured before it happens; it is not part of the timeline yet."""
     root = make_space(tmp_path / "ada", subjects=[HARBOR])

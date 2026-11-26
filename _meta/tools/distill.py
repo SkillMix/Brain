@@ -90,6 +90,7 @@ SOURCES = Path("knowledge") / "sources"
 EVIDENCE_HEADING = "## New evidence"
 MENTION_BLIND_KINDS = ("people", "domains")
 DECISION_RE = re.compile(r"^\s*decision\s*:\s*(.*)$", re.I)
+DECIDED_KINDS = ("decision", "commitment")   # the router's sentences that make a candidate: never an event, a fact or a position
 COMMANDS = ("verify", "checked", "prepare")
 LESSON_LINE = re.compile(r"^\s*(?:[-*]\s*)?lesson:\s*(.+?)(?:[\s;,(]+from:.*)?\s*$", re.I | re.M)
 LESSONS_PROPOSED = STATE / "lessons-proposed.jsonl"   # {slug, from, candidate, at}
@@ -500,7 +501,10 @@ def decision_name(ev: Evidence) -> str:
     return f"{ev.at:%Y-%m-%d}-{slugify(needs_you.untrusted_line(decision_title(ev.body) or '', 200))}"
 
 
-def write_decision(root: Path, space, reg, ev: Evidence, now: dt.datetime, reader: Reader) -> str:
+def write_decision(root: Path, space, reg, ev: Evidence, now: dt.datetime, reader: Reader,
+                   labels: dict | None = None) -> str:
+    """The decision's own candidate; `labels` is the router's informs item, whose `binds` and
+    `binds_second` (needs_you.LABELS) travel to the draft for Needs you to read."""
     title = needs_you.untrusted_line(decision_title(ev.body) or "", 200)
     name = decision_name(ev)
     path = root / CANDIDATES / f"{name}.md"
@@ -519,6 +523,7 @@ def write_decision(root: Path, space, reg, ev: Evidence, now: dt.datetime, reade
     fm["target"] = f"knowledge/decisions/{name}.md"
     fm["evidence"] = [ev.record]
     fm["origin"] = decision_origin(space, reg, ev)
+    fm.update({k: labels[k] for k in needs_you.LABELS if isinstance((labels or {}).get(k), bool)})
     if not fm["origin"]["inside"]:
         fm["recommendation"] = OUTSIDE_DECISION.format(who=fm["origin"]["from"] or "an unknown sender")
     pages.write(path, fm, ev.body, root=root)
@@ -634,8 +639,8 @@ def run(root, now: dt.datetime | None = None, rebuild: bool = False,
         chosen = everything.get(sid, items) if rebuild else items
         count(write_candidate(root, space, reg, subject, chosen, index, now, reader,
                               rebuild=rebuild, ignored=ignored), sid)
-    def decided(ev: Evidence) -> None:
-        outcome = write_decision(root, space, reg, ev, now, reader)
+    def decided(ev: Evidence, labels: dict | None = None) -> None:
+        outcome = write_decision(root, space, reg, ev, now, reader, labels)
         if outcome in ("new", "refreshed"):
             report.decisions.append(decision_name(ev) + ".md")
         count(outcome, None)
@@ -643,10 +648,10 @@ def run(root, now: dt.datetime | None = None, rebuild: bool = False,
     for ev in new:
         if not ev.landed and decision_title(ev.body) and not held(ev.subject):
             decided(ev)
-        for item in ev.fm.get("informs") or []:   # a decision the router saw in the record
-            if isinstance(item, dict) and item.get("kind") == "decision" and str(item.get("text") or "").strip() \
+        for item in ev.fm.get("informs") or []:   # a decision or a commitment the router saw in the record
+            if isinstance(item, dict) and item.get("kind") in DECIDED_KINDS and str(item.get("text") or "").strip() \
                     and not held(ev.subject):
-                decided(dataclasses.replace(ev, body=f"Decision: {str(item['text']).strip()}\n\n{ev.body}"))
+                decided(dataclasses.replace(ev, body=f"Decision: {str(item['text']).strip()}\n\n{ev.body}"), item)
     # lessons are read from the daily note itself: a swept copy of an entry has lost its `from:` line
     for ev in new_since(journal_evidence(root), since):
         source = next((s for s in link.FROM_LINE.findall(ev.body) if s), None)

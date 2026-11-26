@@ -81,6 +81,9 @@ MOUNT_TEXT_MAX = 200
 # makes one `health` line: the person is told, never asked.
 HEALTH = Path("_meta") / "state" / "health"
 HEALTH_SHOWN = 3
+# Whether a sentence the router read binds the company: its own label and a second agent's,
+# each given alone (route.py stamps them, distill carries them to the decision draft).
+LABELS = ("binds", "binds_second")
 
 
 @dataclass
@@ -237,6 +240,23 @@ def _candidate_default(fm: dict) -> str:
     return "yes" if origin.get("inside") is True else UNCHECKED_DECISION
 
 
+def unwritten(rel: str, fm: dict, body: str) -> bool:
+    """A draft only an agent can finish, so never shown to a person: a subject page that is still
+    the stub alone, or a decision nobody checked whose body is still the record under its
+    `Decision:` line (distill.write_decision). It is counted on the agent's health line."""
+    import distill   # here and not at the top: distill imports this module
+    if distill.is_subject_candidate(Path(rel), fm):
+        return distill.stub_only(body)
+    return (str(fm.get("type")) == "decision" and not fm.get("checked") and not fm.get("released_from")
+            and distill.decision_title(body) is not None)
+
+
+def unbinding(fm: dict) -> bool:
+    """Both labellers said the sentence does not bind the company: the draft stays a draft, off
+    the list. One label missing, or saying it binds, keeps it on."""
+    return all(fm.get(key) is False for key in LABELS)
+
+
 def _candidates(root: Path, space: spaceyaml.Space | None = None) -> list:
     import distill   # here and not at the top, as registry and classify are
     out = []
@@ -247,6 +267,8 @@ def _candidates(root: Path, space: spaceyaml.Space | None = None) -> list:
         if rel in waiting:   # counted on the classification line, never offered for a signature
             continue
         if landing_health(fm):   # a release that cannot land as it is: the health line, never a signature
+            continue
+        if unwritten(rel, fm, body) or unbinding(fm):   # the agent's work, or nothing that binds
             continue
         title = _text(fm.get("title"), Path(rel).stem)
         cid = _text(fm.get("id"), Path(rel).stem)
@@ -681,11 +703,18 @@ def health_work(root) -> list:
     except Exception as exc:   # never a silent gap: the line says the held items could not be read
         out.append((f"the held items could not be read ({exc.__class__.__name__})",
                     "the release run reads them again"))
-    for rel, fm, _ in pages_in(root, CANDIDATES):
+    stubs = 0
+    for rel, fm, body in pages_in(root, CANDIDATES):
         work = landing_health(fm)
         if work:
             out.append((f"a release from {untrusted_line(fm.get('released_from'), 40)} could not land "
                         f"({untrusted_line(fm.get('landing'), 120)})", work))
+        elif unwritten(rel, fm, body):
+            stubs += 1
+    if stubs:   # never on the list itself (`unwritten`): the distill skill's agent writes them
+        them = "them" if stubs != 1 else "it"
+        out.append((f"{stubs} draft{'s wait' if stubs != 1 else ' waits'} for an agent to write {them}",
+                    f"the distill run writes {them} and a second agent checks {them}"))
     return out
 
 
