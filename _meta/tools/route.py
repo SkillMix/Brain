@@ -15,7 +15,10 @@ that check against the never-leaves and left-out categories, never matched again
 code. The tool forces the window when the decision flags never-leaves material elsewhere in the
 record (`never_leaves`) or a route's `high_stakes`, on medium confidence, in the review period
 (`routing.review_until`), on a first release, or for a journal record (link.journal_records) to
-a home that is not walled with the writer on its crew; low confidence -> a question for the
+a home that is not walled with the writer on its crew, and always for a day's digest of the
+person's notes (`kind: digest`), which leaves only as parts, never to a deal or a part of one,
+and never with a part that names a person registered as kind people (title or alias, a whole
+word): claims about a named person stay out; low confidence -> a question for the
 owner, nothing leaves. An owner's answer counts as approval, and only for the question this
 tool asked: the question's decision is sealed in routing.jsonl, so a yes never applies a
 question file someone else wrote or changed (a no, which keeps the record here, always applies).
@@ -382,6 +385,13 @@ def _outside(space, reg, dest_space, subject, rec: dict) -> list:
     return out
 
 
+def _named_person(reg, text: str) -> str | None:
+    """The person registered here, in the brain or in a mount (kind people) whom `text` names by
+    title or alias, a whole word in any case; None when it names none."""
+    return next((p.title for p in reg.everywhere() if p.kind == "people"
+                 for name in [p.title, *p.aliases] if registry._word_in(text, str(name))), None)
+
+
 def _projection(rec: dict, route_: dict) -> str:
     if route_.get("content") == "whole":
         return rec["text"]
@@ -453,6 +463,11 @@ def _validate(root: Path, space, reg, decision: dict, now: dt.datetime, strict: 
                 raise RouteError(f"{rid}: history opens no items (an open_item for {subject.id})")
         if home == space.name:
             continue
+        digest = fm.get("kind") == link.DIGEST   # a day of the person's notes (link.journal_records)
+        if digest and r.get("content") != "parts":
+            raise RouteError(f"{rid}: a digest of the day's notes leaves only as parts, never whole")
+        if digest and not link.digestible(reg, subject.id):
+            raise RouteError(f"{rid}: a digest never goes to a deal or a part of one ({subject.id})")
         if r.get("content") == "whole":
             outside = _outside(space, reg, release.destination_space(space, home), subject, rec)
             if outside:
@@ -468,6 +483,10 @@ def _validate(root: Path, space, reg, decision: dict, now: dt.datetime, strict: 
                     raise RouteError(f"{rid}: a part is not verbatim from the record: {text[:60]!r}")
         else:
             raise RouteError(f"{rid}: content must be whole or parts")
+        named = _named_person(reg, _projection(rec, r) + "\n" + str(r.get("title") or "")) if digest else None
+        if named:
+            raise RouteError(f"{rid}: a digest part names {named}, a registered person: claims about a named "
+                             "person stay out")
         if len(_projection(rec, r).encode("utf-8")) > sweep.PART_BYTES:
             raise RouteError(f"{rid}: the projection for {home} is too large for one release; send parts")
     return path, fm, body, rec
@@ -624,6 +643,9 @@ def record(root, decision: dict, now: dt.datetime | None = None, by: str | None 
             tier = "window"
             extra["first_release"] = sid
             reasons.append(f"the first release since {sid} was classified company")
+        if fm.get("kind") == link.DIGEST:   # however walled its home: the person sees the day go first
+            tier = "window"
+            reasons.append("a day's notes wait the window")
         if tier == "at_once" and fm.get("source") == "journal" and not link.journal_at_once(space, reg, sid):
             tier = "window"   # D8: at once only to a walled home whose crew includes the writer
             reasons.append("a note from your session to a home beyond your crew")

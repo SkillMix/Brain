@@ -34,7 +34,8 @@ answered or still open, the same entry never proposes it again.
 Evidence for a subject = witness pages under knowledge/sources/ carrying
 `subject: <id>` or `<id>` in `mentions`, landed records in _inbound/candidates/
 (frontmatter `released_from` and `subject: <id>`), and entries of the daily notes under
-journal/ that name the subject (a `subject: <id>` line or a desk path `work/<kind>/<id>/`). A page is
+journal/ that name the subject (a `subject: <id>` line or a desk path `work/<kind>/<id>/`); the
+witness page of a day's digest (link.journal_records) is not, since its entries are. A page is
 new when `at`, `generated.at` or `released_at` is after the watermark. With `routing.archives` off (the
 default) a page `provenance.is_archive_derived` flags is no evidence, and an archive-derived
 target page lends no body.
@@ -197,7 +198,7 @@ def gather_evidence(root, reader: Reader, space_name: str = "") -> list:
                 fm, body = reader.read(path)
             except Exception:
                 continue
-            if pages.withdrawn(fm or {}):
+            if pages.withdrawn(fm or {}) or (fm or {}).get("kind") == link.DIGEST:   # its entries count themselves
                 continue
             item = _evidence(root, path, fm, body, landed=False, space_name=space_name) if fm else None
             if item:
