@@ -3,7 +3,7 @@
 # without a `measured` entry. An index is disposable: rebuilt from git, one per audience.
 engine: none              # none | index | <adapter>
 version: null             # the adapter's pinned version, when one runs
-sources: [knowledge, live]
+sources: [knowledge, live] # a personal space also reads work, journal, _inbound/candidates and _meta/state/private/briefs
 freshness_hours: 24
 link_step: off
 atoms: off
