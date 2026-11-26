@@ -280,12 +280,16 @@ def collect(root: Path, space, reg, now) -> dict:
             informed.append((sids, at, tier, rel, pid, body, informs, _thread_of(fm, title), refs))
         # a record the router decided holds its thread with no guessed direction
         read = bool(informs) or routing.get("decision") in ("route", "private")
+        events = [i for i in informs if i.get("kind") == "event" and str(i.get("text") or "").strip()]
         for sid in sids:
             if fm.get("issue") and state in DONE_STATES:
                 add(sid, tier, scope, title, at, rel, pid, body, "closed", arrived=_stamp(fm))
                 add(sid, tier, scope, title, at, rel, pid, body, arrived=_stamp(fm))   # and on the timeline
                 continue
-            add(sid, tier, scope, title, at, rel, pid, body, arrived=_stamp(fm))
+            # what happened, as the router wrote it, is the timeline's line in place of the record's title
+            said = [str(i["text"]).strip() for i in events if str(i.get("subject") or sid) == sid]
+            for line in said or [title]:
+                add(sid, tier, scope, line, at, rel, pid, body, arrived=_stamp(fm))
             key, direction = (sid, _thread_of(fm, title)), "" if read else _direction(fm, own)
             last = threads.get(key)
             # the newest record holds the thread; at the same moment, the one that knows who moves next

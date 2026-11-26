@@ -72,7 +72,7 @@ CALL_MINUTES = 60   # a call joins an event that starts within the hour, on the 
 MAIL_DAYS = 3       # a mail joins an event from its start to three days after
 CONFIDENCE = ("high", "medium", "low")
 TIERS = ("at_once", "window")
-INFORMS = ("open_item", "decision", "person", "page")
+INFORMS = ("open_item", "decision", "commitment", "event", "fact", "position", "person", "page")
 # Names that say the router checked its own decision: a second agent's check names someone else.
 NOT_A_CHECKER = ("router", "the router", "self", "myself", "me", "agent", "the agent", "claude", "same",
                  "none", "n/a", "-")
@@ -447,6 +447,8 @@ def _validate(root: Path, space, reg, decision: dict, now: dt.datetime, strict: 
         for item in r.get("informs") or []:
             if not isinstance(item, dict) or item.get("kind") not in INFORMS or not str(item.get("text") or "").strip():
                 raise RouteError(f"{rid}: each informs item needs a kind ({', '.join(INFORMS)}) and a text")
+            if any(key in item and not isinstance(item[key], bool) for key in needs_you.LABELS):
+                raise RouteError(f"{rid}: binds and binds_second are true or false (does it bind the company)")
             if rec["history"] and item["kind"] == "open_item":
                 raise RouteError(f"{rid}: history opens no items (an open_item for {subject.id})")
         if home == space.name:

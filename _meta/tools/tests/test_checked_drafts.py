@@ -88,3 +88,12 @@ def test_the_walk_reads_a_checked_draft_apart_from_what_waits_for_a_signature(tm
         assert f"- {title} (pending, mine, 2026-10-11, " in waiting
     hub = pages.read(root / "knowledge" / "clients" / "lantern-works" / "index.md")[1]
     assert re.search(r"- Pending: \[Kiln shifts\]\(id:p-[0-9a-f]{8}\) \(pending, checked, not signed, mine, 2026-10-11\)", hub)
+
+
+def test_a_checked_decision_both_labellers_call_not_binding_is_readable(tmp_path):
+    decision = {"type": "decision", "kind": "decisions", "checked": CHECKED}
+    rel = "_inbound/candidates/2026-10-11-kiln-supplier.md"
+    assert ground.label(rel, {**decision, "binds": False, "binds_second": False}) == "pending, checked, not signed"
+    for labels in ({"binds": False, "binds_second": True}, {"binds": False}, {}):
+        assert ground.label(rel, {**decision, **labels}) == "pending", labels
+    assert ground.label(rel, {**decision, "binds": False, "binds_second": False, "checked": None}) == "pending"

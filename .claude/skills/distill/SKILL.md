@@ -119,9 +119,11 @@ along on every refresh, whatever the body, since signing the candidate keeps bot
 page's records out of `evidence` (set one aside, with its why, when it is not about the subject).
 A line of that page that fails `verify` failed it where the page was signed: fix it like any other. An open unsigned candidate is refreshed in
 place (one still the stub takes up the page once it is found); set-aside ids stay out. A
-witness page that starts with `Decision:`, or a decision the router recorded, becomes its own
-candidate for `knowledge/decisions/`. Archive-derived pages are not evidence while
-`routing.archives` is off.
+witness page that starts with `Decision:`, or a decision or commitment the router recorded,
+becomes its own candidate for `knowledge/decisions/`, with the router's two labels (`binds`,
+`binds_second`): Needs you counts it on the agent's line until you write it and a second agent
+checks it, and leaves it off for good when both labels say it does not bind. Archive-derived
+pages are not evidence while `routing.archives` is off.
 
 ## Never
 

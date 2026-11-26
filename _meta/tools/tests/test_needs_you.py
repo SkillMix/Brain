@@ -538,3 +538,75 @@ def test_at_propose_a_first_release_line_says_it_waits_too(tmp_path):
     queue_item(root, "p-00000215", "First", NOW + dt.timedelta(hours=10), first_release="harbor")
     (item,) = [i for i in needs_you.collect(root, now=NOW) if i.id == "first-harbor"]
     assert item.default == "waits for your yes"
+
+
+# ----- labels at routing: a draft leaves Needs you only when both labellers say it does not bind ----
+def _labelled_kickoff(root):
+    informs = [{"kind": "event", "text": "Call held", "binds": False, "binds_second": False},
+               {"kind": "decision", "text": "The kickoff notes stay in the shared folder", "binds": False,
+                "binds_second": False},
+               {"kind": "decision", "text": "Harbor pilots run for one quarter", "binds": True,
+                "binds_second": False},
+               {"kind": "fact", "text": "Harbor has two sites", "binds": False, "binds_second": False}]
+    return write_page(root, "knowledge/sources/2026/10/p1.md", type="source", title="Kickoff", subject="pipeline",
+                      at="2026-10-11T09:00:00Z", record="p1", source="mail", kind="mail", audience="owner",
+                      body="[00:01:00] Chloe: one quarter, notes in the shared folder.\n", informs=informs)
+
+
+def _write_and_check(root, rel, line):
+    """What the distill skill's agent does: write the draft with its source, then a second agent checks it."""
+    import distill
+    fm, _ = pages.read(root / rel)
+    pages.write(root / rel, fm, f"{line} [src: p1]\n")
+    assert distill.checked(root, rel, by="Checker", now=NOW) == []
+
+
+def test_a_draft_leaves_needs_you_only_when_both_labellers_say_it_does_not_bind(tmp_path):
+    import distill
+    root = make_space(tmp_path / "ada", subjects=[{"id": "pipeline", "kind": "topics", "title": "Pipeline"}])
+    _labelled_kickoff(root)
+    report = distill.run(root, now=NOW)
+    notes = "_inbound/candidates/2026-10-11-the-kickoff-notes-stay-in-the-shared-folder.md"
+    pilots = "_inbound/candidates/2026-10-11-harbor-pilots-run-for-one-quarter.md"
+    assert sorted(report.decisions) == sorted(rel.split("/")[-1] for rel in (notes, pilots))
+    assert (root / "_inbound/candidates/pipeline.md").is_file()   # the topic's own page, still the stub
+    # raw stubs: never on the list, counted on the agent's line
+    items = needs_you.collect(root, now=NOW, online=False)
+    assert [i.kind for i in items] == ["health"]
+    assert "3 drafts wait for an agent to write them" in items[0].text
+    for rel, line in ((notes, "The kickoff notes stay in the shared folder."),
+                      (pilots, "Harbor pilots run for one quarter.")):
+        _write_and_check(root, rel, line)
+    items = needs_you.collect(root, now=NOW, online=False)
+    assert [i.payload for i in items if i.kind == "candidate"] == [pilots], "one labeller said binds"
+    assert "1 draft waits for an agent to write it" in items[-1].text
+    assert (root / notes).is_file(), "the other stays a draft, off the list"
+    assert [i.payload for i in needs_you.draft_items(root)] == [pilots]
+    status.run(root, now=NOW)
+    body = pages.read(root / "live" / "subjects" / "pipeline.md")[1]
+    timeline = body.split("## Timeline")[1].split("##")[0]
+    assert "- Call held (witness, mine, 2026-10-11" in timeline and "Kickoff" not in timeline
+
+
+def test_a_label_missing_or_saying_binds_keeps_the_draft_on_the_list(tmp_path):
+    root = make_space(tmp_path / "ada")
+    checked = {"by": "Checker", "at": pages.iso(NOW)}
+    candidate(root, "d1", id="p-00000301", type="decision", checked=checked, binds=False)
+    candidate(root, "d2", id="p-00000302", type="decision", checked=checked, binds=False, binds_second=True)
+    candidate(root, "d3", id="p-00000303", type="decision", checked=checked, binds_second=False)
+    candidate(root, "d4", id="p-00000304", type="decision", checked=checked)
+    candidate(root, "d5", id="p-00000305", type="decision", checked=checked, binds=False, binds_second=False)
+    listed = sorted(i.id for i in needs_you.collect(root, now=NOW, online=False))
+    assert listed == ["p-00000301", "p-00000302", "p-00000303", "p-00000304"]
+
+
+def test_a_subject_stub_never_reaches_the_person_and_is_counted(tmp_path):
+    root = make_space(tmp_path / "ada")
+    candidate(root, body="# Harbor\n\n## New evidence\n- 2026-10-11: Kickoff (mail, m-1)\n")
+    candidate(root, "beacon", id="p-00000102", title="Beacon", subject="beacon",
+              body="# Beacon\n\nBeacon is a venue project. [src: m-2]\n\n## New evidence\n- 2026-10-11: Venue (mail, m-2)\n")
+    items = needs_you.collect(root, now=NOW, online=False)
+    assert [(i.kind, i.id) for i in items] == [("candidate", "p-00000102"), ("health", "health")]
+    assert "1 draft waits for an agent to write it" in items[1].text
+    assert needs_you.health_work(root) == [("1 draft waits for an agent to write it",
+                                            "the distill run writes it and a second agent checks it")]

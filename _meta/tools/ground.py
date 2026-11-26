@@ -72,13 +72,19 @@ def readable(rel: str, fm: dict, root: Path | None = None) -> bool:
     """A draft of this space that a second agent checked (`checked: {by, at}`, distill.checked) and
     that is on no high-stakes kind: it counts as knowledge without a signature, always shown as
     `checked, not signed`. A released or held item, a page outside the drafts, a rule, policy,
-    process or decision draft, one about a person, one the check flagged and one that would
-    change a signed page (given the layer's `root`) all wait for a signature."""
+    process or decision draft (unless both labellers said the decision does not bind), one about
+    a person, one the check flagged and one that would change a signed page (given the layer's
+    `root`) all wait for a signature."""
     if not rel.startswith("_inbound/candidates/") or fm.get("released_from") or fm.get("high_stakes"):
         return False
     if not isinstance(fm.get("checked"), dict) or not fm["checked"].get("by"):
         return False
-    if str(fm.get("type") or "").lower() in SIGN_TYPES or str(fm.get("kind") or "").lower() == "people":
+    ptype = str(fm.get("type") or "").lower()
+    if ptype == "decision":
+        import needs_you   # lazily: the labels live there, and it imports much more than a label needs
+        if not needs_you.unbinding(fm):
+            return False
+    elif ptype in SIGN_TYPES or str(fm.get("kind") or "").lower() == "people":
         return False
     target = root / str(fm["target"]) if root is not None and fm.get("target") else None
     if target is not None and target.is_file():

@@ -382,6 +382,30 @@ def test_an_informs_decision_becomes_a_decision_candidate(tmp_path):
     assert len(cands) == 1
     fm, body = pages.read(cands[0])
     assert fm["type"] == "decision" and fm["subject"] == "harbor" and "forty leads." in body
+    assert "binds" not in fm and "binds_second" not in fm, "a sentence nobody labelled carries no label"
+
+
+def test_decisions_and_commitments_make_candidates_and_carry_both_labels(tmp_path):
+    """Events, facts and positions never make a candidate; the two labels travel to the draft."""
+    root = make_space(tmp_path / "ada", subjects=[{"id": "harbor", "kind": "projects", "title": "Harbor"}])
+    write_page(root, "knowledge/sources/2026/10/p1.md", type="source", title="Kickoff", subject="harbor",
+               at="2026-10-11T09:00:00Z", record="p1", body="[00:01:00] Chloe: forty leads.\n",
+               informs=[{"kind": "event", "text": "Kickoff call held", "binds": False, "binds_second": False},
+                        {"kind": "fact", "text": "Harbor has two sites", "binds": False, "binds_second": False},
+                        {"kind": "position", "text": "Chloe prefers a short pilot", "binds": False,
+                         "binds_second": False},
+                        {"kind": "decision", "text": "The kickoff notes stay in the shared folder",
+                         "binds": False, "binds_second": False},
+                        {"kind": "commitment", "text": "We send the first list by Friday", "binds": True,
+                         "binds_second": False}])
+    report = distill.run(root, now=NOW)
+    assert sorted(report.decisions) == ["2026-10-11-the-kickoff-notes-stay-in-the-shared-folder.md",
+                                        "2026-10-11-we-send-the-first-list-by-friday.md"]
+    notes, _ = pages.read(root / "_inbound/candidates/2026-10-11-the-kickoff-notes-stay-in-the-shared-folder.md")
+    promise, body = pages.read(root / "_inbound/candidates/2026-10-11-we-send-the-first-list-by-friday.md")
+    assert (notes["binds"], notes["binds_second"]) == (False, False)
+    assert (promise["binds"], promise["binds_second"]) == (True, False)
+    assert promise["type"] == "decision" and body.startswith("Decision: We send the first list by Friday")
 
 
 def test_a_record_that_lands_after_its_window_is_new_evidence(tmp_path):
