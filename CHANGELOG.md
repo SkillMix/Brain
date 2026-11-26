@@ -7,6 +7,48 @@ the shape and ships its migration. Each choice behind a change has a line in
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-11-25
+
+Search in your own space now also reads your daily notes, your drafts and your private briefs,
+and says how far to trust each hit. A draft that a second agent checked can be read as
+knowledge, marked "checked, not signed". The router labels what each sentence is, so a draft
+that binds nothing no longer waits on Needs you. And once a day is over, your notes about a
+project or client can travel to its space as one digest, cut by the router and checked by a
+second agent, after the usual window.
+
+### Added
+
+- **Search reads where a personal space writes.** `search.py query`, `lines` and the index read
+  `journal/`, `_inbound/candidates/` and `_meta/state/private/briefs/` next to `work/`. Every hit
+  prints its tier. A mount keeps its own zones, and a linked codebase's search (`--for`) still
+  reads no note and no brief. The index file moves to `_meta/state/private/`, which the sync never
+  stages.
+- **Checked drafts are readable.** A draft in `_inbound/candidates/` with a `checked:` stamp
+  counts as knowledge in search, the grounding lines, the hub and the status page (under its own
+  heading), always labelled `checked, not signed`. A policy, directive, process or decision draft,
+  a draft about a person, a draft that would change a signed page and anything the check flagged
+  high stakes still wait for a signature. The distill check now flags a claim about a named
+  person, a promise to a client, a rule or a binding decision.
+- **Labels at routing.** The router gives each sentence it extracts a kind (`decision`,
+  `commitment`, `event`, `fact`, `position`) and says whether it binds the company; a second
+  labeller says it again. A draft leaves Needs you only when both say it does not bind, and a
+  checked one is then read as `checked, not signed`. Events go to the subject's timeline. A
+  stub that no agent has written yet never reaches you: Needs you counts it on the health line
+  for the agent instead.
+- **The daily-note digest.** Once a day is over, your notes about a project or client homed in
+  another space become one digest record for that day. The router sends it only as verbatim
+  parts, always after the window, never to a deal or a part of one, and never with a part that
+  names a registered person; a second agent checks it first, as for every record that leaves.
+  An entry with a `private:` line never travels. The rule the router writes it under is the one
+  measured in a seeded leak test; the suite tests what code stops, and the judged kinds rest on
+  that agent test.
+
+### Changed
+
+- Every search hit and every `lines` file now ends with its tier in brackets.
+- The status page's timeline shows the router's sentence for an event in place of the record's
+  title.
+
 ## [0.3.7] - 2026-11-25
 
 A space that starts from an old archive (the cold start) no longer drafts identity pages that
