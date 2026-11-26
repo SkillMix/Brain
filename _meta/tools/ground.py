@@ -2,7 +2,8 @@
 
 For each page an answer rests on: its tier (`signed`, `system`, `pending`, `witness`,
 `reported`, `working`; `signed` only for a verified signature under knowledge/ or identity/:
-stable, its fingerprint its body's and its signed fields unchanged), the layer's scope (`company`, `team`, `mine`), its date, its age in
+stable, its fingerprint its body's and its signed fields unchanged; a checked draft that may be
+read as knowledge carries `checked, not signed` after its tier, `label`), the layer's scope (`company`, `team`, `mine`), its date, its age in
 days, and "past window", "confidence low" (four weeks past its window) or "contested"
 where they apply. Then one line with the company view's date (the brain mount's pin) and
 one with the index's age, so an answer never hides how old its ground is.
@@ -23,6 +24,10 @@ import spaceyaml  # noqa: E402
 
 SCOPE = {"personal": "mine", "project": "team", "channel": "team", "brain": "company", "template": "mine"}
 LOW_DAYS = 28
+CHECKED = "checked, not signed"
+# What stays signature-only even when checked (rules.md section 2): rules, policies and processes,
+# decisions that may bind, a page about a person; the check flags the rest itself (`high_stakes`).
+SIGN_TYPES = ("policy", "directive", "process", "decision")
 
 
 def _locate(root: Path, ref: str) -> tuple[Path, Path] | None:
@@ -63,6 +68,33 @@ def tier_of(rel: str, fm: dict, body: str = "") -> str:
     return "working"
 
 
+def readable(rel: str, fm: dict, root: Path | None = None) -> bool:
+    """A draft of this space that a second agent checked (`checked: {by, at}`, distill.checked) and
+    that is on no high-stakes kind: it counts as knowledge without a signature, always shown as
+    `checked, not signed`. A released or held item, a page outside the drafts, a rule, policy,
+    process or decision draft, one about a person, one the check flagged and one that would
+    change a signed page (given the layer's `root`) all wait for a signature."""
+    if not rel.startswith("_inbound/candidates/") or fm.get("released_from") or fm.get("high_stakes"):
+        return False
+    if not isinstance(fm.get("checked"), dict) or not fm["checked"].get("by"):
+        return False
+    if str(fm.get("type") or "").lower() in SIGN_TYPES or str(fm.get("kind") or "").lower() == "people":
+        return False
+    target = root / str(fm["target"]) if root is not None and fm.get("target") else None
+    if target is not None and target.is_file():
+        try:
+            return str(pages.read(target)[0].get("status")) != "stable"
+        except Exception:
+            return False
+    return True
+
+
+def label(rel: str, fm: dict, body: str = "", root: Path | None = None) -> str:
+    """The tier as a reader sees it: `pending, checked, not signed` for a readable checked draft."""
+    tier = tier_of(rel, fm, body)
+    return f"{tier}, {CHECKED}" if tier == "pending" and readable(rel, fm, root) else tier
+
+
 def _stamp(fm: dict) -> dt.datetime | None:
     gen = fm.get("generated") if isinstance(fm.get("generated"), dict) else {}
     for value in (fm.get("verified_at"), fm.get("signed_at"), fm.get("at"), gen.get("at")):
@@ -96,7 +128,7 @@ def line_for(root: Path, ref: str, now: dt.datetime) -> str:
     date = f"{stamp:%Y-%m-%d}" if stamp else "undated"
     extra = (", " + ", ".join(marks)) if marks else ""
     title = fm.get("title") or path.stem
-    return f"- {title} ({tier_of(rel, fm, body)}, {SCOPE.get(space.profile, 'mine')}, {date}, {age}{extra})"
+    return f"- {title} ({label(rel, fm, body, base)}, {SCOPE.get(space.profile, 'mine')}, {date}, {age}{extra})"
 
 
 def pin_date(root: Path) -> str | None:

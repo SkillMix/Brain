@@ -73,7 +73,7 @@ class Hit:
     path: str       # relative to that layer's root
     subject: str    # the subject the hit expands to ("" when none)
     line: str       # the first matching line
-    tier: str = ""  # signed, system, pending, witness, reported or working (`ground.tier_of`)
+    tier: str = ""  # signed, system, pending, witness, reported or working; `ground.label`
 
     def to_dict(self) -> dict:
         return {"layer": self.layer, "path": self.path, "subject": self.subject, "line": self.line,
@@ -131,12 +131,13 @@ def _zones(space: spaceyaml.Space, own: bool) -> list:
 
 
 def tier(base: Path, rel: str) -> str:
-    """The tier of a hit's file (`ground.tier_of`); front matter that does not parse counts as none."""
+    """The tier of a hit's file, with `checked, not signed` on a readable checked draft
+    (`ground.label`); front matter that does not parse counts as none."""
     try:
         fm, body = pages.read(base / rel)
     except Exception:
         fm, body = {}, ""
-    return ground.tier_of(rel, fm if isinstance(fm, dict) else {}, body)
+    return ground.label(rel, fm if isinstance(fm, dict) else {}, body, base)
 
 
 def _files(root: Path, zones: list):

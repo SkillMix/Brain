@@ -96,9 +96,11 @@ search until the gap is closed, and let a second agent check.
       destination (nothing about a never-leaves or left-out category). It also reads each
       question settled this run against its source, and reopens one the record does not
       support: `sign_questions.py <root> reopen <qid> --reason "<why>" --by <its name>`. When
-      the page is about one of the destination's `high_stakes` categories it sets
-      `high_stakes: <why, one line>` in the frontmatter: the signed page then waits the window
-      and lands pending. It fixes or removes what fails, runs `verify` again, then
+      the page is about one of the destination's `high_stakes` categories, or holds a claim about
+      a named person, a promise to a client, a rule or a decision that binds (rules.md section
+      2), it sets `high_stakes: <why, one line>` in the frontmatter: the signed page then waits
+      the window and lands pending. A checked draft without the flag is read as knowledge,
+      labelled `checked, not signed` (`ground.label`), so set it whenever in doubt. It fixes or removes what fails, runs `verify` again, then
       `python _meta/tools/distill.py <root> checked <candidate> --by <its name>`.
 3. Your run line: `{"routine": "distill", "at": "<ISO UTC>", "space": "<name>", "cost_tokens":
    <n>, "notes": {"step": "rewrite", "candidates": <n>, "checked": <n>, "set_aside": <n>,
