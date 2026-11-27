@@ -59,8 +59,9 @@ and lands every file. First step 0, once, for the workspace's own sources; then,
    `<root>/_meta/state/feed/<source>.jsonl`, one JSON object per line in the record shape the
    skill gives. A source that names `channels`, `team`, `project` or `repo` is read for exactly
    those. A space without sources exports nothing. Capture is lossless, with no character cap:
-   a mail's full body with `from`, `to` and `cc` as addresses; a call's summary, action items
-   and key points, then the full transcript with speakers; a chat thread with its files and AI
+   a mail's full body with `from`, `to` and `cc` as addresses; a call's labelled parts (the
+   notetaker's summary and action items, then the full transcript, every time, however long) and
+   whether it holds the transcript (`transcript: complete`, `pending` or `none`); a chat thread with its files and AI
    notes; a document's full text; an event's description with its guests as `participants`.
    Keep personal and academic records out (count them in your run line) and park an unsure one
    in `<root>/_meta/state/private/unsure.jsonl`, as the skill says; first fetch again by id, as it

@@ -54,7 +54,9 @@ can be retracted.
    you learned into the brief, and log the searches in its Research log. The archive is read only
    when `archives` is true.
 5. **Place.** Read each episode as one event (a calendar entry, its recordings, the follow-up
-   mail; `same_meeting` marks a second recording of one meeting). For each record write a
+   mail; `same_meeting` marks a second recording of one meeting, and a call's late transcript,
+   `<record id>/transcript`, is one too). A call is read as **Calls: the transcript is the source**
+   below says. For each record write a
    decision to `_meta/state/private/decisions/<record id>.yaml`:
 
 ```yaml
@@ -173,6 +175,47 @@ routes:
   one); `closes`, decisions (dated, historical), events and people are fine. Low confidence on history
   is recorded as private, never a question. When it contradicts a recent record or a signed
   page, recent wins: say so in `why`.
+
+## Calls: the transcript is the source
+
+This section holds for every agent that reads a call page (`kind: call`), whatever notetaker made
+it: the router here, distill and the check (`.claude/skills/distill/SKILL.md`,
+`.claude/skills/check/SKILL.md`) point to it.
+
+- **The notetaker's output is a map.** Who said what, who owes what, dates, amounts and
+  commitments come from the `Transcript:` part (or a written record), never from the notetaker's
+  summary, notes or action items: those say where to look.
+- **A disagreement is written down.** When the notetaker's output and the transcript disagree,
+  follow the transcript and say so in one clause where the line lands: on an open item, "The
+  notetaker's action list names Ada; in the transcript (00:36:26) Chloe asks for it from Ben."; in
+  a draft, under `## Disagreements` (a summary and its transcript are records of the same moment).
+- **Unclear stays unclear.** When the transcript is unclear too (cross-talk, an ambiguous
+  label), do not pick: "owner unclear". It becomes a question for the person only for a promise
+  to a client, under the usual rules (here `confidence: low`; in distill, Ask).
+- **Without a transcript it is hearsay.** A call page with `transcript: pending` or `none` may
+  give its topics; an owner, a date or an amount from it is never stated as fact. A pending
+  transcript arrives later as a call page of its own, `<record id>/transcript`: the next route or
+  distill pass reads it with its call.
+- **The witness page keeps what came.** Never correct the notetaker's text in place.
+- **Cite the moment.** A line that rests on what was said cites `[src: <record id>@<hh:mm:ss>]`
+  (or `@mm:ss`), the time of the utterance that holds the words; `distill.py verify` checks the
+  page holds an utterance there, and the checker reads that moment. A plain
+  `[src: <record id>]` stays right for a line about the meeting as a whole.
+
+### Reading a transcript
+
+- Names are often misheard ("Ayda" for Ada). Match a spoken name to the call's `participants`
+  and the registry (titles and `aliases`); never create a person from a misheard name; when
+  unsure, write the name as heard with "(unclear)".
+- Speaker labels can be generic (`Speaker 2`) or swapped. Work the speaker out from the
+  participants and what is said; when the speaker of a promise is uncertain, its owner is
+  uncertain, and is marked so.
+- Technical terms, numbers and dates are misheard ("the 13th" as "the 30th"). When one matters,
+  look for a written source (a mail, an invite) before relying on the spoken one.
+- Mixed languages transcribe badly: a sentence that reads as nonsense is likely a language switch.
+- Spoken agreement is softer than written: "yeah, I can send it" in cross-talk is an intention.
+  Record it as one, with the owner taken from the words.
+- Timestamps are approximate: cite the utterance that holds the words.
 
 ## Notes from the daily journal
 

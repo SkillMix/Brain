@@ -70,7 +70,7 @@ def classify_in_brain(brain, sid, value):
 
 def captured(root, rid="c-1", sender="ada@lantern.example", participants=None, identifiers=None):
     rec = {"id": rid, "source": "calls", "kind": "call", "at": "2026-10-12T08:00:00Z", "from": sender,
-           "to": [], "subject": "Kickoff", "text": CALL,
+           "to": [], "subject": "Kickoff", "text": CALL, "transcript": "complete",
            "participants": participants or ["ada@lantern.example", "chloe@harbor.example"],
            "identifiers": dict({"thread": rid}, **(identifiers or {}))}
     feed = root / "_meta" / "state" / "feed" / "calls.jsonl"

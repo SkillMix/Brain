@@ -47,7 +47,10 @@ space (window class, scrubbed on the way out); there its librarian marks the pag
 
 For each hit written this run, sharpen its `recommendation` into one plain sentence of this
 shape: "The page says X; <evidence> of <date> says Y; I think Y. Still X?" X and Y come
-from the page and the hit's listed evidence only. When the evidence does not settle it,
+from the page and the hit's listed evidence only. Where that evidence is a call, Y comes from its
+transcript, never from the notetaker's summary or action list, and a call page without its
+transcript cannot settle an owner, a date or an amount (the route skill's **Calls: the transcript
+is the source**, `.claude/skills/route/SKILL.md`). When the evidence does not settle it,
 "I think" becomes "I cannot tell from this; ask <who>" with why. Name a decide-relevant
 risk unasked (a number that binds the company, a claim about a named person). Change
 nothing else in the hit: `check`, `page`, `evidence` and `route` are the tool's. Then your

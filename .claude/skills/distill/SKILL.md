@@ -38,7 +38,10 @@ search until the gap is closed, and let a second agent check.
       one, `python _meta/tools/brief.py <root> pack <subject>`, read every page the pack lists
       in full, and write the brief (sections of `_meta/templates/brief.md`).
    3. **Read every evidence record in full**, not its title: the witness pages the candidate's
-      `evidence` names.
+      `evidence` names. A call page is read as the route skill's **Calls: the transcript is the
+      source** says (`.claude/skills/route/SKILL.md`), with its reading guidance: the transcript
+      decides who, when and how much, a conflict with the notetaker's output is written down, a
+      page without its transcript is hearsay.
    4. **Set aside** evidence that is not about this subject: move its id from `evidence` to
       `set_aside: [{id, why}]` in the frontmatter (the only frontmatter edit you make). The tool
       keeps it out from then on.
@@ -76,9 +79,11 @@ search until the gap is closed, and let a second agent check.
       - lasting facts only: what the subject is, how it started, scope, people and roles,
         agreements, decisions, how it ended. Where it stands is the status page's; at most one
         line pointing to it;
-      - every sentence or bullet ends with `[src: <record id>, ...]`, ids from `evidence`;
+      - every sentence or bullet ends with `[src: <record id>, ...]`, ids from `evidence`; a line
+        that rests on what was said in a call cites the moment, `[src: <record id>@<hh:mm:ss>]`;
       - newer evidence replaces older; `## Disagreements` only for records of the same moment
-        that conflict, each side with its source;
+        that conflict, each side with its source (a notetaker's summary and its transcript are
+        such a pair: the line follows the transcript);
       - written for where it lands (`destination`, else this space): nothing about a category
         on the never-leaves list or the destination's left-out list (prices, terms, pay,
         ownership, a person's private situation), however it is worded. Soften ("currently
@@ -89,10 +94,12 @@ search until the gap is closed, and let a second agent check.
       Then `python _meta/tools/sign_questions.py <root> checked <subject> --by <your name>`:
       the subject's questions count as looked over until a newer record arrives.
    8. **Verify.** `python _meta/tools/distill.py <root> verify <candidate>` and fix every problem
-      it lists (a line without a source, a source not in evidence, a placeholder). It checks
+      it lists (a line without a source, a source not in evidence, a cited moment with no
+      utterance on its page, a placeholder). It checks
       facts only: what the page is about is the check's judgement.
    9. **Check.** A second agent (a fresh subagent that has not seen your reasoning) reads the
-      candidate against every cited record: each line supported, current, and fit for its
+      candidate against every cited record, and for a cited moment the transcript at that time
+      on its page, never the notetaker's summary of it: each line supported, current, and fit for its
       destination (nothing about a never-leaves or left-out category). It also reads each
       question settled this run against its source, and reopens one the record does not
       support: `sign_questions.py <root> reopen <qid> --reason "<why>" --by <its name>`. When
@@ -167,4 +174,6 @@ and `_meta/state/`; no `stable`. `_meta/tests/behaviour/distill-4.yaml`: `prepar
 one candidate whose questions were never checked and writes nothing.
 `_meta/tools/tests/test_distill.py`: `verify` flags a line
 without a source and a bracketed placeholder, and no word decides; set-aside
-evidence stays out; `--rebuild` starts from scratch.
+evidence stays out; `--rebuild` starts from scratch. `_meta/tools/tests/test_call_transcripts.py`:
+`verify` accepts `[src: <id>@<hh:mm:ss>]` where the page holds an utterance, refuses one where it
+does not, and a plain citation still passes.

@@ -49,13 +49,19 @@ def space_set(tmp_path, **ada):
     return root, harbor, beacon
 
 
+def said(text):
+    """A call record says what it holds (sweep.transcript_problem)."""
+    return {"transcript": "complete"} if any(sweep.UTTERANCE.match(l) for l in text.splitlines())         else {"transcript": "none", "transcript_why": "the notetaker kept a summary only"}
+
+
 def captured(root, rid="c-1", text=CALL, participants=None, title="Kickoff", kind="call",
              sender="ada@lantern.example", at="2026-10-12T08:00:00Z", identifiers=None, to=None, **extra):
     rec = {"id": rid, "source": "calls", "kind": kind, "at": at,
            "from": sender, "to": list(to or []), "subject": title, "text": text,
            "participants": participants if participants is not None else
            ["ada@lantern.example", "ben@lantern.example", "chloe@harbor.example"],
-           "identifiers": identifiers if identifiers is not None else {"thread": rid}, **extra}
+           "identifiers": identifiers if identifiers is not None else {"thread": rid},
+           **(said(text) if kind == "call" else {}), **extra}
     feed = root / "_meta" / "state" / "feed" / "calls.jsonl"
     feed.parent.mkdir(parents=True, exist_ok=True)
     with feed.open("a", encoding="utf-8") as fh:

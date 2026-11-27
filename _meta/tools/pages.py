@@ -129,6 +129,34 @@ def id_links(body: str) -> list:
     return ID_LINK_RE.findall(body)
 
 
+# A call's transcript, one line per utterance: `[hh:mm:ss] <speaker as labelled>: <words>` (or `[mm:ss]`).
+UTTERANCE_RE = re.compile(r"^\s*\[(\d{1,2}):(\d{2})(?::(\d{2}))?\]")
+MOMENT_RE = re.compile(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?\Z")   # a cited moment: `hh:mm:ss` or `mm:ss`
+
+
+def _seconds(h, m, s) -> int:
+    return int(h) * 3600 + int(m) * 60 + int(s) if s is not None else int(h) * 60 + int(m)
+
+
+def utterance_at(text: str, moment: str) -> str | None:
+    """The utterance a citation `[src: <id>@<moment>]` points at: the last transcript line stamped at
+    or before `moment`, provided the moment is not past the last line. None when the text holds no
+    utterance there (before the first, after the last, or no transcript at all) or the moment is no time."""
+    cited = MOMENT_RE.match(str(moment).strip())
+    if not cited:
+        return None
+    at = _seconds(*cited.groups())
+    found, last = None, None
+    for line in str(text or "").splitlines():
+        stamp = UTTERANCE_RE.match(line)
+        if not stamp:
+            continue
+        last = _seconds(*stamp.groups())
+        if last <= at:
+            found = line.strip()
+    return found if found is not None and last is not None and at <= last else None
+
+
 def window_days(fm: dict, windows: dict) -> int | None:
     """The page's freshness window: review_every, else the default for its type."""
     own = fm.get("review_every")

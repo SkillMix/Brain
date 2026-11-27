@@ -35,6 +35,13 @@ record parked as unsure (unsure.py). Before it writes a page, the sweep runs the
 check over the records parked here (`unsure.door`); after, it compares every waiting pointer with
 the pages it wrote (`unsure.resolve`) and lets go of those 90 days old (`unsure.expire`).
 
+A call record says what it holds (`transcript_problem`): `transcript: complete` with utterance
+lines, or `pending` or `none` with a `transcript_why`. One that says neither is refused: no page,
+a `refuse` plan line, `refused` in the run line, and its feed's mark stays before it, so the fixed
+line is read next run. A `pending` transcript goes on the attachments-unread list under the name
+`transcript`: `--attachments` lists it every run until a record `<record id>/transcript` is
+swept, or `--attachment-read` says the notetaker has none.
+
 What a record says about itself is never trusted to widen anything. Its `source` is the feed
 file it sits in, whatever the line claims; its `audience` may only narrow its source's declared
 one (owner, then a list of names, then crew, then everyone); an `identifiers.subject` counts only
@@ -114,6 +121,7 @@ class SweepReport:
     held_other: int = 0
     security_notices: int = 0
     unwritable: int = 0   # records whose page could not be written: skipped, named in the plan
+    refused: int = 0      # call records that do not say what they hold: no page, read again next run
     watermark: str | None = None
     records_seen: int = 0
     cost_tokens: int = 0
@@ -470,6 +478,27 @@ def record_text(record: dict) -> str:
     return f"{record.get('subject', '')}\n{record.get('text', '')}"
 
 
+TRANSCRIPT_STATES = ("complete", "pending", "none")
+TRANSCRIPT_NAME = "transcript"   # a pending transcript waits on the attachments list as `<record id>/transcript`
+
+
+def transcript_problem(record: dict) -> str | None:
+    """Why a call record is refused, or None: it says `transcript: complete` and holds utterance lines,
+    or says `pending` or `none` with a `transcript_why`. Any notetaker, any connector: the export says
+    what it could fetch, so a summary never passes for the meeting."""
+    if record.get("kind") != "call":
+        return None
+    state = str(record.get("transcript") or "").strip().lower()
+    if state not in TRANSCRIPT_STATES:
+        return "a call record says transcript: complete, pending or none"
+    if state == "complete":
+        if not any(UTTERANCE.match(line) for line in str(record.get("text") or "").splitlines()):
+            return "transcript: complete, yet no `[hh:mm:ss] Speaker: words` line"
+    elif not str(record.get("transcript_why") or "").strip():
+        return f"transcript: {state} without a transcript_why"
+    return None
+
+
 # ----- the witness page ------------------------------------------------------
 def title_of(record: dict) -> str:
     """A record's subject as a page title: one line (`needs_you.untrusted_line`), at most
@@ -505,6 +534,9 @@ def witness_frontmatter(record: dict, hits: list, mentions: list, audience, now:
     for key in ("issue", "state"):  # a tracker record's issue and its state: spec state reads them
         if record.get(key):
             fm[key] = str(record[key])
+    for key in ("transcript", "transcript_why"):   # a call's page says what it holds: route and distill read it
+        if kind == "call" and record.get(key):
+            fm[key] = needs_you.untrusted_line(record[key], TITLE_MAX)
     if record.get("research"):   # exported by research for this subject: the router decides it for it
         fm["research"] = str(record["research"])
     if record.get("admitted") and unsure.door_of(record.get("door")):   # how and why the door let it in
@@ -725,6 +757,7 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
     records.sort(key=lambda r: (pages.parse_iso(r["at"]), str(r["id"])))
     no_page = set()   # records this run read and gave no page
     written = []      # the front matter of every page this run wrote new, for the pointers
+    refused_at: dict = {}   # feed -> its oldest refused record: its mark stays before it
     for record in records:
         at = pages.parse_iso(record["at"])
         report.records_seen += 1
@@ -748,6 +781,14 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
         except (OSError, ValueError) as exc:   # a link in the way, a name the system refuses
             _unwritable(report, no_page, record, exc)
             continue
+        problem = None if record.get("_reattach") else transcript_problem(record)
+        if problem:   # the export fixes the line in its feed; the next run reads it again
+            report.plan.append(f"refuse {shown}: {problem}")
+            report.refused += 1
+            no_page.add(str(record["id"]))
+            name = str(record.get("_feed"))
+            refused_at[name] = min(at, refused_at.get(name, at))
+            continue
         chars += len(json.dumps({k: v for k, v in record.items() if not str(k).startswith('_')}))
         audience = audience_of(space, record)
         hits = reg.match(record)
@@ -765,6 +806,8 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
                 report.security_notices += 1
             if not record.get("_reattach"):
                 written.append(fm)
+            if record.get("kind") == "call" and str(record.get("transcript")).strip().lower() == "pending":
+                note_unread(root, str(record["id"]), TRANSCRIPT_NAME, now)   # listed by --attachments until fetched
         report.witness_written += 1
         body = str(record.get("text") or "")
 
@@ -833,6 +876,8 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
         report.signals += 1
 
     report.cost_tokens = chars // 4
+    for name, at in refused_at.items():   # a refused record is read again once its line is fixed
+        newest_by_feed[name] = min(newest_by_feed[name], at - dt.timedelta(seconds=1))
     if newest is not None:
         report.watermark = pages.iso(newest)
     if dry_run:
@@ -858,7 +903,8 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
         "attached": report.attached, "queued": report.queued, "signals": report.signals,
         "held_in_doubt": report.held_in_doubt, "held_other": report.held_other,
         "reattached": reattached, "security_notices": report.security_notices,
-        **({"unwritable": report.unwritable} if report.unwritable else {})})
+        **({"unwritable": report.unwritable} if report.unwritable else {}),
+        **({"refused": report.refused} if report.refused else {})})
     return report
 
 
@@ -873,7 +919,7 @@ def _unwritable(report: SweepReport, no_page: set, record: dict, exc: Exception)
 
 # ----- without the router, what leaves by identifier stays shallow -----------------------------
 CAP_WITHOUT_ROUTING = 8_000
-UTTERANCE = re.compile(r"^\s*\[\d{1,2}:\d{2}(?::\d{2})?\]")
+UTTERANCE = pages.UTTERANCE_RE
 
 
 def shallow(text: str) -> str:

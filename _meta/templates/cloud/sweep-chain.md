@@ -53,7 +53,10 @@ Then, for each root, the workspace first:
    A file that clone does not hold is left out and named under `unreachable` in your run line, with its pull
    request. A repository whose answer says GitHub access to it "is not enabled for this session" is one this task
    does not attach: name it under `unreachable` and go on. Keep personal and academic records out (count them) and
-   park an unsure one in `/home/user/<root>/_meta/state/private/unsure.jsonl`, as the skill says. A record parked
+   park an unsure one in `/home/user/<root>/_meta/state/private/unsure.jsonl`, as the skill says. A call record
+   holds the notetaker's transcript, every time, however long: a long transcript is exactly the case it is for, and
+   the sweep splits its page into parts. Only when the notetaker has not finished it, or this run cannot fetch it,
+   does the record say `transcript: pending` with its `transcript_why`; the sweep refuses one that says neither. A record parked
    here goes with this machine, but its pointer stays: before the new records, fetch again by its id, with that
    source's connector, each record `python3 /home/user/<root>/_meta/tools/sweep.py /home/user/<root> --refetch`
    prints (`<source>`, `<signal>`, `<id>`, a tab between each), and append it to its feed as the skill says, with
@@ -70,13 +73,15 @@ Then, for each root, the workspace first:
    so every later run lists it again until it is read; for one read that holds no text (an image), run
    `python3 /home/user/<root>/_meta/tools/sweep.py /home/user/<root> --attachment-read <handle>`.
    The handle is the row's last field, `att-` and twelve hex digits: it needs no quotes, and it is the only value
-   either command takes, so a name a sender chose never reaches the shell.
+   either command takes, so a name a sender chose never reaches the shell. A row named `transcript` is a call's
+   pending transcript: fetch it with the notetaker's connector into a call record of its own, as the skill says.
 3. **Sweep and route.** `python3 /home/user/<root>/_meta/tools/sweep.py /home/user/<root>`. When `space.yaml`
    has `routing:`, route as `/home/user/<root>/.claude/skills/route/SKILL.md` says: understand each subject first
    (its brief, built when missing), research what the records leave open (what a search finds is exported too),
    then place each record; a second agent checks the decisions before they are recorded.
 4. **The chain.** `python3 /home/user/<root>/_meta/tools/chain.py sweep /home/user/<root> --cloud` (sweep,
-   distill, check; the outbox is settled after the reply step, and the transcripts are left to the computer). Then
+   distill, check; the outbox is settled after the reply step, and the scan of Claude's own session transcripts is left to the
+   computer; a call's transcript is never left out). Then
    the judgment, as `/home/user/<root>/.claude/skills/distill/SKILL.md` and
    `/home/user/<root>/.claude/skills/check/SKILL.md` say: for each new or refreshed candidate read
    `_meta/lessons.md` and the subject's brief, read every evidence record in full, set aside what is not about the
