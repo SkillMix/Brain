@@ -7,6 +7,22 @@ the shape and ships its migration. Each choice behind a change has a line in
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-11-27
+
+A space's checks no longer fail on twelve tests that read files only the template has, so the
+protected update a space was holding back can land again, with every fix it carries.
+
+### Fixed
+
+- **Tests that read template-only files run in the template only.** Every space runs the
+  template's tests in its checks, but template-sync never carries `SECURITY.md`, the requirements
+  files, `.gitignore`, `.github/CODEOWNERS` or `docs/decisions.md` into one. Twelve tests read one
+  of them, so a space's protected pull request stayed red, and the machinery it carried reached
+  neither the space's `main` nor its cloud runs. They now carry the `template_only` mark, as the
+  tests that read the template's own `space.yaml` and `.gitattributes` already did. Where a test
+  also checked something every space has (the workflows' hash pins, the release workflow, the
+  tools' docstrings), that part is a test of its own and still runs everywhere.
+
 ## [0.3.8] - 2026-11-25
 
 Search in your own space now also reads your daily notes, your drafts and your private briefs,
