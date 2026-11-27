@@ -857,7 +857,8 @@ M365_OTHERS = ["find_meeting_availability", "outlook_batch_delete_messages", "ou
                "sharepoint_create_folder", "sharepoint_delete_item", "sharepoint_move_item", "sharepoint_rename_item",
                "sharepoint_update_file", "sharepoint_upload_file", "teams_create_chat", "teams_reply_channel_message",
                "teams_send_channel_message", "teams_send_chat_message"]
-GMAIL_READS = ["get_draft", "get_message", "get_thread", "list_drafts", "list_labels", "search_threads"]
+GMAIL_READS = ["download_gmail_attachment", "get_draft", "get_message", "get_thread", "list_drafts", "list_labels",
+               "search_threads"]
 GMAIL_OTHERS = ["apply_sensitive_message_label", "apply_sensitive_thread_label", "create_draft", "create_label",
                 "delete_draft", "delete_label", "forward", "label_message", "label_thread", "mark_message_spam",
                 "mark_thread_spam", "reply", "send_message", "trash_message", "trash_thread", "unlabel_message",
