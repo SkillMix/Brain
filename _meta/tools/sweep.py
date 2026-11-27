@@ -30,8 +30,10 @@ Deterministic from files: an adapter exports records to `_meta/state/feed/<sourc
 
 A cloud run's feed and private zone go with its clone, so two tracked files keep what a later
 run needs and nothing a record says: `_meta/state/attachments-unread.jsonl` the record id and
-name of each attachment a run could not read, and `_meta/state/unsure-ids.jsonl` the id of each
-record parked as unsure (unsure.py), which every sweep notes.
+name of each attachment a run could not read, and `_meta/state/unsure-ids.jsonl` a pointer to each
+record parked as unsure (unsure.py). Before it writes a page, the sweep runs the door's context
+check over the records parked here (`unsure.door`); after, it compares every waiting pointer with
+the pages it wrote (`unsure.resolve`) and lets go of those 90 days old (`unsure.expire`).
 
 What a record says about itself is never trusted to widen anything. Its `source` is the feed
 file it sits in, whatever the line claims; its `audience` may only narrow its source's declared
@@ -59,6 +61,9 @@ record never stops the run. Every write goes through `pages`, never through a li
 A handle (`att-` and twelve hex digits) names one attachment of one record and never needs
 quoting, so a name a sender chose never passes through a shell. It is the only value either
 command takes: anything that is not a handle prints the usage.
+    python sweep.py [root] --refetch       the records parked by a cloud run that a later match
+                                           settled, to fetch again by id: `<source> TAB <signal>
+                                           TAB <id>` (unsure.refetch); writes nothing
     python sweep.py [root] --cursor <source>
                                            where the export of that source starts: its feed
                                            file's newest record, else its mark, else 90 days
@@ -502,6 +507,8 @@ def witness_frontmatter(record: dict, hits: list, mentions: list, audience, now:
             fm[key] = str(record[key])
     if record.get("research"):   # exported by research for this subject: the router decides it for it
         fm["research"] = str(record["research"])
+    if record.get("admitted") and unsure.door_of(record.get("door")):   # how and why the door let it in
+        fm["door"] = unsure.door_of(record["door"])
     imported = record.get("imported_from") or record.get("witness_page")
     if imported:   # the text is an archive page's retelling, not the record: kept out while archives are off
         fm["imported_from"] = str(imported)
@@ -660,6 +667,8 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
             dest_cache[name] = release.destination_space(space, name)
         return dest_cache[name]
 
+    if not dry_run:   # the door's context check: what it admits is swept in this run
+        unsure.door(root, reg, now)
     feed = declared_feed(root, space)
     marks = read_feed_marks(root)
     # An attachment an earlier run could not read carries its mail's time, which the mark has
@@ -715,6 +724,7 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
         reattached += 1
     records.sort(key=lambda r: (pages.parse_iso(r["at"]), str(r["id"])))
     no_page = set()   # records this run read and gave no page
+    written = []      # the front matter of every page this run wrote new, for the pointers
     for record in records:
         at = pages.parse_iso(record["at"])
         report.records_seen += 1
@@ -753,6 +763,8 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
                 continue
             if not record.get("_reattach") and _credential_seen(record) and _security_notice(root, space, record):
                 report.security_notices += 1
+            if not record.get("_reattach"):
+                written.append(fm)
         report.witness_written += 1
         body = str(record.get("text") or "")
 
@@ -829,7 +841,8 @@ def run(root, now: dt.datetime | None = None, dry_run: bool = False) -> SweepRep
         data = {"at": pages.iso(newest)} if newest is not None else {}
         data["feeds"] = {name: pages.iso(at) for name, at in sorted(newest_by_feed.items())}
         pages.write_text(root / WATERMARK, yaml.safe_dump(data, sort_keys=False), root=root)
-    unsure.note_ids(root, now)   # records the export parked as unsure by hand
+    unsure.resolve(root, written, now)
+    unsure.expire(root, now)
     blank = [(rid, name) for rid, name in owed if f"{rid}/{name}" in no_page]
     if blank:   # read, yet no page says so (a file with no text): only its line here will
         _append_unread(root, [{"id": rid, "name": name, "at": pages.iso(now), "read": True}
@@ -1133,7 +1146,7 @@ def _snapshot_id(root: Path, rel: str) -> str:
 
 
 VALUED = {"--cursor": 1, "--attachment-unread": 1, "--attachment-read": 1}   # flag -> how many values
-PLAIN = ("--dry-run", "--attachments")   # the flags with no value
+PLAIN = ("--dry-run", "--attachments", "--refetch")   # the flags with no value
 
 
 def _flag(argv: list, flag: str, count: int):
@@ -1185,6 +1198,10 @@ def main(argv=None) -> int:
     if "--attachments" in argv:
         for rid, sid, name in attachments(root):
             print(f"{_escaped(rid)}\t{sid}\t{_escaped(name)}\t{attachment_handle(rid, name)}")
+        return 0
+    if "--refetch" in argv:
+        for row in unsure.refetch(root):
+            print("\t".join(row))
         return 0
     report = run(root, dry_run=dry_run)
     if dry_run:

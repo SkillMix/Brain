@@ -63,7 +63,9 @@ and lands every file. First step 0, once, for the workspace's own sources; then,
    and key points, then the full transcript with speakers; a chat thread with its files and AI
    notes; a document's full text; an event's description with its guests as `participants`.
    Keep personal and academic records out (count them in your run line) and park an unsure one
-   in `<root>/_meta/state/private/unsure.jsonl`, as the skill says. Then read every attachment
+   in `<root>/_meta/state/private/unsure.jsonl`, as the skill says; first fetch again by id, as it
+   says, each record `{python} <root>/_meta/tools/sweep.py <root> --refetch` lists, with
+   `"admitted": true` and its `door`. Then read every attachment
    that `{python} <root>/_meta/tools/sweep.py <root> --attachments` lists into the same feed
    file as a document record of its own with its `read_via`, run `sweep.py`, and, when
    `space.yaml` has `routing:`, route as `<root>/.claude/skills/route/SKILL.md` says: understand

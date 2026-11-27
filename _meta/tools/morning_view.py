@@ -47,12 +47,9 @@ import unsure  # noqa: E402
 ROUTINE = "morning-view"
 PAGE = Path("live") / "needs-you.md"
 HEALTH = Path("live") / "health.md"
-# The notice and the payload may list records kept out of the repository (unsure ones): they
-# live in the private zone the sync never stages.
+# The notice and the payload live in the private zone the sync never stages.
 NOTICE = spaceyaml.PRIVATE_STATE / "morning-notice.json"
 PAYLOAD = spaceyaml.PRIVATE_STATE / "morning-payload.json"
-UNSURE_TITLE = "Is this work?"
-UNSURE_TAIL = "Reply with the code and yes or no."
 LEGACY = (Path("_meta") / "state" / "morning-notice.json", Path("_meta") / "state" / "morning-payload.json")
 RUNS = Path("_meta") / "state" / "runs.jsonl"
 STALE = Path("_meta") / "state" / "stale.yaml"
@@ -79,7 +76,7 @@ REFERENCE_DAYS = 7     # a reply to a briefing older than this is not read
 MORNING = Path("_meta") / "state" / "morning"
 # Counts that tell the person something and ask nothing: they rank after every kind that waits on
 # them, so hundreds of attachments to read never push a change waiting for one click off the mail.
-INFORMATION = ("landed_silently", "meetings", "unsure", "unread_attachments", "health")
+INFORMATION = ("landed_silently", "meetings", "unread_attachments", "health")
 
 # One plain label per item kind for the email's counts (they pass the plain-language check).
 LABELS = {
@@ -103,7 +100,6 @@ LABELS = {
     "sample": "samples to look over",
     "security": "briefings that reached an address that is not yours",
     SECURITY_OTHER: "security warnings to look at",
-    "unsure": "records not sorted as work or personal, since your last briefing",
     "unread_attachments": "attachments not yet read",
 }
 
@@ -186,11 +182,6 @@ def sent_today(root, now: dt.datetime | None = None) -> bool:
     now = now or space.now()
     today = _day_index(space, now)
     return any(_day_index(space, at) == today and at <= now for at in _sends(root))
-
-
-def _last_sent(root: Path, now: dt.datetime) -> dt.datetime | None:
-    """When the last briefing before now went out, if one did."""
-    return max((at for at in _sends(root) if at <= now), default=None)
 
 
 def _unread_attachments(root: Path) -> int:
@@ -282,7 +273,9 @@ def _health_lines(root: Path) -> list:
         _, body = pages.read(path)
     except Exception:
         return []
-    return [line.strip() for line in body.splitlines() if line.strip() and not line.startswith("#")]
+    # the door's counts stay on the health page: the briefing says nothing about parked records
+    return [line.strip() for line in body.splitlines()
+            if line.strip() and not line.startswith("#") and not line.startswith(unsure.HEALTH_PREFIX)]
 
 
 def _with_stale(root: Path, name: str, lines: list) -> list:
@@ -466,39 +459,6 @@ def _notice(space: spaceyaml.Space, items: list, counts: dict, health: list, sha
     return notice, base
 
 
-def _unsure_also(notice: dict, waiting: list) -> list:
-    """Add the records the reader could not classify to the email (never to the page), each by
-    its code, as many as fit; returns the records listed."""
-    if not waiting:
-        return []
-    limit = owner_email.LIMITS["also_text"]
-
-    def text_of(lines: list, rest: int) -> str:
-        return " ".join(lines + [UNSURE_TAIL]) + (f" {rest} more tomorrow." if rest else "")
-
-    kept = []
-    for record in waiting:
-        line = f"{unsure.code_of(record)}: {unsure.line_for(record)}."
-        if len(text_of([l for _, l in kept] + [line], len(waiting) - len(kept) - 1)) > limit:
-            break
-        kept.append((record, line))
-    if not kept:
-        return []
-    entry = {"title": UNSURE_TITLE, "text": text_of([l for _, l in kept], len(waiting) - len(kept))}
-
-    def fails(candidate: dict) -> bool:   # the entry on its own: the rest of the notice has its own fallback
-        return bool(owner_email.check({"kind": "fyi", "title": UNSURE_TITLE, "summary": UNSURE_TITLE,
-                                       "also": [candidate]}))
-    if fails(entry):
-        plain = [f"{unsure.code_of(r)}: a {r.get('kind') or 'record'} from {str(r.get('at') or '')[:10]}."
-                 for r, _ in kept]
-        entry["text"] = text_of(plain, len(waiting) - len(kept))
-        if fails(entry):
-            return []
-    notice["also"] = list(notice.get("also") or []) + [entry]
-    return [r for r, _ in kept]
-
-
 def _payload(space: spaceyaml.Space, notice: dict, base: str, shadow: bool, now: dt.datetime) -> dict:
     to = [space.owner_email.strip()] if "@" in space.owner_email else []
     today = now.date().isoformat()
@@ -507,13 +467,7 @@ def _payload(space: spaceyaml.Space, notice: dict, base: str, shadow: bool, now:
     except owner_email.NoticeError:
         # The health line did not pass the plain-language check: leave it to the page.
         notice["summary"] = f"{base} The health line is on your health page."
-        try:
-            payload = owner_email.render(notice, to, today=today)
-        except owner_email.NoticeError:   # the unsure list waits a day rather than the briefing
-            notice["also"] = [a for a in notice.get("also") or [] if a.get("title") != UNSURE_TITLE]
-            if not notice["also"]:
-                notice.pop("also")
-            payload = owner_email.render(notice, to, today=today)
+        payload = owner_email.render(notice, to, today=today)
     if shadow:
         payload["subject"] = "[shadow] " + payload["subject"].replace("[shadow] ", "")
     return payload
@@ -619,12 +573,6 @@ def run(root, person: str, now: dt.datetime | None = None, shadow: bool = False,
     approved = needs_you.approved_leaving(root, space, now)
     if approved:
         counts["approved_leaving"] = len(approved)
-    # what a cloud run kept by id only: counts, never which records or files. A record this
-    # computer still holds is asked about by its code below, so it is not counted as well.
-    here = {str(r["id"]) for r in unsure.waiting(root)}
-    kept = unsure.kept_since(root, _last_sent(root, now), now, besides=here)
-    if kept:
-        counts["unsure"] = kept
     unread = _unread_attachments(root)
     if unread:
         counts["unread_attachments"] = unread
@@ -637,12 +585,7 @@ def run(root, person: str, now: dt.datetime | None = None, shadow: bool = False,
     notice, base = _notice(space, items, counts, health, shadow)
     reference = new_reference()   # in the mail only; the listing keeps its hash
     notice["reference"] = reference
-    unsure.expire(root, now)
-    asked = _unsure_also(notice, unsure.waiting(root))
     payload = _payload(space, notice, base, shadow, now)
-    if not any(a.get("title") == UNSURE_TITLE for a in notice.get("also") or []):
-        asked = []
-    unsure.mark_listed(root, [r["key"] for r in asked], now)
     for legacy in LEGACY:   # before the private zone these were tracked: never send a stale copy
         (root / legacy).unlink(missing_ok=True)
     _write_json(root / NOTICE, notice, root)
@@ -655,7 +598,7 @@ def run(root, person: str, now: dt.datetime | None = None, shadow: bool = False,
                                                                 "fingerprint": i.fingerprint} for i in items],
                           "left": _left_ids(_left_yesterday(root, space, now)), "references": references}, root)
     line = {"routine": ROUTINE, "at": pages.iso(now), "space": space.name, "cost_tokens": 0,
-            "notes": {"items": len(items), "listed": len(listed), "unsure_asked": len(asked), "shadow": shadow,
+            "notes": {"items": len(items), "listed": len(listed), "shadow": shadow,
                       "recipient": bool(payload["to"])}}
     pages.append_text(root / RUNS, json.dumps(line) + "\n", root=root)
     return MorningReport(markdown_path=root / PAGE, notice_path=root / NOTICE,

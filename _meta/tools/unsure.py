@@ -1,26 +1,31 @@
-"""unsure: records the reader could not classify as company or personal (judgment routing design).
+"""unsure: records the door could not place as company or personal, settled without asking anyone.
 
-The export writes such a record, with `"feed": "<source>"` added, to
-`_meta/state/private/unsure.jsonl` (or hands it to `keep`): a local private zone the sync script
-never stages. The morning view lists each one in the owner's own email by a plain one-line label;
-a `yes` in the reply admits it (written once to its feed as a company record, so the next sweep
-makes its page and the router reads it), a `no` drops it (counted as personal). An item listed
-for 14 days without an answer goes.
+The export parks such a record, with `"feed": "<source>"` added, in
+`_meta/state/private/unsure.jsonl`: a local private zone the sync script never stages. Before the
+sweep writes any page it runs the door's context check over every record parked here that was
+not checked yet (`door`): a hard signal, a fact a script can check, admits it to its feed at once
+as a company record. A hard signal is its thread, channel or event series on a witness page of
+this space, or an identifier of a registered subject on it (a mail domain, a label, a linked
+repository), never a keyword of its title, a subject it names or anything it says. A record the
+export parked with `"reason": "mixed"` (a sign against beside a sign for) is never admitted.
 
-A cloud run's private zone goes with its clone, so every record kept here also leaves its id,
-its source and the time it was kept in `_meta/state/unsure-ids.jsonl`, once per id, and nothing
-else: no content, no subject, no sender. The morning view counts them and a session on the
-computer can fetch each by its id. A record the export wrote to the store itself is noted the
-next time the sweep runs. That file is the only tracked file this tool writes.
+Every other record waits as a pointer: its id, its source, when it was parked, a hash of each of
+its thread, channel and series ids and its reason, in the tracked `_meta/state/unsure-ids.jsonl`,
+and nothing else: no content, no subject, no sender, no address, no name, so a cloud run's pointer
+outlives its clone. After the sweep wrote its pages, `resolve` compares every waiting pointer with
+the ids of those pages: on a match, a record held here goes to its feed as the door admits one,
+and the pointer is listed by `refetch` (`sweep.py --refetch`) until its witness page exists, so
+the next export fetches by its id what a cloud run's clone took with it. A pointer with no match
+90 days after it was parked goes, from the store and for matching, and no one is told (`expire`).
+A whole calendar is no signal: only an event's series (`identifiers.series`). The owner is never asked; the health page counts what happened
+(`health_line`). Matching compares ids: no model, no wording.
 
-The owner answers with a record's code (`3fa2c09b yes`). A code is random, eight hex digits
-drawn once and kept with the record in the private store (`waiting` draws one for a record that
-has none), so no one can work it out from the record's id, which the tracked ids file holds.
-The label the email shows is the subject made plain: no link, dash, long code, markup sign
-(`*`, a backtick) or control character, so an outsider's subject cannot style or spoof the
-person's own briefing.
+The ids file is append-only (a union merge keeps both sides): a pointer line
+`{id, source, at, ids, reason}`, and a line `{id, admitted, signal, at}` when it was admitted
+(`admitted` is `context` at the door and `match` later, which carries `"fetch": true`).
 
-    python unsure.py [root]            how many records wait
+    python unsure.py [root]            how many pointers wait
+    python sweep.py [root] --refetch   the records to fetch again by id (`refetch`), a routine's command
 """
 from __future__ import annotations
 
@@ -28,7 +33,6 @@ import datetime as dt
 import hashlib
 import json
 import re
-import secrets
 import sys
 from pathlib import Path
 
@@ -37,44 +41,41 @@ import pages  # noqa: E402
 import spaceyaml  # noqa: E402
 
 STORE = spaceyaml.PRIVATE_STATE / "unsure.jsonl"
-IDS = Path("_meta") / "state" / "unsure-ids.jsonl"   # tracked: ids, sources and times only
+IDS = Path("_meta") / "state" / "unsure-ids.jsonl"   # tracked: ids, sources, times and hashes only
 FEED = Path("_meta") / "state" / "feed"
-EXPIRE_DAYS = 14
-LOCAL = ("key", "feed", "first_listed", "code")
-CODE_RE = re.compile(r"^[0-9a-f]{8}\Z")
-URL = re.compile(r"https?://\S+|www\.\S+", re.I)
-DASHES = re.compile("[—–]")
-LONG_TOKEN = re.compile(r"\S{32,}")
-# Markup the email would honour (`**bold**`, a backtick), control characters, line and paragraph
-# separators, zero-width and bidirectional marks.
-MARKUP = re.compile("[*`\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]")
+WITNESS = Path("knowledge") / "sources"
+EXPIRE_DAYS = 90
+KINDS = ("thread", "channel", "series")   # the ids a pointer is matched on: never a whole calendar
+REASONS = ("no-signal", "mixed")            # why it was parked; anything else reads as the first
+BY = ("context", "match")
+# Never copied to the feed on admission: the store's own fields (`first_listed` and `code` from
+# before the door settled records itself, in a store an older version wrote).
+LOCAL = ("key", "feed", "reason", "first_listed", "code")
+PLAIN = re.compile(r"^[a-z][a-z_]{0,30}\Z")   # a signal or a `by`, as the door writes them
+SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@+=-]{0,199}\Z")   # what `refetch` prints: no shell sign, no glob
+SAFE_SOURCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
+HEALTH_PREFIX = "- door:"
 
 
 def key_of(record: dict) -> str:
     return hashlib.sha1(str(record.get("id")).encode("utf-8")).hexdigest()[:10]
 
 
-def code_of(record: dict) -> str:
-    """The eight hex digits the owner answers with ("3fa2c09b yes"), drawn at random when the
-    record was first listed (`waiting`) and kept in the private store: stable across days and
-    lists, never derived from the id. A record without one has none ("")."""
-    code = str(record.get("code") or "")
-    return code if CODE_RE.match(code) else ""
+def _row(line: str) -> dict:
+    try:
+        row = json.loads(line)
+    except ValueError:
+        return {}
+    return row if isinstance(row, dict) else {}
+
+
+def _jsonl(path: Path) -> list:
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    return [row for row in map(_row, lines) if row.get("id")]
 
 
 def _read(root: Path) -> list:
-    path = Path(root) / STORE
-    out = []
-    if not path.exists():
-        return out
-    for line in path.read_text(encoding="utf-8").splitlines():
-        try:
-            record = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(record, dict) and record.get("id"):
-            out.append(record)
-    return out
+    return _jsonl(Path(root) / STORE)
 
 
 def _write(root: Path, records: list) -> None:
@@ -86,174 +87,283 @@ def _write(root: Path, records: list) -> None:
 
 
 def _id_rows(root: Path) -> list:
-    path = Path(root) / IDS
-    out = []
-    for line in path.read_text(encoding="utf-8").splitlines() if path.exists() else []:
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(row, dict) and row.get("id"):
-            out.append(row)
-    return out
+    return _jsonl(Path(root) / IDS)
 
 
-def keep(root, record: dict, now: dt.datetime | None = None) -> bool:
-    """Park a record the reader could not classify, once per id, with its `feed` (its source
-    when the export left it out), and note its id. True when it was not kept yet."""
-    root = Path(root)
-    if not isinstance(record, dict) or not record.get("id"):
-        return False
-    records = _read(root)
-    new = str(record["id"]) not in {str(r["id"]) for r in records}
-    if new:
-        _write(root, records + [dict(record, feed=record.get("feed") or record.get("source") or "mail")])
-    note_ids(root, now)
-    return new
+def _append(root: Path, rows: list) -> None:
+    if rows:
+        pages.append_text(Path(root) / IDS, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows),
+                          root=root)
+
+
+def _values(value) -> list:
+    return [str(v) for v in (value if isinstance(value, list) else [value]) if v not in (None, "")]
+
+
+def _hash(kind: str, value: str) -> str:
+    return hashlib.sha256(f"{kind}\0{value}".encode("utf-8")).hexdigest()[:16]
+
+
+def id_hashes(identifiers) -> dict:
+    """{hash: kind} for each thread, channel and series id: what a pointer keeps, never the id
+    (an export may have put a name there)."""
+    ident = identifiers if isinstance(identifiers, dict) else {}
+    return {_hash(kind, value): kind for kind in KINDS for value in _values(ident.get(kind))}
+
+
+def _reason(record: dict) -> str:
+    return record.get("reason") if record.get("reason") in REASONS else REASONS[0]
+
+
+def door_of(value):
+    """A record's `door` as a witness page keeps it, only in the shape the door writes; else None."""
+    if isinstance(value, dict) and value.get("by") in BY and PLAIN.match(str(value.get("signal") or "")):
+        return {"by": value["by"], "signal": value["signal"]}
+    return None
 
 
 def note_ids(root, now: dt.datetime | None = None) -> int:
-    """Append `{id, source, at}` to IDS for every kept record it does not name yet (`at` is when
-    it was noted, so the morning view can count what came since the last briefing); returns how
-    many. Nothing else of the record leaves the private zone."""
+    """Append a pointer line for every record held here that has none with its ids yet; returns
+    how many. Nothing the record says leaves the private zone."""
     root = Path(root)
-    known = {str(r["id"]) for r in _id_rows(root)}
-    new = []
+    known = {str(r["id"]) for r in _id_rows(root) if "ids" in r}
+    at = pages.iso(now or spaceyaml.load(root).now())
+    rows = []
     for record in _read(root):
         if str(record["id"]) not in known:
             known.add(str(record["id"]))
-            new.append(record)
-    if not new:
-        return 0
-    at = pages.iso(now or spaceyaml.load(root).now())
-    lines = "".join(json.dumps({"id": str(record["id"]), "source": str(record.get("feed") or record.get("source")
-                                                                          or "mail"), "at": at},
-                               ensure_ascii=False) + "\n" for record in new)
-    pages.append_text(root / IDS, lines, root=root)
-    return len(new)
+            rows.append({"id": str(record["id"]), "source": str(record.get("feed") or record.get("source") or "mail"),
+                         "at": at, "ids": sorted(id_hashes(record.get("identifiers"))), "reason": _reason(record)})
+    _append(root, rows)
+    return len(rows)
 
 
-def kept_since(root, since: dt.datetime | None, now: dt.datetime, besides=()) -> int:
-    """How many records were noted as unsure after `since` and by `now` (every one by `now`
-    without a `since`), leaving out the ids in `besides`: distinct ids, a count only."""
-    ids, besides = set(), {str(b) for b in besides}
+def pointers(root, now: dt.datetime) -> dict:
+    """{id: pointer} for every record parked here or by a cloud run: `source`, `at` (first parked),
+    `ids`, `reason`, and `state`: `admitted`, `fetch`, `waiting` or `expired`."""
+    out = {}
     for row in _id_rows(root):
+        p = out.setdefault(str(row["id"]), {"source": "", "at": None, "ids": set(), "reason": REASONS[0],
+                                            "admitted": None, "fetch": None})
+        if row.get("admitted") in BY:
+            if not PLAIN.match(str(row.get("signal") or "")):
+                continue
+            if row.get("fetch"):
+                p["fetch"] = p["fetch"] or row
+            else:
+                p["admitted"] = row
+            continue
         try:
             at = pages.parse_iso(row.get("at"))
         except (TypeError, ValueError):
             continue
-        if (since is None or at > since) and at <= now and str(row["id"]) not in besides:
-            ids.add(str(row["id"]))
-    return len(ids)
+        p["at"] = at if p["at"] is None else min(p["at"], at)
+        p["source"] = p["source"] or str(row.get("source") or "mail")
+        p["ids"] |= {str(h) for h in row.get("ids") or []}
+        if _reason(row) == "mixed":   # a sign against stands, whichever line a merge put last
+            p["reason"] = "mixed"
+    days = dt.timedelta(days=EXPIRE_DAYS)
+    for p in out.values():
+        try:   # a fetch that never lands goes too, 90 days after its match
+            fetching = bool(p["fetch"]) and now - pages.parse_iso(p["fetch"].get("at")) <= days
+        except (TypeError, ValueError):
+            fetching = False
+        p["state"] = ("admitted" if p["admitted"] else "fetch" if fetching
+                      else "expired" if p["fetch"] or p["at"] is None or now - p["at"] > days
+                      else "waiting")
+    return out
 
 
-def waiting(root) -> list:
-    """Every record waiting for the owner's word, oldest first, each with its `key` and its
-    `code`. A record that has no code yet (the export wrote it to the store itself) gets one
-    now, drawn at random and kept, never two records the same."""
-    records = _read(root)
-    taken = {code_of(r) for r in records} - {""}
-    drawn = False
-    for record in records:
-        if not code_of(record):
-            code = secrets.token_hex(4)
-            while code in taken:
-                code = secrets.token_hex(4)
-            record["code"] = code
-            taken.add(code)
-            drawn = True
-    if drawn:
-        _write(Path(root), records)
-    out = [dict(r, key=key_of(r)) for r in records]
-    return sorted(out, key=lambda r: str(r.get("at") or ""))
-
-
-def mark_listed(root, keys, now: dt.datetime) -> None:
-    keys = set(keys)
-    records = _read(root)
-    for r in records:
-        if key_of(r) in keys and not r.get("first_listed"):
-            r["first_listed"] = pages.iso(now)
-    _write(root, records)
-
-
-def _take(root, key: str):
+def admit(root, key: str, door: dict | None = None) -> bool:
+    """The record goes to its feed (once) as a company record, with `admitted: true` (swept however
+    old) and how the door admitted it. A `feed` that is no plain name raises UnsafePath and the
+    record stays where it is."""
+    root = Path(root)
     records = _read(root)
     hit = next((r for r in records if key_of(r) == key), None)
-    if hit is not None:
-        _write(root, [r for r in records if r is not hit])
-    return hit
-
-
-def admit(root, key: str) -> bool:
-    """`yes`: the record goes to its feed (once) as a company record. A `feed` that is no plain
-    name raises UnsafePath and the record stays where it is."""
-    root = Path(root)
-    hit = next((r for r in _read(root) if key_of(r) == key), None)
     if hit is None:
         return False
     feed = root / FEED / f"{pages.check_name(str(hit.get('feed') or 'mail'), 'feed name')}.jsonl"
-    record = _take(root, key)
-    if record is None:
-        return False
-    present = set()
-    if feed.exists():
-        for line in feed.read_text(encoding="utf-8").split("\n"):
-            try:
-                present.add(str(json.loads(line).get("id")))
-            except (ValueError, AttributeError):
-                continue
-    if str(record["id"]) not in present:
-        clean = dict({k: v for k, v in record.items() if k not in LOCAL}, admitted=True)   # swept however old
+    rid, lines = str(hit["id"]), feed.read_text(encoding="utf-8").splitlines() if feed.exists() else []
+    # in the feed first, so a failed write loses nothing; only a line that holds the id is parsed
+    if not any(rid in line and str(_row(line).get("id")) == rid for line in lines):
+        clean = dict({k: v for k, v in hit.items() if k not in LOCAL and k != "door"}, admitted=True)
+        if door_of(door):
+            clean["door"] = door_of(door)
         pages.append_text(feed, json.dumps(clean, ensure_ascii=False) + "\n", root=root)
+    _write(root, [r for r in records if r is not hit])
     return True
 
 
-def drop(root, key: str) -> bool:
-    """`no`: the record goes, counted as personal; nothing of it is kept."""
-    return _take(Path(root), key) is not None
+def _admitted_row(record_id: str, by: str, signal: str, now: dt.datetime, fetch: bool = False) -> dict:
+    return dict({"id": record_id, "admitted": by, "signal": signal, "at": pages.iso(now)},
+                **({"fetch": True} if fetch else {}))
 
 
-def expire(root, now: dt.datetime, days: int = EXPIRE_DAYS) -> int:
-    """Items listed for `days` without an answer go; returns how many."""
-    records = _read(root)
-    kept, gone = [], 0
-    for r in records:
+def _on_witness_pages(root: Path, wanted: dict) -> dict:
+    """{hash: kind} for the wanted hashes some witness page here carries among its identifiers.
+    A page is read only when its front matter holds one of the ids as text."""
+    found = {}
+    needles = {value for value in wanted.values()}
+    for path in (root / WITNESS).rglob("*.md") if needles else []:
         try:
-            first = pages.parse_iso(r["first_listed"]) if r.get("first_listed") else None
-        except (TypeError, ValueError):
-            first = None
-        if first is not None and now - first > dt.timedelta(days=days):
-            gone += 1
+            with path.open(encoding="utf-8", errors="replace") as handle:   # the front matter, not the text
+                head = "".join(line for _, line in zip(range(400), handle)).split("\n---", 1)[0]
+        except OSError:
+            continue
+        if not any(n in head for n in needles):
+            continue
+        try:
+            fm, _ = pages.read(path)
+        except Exception:
+            continue
+        found.update({h: k for h, k in id_hashes(fm.get("identifiers")).items() if h in wanted})
+    return found
+
+
+def _registry_signal(reg, record: dict) -> str | None:
+    """The first identifier of a registered subject the record carries: never a keyword of its
+    title, and never a subject it names itself (only the journal feed may)."""
+    ident = record.get("identifiers") if isinstance(record.get("identifiers"), dict) else {}
+    record = dict(record, identifiers={k: v for k, v in ident.items() if k != "subject"})
+    for subject in reg.match(record):
+        keys = reg.matched_by(subject, record) - {"keywords", "subject"}
+        if keys:
+            return sorted(keys)[0]
+    return None
+
+
+def door(root, reg, now: dt.datetime) -> int:
+    """The door's context check, before the sweep writes a page: every record held here that was
+    not checked yet is admitted at once on a hard signal (`context` the first time, `match` for
+    one parked before), unless it was parked as `mixed`; the rest get their pointer line.
+    Returns how many were admitted."""
+    root = Path(root)
+    rows = _id_rows(root)
+    checked = {str(r["id"]) for r in rows if "ids" in r}
+    parked_before = {str(r["id"]) for r in rows if r.get("source")}
+    todo = [r for r in _read(root) if str(r["id"]) not in checked and _reason(r) != "mixed"]
+    raw = {}
+    for record in todo:
+        ident = record.get("identifiers") if isinstance(record.get("identifiers"), dict) else {}
+        raw.update({_hash(kind, value): value for kind in KINDS for value in _values(ident.get(kind))})
+    on_pages = _on_witness_pages(root, raw)
+    admitted, out = 0, []
+    for record in todo:
+        signal = next((on_pages[h] for h in sorted(id_hashes(record.get("identifiers"))) if h in on_pages), None)
+        signal = signal or _registry_signal(reg, record)
+        if not signal:
+            continue
+        by = "match" if str(record["id"]) in parked_before else "context"
+        try:
+            if admit(root, key_of(record), {"by": by, "signal": signal}):
+                out.append(_admitted_row(str(record["id"]), by, signal, now))
+                admitted += 1
+        except pages.UnsafePath:   # a feed that is no plain name: it waits, and expires
+            continue
+    _append(root, out)
+    note_ids(root, now)
+    return admitted
+
+
+def resolve(root, written: list, now: dt.datetime) -> int:
+    """Compare every waiting pointer with the identifiers of the witness pages this run wrote
+    (their front matter). A match is marked to be fetched again by its id until its witness page
+    exists (`refetch`), and a record held here goes to its feed at once (`match`), so a cloud run's
+    admission, whose feed goes with its clone, is never lost. A record this computer holds whose
+    pointer another run marked goes to its feed too. Returns how many matched."""
+    root = Path(root)
+    on_pages = {}
+    for fm in written:
+        on_pages.update(id_hashes((fm or {}).get("identifiers")))
+    held = {str(r["id"]): r for r in _read(root)}
+    rows = []
+    for pid, p in pointers(root, now).items():
+        if p["state"] == "fetch":
+            signal = p["fetch"]["signal"]
+        elif p["state"] == "waiting" and p["reason"] != "mixed":
+            signal = next((on_pages[h] for h in sorted(p["ids"]) if h in on_pages), None)
+            if signal:
+                rows.append(_admitted_row(pid, "match", signal, now, fetch=True))
         else:
-            kept.append(r)
-    if gone:
-        _write(root, kept)
-    return gone
+            continue
+        if signal and pid in held:
+            try:
+                admit(root, key_of(held[pid]), {"by": "match", "signal": signal})
+            except pages.UnsafePath:   # a feed that is no plain name: the export fetches it again
+                continue
+    _append(root, rows)
+    return len(rows)
 
 
-def line_for(record: dict, width: int = 60) -> str:
-    """A plain one-line label for the owner's email: the subject without links, dashes, long
-    codes, markup or control characters, cut on a word, then the source and the day."""
-    text = MARKUP.sub(" ", str(record.get("subject") or record.get("title") or "untitled"))
-    text = URL.sub("", text)
-    text = LONG_TOKEN.sub("", DASHES.sub(",", text))
-    text = " ".join(text.replace(" ,", ",").split()).strip(" ,") or "untitled"
-    if len(text) > width:
-        text = text[:width].rsplit(" ", 1)[0].rstrip(" ,.") + "..."
-    try:
-        day = f"{pages.parse_iso(record.get('at')):%d %b}"
-    except (TypeError, ValueError):
-        day = "undated"
-    source = MARKUP.sub("", str(record.get("feed") or record.get("kind") or "record"))[:20] or "record"
-    return f"{text} ({source}, {day})"
+def expire(root, now: dt.datetime) -> int:
+    """Records held here whose pointer found no match within 90 days of parking go; returns how
+    many. Nothing is shown to anyone."""
+    # an admitted one is on its feed somewhere already: a copy here would stay for ever
+    gone = {pid for pid, p in pointers(root, now).items() if p["state"] in ("expired", "admitted")}
+    records = _read(root)
+    kept = [r for r in records if str(r["id"]) not in gone]
+    if len(kept) != len(records):
+        _write(Path(root), kept)
+    return len(records) - len(kept)
+
+
+def refetch(root, now: dt.datetime | None = None) -> list:
+    """(source, signal, id) for every pointer a match settled while its record was on no computer
+    that ran the match, until the record's witness page exists: the next export fetches each by
+    its id. An id or a source outside a plain set of characters is left out: what is printed never
+    carries a shell sign, a glob, a line break or a control character."""
+    root = Path(root)
+    now = now or spaceyaml.load(root).now()
+    out = []
+    for pid, p in sorted(pointers(root, now).items()):
+        if p["state"] != "fetch" or not SAFE_ID.match(pid) or not SAFE_SOURCE.match(p["source"]):
+            continue
+        if any((root / WITNESS).glob(f"*/*/{pages.record_file_name(pid)}.md")):
+            continue
+        out.append((p["source"], p["fetch"]["signal"], pid))
+    return out
+
+
+def counts(root, now: dt.datetime) -> dict:
+    out = {"context": 0, "match": 0, "waiting": 0, "expired": 0}
+    for p in pointers(root, now).values():
+        row = p["admitted"] or p["fetch"]
+        if row:
+            out[row["admitted"]] += 1
+        elif p["state"] in out:
+            out[p["state"]] += 1
+    return out
+
+
+def _skipped(value) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return max(value, 0)
+    return sum(_skipped(v) for v in value.values()) if isinstance(value, dict) else 0
+
+
+def health_line(root, runs: list, now: dt.datetime) -> str:
+    """One line of counts for the health page, or "" when there is nothing to count: the records
+    the door admitted, those admitted later by a match, those the export left out as personal or
+    academic (its run lines' `notes.skipped`), the pointers waiting and those expired."""
+    c = counts(root, now)
+    left_out = sum(_skipped((run.get("notes") or {}).get("skipped")) for run in runs
+                   if isinstance(run.get("notes"), dict))
+    if not any(c.values()) and not left_out:
+        return ""
+    return (f"{HEALTH_PREFIX} {c['context']} admitted at the door, {c['match']} admitted later by a match, "
+            f"{left_out} left out as personal or academic, {c['waiting']} waiting, {c['expired']} expired")
 
 
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     import needs_you   # here and not at the top: its helpers are the CLI's alone
     needs_you.utf8_stdio()
-    print(f"{len(waiting(Path(argv[0]) if argv else Path('.')))} record(s) wait for the owner's word")
+    root = Path(argv[0]) if argv else Path(".")
+    now = spaceyaml.load(root).now()
+    print(f"{counts(root, now)['waiting']} pointer(s) wait for a match")
     return 0
 
 
