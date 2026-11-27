@@ -15,8 +15,14 @@ from pathlib import Path
 import pytest
 
 import scan
+import spaceyaml
 import sync
 from test_sync import git, head_files, repo, run, run_lines, write  # noqa: F401  (repo is a fixture)
+
+# Every space runs these tests in its checks, but template-sync never carries .gitignore into one: a test
+# that reads the template's own .gitignore runs in the template only.
+template_only = pytest.mark.skipif(not spaceyaml.is_template_repo(Path(scan.__file__).resolve().parents[2]),
+                                   reason="reads a file only the template has")
 
 
 def j(*parts: str) -> str:
@@ -220,6 +226,7 @@ def test_scan_paths_names_a_credential_file_whatever_it_holds(tmp_path):
     assert scan.scan_paths([example]) == []
 
 
+@template_only
 def test_the_template_gitignore_ignores_credential_files(tmp_path, monkeypatch):
     config = tmp_path / "gitconfig"
     config.write_text("", encoding="utf-8")
@@ -547,6 +554,7 @@ def test_more_credential_file_names(rel, expected):
     assert scan.credential_file(rel) is expected
 
 
+@template_only
 def test_the_template_gitignore_ignores_the_further_credential_files(tmp_path, monkeypatch):
     config = tmp_path / "gitconfig"
     config.write_text("", encoding="utf-8")

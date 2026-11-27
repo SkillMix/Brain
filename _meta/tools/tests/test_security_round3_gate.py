@@ -31,6 +31,9 @@ def _computer_signed(monkeypatch):
 REPO = Path(__file__).resolve().parents[3]
 PROV = "_meta/state/template-version.yaml"
 REGISTRY = "_meta/subjects.yaml"
+# Every space runs these tests in its checks, but template-sync never carries SECURITY.md or
+# .github/CODEOWNERS into one: a test that reads them runs in the template only.
+template_only = pytest.mark.skipif(not spaceyaml.is_template_repo(REPO), reason="reads a file only the template has")
 
 
 def _git(cwd: Path, *args: str, date: str | None = None) -> str:
@@ -117,11 +120,15 @@ def test_a_link_in_the_template_still_waits(tmp_path, monkeypatch):
 
 
 def test_following_main_is_documented_as_dev_only():
-    text = " ".join((REPO / "SECURITY.md").read_text(encoding="utf-8").split())
-    assert "`template_updates: main`" in text and "dev-only mode" in text
     assert "dev-only mode" in " ".join((template_sync.__doc__ or "").split())
     assert "release tag is the human gate" in " ".join(gate.__doc__.split()) \
         or "the one human gate on what reaches the spaces is the release tag" in " ".join(gate.__doc__.split())
+
+
+@template_only
+def test_security_md_documents_following_main_as_dev_only():
+    text = " ".join((REPO / "SECURITY.md").read_text(encoding="utf-8").split())
+    assert "`template_updates: main`" in text and "dev-only mode" in text
 
 
 # ----- 2. the registry holds only what points trust somewhere new ---------------------------------------------
@@ -393,6 +400,7 @@ def test_the_owners_agent_marks_a_waiting_release_on_its_sync_branch(tmp_path):
 
 
 # ----- 5. code-owner review: the template only ----------------------------------------------------------------
+@template_only
 def test_security_md_recommends_no_code_owner_review_in_a_space():
     text = " ".join((REPO / "SECURITY.md").read_text(encoding="utf-8").split())
     assert "No code-owner review in a space" in text and "never lets the author approve" in text
@@ -823,10 +831,15 @@ def test_the_release_job_publishes_only_while_the_tag_ruleset_is_there():
     check = steps[names.index("Only a maintainer can make a release tag")]
     assert "template_archive.py ruleset" in check["run"] and "${{" not in check["run"]
     assert names.index("Only a maintainer can make a release tag") < names.index("Build the archive and its checksum")
+
+
+@template_only
+def test_security_md_names_the_tag_ruleset_check():
     text = " ".join((REPO / "SECURITY.md").read_text(encoding="utf-8").split())
     assert "`template_archive.py ruleset`" in text
 
 
+@template_only
 def test_security_md_says_github_does_not_enforce_the_hold():
     text = " ".join((REPO / "SECURITY.md").read_text(encoding="utf-8").split())
     assert "GitHub does not enforce the hold itself" in text and "agents never merge" in text
@@ -937,6 +950,7 @@ def test_a_subjects_people_sign_only_that_subjects_pages(tmp_path):
     assert _gate(root, base, author="benliu", head_ref="ben/notes")[0] == "auto-mergeable"
 
 
+@template_only
 def test_the_owner_login_onboard_writes_into_codeowners_lands_the_owners_signature(tmp_path, monkeypatch):
     import onboard
     ada = {k: v for k, v in ADA.items() if k != "match"}   # an owner's row with no login, as older brains have it

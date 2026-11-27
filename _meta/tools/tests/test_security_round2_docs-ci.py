@@ -17,12 +17,16 @@ import pytest
 import yaml
 
 import scan
+import spaceyaml
 import template_sync
 from conftest import make_space
 
 REPO = Path(__file__).resolve().parents[3]
 PROV = Path("_meta") / "state" / "template-version.yaml"
 ORIGIN = Path("_meta") / "state" / "template-origin.yaml"
+# Every space runs these tests in its checks, but template-sync never carries SECURITY.md or
+# docs/decisions.md into one: a test that reads them runs in the template only.
+template_only = pytest.mark.skipif(not spaceyaml.is_template_repo(REPO), reason="reads a file only the template has")
 
 
 def j(*parts: str) -> str:
@@ -267,6 +271,7 @@ def test_the_templates_own_docs_pass_its_scan():
     assert [(f.kind, f.path, f.line_no) for f in scan.scan_paths([p for p in paths if p.exists()])] == []
 
 
+@template_only
 def test_the_review_row_reads_as_two_clauses():
     text = (REPO / "docs" / "decisions.md").read_text(encoding="utf-8")
     assert "each proposal `--reviewed-by`" not in text and "each proposal; `--reviewed-by`" in text
@@ -309,6 +314,7 @@ def test_the_workflow_comments_say_what_it_does():
     assert "its own tools run in checks, without mounts" not in text
 
 
+@template_only
 def test_security_md_describes_the_release_workflow_as_it_is():
     text = (REPO / "SECURITY.md").read_text(encoding="utf-8")
     assert "whatever a `v*` tag points at" not in text

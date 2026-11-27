@@ -14,12 +14,16 @@ import yaml
 import behaviour
 import gate
 import template_archive
+import spaceyaml
 import start
 import template_sync
 from conftest import make_space, write_page
 
 REPO = Path(__file__).resolve().parents[3]
 WORKFLOWS = REPO / ".github" / "workflows"
+# Every space runs these tests in its checks, but template-sync never carries the requirements files or
+# .github/CODEOWNERS into one: a test that reads them runs in the template only.
+template_only = pytest.mark.skipif(not spaceyaml.is_template_repo(REPO), reason="reads a file only the template has")
 
 
 def _wf(name: str) -> dict:
@@ -238,6 +242,10 @@ def test_every_install_is_pinned_by_hash():
                 for heredoc in re.findall(r"<<'EOF'\n(.*?)\nEOF", run, re.S):
                     for req in _requirement_blocks(heredoc):
                         assert re.match(r"^[A-Za-z0-9._-]+==[0-9][^ ;]*( |;)", req) and "--hash=sha256:" in req, req
+
+
+@template_only
+def test_the_requirements_files_are_pinned_by_hash():
     for name in ("requirements.txt", "requirements-dev.txt"):
         for req in _requirement_blocks((REPO / name).read_text(encoding="utf-8")):
             assert re.match(r"^[A-Za-z0-9._-]+==[0-9]", req) and re.search(r"--hash=sha256:[0-9a-f]{64}", req), req
@@ -261,6 +269,7 @@ def test_a_release_is_a_release_name_on_the_default_branch():
     assert names.index("The tag is a release name on the default branch") < names.index("Build the archive and its checksum")
 
 
+@template_only
 def test_codeowners_names_every_path_the_gate_holds():
     lines = [line.split()[0] for line in (REPO / ".github" / "CODEOWNERS").read_text(encoding="utf-8").splitlines()
              if line.strip() and not line.startswith("#")]
@@ -652,6 +661,7 @@ def test_a_push_switches_off_an_earlier_arming_before_the_checks_can_pass():
     assert jobs["checks"]["needs"] == "mounts"
 
 
+@template_only
 def test_codeowners_names_compiled_and_root_modules():
     lines = {line.split()[0] for line in (REPO / ".github" / "CODEOWNERS").read_text(encoding="utf-8").splitlines()
              if line.strip() and not line.startswith("#")}
