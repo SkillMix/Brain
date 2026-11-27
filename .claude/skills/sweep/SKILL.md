@@ -117,9 +117,12 @@ export; the tool decides.
    without it, on threads of exactly one subject), then those an earlier run could not read, whose
    subject is empty (`<record id>\t\t<name>\t<handle>`). A control character or line break in an
    id or a name is shown escaped (`\u000a`), so every line is one attachment. Read each, in this
-   order: the mail connector's attachment reader; else the browser, opening the message in the
-   mail web app and reading the attachment in its preview, never downloading (a cloud run has no
-   browser); else leave it for the daily list the owner approves, and note it:
+   order: the mail connector's `download_gmail_attachment` (Claude's own Gmail connector; it
+   takes the message id and the attachment's id or file name, which `get_message` gives, and
+   returns the file itself into the session, up to 12 MB, nothing saved to disk); else the
+   browser, opening the message in the mail web app and reading the attachment in its preview,
+   never downloading (a cloud run has no browser); else leave it for the daily list the owner
+   approves, and note it:
    `python _meta/tools/sweep.py <root> --attachment-unread <handle>`, so every later run, a cloud
    run's fresh clone included, lists it again until it is read. Append what you read to the same
    feed file as a document record of its own: `id` `<record id>/<file name>`, `subject` the file

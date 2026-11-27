@@ -672,11 +672,17 @@ class Registry:
     def check(self) -> list:
         errs = []
         kinds = self.space.all_kinds if self.space else None
+        # The company's kinds are the brain's: while a space's brain mount is not on disk (the checks run
+        # without mounts), a kind outside the defaults may be the brain's own, so it is only a warning.
+        unsure = (self.space is not None and self.space.profile != "brain" and not self.space.data.get("kinds")
+                  and any(m.get("name") == "brain" for m in self.space.mounts) and self.space.brain_space() is None)
         for sid, subject in self.subjects.items():
             if not _is_slug(sid):
                 errs.append(f"registry: id `{sid}` is not a lowercase slug")
             if kinds is not None and subject.kind not in kinds:
-                errs.append(f"registry: `{sid}` has unknown kind `{subject.kind}`")
+                message = f"registry: `{sid}` has unknown kind `{subject.kind}`"
+                errs.append(f"warning: {message}; the brain, which declares the company's kinds, is not on disk"
+                            if unsure else message)
             if subject.state not in STATES:
                 errs.append(f"registry: `{sid}` has unknown state `{subject.state}`")
             if subject.part_of and self.get(subject.part_of) is None:

@@ -20,7 +20,8 @@ step 1. A skill writes its commands relative to the space (python _meta/tools/<t
 `Grep` to read; `Edit` and `Write` for the files its steps write (feed files, pages, briefs, decisions, run lines);
 `ToolSearch` to load a connector's tools; `Task` (called `Agent` in some versions) for the second agent the route
 and distill skills ask for. Of the connectors it uses the read tools of the person's apps (the mail connector's
-attachment reader among them) and nothing that writes, sends, shares or deletes. That is all the task was given.
+`download_gmail_attachment` among them) and nothing that writes, sends, shares or deletes. That is all the task was
+given.
 
 **Tripwire.** A tool this prompt does not name, or a refusal it does not expect, ends the run: do no other step,
 land nothing, and end with one line that names the tool or the refusal in plain words. The refusals it expects
@@ -60,7 +61,8 @@ Then, for each root, the workspace first:
 2. **Attachments.** `python3 /home/user/<root>/_meta/tools/sweep.py /home/user/<root> --attachments` prints one
    row per attachment to read: the record id, its subject, the file name and its handle, separated by a tab each;
    the subject is empty on some rows (`<record id>\t\t<name>\t<handle>`). Read each with the mail connector's
-   attachment reader (it returns the text, 40,000 characters a call; ask again from the offset for the rest) into
+   `download_gmail_attachment` (the message id and the attachment's id or file name from `get_message`; it
+   returns the file itself, up to 12 MB) into
    the same feed file as a document record of its own, as the skill says, with `read_via: connector`. There is no
    browser here. For one you could not read, run
    `python3 /home/user/<root>/_meta/tools/sweep.py /home/user/<root> --attachment-unread <handle>`,

@@ -40,6 +40,21 @@ transcript is written down, and a line can cite the moment it rests on.
 - **More notetakers are known by name** in the apps card (`fireflies`, `tactiq`, `sembly`,
   `supernormal`, `circleback`, `bluedot`, `leexi`).
 
+
+## [0.3.10] - 2026-11-27
+
+A space whose registry uses a kind the brain adds (`deals`, say) no longer fails its checks, which
+run without the brain mounted, so its protected update can land.
+
+### Fixed
+
+- **A kind of the brain's is a warning while the brain is not on disk.** The company's kinds are
+  declared in the brain, and the checks of a space run without its mounts, so there the space fell
+  back to the default kinds and called a subject of a kind the brain added an error. While a
+  space's brain mount is listed but absent (and the space declares no kinds of its own), the
+  unknown kind is a warning naming the absent brain, as an id link into an absent mount already
+  is. With the brain on disk a kind it does not declare is still an error.
+
 ## [0.3.9] - 2026-11-27
 
 A space's checks no longer fail on twelve tests that read files only the template has, so the
