@@ -23,9 +23,9 @@ repositories and the person's claude.ai connectors, and it ends when the session
 The chains left the cloud on 2026-10-12 for one reason: "a cloud run that commits nothing
 leaves its feed exports, candidates and run lines in a checkout that is thrown away". The
 earlier cloud era failed on the same thing: "landing, not running, is the failure". The second
-blocker, Gmail attachments, is gone: a read-only mail connector with an attachment reader now
-exists. This design makes a cloud run land its own files, through the same sync script and the
-same pull request checks a computer uses, carries the computer's own safety profile into the
+blocker, Gmail attachments, is gone: Claude's own Gmail connector now reads them
+(`download_gmail_attachment`). This design makes a cloud run land its own files, through the
+same sync script and the same pull request checks a computer uses, carries the computer's own safety profile into the
 cloud, and keeps on the computer only what has to be there.
 
 ## 2. Goals, non-goals, anti-goals
@@ -76,9 +76,9 @@ A one-off probe run, attached to a workspace and two of its mounts, measured the
 | GitHub identity | The pull request the run opened was opened by the person's own GitHub account (`author_association: OWNER`). The run acts on GitHub as the person, with the person's rights on every attached repository. |
 | Pull requests | `gh api -X POST repos/<o>/<r>/pulls ... -F draft=false` opens a ready pull request. `gh pr ...` (GraphQL) is refused: only REST works. |
 | Deny rules | The trigger's `disallowed_tools` are enforced: `Edit(_meta/tools/**)` refused the edit; `Bash(git push --dry-run origin HEAD:main*)` refused the command, also inside a compound command. A Bash rule matches the command's text only. |
-| Connectors | The tool prefix is the connection's `name` (`mcp__Gmail-readonly__read_gmail_attachment`). A connection's `permitted_tools` did not narrow the tools: all 30 of the mail connector's tools were offered with `permitted_tools: [send_message, get_message]`. Narrowing has to be done with `disallowed_tools` by exact tool name, and a hook. |
+| Connectors | The tool prefix is the connection's `name` (`mcp__<name>__get_message`). A connection's `permitted_tools` did not narrow the tools: all 30 of the mail connector's tools were offered with `permitted_tools: [send_message, get_message]`. Narrowing has to be done with `disallowed_tools` by exact tool name, and a hook. |
 | Mail send | `send_message` to the person's own address ran unattended; read back with labels SENT and INBOX. |
-| Attachment text | `read_gmail_attachment` returns the text inline, 40,000 characters per call with an offset for more. |
+| Attachment text | Claude's own Gmail connector: `download_gmail_attachment` takes the message id and the attachment's id or file name from `get_message`, and returns the file itself, up to 12 MB. On a PDF invoice (2026-11-26, a computer session) it gave the exact text and a page image. A cloud run has not called it yet. |
 | Schedule | `CRON_TZ=<IANA zone> m h * * *` is accepted; `next_run_at` follows the zone. |
 | Trigger fields | `environment_variables` is refused on triggers. The body takes `enabled_plugins`, `extra_marketplaces`, `auto_mode_allow` and `auto_mode_soft_deny` (seen, not exercised). |
 | CI merge | The space's own `checks` ran on the pull request opened from the cloud, `arm` armed auto-merge, and it merged 65 s after it opened, with no computer involved. |
@@ -378,8 +378,13 @@ person. So the task carries the computer's routine profile, in four layers:
 
 The grant is the computer's, read from the same verdicts (`apps.yaml`) when the tasks are made:
 read tools for read apps; the tracker's create and update tools; for mail, `send_message` and
-`get_message` only, and only while the send guard holds. The sweep's read-only mail connector
-serves its mail and attachments. Owner notices go out from whichever task runs first after they
+`get_message` only, and only while the send guard holds. The sweep reads mail and attachments
+with the read tools of Claude's own Gmail connector (`search_threads`, `get_thread`,
+`get_message`, `download_gmail_attachment`). Since `permitted_tools` does not narrow a connection
+(section 3), its other tools (`send_message`, `reply`, `forward`, `create_draft`, `trash_*`, the
+label and spam changes) are denied by exact name in `disallowed_tools`, like every connector tool
+the task is not granted; the send tools a task is granted stay behind the plugin's hook and its
+`send_guard`. Owner notices go out from whichever task runs first after they
 are queued; both tasks hold the send tool behind the same guard. `record-send` still refuses a
 read-back whose recipients are not the person, as a second check. Its `--to` keeps every
 recipient, whether they follow one `--to` or each has its own; the prompts use one `--to`. The
