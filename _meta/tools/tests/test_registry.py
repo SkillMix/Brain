@@ -66,6 +66,26 @@ def test_unknown_kind_against_space(tmp_path):
     assert any("unknown kind" in e for e in errs)
 
 
+def test_a_kind_of_the_brain_is_a_warning_while_the_brain_is_not_on_disk(tmp_path):
+    brain = make_space(tmp_path / "brain", profile="brain", subjects=[])
+    data = yaml.safe_load((brain / "space.yaml").read_text(encoding="utf-8"))
+    data["kinds"] = ["clients", "projects", "deals"]
+    (brain / "space.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    ada = make_space(tmp_path / "ada", profile="personal", subjects=[{"id": "beacon", "kind": "deals"}])
+    mount_brain(ada, brain)
+    assert registry.Registry(ada, spaceyaml.load(ada)).check() == []
+    # a check run without mounts: the brain that declares `deals` is not there to ask
+    mount_brain(ada, tmp_path / "not-checked-out")
+    errs = registry.Registry(ada, spaceyaml.load(ada)).check()
+    assert [e for e in errs if "unknown kind" in e] and all(e.startswith("warning: ") for e in errs)
+    # a kind the brain does not have is still an error once the brain is on disk
+    mount_brain(ada, brain)
+    data["kinds"] = ["clients", "projects"]
+    (brain / "space.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    assert any(e.startswith("registry: `beacon` has unknown kind")
+               for e in registry.Registry(ada, spaceyaml.load(ada)).check())
+
+
 def _harbor_with(tmp_path, **match):
     root = make_space(tmp_path / "s", subjects=[
         {"id": "harbor", "kind": "projects", "title": "Harbor", "match": match},
