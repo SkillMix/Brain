@@ -37,8 +37,6 @@ transcript is written down, and a line can cite the moment it rests on.
   verify` accepts it when the record is in evidence and its page, split parts included, holds an
   utterance at or before that time and not past the last. A plain `[src: <record id>]` still
   passes.
-- **More notetakers are known by name** in the apps card (`fireflies`, `tactiq`, `sembly`,
-  `supernormal`, `circleback`, `bluedot`, `leexi`).
 
 
 ## [0.3.10] - 2026-11-27

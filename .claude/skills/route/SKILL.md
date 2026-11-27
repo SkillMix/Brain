@@ -204,7 +204,7 @@ it: the router here, distill and the check (`.claude/skills/distill/SKILL.md`,
 
 ### Reading a transcript
 
-- Names are often misheard ("Neema" for Nima). Match a spoken name to the call's `participants`
+- Names are often misheard ("Ayda" for Ada). Match a spoken name to the call's `participants`
   and the registry (titles and `aliases`); never create a person from a misheard name; when
   unsure, write the name as heard with "(unclear)".
 - Speaker labels can be generic (`Speaker 2`) or swapped. Work the speaker out from the
