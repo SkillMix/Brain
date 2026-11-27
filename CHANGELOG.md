@@ -7,6 +7,51 @@ the shape and ships its migration. Each choice behind a change has a line in
 
 ## [Unreleased]
 
+A record the export could not place as work or personal no longer waits for your answer in the
+morning email. The sweep lets it in as work by itself when a script finds a hard signal (its
+thread, channel or event series already holds company work, or it carries a registered
+client's identifier) and says on its witness page why. Otherwise it waits, comes in by itself
+when later company work shares its thread, channel or series, and goes after 90 days. Nobody is
+asked; the health page counts what happened.
+
+### Changed
+
+- **The door settles unsure records itself.** Before the sweep writes a page it checks every
+  record parked in `_meta/state/private/unsure.jsonl` for a hard signal: its `identifiers.thread`,
+  `channel` or `series` (a recurring event's series, a new field of the event record; a whole calendar
+  is no signal) on a witness page of the space, or an identifier of a registered subject
+  (a mail domain, a label, a linked repository; never a keyword of its title or a subject it names
+  itself). With one, and no `"reason": "mixed"` from the export, it is written to its feed at once
+  and its witness page carries `door: {by: context, signal: <what matched>}`. Nothing a record
+  says admits it.
+- **A parked record is a pointer.** Its line in the tracked `_meta/state/unsure-ids.jsonl` holds
+  its id, source, when it was parked, a hash of each of its thread, channel and series ids and
+  its reason (`no-signal` or `mixed`): no content, subject, sender, address or name.
+- **Pointers resolve themselves.** After writing its pages the sweep compares every waiting
+  pointer with their ids. A match admits a record this computer holds (`door: {by: match}`); a
+  match is listed by `python _meta/tools/sweep.py <root> --refetch` until its witness page exists, so
+  a record a cloud run parked, or admitted into a feed its clone took with it, is not lost: the next
+  export fetches that record again by its id with the read-only connector.
+- **Pointers expire silently** 90 days after they were parked, from the private store and for
+  matching. Expiry counts from parking, never from a listing.
+- **One health line** of counts: admitted at the door, admitted later by a match, left out as
+  personal or academic (the export's run lines), waiting, expired. The morning email leaves it out.
+
+### Removed
+
+- The morning email's "Is this work?" list, its eight-digit codes and its count of parked
+  records; the `<code> yes` and `<code> no` reply verbs in `reply.py`; `first_listed`,
+  `mark_listed`, `waiting`, `keep`, `drop`, `code_of`, `line_for` and `kept_since` in `unsure.py`;
+  the 14-day expiry from a record's first listing.
+
+### Upgrading
+
+A record already parked on a computer is checked at the door once on the first sweep after the
+update, and comes in (labelled `match`) when its thread, channel or series already holds company
+work. Pointer lines written before the update hold no ids, so a record a cloud run parked before it
+can no longer match and goes 90 days after it was parked. An older store's `code` and
+`first_listed` fields are never copied into a feed.
+
 ## [0.3.10] - 2026-11-27
 
 A space whose registry uses a kind the brain adds (`deals`, say) no longer fails its checks, which

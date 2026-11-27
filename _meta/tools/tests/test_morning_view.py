@@ -343,7 +343,7 @@ def test_a_channel_writes_no_page_where_its_profile_has_no_live_folder(tmp_path)
     assert (root / "_meta" / "state" / "private" / "morning-notice.json").exists()
 
 
-def test_unsure_records_are_listed_in_the_email_only(tmp_path):
+def test_the_notice_and_the_payload_stay_private_and_list_no_parked_record(tmp_path):
     import unsure
     root = make_space(tmp_path / "ada", owner_email="ada@lantern.example")
     path = root / unsure.STORE
@@ -353,56 +353,41 @@ def test_unsure_records_are_listed_in_the_email_only(tmp_path):
     path.write_text(json.dumps(rec) + "\n", encoding="utf-8")
     report = morning_view.run(root, person="Ada Okafor", now=NOW)
     payload = json.loads(Path(report.payload_path).read_text(encoding="utf-8"))
-    assert "Dinner on Friday" in payload["body"]
+    assert "Dinner" not in payload["body"] and "Dinner" not in payload["htmlBody"]
     assert Path(report.payload_path).relative_to(root).as_posix().startswith("_meta/state/private/")
     assert Path(report.notice_path).relative_to(root).as_posix().startswith("_meta/state/private/")
     day = json.loads((root / "_meta" / "state" / "morning" / "2026-10-12.json").read_text(encoding="utf-8"))
     assert "Dinner" not in json.dumps(day)
     assert "Dinner" not in (root / "live" / "needs-you.md").read_text(encoding="utf-8")
-    assert unsure.waiting(root)[0]["first_listed"] == "2026-10-12T09:00:00Z"
+    assert "first_listed" not in path.read_text(encoding="utf-8"), "nothing is listed, so nothing is stamped"
 
 
-def test_unsure_records_are_asked_by_code_and_survive_a_failing_health_line(tmp_path):
-    import unsure
+def test_a_health_line_that_fails_the_plain_language_check_leaves_the_briefing_standing(tmp_path):
     root = setup(tmp_path, owner_email="ada@lantern.example")
     write_page(root, "live/health.md", id="p-00000002", type="snapshot", title="Health",
                body="# Health\n\nsee _meta/state/runs.jsonl for the raw lines\n")
-    rec = {"id": "m-80", "feed": "mail", "kind": "mail", "at": "2026-10-11T08:00:00Z", "subject": "Gym plan",
-           "text": "B."}
-    (root / unsure.STORE).parent.mkdir(parents=True, exist_ok=True)
-    (root / unsure.STORE).write_text(json.dumps(rec) + "\n", encoding="utf-8")
     report = morning_view.run(root, person="Ada Okafor", now=NOW)
     payload = json.loads(Path(report.payload_path).read_text(encoding="utf-8"))
-    assert f"{unsure.code_of(rec)}: Gym plan" in payload["body"]
-    day = json.loads((root / "_meta" / "state" / "morning" / "2026-10-12.json").read_text(encoding="utf-8"))
-    assert all(i["kind"] != "unsure" for i in day["items"]), "unsure records are never numbered"
-    assert unsure.waiting(root)[0]["first_listed"]
+    assert "health page" in payload["body"] and "runs.jsonl" not in payload["body"]
 
 
-def test_the_briefing_counts_unsure_records_and_unread_attachments(tmp_path):
-    """A cloud run keeps no unsure record and no feed: the mail counts the ids it left since the
-    last briefing went out, and the attachments still to read, never what they are."""
+def test_the_briefing_counts_unread_attachments_and_never_parked_records(tmp_path):
+    """A cloud run keeps no feed: the mail counts the attachments still to read, never what they
+    are, and nothing about records the door parked, wherever they were parked."""
     import sweep
     import unsure
     root = make_space(tmp_path / "ada", owner_email="ada@example.test")
-    yesterday = NOW - dt.timedelta(days=1)
-    morning_view.record_send(root, "m-old", to=["ada@example.test"], now=yesterday)
-    morning_view.record_send(root, "m-bad", to=["x@else.test"], now=NOW - dt.timedelta(hours=4))
-    unsure.keep(root, {"id": "gmail-0001", "source": "mail", "subject": "Asked yesterday"}, now=yesterday)
-    for n in (2, 3):
-        unsure.keep(root, {"id": f"gmail-000{n}", "source": "mail", "subject": "Gym plan"},
-                    now=NOW - dt.timedelta(hours=n))
-    (root / unsure.STORE).unlink()   # a cloud run kept them: its private zone went with its clone
-    unsure.keep(root, {"id": "gmail-0004", "source": "mail", "subject": "Asked here"},
-                now=NOW - dt.timedelta(hours=1))
+    ids = root / unsure.IDS
+    ids.parent.mkdir(parents=True, exist_ok=True)
+    ids.write_text("".join(json.dumps({"id": f"gmail-000{n}", "source": "mail", "at": "2026-10-12T07:00:00Z",
+                                       "ids": [], "reason": "no-signal"}) + "\n" for n in (2, 3)), encoding="utf-8")
     sweep.note_unread(root, "gmail-0002", "invoice.pdf", now=NOW - dt.timedelta(hours=2))
     report = morning_view.run(root, "Ada Okafor", now=NOW)
-    assert report.counts["unsure"] == 2, ("since the last briefing that went out, not the failed one, "
-                                          "and not one the mail already asks about by its code")
     assert report.counts["unread_attachments"] == 1
+    assert not [k for k in report.counts if "unsure" in k]
     notice = json.loads(Path(report.notice_path).read_text(encoding="utf-8"))
     stats = [(s["count"], s["label"]) for s in notice["stats"]]
-    assert (2, morning_view.LABELS["unsure"]) in stats and (1, morning_view.LABELS["unread_attachments"]) in stats
+    assert (1, morning_view.LABELS["unread_attachments"]) in stats
     payload = Path(report.payload_path).read_text(encoding="utf-8")
     assert "invoice" not in payload and "gmail-000" not in payload
 
@@ -411,7 +396,7 @@ def test_counts_that_only_inform_never_push_one_that_waits_on_the_person_off_the
     """Hundreds of attachments still to read rank after a change waiting for one click."""
     import spaceyaml
     space = spaceyaml.load(make_space(tmp_path / "ada"))
-    counts = {"unread_attachments": 300, "unsure": 40, "meetings": 9, "landed_silently": 7,
+    counts = {"unread_attachments": 300, "meetings": 9, "landed_silently": 7,
               "protected_pr": 1, "leaving": 1, "candidate": 2, "question": 1, "security": 1}
     notice, _ = morning_view._notice(space, [], counts, [], False)
     labels = [s["label"] for s in notice["stats"]]

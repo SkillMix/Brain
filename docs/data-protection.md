@@ -13,7 +13,8 @@ reads into git repositories your company owns on your Git host.
 |---|---|---|
 | Raw records as exported: full mail bodies with quoted history, full call transcripts with speaker names, chat threads, calendar descriptions, document and attachment text | `_meta/state/feed/` on the person's machine | no |
 | Witness pages: one dated page per record, holding its full text | `knowledge/sources/` in the person's workspace | yes |
-| Records the agent could not classify as work or personal | `_meta/state/private/unsure.jsonl` on the person's machine, listed by a one-line label in their own morning mail | no |
+| Records the agent could not classify as work or personal | `_meta/state/private/unsure.jsonl` on the person's machine, never shown to anyone | no |
+| A pointer to each of those: its id, source, when it was parked, a hash of its thread, channel and event series ids and why it was parked, never what it says or who sent it | `_meta/state/unsure-ids.jsonl` in the person's workspace | yes |
 | Subject briefs: the agent's private working notes per client or project | `_meta/state/private/briefs/` on the person's machine | no |
 | Facts and verbatim passages released to the brain or a project, and pages people signed | `knowledge/` in the brain or the project space | yes |
 | The question log: what the person asked and which pages answered | `_meta/questions.log` in that space; it never leaves it | yes |
@@ -21,8 +22,12 @@ reads into git repositories your company owns on your Git host.
 
 Before writing a record, the agent decides whether it is work, personal, academic or unsure.
 Personal and academic records are counted in the run log and written nowhere. An unsure record
-waits on the person's machine until they answer yes (it comes in as work) or no (it is
-dropped); unanswered, it goes after 14 days. This is an agent's judgment and can be wrong.
+comes in as work at once when a script finds a hard signal in it (its thread, channel or
+event series already holds company work, or it carries a registered client's identifier),
+and its witness page says which; otherwise it waits on the person's machine and comes in when
+later company work shares its thread, channel or series. Nobody is asked, and it goes after 90
+days without such a match. Personal or academic is an agent's judgment and can be wrong; a record
+comes in as work only on a hard signal, never on what it says.
 
 Mail and calls name other people: colleagues, clients, suppliers. Their words and addresses are
 copied with the record.
@@ -91,7 +96,7 @@ access only to the repositories it needs; a workspace needs none.
   deletes them on a schedule.
 - Status pages, the morning view and the health line are rebuilt from the records on every
   run.
-- Unsure records go after 14 days without an answer.
+- Unsure records go 90 days after they were parked unless company work matched them first.
 - Raw feed files stay on the person's machine until they remove them.
 
 Git keeps history. A file deleted today is still in every earlier commit, in every clone of

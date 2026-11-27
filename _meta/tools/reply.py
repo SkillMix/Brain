@@ -24,12 +24,10 @@ notice is queued (`owner_email.queue`, to the owner's own address, at most one a
 why it was not applied and how to reply so it is. The notice quotes nothing of the mail.
 Anyone else's mail stays silent.
 
-A record the reader could not classify is answered by its code (`3fa2c09b yes`), applied at
-once (capture, never a release or a signature), but only when every code the reply names is
-one waiting and they are no more than the records waiting: one unknown code, or too many,
-and none is applied. Only the person's own lines count (`own_lines`): the quoted mail, or the
-briefing quoted without `>` marks, whose "Also worth knowing" part holds outsiders' subjects,
-never answers anything.
+A record the door could not place is never answered by mail: the sweep settles it by itself
+(unsure.py), so no line of a reply brings one in or lets one go. Only the person's own lines
+count (`own_lines`): the quoted mail, or the briefing quoted without `>` marks, never answers
+anything.
 
     python reply.py [root]
 """
@@ -46,7 +44,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import morning_view  # noqa: E402
 import pages  # noqa: E402
 import spaceyaml  # noqa: E402
-import unsure  # noqa: E402
 
 FEED = Path("_meta") / "state" / "feed" / "mail.jsonl"
 MORNING = Path("_meta") / "state" / "morning"
@@ -62,8 +59,9 @@ CLAUSE_MAX = 200     # a longer line is no answer line
 CLAUSES_MAX = 50     # a reply naming more clauses than this is read as none
 QUOTED = re.compile(r"^\s*(>|on .+ wrote:)", re.I)
 # The briefing's own words, for a reply whose mail program quoted it without `>` marks: its
-# "Also worth knowing" part carries outsiders' subjects (`Is this work? ... lunch; all yes`), so
-# no line from that heading on is the person's own, and neither is its footer.
+# "Also worth knowing" part may carry outsiders' words (an older briefing listed parked records
+# there, `Is this work? ... lunch; all yes`), so no line from that heading on is the person's own,
+# and neither is its footer.
 BRIEFING_OWN = re.compile(r"also worth knowing|is this work\?|sent automatically by your space|"
                           r"if you answer by reply, keep this line", re.I)
 
@@ -115,34 +113,6 @@ def parse(text: str, count: int) -> dict:
 
 
 LEFT = re.compile(r"^\s*left\s+(\d+(?:\s*,\s*\d+)*)\s+no\b", re.I)
-UNSURE_CODE = re.compile(r"\b([0-9a-f]{8})\s+(yes|no)\b", re.I)
-
-
-def unsure_answers(root: Path, text: str) -> dict:
-    """`3fa2c09b yes` / `3fa2c09b no` in the reply's own lines: a record the reader could not
-    classify is brought in or let go, at once (it is capture, never a release or a signature).
-    Only its code names it, so `all yes` or a range never reaches one. All or nothing: when any
-    code named is not one waiting, or the reply names more codes than records wait, nothing is
-    applied and the count says `refused`, so guessing codes gains nothing."""
-    settled = {"admitted": 0, "dropped": 0}
-    by_code = {unsure.code_of(r): r["key"] for r in unsure.waiting(root)}
-    by_code.pop("", None)
-    named = []
-    for raw in own_lines(text):
-        named += [(code.lower(), verb.lower()) for code, verb in UNSURE_CODE.findall(raw)]
-    if not named:
-        return settled
-    if len(named) > len(by_code) or any(code not in by_code for code, _ in named):
-        return dict(settled, refused=len(named))
-    for code, verb in named:
-        key = by_code[code]
-        if verb == "yes" and unsure.admit(root, key):
-            settled["admitted"] += 1
-        elif verb == "no" and unsure.drop(root, key):
-            settled["dropped"] += 1
-    return settled
-
-
 def parse_left(text: str, left: list) -> list:
     """`left 2 no` (or `left 1, 3 no`): pull back what the briefing listed under Left yesterday."""
     out = []
@@ -169,9 +139,9 @@ def _seen(root: Path) -> set:
     return out
 
 
-def _mark_seen(root: Path, seen: set, rec: dict, now, answers: int, settled: dict,
+def _mark_seen(root: Path, seen: set, rec: dict, now, answers: int,
                rejected: str | None = None, told: bool = False) -> None:
-    row = {"record": rec.get("id"), "at": pages.iso(now), "answers": answers, "unsure": settled}
+    row = {"record": rec.get("id"), "at": pages.iso(now), "answers": answers}
     if rejected:
         row["rejected"] = rejected
     if told:   # the owner was told by email why it was not applied
@@ -235,10 +205,9 @@ def _owner_sent(rec: dict, me: str) -> bool:
 
 
 def _answers_something(text) -> bool:
-    """The person's own lines hold an answer line: numbers and a verb, a record's code, or a
-    `left` line. A plain forward with nothing of theirs is no reply."""
-    lines = own_lines(text)
-    return bool(parse(text, CLAUSES_MAX)) or any(UNSURE_CODE.search(l) or LEFT.match(l) for l in lines)
+    """The person's own lines hold an answer line: numbers and a verb, or a `left` line. A plain
+    forward with nothing of theirs is no reply."""
+    return bool(parse(text, CLAUSES_MAX)) or any(LEFT.match(l) for l in own_lines(text))
 
 
 def _tell_owner(root: Path, space, rec: dict, why: str) -> bool:
@@ -287,7 +256,7 @@ def run(root, now: dt.datetime | None = None) -> list:
         if FORWARD.match(subject):   # never applied; the owner hears why when it answered something
             if _owner_sent(rec, me) and _answers_something(rec.get("text")):
                 told = _tell_owner(root, space, rec, "forward")
-                _mark_seen(root, seen, rec, now, 0, {}, rejected="forward", told=told)
+                _mark_seen(root, seen, rec, now, 0, rejected="forward", told=told)
             continue
         if not BRIEFING.match(subject):
             continue
@@ -302,21 +271,16 @@ def run(root, now: dt.datetime | None = None) -> list:
         if problem:   # never the person's own reply: nothing of it is applied, and it is read once
             told = (problem in ("recipient", "reference") and _owner_sent(rec, me)
                     and _answers_something(rec.get("text")) and _tell_owner(root, space, rec, problem))
-            _mark_seen(root, seen, rec, now, 0, {}, rejected=problem, told=told)
+            _mark_seen(root, seen, rec, now, 0, rejected=problem, told=told)
             continue
-        settled = unsure_answers(root, rec.get("text"))
         listing = root / MORNING / f"{day}.json"
         if not listing.exists():
-            if any(settled.values()):
-                _mark_seen(root, seen, rec, now, 0, settled)
             continue
         day_list = json.loads(listing.read_text(encoding="utf-8"))
         items = day_list.get("items") or []
         verdicts = parse(rec.get("text"), len(items))
         pulled = parse_left(rec.get("text"), day_list.get("left") or [])
         if not verdicts and not pulled:
-            if any(settled.values()):
-                _mark_seen(root, seen, rec, now, 0, settled)
             continue
         chosen = {items[n - 1]["id"]: ([v, note] if note else v) for n, (v, note) in sorted(verdicts.items())}
         chosen.update({pid: "no" for pid in pulled})
@@ -331,7 +295,7 @@ def run(root, now: dt.datetime | None = None) -> list:
                 "or correct any line first.\n\n" + "\n".join(lines) + "\n")
         tail = pages.record_file_name(str(rec.get("id")))[-6:].strip("-.") or "reply"
         target = pages.write(root / ANSWERS / f"reply-{day}-{tail}.md", fm, body, root=root)
-        _mark_seen(root, seen, rec, now, len(chosen), settled)
+        _mark_seen(root, seen, rec, now, len(chosen))
         written.append(target.relative_to(root).as_posix())
     return written
 

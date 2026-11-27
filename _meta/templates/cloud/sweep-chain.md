@@ -52,8 +52,12 @@ Then, for each root, the workspace first:
    A file that clone does not hold is left out and named under `unreachable` in your run line, with its pull
    request. A repository whose answer says GitHub access to it "is not enabled for this session" is one this task
    does not attach: name it under `unreachable` and go on. Keep personal and academic records out (count them) and
-   park an unsure one in `/home/user/<root>/_meta/state/private/unsure.jsonl`, as the skill says. There is no
-   history to read in the cloud: the routines move here only once it is read.
+   park an unsure one in `/home/user/<root>/_meta/state/private/unsure.jsonl`, as the skill says. A record parked
+   here goes with this machine, but its pointer stays: before the new records, fetch again by its id, with that
+   source's connector, each record `python3 /home/user/<root>/_meta/tools/sweep.py /home/user/<root> --refetch`
+   prints (`<source>`, `<signal>`, `<id>`, a tab between each), and append it to its feed as the skill says, with
+   `"admitted": true` and its `door`. There is no history to read in the cloud: the routines move here only once
+   it is read.
 2. **Attachments.** `python3 /home/user/<root>/_meta/tools/sweep.py /home/user/<root> --attachments` prints one
    row per attachment to read: the record id, its subject, the file name and its handle, separated by a tab each;
    the subject is empty on some rows (`<record id>\t\t<name>\t<handle>`). Read each with the mail connector's

@@ -64,65 +64,26 @@ def test_a_reply_to_the_briefing_becomes_one_answer_to_read_back(tmp_path):
     assert all((root / f"_inbound/candidates/c{n}.md").exists() for n in range(3))
 
 
-def test_a_yes_on_an_unsure_item_brings_the_record_in_once(tmp_path):
+def test_a_reply_naming_a_parked_records_code_brings_nothing_in_and_lets_nothing_go(tmp_path):
+    """R2: the door settles parked records by itself, so no reply answers one, even the owner's own
+    referenced reply naming the code an older version drew for it."""
     import unsure
     root = make_space(tmp_path / "ada", owner_email="ada@lantern.example")
-    rec = {"id": "m-77", "feed": "mail", "kind": "mail", "at": "2026-10-11T08:00:00Z", "subject": "Dinner",
-           "text": "B."}
+    parked = [{"id": "m-77", "feed": "mail", "kind": "mail", "at": "2026-10-11T08:00:00Z", "subject": "Dinner",
+               "text": "B.", "code": "3fa2c09b"},
+              {"id": "m-79", "feed": "mail", "kind": "mail", "at": "2026-10-11T08:00:00Z", "subject": "Gym",
+               "text": "B.", "code": "4bb3d10c"}]
     (root / unsure.STORE).parent.mkdir(parents=True, exist_ok=True)
-    (root / unsure.STORE).write_text(json.dumps(rec) + "\n", encoding="utf-8")
-    [waiting] = unsure.waiting(root)
-    key = unsure.code_of(waiting)
-    listing(root, [{"id": f"unsure-{key}", "kind": "unsure", "text": "a record to classify"}])
-    feed = root / "_meta" / "state" / "feed" / "mail.jsonl"
-    feed.parent.mkdir(parents=True, exist_ok=True)
-    for n in (1, 2):
-        with feed.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps({"id": f"r-{n}", "kind": "mail", "at": "2026-10-12T10:00:00Z",
-                                 "from": "ada@lantern.example", "to": ["ada@lantern.example"],
-                                 "subject": "Re: Morning briefing: 1 item needs you", "text": f"{key} yes{QUOTE}"})
-                     + "\n")
-    reply.run(root, now=NOW)
-    ids = [json.loads(line)["id"] for line in feed.read_text(encoding="utf-8").splitlines()]
-    assert ids.count("m-77") == 1 and unsure.waiting(root) == []
-    assert not list((root / "_inbound" / "answers").glob("*.md")), "nothing to sign: applied at once"
-
-
-def test_a_no_on_an_unsure_item_lets_it_go(tmp_path):
-    import unsure
-    root = make_space(tmp_path / "ada", owner_email="ada@lantern.example")
-    rec = {"id": "m-79", "feed": "mail", "kind": "mail", "at": "2026-10-11T08:00:00Z", "subject": "Gym", "text": "B."}
-    (root / unsure.STORE).parent.mkdir(parents=True, exist_ok=True)
-    (root / unsure.STORE).write_text(json.dumps(rec) + "\n", encoding="utf-8")
-    listing(root, [{"id": f"unsure-{unsure.key_of(rec)}", "kind": "unsure", "text": "x"}])
-    [waiting] = unsure.waiting(root)
-    feed = root / "_meta" / "state" / "feed" / "mail.jsonl"
-    feed.parent.mkdir(parents=True, exist_ok=True)
-    feed.write_text(json.dumps({"id": "r-9", "kind": "mail", "at": "2026-10-12T10:00:00Z",
-                                "from": "ada@lantern.example", "to": ["ada@lantern.example"],
-                                "subject": "Re: Morning briefing", "text": f"{unsure.code_of(waiting)} no{QUOTE}"}) + "\n",
-                    encoding="utf-8")
-    reply.run(root, now=NOW)
-    assert unsure.waiting(root) == []
-    assert "m-79" not in feed.read_text(encoding="utf-8")
-
-
-def test_unsure_records_answer_to_their_code_only(tmp_path):
-    import unsure
-    root = make_space(tmp_path / "ada", owner_email="ada@lantern.example")
-    keep = {"id": "m-81", "feed": "mail", "kind": "mail", "at": "2026-10-11T08:00:00Z", "subject": "A", "text": "B."}
-    other = dict(keep, id="m-82")
-    (root / unsure.STORE).parent.mkdir(parents=True, exist_ok=True)
-    (root / unsure.STORE).write_text(json.dumps(keep) + "\n" + json.dumps(other) + "\n", encoding="utf-8")
+    (root / unsure.STORE).write_text("".join(json.dumps(r) + "\n" for r in parked), encoding="utf-8")
     listing(root, [{"id": "p-1", "kind": "candidate", "text": "x"}])
-    code = next(unsure.code_of(r) for r in unsure.waiting(root) if r["id"] == "m-81")
     feed = root / "_meta" / "state" / "feed" / "mail.jsonl"
     feed.parent.mkdir(parents=True, exist_ok=True)
     feed.write_text(json.dumps({"id": "r-20", "kind": "mail", "at": "2026-10-12T10:00:00Z",
                                 "from": "ada@lantern.example", "to": ["ada@lantern.example"],
-                                "subject": "Re: Morning briefing", "text": f"all yes\n{code} yes{QUOTE}"}) + "\n",
-                    encoding="utf-8")
-    reply.run(root, now=NOW)
+                                "subject": "Re: Morning briefing",
+                                "text": f"all yes\n3fa2c09b yes\n4bb3d10c no{QUOTE}"}) + "\n", encoding="utf-8")
+    [written] = reply.run(root, now=NOW)
+    assert pages.read(root / written)[0]["verdicts"] == {"p-1": "yes"}, "the list's own answers still count"
     ids = [json.loads(line)["id"] for line in feed.read_text(encoding="utf-8").splitlines()]
-    assert "m-81" in ids and "m-82" not in ids, "all yes never reaches an unsure record"
-    assert [r["id"] for r in unsure.waiting(root)] == ["m-82"]
+    assert "m-77" not in ids and "m-79" not in ids
+    assert [json.loads(l)["id"] for l in (root / unsure.STORE).read_text(encoding="utf-8").splitlines()] == ["m-77", "m-79"]
