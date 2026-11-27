@@ -50,9 +50,19 @@ export; the tool decides.
    message sent, received or copied to the person (`thread`, `labels`), `text` its full body
    (quoted history included), the file names in `attachments`. Mail and messages always carry
    `from`, `to` and `cc` as addresses: without them no status page knows who owes whom. call =
-   one recorded meeting, `subject` the meeting's own title, `text` the recorder's summary, action
-   items and key points (each owner and date kept), then the full transcript, one line per
-   utterance `[hh:mm:ss] Speaker: words`, `participants` everyone on it by address; message =
+   one recorded meeting, whatever notetaker made it, `subject` the meeting's own title,
+   `participants` everyone on it by address, `text` in up to three labelled parts, in this order,
+   each only when the notetaker offers it: `Notetaker's summary (<notetaker>, AI-written):` its
+   summary or AI notes verbatim (notes it built from the person's own notes are its output too);
+   `Notetaker's action items (<notetaker>, AI-written):` verbatim, each owner and date kept;
+   `Transcript:` the full transcript, one line per utterance, `[hh:mm:ss] <speaker as labelled>: <words>`, a generic
+   label (`Speaker 2`) kept as it is. A call record also says what it holds: `transcript:
+   complete`, or `transcript: pending` (the notetaker has not finished it, or this run could not
+   fetch it) or `transcript: none` (the notetaker offers none for this meeting), each of the two
+   with `transcript_why: <one line>`. **The transcript, every time.** It is the source; the
+   summary and the action items only say where to look. A long transcript is exactly the case it
+   is for (the sweep splits a long page into parts): never leave it out for its length, your time
+   or your tokens. The sweep refuses a call record that says neither; message =
    one chat thread (`channel`), every message with its author and time, its files read with the
    chat connector's file reader, and AI notes and canvases as `document` records of their own;
    event = one calendar entry (`calendar`), `subject` the title, `text` the description,
@@ -118,7 +128,11 @@ export; the tool decides.
    gets no witness page), `read_via: connector | preview | approved_batch`, and `from`, `to`,
    `cc`, `at` and `identifiers` copied from its mail. The handle (`att-` and twelve hex digits)
    is the only value either command takes: it needs no quotes, so a name a sender chose never
-   reaches the shell.
+   reaches the shell. A row named `transcript` is a call's transcript still `pending`: fetch it
+   from the notetaker and append a call record of its own, `id` `<record id>/transcript`, `kind:
+   call`, `transcript: complete`, `text` `Transcript:` and its lines, `subject`, `participants`,
+   `at` and `identifiers` copied from its call; when the notetaker now says there is none, run
+   `--attachment-read <handle>`; while it is still not ready, leave it: every later run lists it.
 3. `python _meta/tools/sweep.py <root>` (`--dry-run` prints the plan and writes nothing).
 4. With `routing:` in `space.yaml`: route what the sweep wrote, as
    `.claude/skills/route/SKILL.md` says. The sweep itself then releases nothing.
@@ -168,8 +182,9 @@ signals in `_outbound/signals/`; the watermark; one run line.
 
 None on classification: the tool decides, doubt stays home and is shown as a count on Needs
 you. Your only call is a broken export: a connector you could not reach (export nothing for
-it, say so in your run line, continue with the others) or a record that is not valid JSON
-(fix the export, rerun). Then your run line in `_meta/state/runs.jsonl`:
+it, say so in your run line, continue with the others), a record that is not valid JSON
+(fix the export, rerun), or a call record the sweep refused (a `refuse` line in its plan, and
+`refused` in its run line): fix that line in the feed so it says what it holds, and rerun. Then your run line in `_meta/state/runs.jsonl`:
 `{"routine": "sweep", "at": "<ISO UTC>", "space": "<name>", "cost_tokens": <n>,
 "notes": {"step": "export", "sources": {"<name>": <records or "unreachable">}}}`.
 
@@ -213,3 +228,6 @@ Run the sweep chain for the space at <root> as <person>.
 
 `_meta/tests/behaviour/sweep.yaml`: a fixture feed in, witness pages and queue items out;
 writes only under `knowledge/sources/`, `_outbound/`, `_meta/state/`; no `stable`; no send.
+`_meta/tools/tests/test_call_transcripts.py`: three notetaker shapes (speaker names, generic
+labels, notes plus transcript); a call that does not say what it holds is refused until its
+line is fixed; a `pending` transcript is listed every run until it is fetched.

@@ -7,6 +7,39 @@ the shape and ships its migration. Each choice behind a change has a line in
 
 ## [Unreleased]
 
+A recorded meeting's transcript is now the source, every time, from any notetaker. The
+notetaker's summary and action items only say where to look, a disagreement between them and the
+transcript is written down, and a line can cite the moment it rests on.
+
+### Changed
+
+- **A call record says what it holds.** Its text keeps up to three labelled parts, in order: the
+  notetaker's summary or notes, its action items (both marked AI-written), then the transcript,
+  one `[hh:mm:ss] <speaker>: <words>` line per utterance. A field says whether the transcript is
+  there: `transcript: complete`, `pending` or `none`, the last two with a `transcript_why`. The
+  witness page carries both fields. The sweep refuses a call record that says neither, or that
+  says `complete` without one utterance line: no page, a `refuse` plan line, `refused` in the run
+  line, and the feed's mark stays before it, so the fixed line is read on the next run.
+- **A pending transcript is fetched later, like an unread attachment.** The sweep lists it in
+  `_meta/state/attachments-unread.jsonl` under the name `transcript`; `--attachments` shows it
+  every run, a cloud run's fresh clone included, until a call record `<record id>/transcript` is
+  swept, or `--attachment-read` says the notetaker has none.
+- **"The transcript, every time" is a rule the run cannot read as optional.** The sweep skill and
+  the cloud sweep chain say a long transcript is exactly the case it is for. The chain's line that
+  left "the transcripts" to the computer now names what it meant: Claude's own session transcripts.
+- **The transcript is the source; the notetaker's output is a map.** One section of the route
+  skill, which distill and the check point to: who, when and how much come from the transcript; a
+  conflict is written down in one clause (in a draft, under `## Disagreements`); an unclear
+  transcript stays "owner unclear"; a call page without its transcript is hearsay; the witness
+  page is never corrected. It comes with guidance on reading a transcript: misheard names, generic
+  or swapped speaker labels, misheard numbers and dates, mixed languages, soft spoken agreement.
+- **Citations can name the moment.** `[src: <record id>@<hh:mm:ss>]` (or `@mm:ss`): `distill.py
+  verify` accepts it when the record is in evidence and its page, split parts included, holds an
+  utterance at or before that time and not past the last. A plain `[src: <record id>]` still
+  passes.
+- **More notetakers are known by name** in the apps card (`fireflies`, `tactiq`, `sembly`,
+  `supernormal`, `circleback`, `bluedot`, `leexi`).
+
 ## [0.3.9] - 2026-11-27
 
 A space's checks no longer fail on twelve tests that read files only the template has, so the

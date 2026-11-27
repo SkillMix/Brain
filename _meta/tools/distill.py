@@ -48,7 +48,8 @@ the watermark stays). `verify` lists what keeps a candidate from the signer (a l
 `[src: ...]`, a source not in `evidence`, a never-leaves term, a left-out term of the
 destination, a bracketed placeholder); `checked` stamps `checked: {by, at}` once it is clean.
 A source also passes when it is the `q-` id of a question of the candidate's subject that was
-answered or settled (`sign_questions.py`). `verify --body <file>` checks that file's text, a
+answered or settled (`sign_questions.py`), and `<record id>@<hh:mm:ss>` names a moment of a call
+in evidence, which passes when the record's page holds an utterance there. `verify --body <file>` checks that file's text, a
 write-up, against the candidate's frontmatter instead of the candidate's own body.
 `prepare` lists the subject candidates whose questions need preparing, one tab-separated line
 (candidate, subject, why) each: a subject never checked, or with records that arrived since its
@@ -732,11 +733,14 @@ def verify(root, candidate) -> list:
 def verify_body(root, fm: dict, body: str, offset: int = 0) -> list:
     """The problems `verify` reports for `body` against the frontmatter `fm` of its candidate.
     A source passes when it is in `evidence`, or is the `q-` id of a question of the candidate's
-    subject that was answered or settled. `offset` is the number of lines before `body`."""
+    subject that was answered or settled. A moment of a call, `<record id>@<hh:mm:ss>` (or
+    `@mm:ss`), passes when its record is in `evidence` and the record's page holds an utterance
+    there (`pages.utterance_at`). `offset` is the number of lines before `body`."""
     import sign_questions   # here and not at the top: sign_questions imports distill
     evidence = {str(r) for r in fm.get("evidence") or []}
     subject = str(fm.get("subject") or "")
     answered = None   # the subject's citable questions, read from the ledger at the first `q-` source
+    texts = None      # record id -> its page's text (parts joined), read at the first cited moment
     problems = []
     for number, heading, unit in body_units(body):
         where = f"line {number + offset}"
@@ -753,11 +757,28 @@ def verify_body(root, fm: dict, body: str, offset: int = 0) -> list:
                                     if q.subject == subject and q.status in ("answered", "settled")}
                     if rid in answered:
                         continue
+                record, _, moment = rid.rpartition("@")
+                if record in evidence and pages.MOMENT_RE.match(moment):
+                    if texts is None:
+                        texts = record_texts(root)
+                    if pages.utterance_at(texts.get(record, ""), moment) is None:
+                        problems.append(f"{where}: source {rid}: no utterance at {moment} in its transcript")
+                    continue
                 problems.append(f"{where}: source {rid} is not in evidence")
         mark = next((m for m in PLACEHOLDERS if m in unit.lower()), None)
         if mark:
             problems.append(f"{where}: placeholder `{mark}`")
     return problems
+
+
+def record_texts(root) -> dict:
+    """Record id -> the text of its witness page or landed record, a split page's parts joined in
+    order: what a cited moment is looked up in."""
+    parts: dict = {}
+    for ev in gather_evidence(root, Reader()):
+        part = int(ev.fm.get("part") or 1)   # part k > 1 is the record `<id>#k` (sweep._write_parts)
+        parts.setdefault(ev.record.rpartition("#")[0] if part > 1 else ev.record, []).append((part, ev.body))
+    return {rid: "".join(body for _, body in sorted(chunks, key=lambda c: c[0])) for rid, chunks in parts.items()}
 
 
 def checked(root, candidate, by: str, now: dt.datetime | None = None) -> list:

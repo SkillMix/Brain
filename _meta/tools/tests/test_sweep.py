@@ -33,6 +33,9 @@ def record(rid="m-0001", **over):
             "text": "Go-live moves to 3 November. Please confirm.",
             "identifiers": {"thread": "t-1", "labels": ["Harbor"]}, "attachments": []}
     base.update(over)
+    if base["kind"] == "call" and "transcript" not in over:   # a call says what it holds
+        base.update({"transcript": "complete"} if any(sweep.UTTERANCE.match(l) for l in base["text"].splitlines())
+                    else {"transcript": "none", "transcript_why": "the notetaker kept a summary only"})
     return base
 
 

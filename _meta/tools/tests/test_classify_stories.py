@@ -52,7 +52,7 @@ def tide(brain):
 
 def captured(root, rid="c-1"):
     rec = {"id": rid, "source": "calls", "kind": "call", "at": "2026-10-12T08:00:00Z", "from": "ben@lantern.example",
-           "to": [], "subject": "Timetable", "text": CALL,
+           "to": [], "subject": "Timetable", "text": CALL, "transcript": "complete",
            "participants": ["ben@lantern.example", "dana@tide.example"], "identifiers": {"thread": rid}}
     feed = root / "_meta" / "state" / "feed" / "calls.jsonl"
     feed.parent.mkdir(parents=True, exist_ok=True)

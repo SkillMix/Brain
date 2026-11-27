@@ -1,0 +1,89 @@
+# A call whose notetaker's action list names the wrong owner: the router takes the owner from the
+# transcript and writes the conflict down in one clause. The tool records the decision as given:
+# the open item carries the transcript's owner, the clause travels with it, the witness page keeps
+# the notetaker's text as it came, and nothing is signed. Any notetaker: the parts are labelled,
+# never a product's own format.
+name: route records the transcript's owner and the conflict with the notetaker's action list
+command: [python, _meta/tools/route.py, "{root}", record, "{root}/_meta/state/private/decisions/c-scenario-2.yaml"]
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1440
+      name: ada
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience: [Ada Okafor]
+      parent: brain
+      routing: {since: "2026-09-01"}
+      sources: [{name: calls, adapter: files, audience: owner}]
+    work/.gitkeep: ""
+    journal/.gitkeep: ""
+    outbox/.gitkeep: ""
+    _meta/subjects.yaml:
+      subjects:
+        - id: harbor
+          kind: projects
+          title: Harbor
+          state: active
+          owner: Ada Okafor
+          home: harbor
+          classification: {class: walled, state: settled, home: harbor, crew: [ada], reason: its own space,
+                           decided_by: Ada Okafor, at: "2026-10-01T09:00:00Z"}
+          match: {domain: harbor.example}
+    knowledge/sources/2026/10/c-scenario-2.md: |
+      ---
+      id: p-5ce0a002
+      type: source
+      title: Harbor kickoff
+      status: draft
+      generated: {by: sweep, at: '2026-10-02T10:00:00Z'}
+      record: c-scenario-2
+      source: calls
+      kind: call
+      transcript: complete
+      at: '2026-10-02T09:15:00Z'
+      from: ada@lantern.example
+      participants: [ada@lantern.example, ben@lantern.example, chloe@harbor.example]
+      mentions: [harbor]
+      audience: owner
+      identifiers: {thread: c-scenario-2}
+      ---
+      Notetaker's summary (Recorder, AI-written):
+      The pilot scope is forty leads in the first list.
+      Notetaker's action items (Recorder, AI-written):
+      - Ada Okafor: send the first lead list by Friday
+      Transcript:
+      [00:12:40] Ada Okafor: Forty leads in the first list works for us.
+      [00:36:26] Chloe Martin: Ben, can you send me the first list by Friday?
+      [00:36:31] Ben Liu: Yeah, I can send it Friday.
+    _meta/state/private/decisions/c-scenario-2.yaml: |
+      record: c-scenario-2
+      decision: route
+      confidence: high
+      why: the client's kickoff; the owner comes from the transcript, not the notetaker's action list
+      checked_by: Checker
+      routes:
+        - space: harbor
+          subject: harbor
+          tier: at_once
+          why: pilot work
+          content: parts
+          parts:
+            - text: "[00:36:26] Chloe Martin: Ben, can you send me the first list by Friday?"
+            - text: "[00:36:31] Ben Liu: Yeah, I can send it Friday."
+          informs:
+            - kind: open_item
+              text: "Send Chloe the first list by Friday. The notetaker's action list names Ada; in the transcript (00:36:26) Chloe asks for it from Ben."
+              owner: Ben Liu
+              direction: we owe
+env: {SPACE_NOW: "2026-10-05T09:00:00Z"}
+expect:
+  exit: 0
+  writes_only_under: [knowledge/sources/, _outbound/]
+  never_contains:
+    "knowledge/sources/**": ["status: stable"]
+    "_outbound/**": ["status: stable", "owner: Ada Okafor"]
+  must_exist: ["_outbound/queue/*.md", "_meta/state/routing.jsonl"]
