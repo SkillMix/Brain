@@ -1,0 +1,60 @@
+# A record a cloud run parked leaves only its pointer; once company work shared its thread, the
+# next export fetches it again by its id (unsure.py refetch) and writes it to its feed as admitted.
+# The sweep then gives it its page however old it is, saying how the door let it in, and the
+# tracked pointer file still holds nothing the record says.
+name: a record a cloud pointer named is swept once the export fetched it again by its id
+command:
+- python
+- _meta/tools/sweep.py
+- '{root}'
+setup:
+  files:
+    space.yaml:
+      shape: 1
+      profile: personal
+      mode: fixture
+      time_scale: 1440
+      name: ada
+      owner: Ada Okafor
+      owner_email: ada@lantern.example
+      audience:
+      - Ada Okafor
+      parent: brain
+      sources:
+      - name: mail
+        adapter: files
+        audience: owner
+    work/.gitkeep: ''
+    journal/.gitkeep: ''
+    outbox/.gitkeep: ''
+    _meta/subjects.yaml:
+      subjects: []
+    _meta/state/sweep-watermark.yaml: "at: '2026-10-04T00:00:00Z'\nfeeds:\n  mail: '2026-10-04T00:00:00Z'\n"
+    _meta/state/unsure-ids.jsonl: '{"id": "m-cloud", "source": "mail", "at": "2026-09-21T07:00:00Z", "ids":
+      ["9f5b4da69238636e"], "reason": "no-signal"}
+
+      {"id": "m-cloud", "admitted": "match", "signal": "thread", "at": "2026-10-03T13:00:00Z", "fetch": true}
+
+      '
+    _meta/state/feed/mail.jsonl: '{"id": "m-cloud", "source": "mail", "kind": "mail", "at": "2026-09-20T09:15:00Z",
+      "from": "pat@tidewater.example", "to": ["ada@lantern.example"], "subject": "Re: the pier schedule", "text":
+      "The pier opens on the ninth.", "identifiers": {"thread": "t-7"}, "attachments": [], "admitted": true,
+      "door": {"by": "match", "signal": "thread"}}
+
+      '
+env:
+  SPACE_NOW: '2026-10-05T09:00:00Z'
+expect:
+  exit: 0
+  writes_only_under:
+  - knowledge/sources/
+  - live/
+  must_exist:
+  - knowledge/sources/2026/09/m-cloud.md
+  never_contains:
+    knowledge/sources/**:
+    - 'status: stable'
+    _meta/state/unsure-ids.jsonl:
+    - pier
+    - tidewater
+    - t-7

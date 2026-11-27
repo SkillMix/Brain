@@ -34,15 +34,12 @@ Wrote `live/needs-you.md` (the full list: deadline first, then how much depends 
 about seven shown, the rest counted); stamped every queue item leaving within the next 24
 hours `listed: true` with the date, which is what lets release ship it tomorrow; wrote the
 notice and rendered the payload: counts with plain labels, the health line, `[shadow]` in
-the subject when asked; never a title, name, date or path from the items counted. The one
-exception, in the email only: the records the export could not classify as work or personal
-(`_meta/state/private/unsure.jsonl`), each a plain one-line label numbered after the list, so a
-reply's `yes` brings one in and `no` lets it go (`reply.py` applies those at once). The notice
-and the payload live in `_meta/state/private/`, which the sync never stages. The mail's footer
-carries a reply reference (`reference <code>`), and the listing keeps only its hash: reply.py
-reads a reply only from the owner's own address, sent only to it, that quotes that reference,
-so send the payload unchanged. An unsure code is eight hex digits, and one unknown code in a
-reply means none applies. A reply from the owner's own address that holds answers but lost
+the subject when asked; never a title, name, date or path from the items counted, and nothing
+about records the door parked (the sweep settles those by itself; the health page counts them).
+The notice and the payload live in `_meta/state/private/`, which the sync never stages. The
+mail's footer carries a reply reference (`reference <code>`), and the listing keeps only its
+hash: reply.py reads a reply only from the owner's own address, sent only to it, that quotes
+that reference, so send the payload unchanged. A reply from the owner's own address that holds answers but lost
 its reference line, went to someone else too, or was a forward is not applied; reply.py then
 queues one owner notice (at most one a day) saying why and how to reply so it counts. Send
 it with the owner-email skill like any notice. Mail from anyone else stays silent.

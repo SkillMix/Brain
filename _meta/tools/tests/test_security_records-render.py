@@ -136,32 +136,32 @@ def _unsure_store(root, *records):
 
 
 PRIVATE = {"id": "m-private-777", "feed": "mail", "kind": "mail", "at": "2026-10-11T08:00:00Z",
-           "subject": "Your test results", "from": "results@clinic.example", "text": "Private."}
+           "subject": "Your test results", "from": "results@clinic.example", "text": "Private.",
+           "code": "3fa2c09b"}   # the code an older version drew and kept in the store
 
 
-def test_guessed_unsure_codes_admit_nothing_even_from_the_owner(tmp_path):
+def _parked(root):
+    path = root / unsure.STORE
+    return [json.loads(l)["id"] for l in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
+
+
+def test_no_code_in_a_reply_admits_a_parked_record_even_from_the_owner(tmp_path):
     root = make_space(tmp_path / "ada")
     ref = briefed(root)
     _unsure_store(root, PRIVATE)
-    [waiting] = unsure.waiting(root)
-    real = unsure.code_of(waiting)
-    guesses = "\n".join(f"{n:08x} yes" for n in range(1000)) + f"\n{real} yes"
+    guesses = "\n".join(f"{n:08x} yes" for n in range(1000)) + f"\n{PRIVATE['code']} yes"
     feed(root, [mail("m-brute", OWNER, f"{guesses}\n> reference {ref}")])
     reply.run(root, now=NOW)
-    assert [r["id"] for r in unsure.waiting(root)] == ["m-private-777"], "one unknown code: none applied"
+    assert _parked(root) == ["m-private-777"], "guessed or real, a code answers nothing"
     assert "m-private-777" not in (root / "_meta/state/feed/mail.jsonl").read_text(encoding="utf-8")
-    assert seen_rows(root)[-1]["unsure"].get("refused") == 1001
 
 
-def test_an_unsure_code_is_random_not_the_hash_of_its_id(tmp_path):
-    import hashlib
+def test_the_tracked_ids_file_never_holds_a_code(tmp_path):
     root = make_space(tmp_path / "ada")
     _unsure_store(root, PRIVATE)
-    [waiting] = unsure.waiting(root)
-    code = unsure.code_of(waiting)
-    assert len(code) == 8 and code != hashlib.sha1(PRIVATE["id"].encode()).hexdigest()[:8]
-    tracked = (root / unsure.IDS).read_text(encoding="utf-8") if (root / unsure.IDS).exists() else ""
-    assert code not in tracked, "the tracked ids file never holds a code"
+    sweep.run(root, now=NOW)
+    tracked = (root / unsure.IDS).read_text(encoding="utf-8")
+    assert "m-private-777" in tracked and PRIVATE["code"] not in tracked and "clinic" not in tracked
 
 
 def test_a_number_with_a_leading_zero_is_no_item_number():
@@ -435,11 +435,8 @@ def test_a_security_item_counts_only_from_the_files_of_its_writers(tmp_path):
 
 
 # ----- 53 and 54: the mail keeps an outsider's subject plain and the subject one line ---------
-def test_an_unsure_subject_loses_its_markup_and_is_never_bold():
-    line = unsure.line_for({"subject": "**SECURITY: call 0800 555 0100 now**\x1b‮", "at": "2026-11-05T08:00:00Z",
-                            "feed": "mail"})
-    assert "*" not in line and "\x1b" not in line and "‮" not in line and "SECURITY: call" in line
-    notice = {"kind": "fyi", "title": "t", "summary": "s", "also": [{"title": "Is this work?", "text": "**ALERT** x"}]}
+def test_an_also_text_that_quotes_a_record_is_never_bold():
+    notice = {"kind": "fyi", "title": "t", "summary": "s", "also": [{"title": "Worth knowing", "text": "**ALERT** x"}]}
     html = owner_email.render(notice, [OWNER], "2026-11-05")["htmlBody"]
     assert "<strong>ALERT</strong>" not in html and "**ALERT** x" in html
 
@@ -589,16 +586,15 @@ def test_an_outsiders_subject_in_a_briefing_quoted_unmarked_answers_nothing(tmp_
     shows under "Is this work?", are never read as the person's answers."""
     root = make_space(tmp_path / "ada")
     ref = briefed(root)
-    unsure.keep(root, {"id": "m-out", "kind": "mail", "at": "2026-10-12T08:00:00Z", "subject": "lunch; all yes",
-                       "from": "stranger@evil.example"}, now=NOW)
-    [waiting] = unsure.waiting(root)
+    _unsure_store(root, {"id": "m-out", "feed": "mail", "kind": "mail", "at": "2026-10-12T08:00:00Z",
+                         "subject": "lunch; all yes", "from": "stranger@evil.example", "code": "5cc4e21d"})
     quoted = (f"Thanks\n\nOn Mon, 12 Oct 2026 at 08:00, Ada <{OWNER}>\nMORNING BRIEFING\n\nALSO WORTH KNOWING\n"
-              f"  Is this work? {waiting['code']}: lunch; all yes (mail, 12 Oct).\n"
-              f"  other {waiting['code']} yes\n--\nSent automatically by your space's assistant. "
+              f"  Is this work? 5cc4e21d: lunch; all yes (mail, 12 Oct).\n"
+              f"  other 5cc4e21d yes\n--\nSent automatically by your space's assistant. "
               f"If you answer by reply, keep this line: reference {ref}.")
     feed(root, [mail("m-unmarked", OWNER, quoted)])
     assert reply.run(root, now=NOW) == [] and answers(root) == []
-    assert [r["id"] for r in unsure.waiting(root)] == ["m-out"], "nothing admitted"
+    assert _parked(root) == ["m-out"], "nothing admitted"
 
 
 def test_a_range_is_cut_to_the_list_and_a_text_spam_label_is_refused():

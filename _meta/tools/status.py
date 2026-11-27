@@ -40,6 +40,7 @@ import ids  # noqa: E402
 import pages  # noqa: E402
 import registry as registry_mod  # noqa: E402
 import spaceyaml  # noqa: E402
+import unsure  # noqa: E402
 
 TEMPLATES = Path(__file__).resolve().parents[1] / "templates"
 SCOPE = {"personal": "mine", "project": "team", "brain": "company", "channel": "team"}
@@ -1709,9 +1710,12 @@ def run(root, now=None, check: bool = False) -> StatusReport:
     report.health_lines = [_health_line(space, space.name, root, now)] + [mount_line(m) for m in space.mounts]
     report.health_lines += [f"- {rel} is a link; not written"
                             for rel in [*outputs, "live/health.md", "live/now.md"] if _link_in_way(root, rel)]
+    door = unsure.health_line(root, _jsonl(root / "_meta" / "state" / "runs.jsonl"), now)   # counts only
+    report.health_lines += [door] if door else []
     outputs["live/health.md"] = pages.render(
         _snapshot_fm(root, "live/health.md", "Health", now),
-        "# Health\n\nOne line per space: this one, then each mount.\n\n" + "\n".join(report.health_lines) + "\n")
+        "# Health\n\nOne line per space: this one, then each mount; then what the door settled by itself.\n\n"
+        + "\n".join(report.health_lines) + "\n")
     outputs["live/now.md"] = pages.render(_snapshot_fm(root, "live/now.md", "Now", now),
                                           _render_now(root, space, reg, evidence, status_ids, now))
     if items_text.strip() != "items: []" or (root / LIBRARIAN_ITEMS).exists():

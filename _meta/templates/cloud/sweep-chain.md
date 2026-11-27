@@ -56,8 +56,12 @@ Then, for each root, the workspace first:
    park an unsure one in `/home/user/<root>/_meta/state/private/unsure.jsonl`, as the skill says. A call record
    holds the notetaker's transcript, every time, however long: a long transcript is exactly the case it is for, and
    the sweep splits its page into parts. Only when the notetaker has not finished it, or this run cannot fetch it,
-   does the record say `transcript: pending` with its `transcript_why`; the sweep refuses one that says neither. There is no
-   history to read in the cloud: the routines move here only once it is read.
+   does the record say `transcript: pending` with its `transcript_why`; the sweep refuses one that says neither. A record parked
+   here goes with this machine, but its pointer stays: before the new records, fetch again by its id, with that
+   source's connector, each record `python3 /home/user/<root>/_meta/tools/sweep.py /home/user/<root> --refetch`
+   prints (`<source>`, `<signal>`, `<id>`, a tab between each), and append it to its feed as the skill says, with
+   `"admitted": true` and its `door`. There is no history to read in the cloud: the routines move here only once
+   it is read.
 2. **Attachments.** `python3 /home/user/<root>/_meta/tools/sweep.py /home/user/<root> --attachments` prints one
    row per attachment to read: the record id, its subject, the file name and its handle, separated by a tab each;
    the subject is empty on some rows (`<record id>\t\t<name>\t<handle>`). Read each with the mail connector's

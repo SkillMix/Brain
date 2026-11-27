@@ -21,7 +21,7 @@ A notice: {"kind": security|action|fyi|briefing, "sender": <routine>, "title", "
 "steps": [...], "stats": [{"count", "label", "hint"}], "link": {"label", "url"},
 "reassure", "also": [{"title", "text"}], "allow_terms": [...], "reference"}. No reader-facing
 text holds a line break or a control character, so the subject stays one header line. An `also`
-text may quote a record (the morning view's unsure list), so it is escaped and never bold. A
+text may quote a record, so it is escaped and never bold. A
 `reference` (the morning view's reply reference) is shown in the footer.
 
 Queued security notices join one pending digest, and `pending` holds it back while a

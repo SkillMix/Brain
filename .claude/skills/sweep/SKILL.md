@@ -36,7 +36,7 @@ export; the tool decides.
    object per line:
    `{"id", "source", "kind": mail|call|message|event|document, "at": ISO, "from",
    "to": [...], "cc": [...], "subject", "text", "identifiers": {"thread", "channel", "labels": [...],
-   "repo", "tracker", "calendar"}, "attachments": [...], "audience": owner|crew|everyone,
+   "repo", "tracker", "calendar", "series"}, "attachments": [...], "audience": owner|crew|everyone,
    "participants": [...]}`; a tracker record adds `"issue"` (its key) and `"state"`, and its `id`
    is the key with the issue's last update (`SM-224@2026-10-02T15:46:23Z`), so each change to an
    issue is a record of its own and the newest one decides its state.
@@ -65,7 +65,8 @@ export; the tool decides.
    or your tokens. The sweep refuses a call record that says neither; message =
    one chat thread (`channel`), every message with its author and time, its files read with the
    chat connector's file reader, and AI notes and canvases as `document` records of their own;
-   event = one calendar entry (`calendar`), `subject` the title, `text` the description,
+   event = one calendar entry (`calendar`; `series` the id of the recurring series it belongs to,
+   none for a one-off), `subject` the title, `text` the description,
    `participants` the guests by address; document = one new or changed file, `text` its full
    text, the file only as a pointer in `attachments`; issue = a tracker issue created,
    changed or closed (`identifiers.tracker` the project, `issue`, `state`); change = a pull
@@ -104,11 +105,23 @@ export; the tool decides.
    A record exported by research for a subject carries `"research": "<subject id>"`; its page
    keeps it, so the router decides it for that subject even when the text never names it.
    Private at the door: before writing a record decide whether it is `company`, `personal`,
-   `academic` or `unsure`. Only a `company` record is written to the feed. Count `personal` and
-   `academic` records per source in your run line (`notes.skipped`) and write them nowhere. Write
-   an `unsure` record, with `"feed": "<source name>"` added, to
-   `_meta/state/private/unsure.jsonl`: a local private zone the sync never stages; the owner's
-   morning email asks about it and one word brings it in. The workspace's own briefings and
+   `academic` or `unsure`. Only a `company` record is written to the feed. A sign against (a
+   personal account, a university course, family) with no work in it is `personal` or
+   `academic`: count those per source in your run line (`notes.skipped`) and write them
+   nowhere. Write an `unsure` record, with `"feed": "<source name>"` added, to
+   `_meta/state/private/unsure.jsonl`: a local private zone the sync never stages; add
+   `"reason": "mixed"` when a sign against stands beside a sign of work. Never admit an unsure
+   record on what it says: the sweep checks each for a hard signal, a fact a script can check (its
+   thread, channel or event series already on a witness page here, never a whole calendar, or a
+   registered subject's identifier on it, such as a sender's mail domain), and writes one with a
+   hard signal and no `mixed` to its feed at once, with `"door": {"by": "context", "signal":
+   "<what matched>"}`. The rest wait as pointers, settle by themselves when later company work
+   shares their thread, channel or series, and go after 90 days; nobody is asked. Records a cloud
+   run parked and a later match settled come back by their id: `python _meta/tools/sweep.py <root> --refetch`
+   prints one per line, `<source>`, `<signal>` and `<id>` separated by a tab each; fetch each by
+   its id with that source's connector, in full like any record, and append it to its feed file
+   as a company record with `"admitted": true` and `"door": {"by": "match", "signal":
+   "<signal>"}`, before the new records. The workspace's own briefings and
    notices (from the owner to the owner) stay in the feed for the reply reader; the sweep never
    makes pages of them.
 2. Attachments: `python _meta/tools/sweep.py <root> --attachments` lists one attachment per
