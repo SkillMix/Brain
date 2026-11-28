@@ -272,7 +272,8 @@ organisation secret.
   read-only on the brain repository alone, with an expiry; never a classic token. `onboard.py`
   flags an organisation secret of either name for removal. A token that reads more (the walled
   projects, other people's workspaces) hands all of it to every colleague, which `rules.md`
-  section 9 forbids.
+  section 9 forbids. When the keys are refused because the organization has deploy keys switched
+  off, the person is told that setting first, so a token is made only by choice.
 - **The checkout.** The address list is the default branch's `.gitmodules`, a protected path.
   Any plain `https://github.com/<owner>/<name>` address in it is read, pinned in that form.
   ssh is used only as `ssh://git@github.com/<owner>/<name>.git` built from that address, with

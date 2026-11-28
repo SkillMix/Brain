@@ -368,7 +368,9 @@ owner does not administer the mount: that is their Needs-you item (ask its admin
 next run attaches it. Its rows the agent
 fixes are on the health list. A crew project the registry now pins is mounted by the same run;
 it lands with the person's one click on the sync's protected pull request. A `mount token` row
-only appears when no key can read the brain; then it is the person's, with its steps.
+only appears when no key can read the brain; then it is the person's, with its steps. When GitHub
+refuses the keys because the organization has deploy keys switched off, that row (and, in the brain,
+the colleague's key row) names the setting first; setup goes on, and the next daily run tries again.
 
 ## "Connect my mail" (calendar, chat, calls, tracker, documents)
 

@@ -64,6 +64,12 @@ transcript is written down, and a line can cite the moment it rests on.
   verify` accepts it when the record is in evidence and its page, split parts included, holds an
   utterance at or before that time and not past the last. A plain `[src: <record id>]` still
   passes.
+- **A switched-off organization is named, not hidden.** When GitHub refuses a mount key because
+  the organization has deploy keys switched off, the left-out reason says so, and the person's
+  item names that one setting (with its `gh api` command and the enterprise policy above it)
+  before the read-only token. In the brain, a colleague's key refused that way is its owner's
+  Needs-you item instead of a silent retry. Setup and pull requests go on as before: the checks
+  run without the mounts the keys would read, and the next daily run tries again.
 
 ### Removed
 

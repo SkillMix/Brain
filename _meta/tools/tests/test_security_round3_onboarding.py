@@ -419,6 +419,45 @@ def test_the_brains_agent_attaches_a_queued_key_once_the_host_agrees(tmp_path):
     assert "refused" in onboard.attach_mount_keys(brain, gh=left).steps[0].result and not left.keys
 
 
+class KeysOff(FakeGH):
+    """An organization with deploy keys switched off: GitHub refuses every key with a 422."""
+
+    def __call__(self, args, input=None):
+        args = [str(a) for a in args]
+        if args[1:3] == ["-X", "POST"] and args[3].endswith("/keys"):
+            self.calls.append(args)
+            return subprocess.CompletedProcess(args, 1, "", "Deploy keys are disabled for this repository (HTTP 422)")
+        if args[1:2] == ["orgs/northwind-co"] and args[-1] == ".deploy_keys_enabled_for_repositories":
+            self.calls.append(args)
+            return done(args, 0, "false\n")
+        return super().__call__(args, input)
+
+
+def test_deploy_keys_switched_off_name_the_switch_without_stopping_anything(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard, "run_cmd", lambda argv, *a, **k: done(argv, 1))   # no token, no organisation secret
+    ws = _consumer(tmp_path)
+    gh = KeysOff(admin={"northwind-co/ada-workspace", "northwind-co/brain"},
+                 readers={("northwind-co/brain", "ada-lw"): "read"})
+    report = onboard.Report("person")
+    onboard.mount_access(report, "northwind-co/ada-workspace", ws, gh=gh, keygen=_keygen([]))
+    keys = next(s for s in report.steps if s.name.startswith("mount keys"))
+    assert keys.done and "switched off for northwind-co" in keys.result   # not a failure: setup goes on
+    assert gh.inputs == []   # no secret without a key
+    token = next(s for s in report.steps if s.name == "mount token northwind-co/ada-workspace")
+    assert token.needs_owner and not token.done
+    assert token.result.startswith("deploy keys are switched off for northwind-co")   # the switch first, the token second
+    assert "deploy_keys_enabled_for_repositories=true" in token.result and "BRAIN_READ_TOKEN" in token.result
+
+
+def test_the_brains_agent_names_the_switch_to_its_owner_and_keeps_the_request(tmp_path):
+    brain = _brain_with_ben(tmp_path)
+    onboard.queue_mount_key(brain, _note())
+    off = KeysOff(admin={"northwind-co/brain"}, readers={("northwind-co/brain", "ben-lw"): "read"})
+    row = onboard.attach_mount_keys(brain, gh=off).steps[0]
+    assert row.needs_owner and not row.done and "switched off for northwind-co" in row.result
+    assert list((brain / onboard.KEY_REQUESTS).glob("*.yaml"))   # tried again on the next daily run
+
+
 # ----- 3: the invitation carries the colleague's login ---------------------------------------------------
 def _inviting_brain(tmp_path, **ben):
     people = [{"id": "ada", "kind": "people", "title": "Ada Okafor", "match": {"github": "ada-gh"}},
