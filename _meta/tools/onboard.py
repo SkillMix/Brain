@@ -2484,17 +2484,20 @@ def brain_of_gitmodules(root) -> str | None:
     return f"{match.group(1)}/{match.group(2)}" if match else None
 
 
-def mount_token(report, repo: str, org, dry_run, brain: str | None = None) -> None:
+def mount_token(report, repo: str, org, dry_run, brain: str | None = None, why: str = "") -> None:
     """The checks' mount token for one repository with mounts: present as this repository's own secret,
-    else one owner row with `mount_token_advice`. An organization secret of that name is one owner row of
-    its own, to delete it: it reaches every repository of the organization, every colleague's workspace
-    included, so every colleague can read it."""
+    else one owner row with `mount_token_advice`, after the organization's deploy-key switch when that is
+    why the brain has no key (`why`, its left-out reason). An organization secret of that name is one owner
+    row of its own, to delete it: it reaches every repository of the organization, every colleague's
+    workspace included, so every colleague can read it."""
     listed = run_cmd(["gh", "secret", "list", "--repo", repo], dry_run)
     names = {line.split()[0] for line in (listed.stdout or "").splitlines() if line.split()}
     present = listed.returncode == 0 and any(name in names for name in MOUNT_TOKENS)   # the name itself, not a longer one
+    advice = mount_token_advice(repo, brain)
+    if why.startswith(SWITCHED_OFF):   # one setting makes the keys: it comes before a token made by hand
+        advice = f"{keys_switch_advice(why[len(SWITCHED_OFF):])}; or, to keep them off, {advice}"
     report.add(f"mount token {repo}", present or dry_run, f"gh secret list --repo {repo}",
-               "present as this repository's own secret" if present else mount_token_advice(repo, brain),
-               needs_owner=not present)
+               "present as this repository's own secret" if present else advice, needs_owner=not present)
     organization_token(report, repo, org, dry_run)
 
 
@@ -2679,6 +2682,25 @@ def attach_key(gh, mount: str, consumer: str, public: str) -> bool:
     return res.returncode == 0 and (res.stdout or "").strip() == "true"
 
 
+SWITCHED_OFF = "deploy keys are switched off for "   # a left-out reason: the organization refuses every key
+
+
+def keys_switched_off(gh, repo: str) -> str:
+    """The organization that owns `repo` when it has deploy keys switched off, so GitHub refuses every key on
+    every one of its repositories; "" otherwise (a key refused for another reason, or a personal account)."""
+    org = str(repo).split("/")[0]
+    ok, out = _gh_ok(gh, "api", f"orgs/{org}", "-q", ".deploy_keys_enabled_for_repositories")
+    return org if ok and out == "false" else ""
+
+
+def keys_switch_advice(org: str) -> str:
+    """The one setting that lets the checks' read-only keys in, said so the person can act on it."""
+    return (f"{SWITCHED_OFF}{org}, so GitHub refuses the checks' read-only keys: allow them "
+            f"(`gh api -X PATCH orgs/{org} -F deploy_keys_enabled_for_repositories=true`, or in the organization's "
+            "settings; when GitHub answers that an enterprise policy sets it, allow them in the enterprise's policies "
+            "first) and the next daily run tries again")
+
+
 def remove_keys(gh, mount: str, consumer: str) -> tuple:
     """Remove every deploy key `consumer` holds on `mount` (offboarding, a mount let go); (removed,
     read back): read back is True once no key of that title is listed."""
@@ -2816,7 +2838,8 @@ def mount_access(report, repo: str, root, org=None, dry_run=False, gh=None, keyg
         secret, public = pair
         if own:
             if not attach_key(gh, mount, consumer, public):
-                left[mount] = "GitHub did not take the deploy key"
+                off = keys_switched_off(gh, mount)
+                left[mount] = f"{SWITCHED_OFF}{off}" if off else "GitHub did not take the deploy key"
                 continue
         else:
             refused = request_key(root, mount, consumer, public)
@@ -2838,7 +2861,7 @@ def mount_access(report, repo: str, root, org=None, dry_run=False, gh=None, keyg
     # The brain unread by a key, or asked of the brain's agent more than once with no answer: the token is the
     # fallback, and only its absence is the person's.
     if mounts[0] in left or int((record.get(mounts[0]) or {}).get("asks") or 1) > 1:
-        mount_token(report, repo, org, dry_run, mounts[0])
+        mount_token(report, repo, org, dry_run, mounts[0], why=left.get(mounts[0], ""))
     else:
         organization_token(report, repo, org, dry_run)
 
@@ -3119,8 +3142,10 @@ def attach_mount_keys(brain_root, gh=None) -> Report:
             continue
         if attach_key(gh, mount, consumer, public):
             settle("attached", "")
-        else:
-            report.add(name, False, check, "GitHub did not take it: tried again next run")
+        else:   # kept: the next run tries again; a switched-off organization is the owner's one setting
+            off = keys_switched_off(gh, mount)
+            report.add(name, False, check, keys_switch_advice(off) if off else "GitHub did not take it: tried again "
+                       "next run", needs_owner=bool(off))
     for key, entry in list(record.items()):
         person = reg.subjects.get(str(entry.get("person") or ""))
         consumer, mount = plain_repo(entry.get("consumer")), plain_repo(entry.get("mount"))
