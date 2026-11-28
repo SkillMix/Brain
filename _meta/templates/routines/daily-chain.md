@@ -35,6 +35,12 @@ root <root>:
    `{python} <root>/_meta/tools/librarian.py <root> apply <id> --reviewed-by "<reviewer>"`. The
    tool applies only a change it makes itself on the tree as it is now, checks every move and the
    tests, and turns a change of owner into the owners' question; a refusal is the tool working.
+   Then the records that arrived twice, as the same skill says under "One record that arrived
+   twice": for each pair `{python} <root>/_meta/tools/landing.py <root> duplicates` lists, a cheap
+   agent reads both pages and answers duplicate (the main already holds all the copy says) or keep
+   both (anything else, and when unsure), and you record it with
+   `{python} <root>/_meta/tools/landing.py <root> mark <main> <copy> --by "<agent>"` or
+   `{python} <root>/_meta/tools/landing.py <root> keep-both <a> <b> --by "<agent>"`. Nothing is deleted.
 4. Follow `<root>/.claude/skills/owner-email/SKILL.md`: send each notice that
    `{python} <root>/_meta/tools/owner_email.py pending --root <root>` lists, exactly as rendered,
    to {person}'s own address, and record each with its message id.

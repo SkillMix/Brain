@@ -270,6 +270,8 @@ def _candidates(root: Path, space: spaceyaml.Space | None = None) -> list:
             continue
         if unwritten(rel, fm, body) or unbinding(fm):   # the agent's work, or nothing that binds
             continue
+        if fm.get("released_from") and pages.duplicate_of(fm):   # one record that arrived twice: its main is asked
+            continue
         title = _text(fm.get("title"), Path(rel).stem)
         cid = _text(fm.get("id"), Path(rel).stem)
         subject = fm.get("subject")

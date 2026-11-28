@@ -241,7 +241,7 @@ TOOL_WRITTEN = ("_outbound/queue/**", "_outbound/held/**", "_outbound/signals/**
                 "_meta/state/released.jsonl", "_meta/state/queued.jsonl", "_meta/state/classify.jsonl",
                 "_meta/state/registry-notes.jsonl", "_meta/subjects.yaml", "_meta/lessons.md",
                 "_meta/access/resources.yaml", "_meta/state/template-origin.yaml", "_meta/state/librarian/**",
-                "_meta/state/check-verdicts.jsonl", "_meta/state/sign-questions.jsonl")
+                "_meta/state/check-verdicts.jsonl", "_meta/state/sign-questions.jsonl", "_meta/state/duplicates.jsonl")
 # The corridor and the answers: requests and answers waiting to leave and the logs release.ship_requests reads as proof
 # that request.py asked or answered (finding 38), the conflict notes check.py already sent, and the person's verdict
 # store, which sign.py writes and every tool acting on an answer reads (finding 7). Landed by every sync, as above.

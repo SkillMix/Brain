@@ -190,6 +190,14 @@ def withdrawn(fm: dict) -> bool:
     return bool(fm.get("retracted") or fm.get("retracted_at"))
 
 
+def duplicate_of(fm: dict) -> str | None:
+    """The page id of the main copy a record was marked a duplicate of (`landing.py mark`): kept,
+    counted once through that main. None when it is not marked."""
+    mark = fm.get("duplicate_of")
+    main = mark.get("id") if isinstance(mark, dict) else None
+    return str(main) if main else None
+
+
 # ----- safe ids, names and paths ---------------------------------------------
 # Ids, names and paths reach the tools from data (a feed record, a queue file, a release
 # another space wrote), and a path built from one decides where a write lands. Each check

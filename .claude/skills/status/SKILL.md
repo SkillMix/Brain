@@ -85,6 +85,36 @@ names it (`librarian reverted N: <id> <kind> <summary>: tests <before> -> <after
 applies or the scan stops making it. Judge whether the test or the move is wrong; once the
 test is put right, `apply <id> --reviewed-by` tries the reverted proposal again.
 
+### One record that arrived twice
+
+When colleagues sweep the same mail, message or meeting, each of their rooms can release it
+here, under another id and, for a call, with a transcript that has its own errors. After the
+landing, `python _meta/tools/landing.py <root> duplicates` lists the likely pairs as JSON: each
+pair's two page ids (`a`, `b`), their paths and why the script paired them (the same original id,
+mail from one sender in one minute, or two calls on one day starting within 30 minutes, whatever
+their titles). It lists only copies that share a subject: copies sent for different subjects each
+count once, for their own. The script never compares text; that is the judgment.
+
+One record is not yet a duplicate. Two routers often send different verbatim parts of one mail or
+call, and a second recording may catch what the first missed. The question for each pair is
+whether one copy adds anything to the other. Have a cheap agent (the Task tool with the smallest
+model) read both pages whole and answer one of two:
+
+- **Duplicate**: the main already holds everything the other copy says (in a second recording of
+  one meeting: no passage the main lacks; transcription errors do not count). The main is the
+  fuller copy: `python _meta/tools/landing.py <root> mark <main> <copy> --by "<agent>"`. The copy
+  stays where it is, filed or waiting, marked `duplicate_of`; distill counts it once, through its
+  main, and Needs you does not ask to file it.
+- **Keep both**: two records, or one record whose copies each hold something the other lacks
+  (other parts, another passage): `python _meta/tools/landing.py <root> keep-both <a> <b> --by
+  "<agent>"`. Both pages stay untouched and both stay evidence; the pair is not listed again.
+
+When unsure, keep both: a copy counted twice costs a line, a passage lost costs the record.
+Nothing is deleted. `python _meta/tools/landing.py <root> undo <copy> --by "<name>"` takes a mark
+back; the pair is then recorded as kept. A refused verdict prints one `refused:` line: name it in
+your run line and go on. A first run in a space with history lists the pairs over every page
+already there.
+
 When `run` or `apply` reports `asked` (a change that would move ownership or a
 classification), the tool has already written the owners' question
 (`_inbound/questions/librarian-<id>.md`), the only one an owner's yes acts on. Write no
