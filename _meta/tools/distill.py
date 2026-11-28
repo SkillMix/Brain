@@ -38,7 +38,8 @@ journal/ that name the subject (a `subject: <id>` line or a desk path `work/<kin
 witness page of a day's digest (link.journal_records) is not, since its entries are. A page is
 new when `at`, `generated.at` or `released_at` is after the watermark. With `routing.archives` off (the
 default) a page `provenance.is_archive_derived` flags is no evidence, and an archive-derived
-target page lends no body.
+target page lends no body. A record marked `duplicate_of` another (one record that arrived twice,
+landing.py `mark`) counts once, through that main copy, which takes its subjects (`counted`).
 
 Evidence the agent found to be about something else moves from `evidence` to
 `set_aside: [{id, why}]`; every refresh keeps those ids out and the list as it is. `--rebuild`
@@ -378,14 +379,26 @@ def archives_on(space) -> bool:
     return bool(getattr(space, "routing_archives", False))
 
 
+def counted(evidence: list, space) -> tuple[list, frozenset]:
+    """The evidence that counts, and the record ids left out of it: an archive-derived page unless
+    the space has `routing.archives` on, and a record marked a duplicate (`pages.duplicate_of`,
+    landing.py `mark`), which counts once, through its main copy: the main takes its subjects.
+    A duplicate whose main is not here, or is itself marked, counts as itself."""
+    out = set() if archives_on(space) else {ev.record for ev in evidence if provenance.is_archive_derived(ev.fm)}
+    mains = {str(ev.fm.get("id")): ev for ev in evidence if ev.fm.get("id") and ev.record not in out}
+    for ev in evidence:
+        main = mains.get(pages.duplicate_of(ev.fm) or "")
+        if main is None or main is ev or pages.duplicate_of(main.fm):
+            continue
+        out.add(ev.record)
+        main.subjects.extend(s for s in ev.subjects if s not in main.subjects)
+    return [ev for ev in evidence if ev.record not in out], frozenset(out)
+
+
 def evidence_by_subject(root) -> dict:
-    """Subject id -> the evidence that counts for it, as `run` reads it: archive-derived pages
-    are left out unless the space has `routing.archives` on."""
+    """Subject id -> the evidence that counts for it, as `run` reads it (`counted`)."""
     space = spaceyaml.load(root)
-    evidence = gather_evidence(root, Reader(), space.name)
-    if not archives_on(space):
-        evidence = [ev for ev in evidence if not provenance.is_archive_derived(ev.fm)]
-    return by_subject(evidence)
+    return by_subject(counted(gather_evidence(root, Reader(), space.name), space)[0])
 
 
 def set_aside_of(fm: dict) -> list:
@@ -571,11 +584,7 @@ def run(root, now: dt.datetime | None = None, rebuild: bool = False,
     reader = Reader()
     report = DistillReport()
     since = stamp_of(read_watermark(root, ROUTINE).get("at"))
-    evidence = gather_evidence(root, reader, space.name)
-    ignored: frozenset = frozenset()
-    if not archives_on(space):
-        ignored = frozenset(ev.record for ev in evidence if provenance.is_archive_derived(ev.fm))
-        evidence = [ev for ev in evidence if not provenance.is_archive_derived(ev.fm)]
+    evidence, ignored = counted(gather_evidence(root, reader, space.name), space)
     index = {ev.record: ev for ev in evidence}
     new = new_since(evidence, since)
     asked = asked_subjects(root)

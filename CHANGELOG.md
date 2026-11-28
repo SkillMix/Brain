@@ -18,6 +18,35 @@ A recorded meeting's transcript is now the source, every time, from any notetake
 notetaker's summary and action items only say where to look, a disagreement between them and the
 transcript is written down, and a line can cite the moment it rests on.
 
+One mail, message or meeting that two colleagues' rooms both released now counts once where it
+lands, when one copy adds nothing to the other. A script lists the likely pairs, a cheap agent
+reads each pair, and a copy whose text its main already holds is marked, never deleted. Copies
+that each hold what the other lacks (two routers sent different parts) stay evidence.
+
+### Added
+
+- **`landing.py <root> duplicates`** lists, as JSON, the likely pairs of one record arriving
+  twice: two records under `knowledge/sources/` or still waiting in `_inbound/candidates/`, at
+  least one released from another space and both sharing a subject (copies for different subjects
+  each count once already), with the same original id once written one way (a source's name, as
+  in `slack:` or `gcal-`, a calendar's `＠version` and the separators do not count), or mail from
+  one sender in one minute, or two calls on one day starting within 30 minutes, whatever their
+  titles. It never compares text, so two transcripts of one meeting with different errors still
+  pair. A space's first run lists the pairs over every page already there.
+- **`mark <main> <copy>`, `keep-both <a> <b>` and `undo <copy>`**, each with `--by`. `mark` marks
+  a copy whose text the main already holds `duplicate_of: {id, by, at}`, filed or still waiting,
+  and moves anything marked against it to the main; `keep-both` writes the pair to
+  `_meta/state/duplicates.jsonl` and leaves both pages untouched and both evidence; `undo` takes a
+  mark back, leaving the page as it was, and records the pair as kept. Each writes one line to
+  `log.md`; a refused verdict prints one `refused:` line.
+- **A marked copy counts once.** Distill folds it into its main copy, which takes its subjects
+  (`distill.counted`, which also does what the archive filter did), so a subject candidate drops it
+  on its next refresh; Needs you does not ask to file a marked arrival. The gate lets the
+  receiving room's sync carry a `duplicate_of` mark on a release that still waits, and holds a
+  release whose sender wrote one: the mark is the receiving room's.
+- **The daily chain judges the pairs** after the librarian's proposals, as the status skill says
+  under "One record that arrived twice".
+
 ### Changed
 
 - **The door settles unsure records itself.** Before the sweep writes a page it checks every
@@ -79,6 +108,10 @@ update, and comes in (labelled `match`) when its thread, channel or series alrea
 work. Pointer lines written before the update hold no ids, so a record a cloud run parked before it
 can no longer match and goes 90 days after it was parked. An older store's `code` and
 `first_listed` fields are never copied into a feed.
+
+Records that arrived twice before the update are checked by the first daily chain after it:
+`duplicates` reads every page already there, so that first run lists more pairs than later ones.
+To run it by hand: `python _meta/tools/landing.py <root> duplicates`, then a verdict per pair.
 
 ## [0.3.10] - 2026-11-27
 

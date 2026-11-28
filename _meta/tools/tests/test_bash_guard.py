@@ -217,6 +217,9 @@ def test_every_command_the_routine_prompts_name_fits_the_guard(tmp_path):
             filled = command.replace("<root>", ws.resolve().as_posix()).replace("<file>", "x.json").replace(
                 "<message id>", "m-1").replace("<address>", "ada@example.test").replace(
                 "<id>", "lib-1a2b3c4d").replace("<reviewer>", "second agent")   # the librarian's step (round 3)
+            for mark in ("<main>", "<copy>", "<a>", "<b>"):   # a record that arrived twice: two page ids
+                filled = filled.replace(mark, "p-0000c001")
+            filled = filled.replace("<agent>", "pair checker")
             assert passes(path, filled), (prompt.name, filled)
 
 

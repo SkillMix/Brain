@@ -98,14 +98,37 @@ space for each failed one (that space pauses the path that let it through), and
 (five samples or more) under the trust switch (`_meta/state/trust.yaml`): its signed
 releases land pending until the share recovers. Nothing here writes `stable` of its own: a
 silent landing keeps the releaser's signature exactly as it arrived.
+
+One record arriving twice. When colleagues sweep the same mail, message or meeting, each room
+may release it, with another id and, for a call, a transcript with other errors, so the exact
+`record_key` above misses it. `duplicates` lists the likely pairs for an agent to judge, and
+never compares text: two records here, at least one released from another space (a page under
+`knowledge/sources/`, or a record still waiting in `_inbound/candidates/`), that share a subject
+(copies for two different subjects each count once there, so they never count twice), with the
+same original id once written one way (`_id_key`: `slack:C0B:17.68` is `C0B/17.68`), or mail
+from one sender in one minute (every recipient's copy), or two calls on one day starting within
+TWIN_CALL_MINUTES, whatever their titles. One record is not yet a duplicate: two routers may
+have sent different verbatim parts of it. `mark` marks a copy whose text its main already holds
+`duplicate_of: {id, by, at}`: it stays where it is, distill counts it once through its main
+(`distill.counted`) and Needs you does not ask to file it. `keep-both` records a pair that stays
+two pieces of evidence (two records, or copies that each hold what the other lacks) in
+`_meta/state/duplicates.jsonl`, the pages untouched, so it is not listed again. `undo` takes a
+mark back and records the pair as kept. Nothing is deleted.
+
+    python landing.py [root] duplicates                  the likely pairs, as JSON
+    python landing.py [root] mark <main> <copy> --by NAME
+    python landing.py [root] keep-both <a> <b> --by NAME
+    python landing.py [root] undo <copy> --by NAME
 """
 from __future__ import annotations
 
 import datetime as dt
+import itertools
 import json
 import random
 import re
 import sys
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -122,6 +145,9 @@ LANDED = Path("_meta") / "state" / "landed.jsonl"
 SAMPLES = Path("_meta") / "state" / "samples.jsonl"
 TRUST = Path("_meta") / "state" / "trust.yaml"
 SIGNALS_OUT = Path("_outbound") / "signals"
+SOURCES = Path("knowledge") / "sources"
+DUPLICATES = Path("_meta") / "state" / "duplicates.jsonl"   # pairs an agent read and found to be two records
+TWIN_CALL_MINUTES = 30   # two recordings of one meeting start this close, on one day
 STRIP = ("class", "stage_after", "listed", "listed_at", "destination", "from_space", "landing",
          "disagrees_with", "for", "target", "recommendation", "depends", "deadline", "approved_by",
          "approved_at", "page", "health", "held_at")
@@ -1235,6 +1261,157 @@ def retract(root, page_id: str, by: str, why: str = "", now: dt.datetime | None 
     return path
 
 
+# ----- one record arriving twice ------------------------------------------------------
+def _id_key(value, kind) -> str | None:
+    """A record's original id written one way, so rooms that write it differently agree: a
+    calendar's `＠version` cut off (an event's plain `@` too: its id is one in every calendar),
+    letters and digits only, every separator alike, and a leading word of letters alone dropped
+    (a source's name, as in `slack:` or `gcal-`)."""
+    text = re.split("[＠﹫]", str(value or ""))[0]
+    text = unicodedata.normalize("NFKC", text).casefold()
+    if kind == "event":
+        text = text.split("@")[0]
+    tokens = re.findall(r"[0-9a-z]+", text)
+    while len(tokens) > 1 and tokens[0].isalpha():
+        tokens.pop(0)
+    return "|".join(tokens) or None
+
+
+def _records(root: Path) -> dict:
+    """Page id -> (path, frontmatter, body) of every record here that can pair: a page under
+    `knowledge/sources/` (a split page by its first part) and a released record still waiting in
+    `_inbound/candidates/`. A withdrawn one is no record any more."""
+    base = root / SOURCES
+    filed = [p for p in sorted(base.rglob("*.md")) if pages.is_page_path(p)] if base.is_dir() else []
+    waiting = sorted((root / CANDIDATES).glob("*.md"))
+    found: dict = {}
+    for path in filed + waiting:
+        try:
+            fm, body = pages.read(path)
+        except Exception:
+            continue
+        pid = fm.get("id")
+        if str(fm.get("type")) != "source" or not pages.is_page_id(pid) or pages.withdrawn(fm) \
+                or str(fm.get("part") or 1) != "1" or (path.parent.name == "candidates" and not fm.get("released_from")):
+            continue
+        found.setdefault(pid, (path, fm, body))
+    return found
+
+
+def _checked(root: Path) -> set:
+    """The pairs an agent kept as two pieces of evidence (`keep-both`, `undo`), each as a frozenset of ids."""
+    return {frozenset(str(p) for p in row["pages"]) for row in _jsonl(root / DUPLICATES)
+            if isinstance(row.get("pages"), list) and len(row["pages"]) == 2}
+
+
+def duplicate_pairs(root) -> list:
+    """The likely pairs of one record arriving twice (the module's last section), each
+    {a, b, a_path, b_path, why}, for an agent to read and judge. Text is never compared."""
+    root = Path(root)
+    found = {pid: rec for pid, rec in _records(root).items() if not pages.duplicate_of(rec[1])}
+    checked = _checked(root)
+    here = spaceyaml.load(root).name
+    subjects = {pid: set(registry_mod.routed_subjects(fm, here)) for pid, (_, fm, _) in found.items()}
+    groups: dict = {}   # (why, key) -> page ids
+    calls: dict = {}    # a day -> [(start, page id)]
+    for pid, (_, fm, _) in found.items():
+        kind = str(fm.get("kind") or "")
+        evidence = fm.get("evidence") if isinstance(fm.get("evidence"), list) else []
+        for rid in [fm["record"]] if fm.get("record") else evidence:
+            key = _id_key(rid, kind)
+            if key:
+                groups.setdefault(("the same original id", key), []).append(pid)
+        try:
+            at = pages.parse_iso(fm.get("at")).astimezone(dt.timezone.utc)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if kind == "mail" and fm.get("from"):
+            key = f"{registry_mod.address_of(fm['from'])}|{at:%Y-%m-%dT%H:%M}"
+            groups.setdefault(("mail from one sender in one minute", key), []).append(pid)
+        elif kind == "call":
+            calls.setdefault(at.date(), []).append((at, pid))
+    pairs: dict = {}
+
+    def pair(a: str, b: str, why: str) -> None:
+        a, b = sorted((a, b))
+        arrived = any(found[p][1].get("released_from") or found[p][1].get("landed_from") for p in (a, b))
+        apart = subjects[a] and subjects[b] and not subjects[a] & subjects[b]   # each counts once, for its own
+        if a != b and arrived and not apart and frozenset((a, b)) not in checked:
+            pairs.setdefault((a, b), {"a": a, "b": b, "a_path": found[a][0].relative_to(root).as_posix(),
+                                      "b_path": found[b][0].relative_to(root).as_posix(), "why": why})
+
+    for (why, _), members in groups.items():
+        for a, b in itertools.combinations(dict.fromkeys(members), 2):
+            pair(a, b, why)
+    for day in calls.values():
+        for (start, a), (end, b) in itertools.combinations(sorted(day), 2):
+            if end - start <= dt.timedelta(minutes=TWIN_CALL_MINUTES):
+                pair(a, b, f"two calls {int((end - start).total_seconds() // 60)} minutes apart")
+    return [pairs[k] for k in sorted(pairs)]
+
+
+def _verdict(root, by, ids: tuple):
+    """(root, now, who, the records here) for a verdict on `ids`, each a record here, or ValueError."""
+    root = Path(root)
+    pages.refuse_copy(root)
+    if not str(by or "").strip():
+        raise ValueError("a verdict names who gave it (--by)")
+    found = _records(root)
+    for pid in ids:
+        if pid not in found:
+            raise KeyError(f"{pages.check_page_id(pid)} is no record here")
+    if len(set(ids)) != len(ids):
+        raise ValueError("a pair is two records")
+    return root, spaceyaml.load(root).now(), str(by).strip(), found
+
+
+def mark_duplicate(root, main: str, copy: str, by: str, now: dt.datetime | None = None) -> Path:
+    """`copy` holds nothing `main` does not: marked `duplicate_of: {id, by, at}`, never deleted.
+    A record marked a duplicate of it follows it to `main`, so a mark always names a record that
+    counts."""
+    root, today, by, found = _verdict(root, by, (main, copy))
+    now = now or today
+    if pages.duplicate_of(found[main][1]):
+        raise ValueError(f"{main} is itself a duplicate of {pages.duplicate_of(found[main][1])}: name that one as main")
+    mark = {"id": main, "by": by, "at": pages.iso(now)}
+    for opath, ofm, obody in found.values():
+        if pages.duplicate_of(ofm) == copy:
+            pages.write(opath, dict(ofm, duplicate_of=dict(mark)), obody, root=root)
+    path, fm, body = found[copy]
+    pages.write(path, dict(fm, duplicate_of=mark), body, root=root)
+    _append(root / "log.md", f"- {pages.iso(now)} marked {copy} a duplicate of {main} by {by}")
+    return path
+
+
+def _kept(root: Path, verdict: str, a: str, b: str, by: str, now: dt.datetime) -> None:
+    _append(root / DUPLICATES, json.dumps({"at": pages.iso(now), "verdict": verdict, "pages": sorted((a, b)),
+                                           "by": by}, ensure_ascii=False))
+
+
+def keep_both(root, a: str, b: str, by: str, now: dt.datetime | None = None) -> None:
+    """A pair the agent read that stays two pieces of evidence (two records, or copies that each
+    hold what the other lacks): it goes to DUPLICATES, both pages untouched, and is not listed again."""
+    root, today, by, _ = _verdict(root, by, (a, b))
+    now = now or today
+    _kept(root, "keep-both", a, b, by, now)
+    _append(root / "log.md", f"- {pages.iso(now)} kept {a} and {b} both as evidence, by {by}")
+
+
+def undo(root, copy: str, by: str, now: dt.datetime | None = None) -> Path:
+    """Take a mark back: the record is again exactly as it was before it and counts as itself,
+    and the pair is recorded as kept, so it is not listed again."""
+    root, today, by, found = _verdict(root, by, (copy,))
+    now = now or today
+    path, fm, body = found[copy]
+    main = pages.duplicate_of(fm)
+    if not main:
+        raise ValueError(f"{copy} is not marked a duplicate")
+    pages.write(path, {k: v for k, v in fm.items() if k != "duplicate_of"}, body, root=root)
+    _kept(root, "undo", main, copy, by, now)
+    _append(root / "log.md", f"- {pages.iso(now)} took back the mark on {copy} (a duplicate of {main}) by {by}")
+    return path
+
+
 def main(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -1245,11 +1422,30 @@ def main(argv=None) -> int:
     r.add_argument("id")
     r.add_argument("--by", required=True)
     r.add_argument("--why", default="")
+    sub.add_parser("duplicates")
+    for name, ids in (("mark", ("main", "copy")), ("keep-both", ("a", "b")), ("undo", ("copy",))):
+        p = sub.add_parser(name)
+        for arg in ids:
+            p.add_argument(arg)
+        p.add_argument("--by", required=True)
     args = ap.parse_args(argv)
     if args.cmd == "retract":
         print(retract(args.root, args.id, args.by, args.why))
-    else:
+    elif args.cmd == "land":
         print(land(args.root))
+    elif args.cmd == "duplicates":
+        print(json.dumps(duplicate_pairs(args.root), indent=1, ensure_ascii=False))
+    else:
+        try:   # a refused verdict is one line for the agent, never a traceback
+            if args.cmd == "mark":
+                print(mark_duplicate(args.root, args.main, args.copy, args.by))
+            elif args.cmd == "keep-both":
+                keep_both(args.root, args.a, args.b, args.by)
+            else:
+                print(undo(args.root, args.copy, args.by))
+        except (KeyError, ValueError) as exc:
+            print(f"refused: {exc.args[0] if exc.args else exc}", file=sys.stderr)
+            return 1
     return 0
 
 

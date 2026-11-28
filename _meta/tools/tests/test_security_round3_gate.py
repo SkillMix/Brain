@@ -363,6 +363,13 @@ def test_a_release_on_the_older_branch_name_lands_for_its_sender(tmp_path):
     for bad in ({"author": "mallory", "head_ref": "release/ben"}, {"author": "benliu", "head_ref": "release/cara"},
                 {"author": "benliu", "head_ref": "release/Ben"}, {"author": "benliu", "head_ref": "release/ben/x"}):
         assert _gate(root, base, **bad)[0] == "protected", bad
+    # a duplicate mark is the receiving room's to write (landing.py same): one a sender wrote is protected
+    write_page(root, "_inbound/candidates/p-0000ab01.md", "A release.\n", id="p-0000ab01", released_from="ben",
+               duplicate_of={"id": "p-0000ab09", "by": "ben", "at": "2026-10-12T09:00:00Z"})
+    _commit(root)
+    cls, reasons = _gate(root, base, author="benliu", head_ref="release/ben-0123abcd")
+    assert cls == "protected" and any("duplicate mark" in r for r in reasons)
+    _git(root, "reset", "-q", "--hard", "HEAD~1")
     # every other condition holds for the older name too: nothing outside _inbound/
     (root / "work").mkdir(exist_ok=True)
     (root / "work" / "x.md").write_text("x\n", encoding="utf-8")
@@ -390,6 +397,12 @@ def test_the_owners_agent_marks_a_waiting_release_on_its_sync_branch(tmp_path):
     _commit(root, "chore: sync")
     assert _gate(root, base, author="adaokafor", head_ref="sync/m-1a2b3c4d")[0] == "auto-mergeable"
     assert _gate(root, base, author="benliu", head_ref="sync/m-1a2b3c4d")[0] == "protected"
+    # so is the agent's mark that it is one record arrived twice (landing.py same)
+    _git(root, "reset", "-q", "--hard", base)
+    write_page(root, rel, "A release.\n", id="p-0000ab02", released_from="ben", released_by="Ben Liu",
+               duplicate_of={"id": "p-0000ab09", "by": "pair-checker", "at": "2026-11-20T09:00:00Z"})
+    _commit(root, "chore: sync")
+    assert _gate(root, base, author="adaokafor", head_ref="sync/m-1a2b3c4d")[0] == "auto-mergeable"
     for changed in ({"body": "Another text.\n"}, {"released_from": "cara"}, {"released_by": "Cara Diaz"}):
         _git(root, "reset", "-q", "--hard", base)
         fields = dict(id="p-0000ab02", released_from="ben", released_by="Ben Liu", **marks)

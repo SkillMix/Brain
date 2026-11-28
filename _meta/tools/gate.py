@@ -518,10 +518,11 @@ RELEASE_BRANCH = re.compile(r"^release/([a-z0-9][a-z0-9-]*)-[0-9a-f]{8}$")
 NEEDS_YOU = "_inbound/needs-you/"
 CANDIDATES, SIGNALS_IN = "_inbound/candidates/", "_inbound/signals/"
 REGISTRY = "_meta/subjects.yaml"
-# what the receiving space writes on a release where it waits: landing.py's `_mark`, and the `deadline` the
-# person's `later` sets (sign._candidate); landing.STRIP drops every one before a page is filed. The one change
-# the receiving space's own agent makes to a release (`marks_only`, which the gate and sync.Run.forged_release apply)
-RELEASE_MARKS = frozenset({"landing", "health", "held_at", "for", "disagrees_with", "deadline"})
+# what the receiving space writes on a release where it waits: landing.py's `_mark`, the `deadline` the
+# person's `later` sets (sign._candidate) and the `duplicate_of` landing.py's `mark` sets; landing.STRIP drops
+# every one but `duplicate_of` before a page is filed. The one change the receiving space's own agent makes to a
+# release (`marks_only`, which the gate and sync.Run.forged_release apply)
+RELEASE_MARKS = frozenset({"landing", "health", "held_at", "for", "disagrees_with", "deadline", "duplicate_of"})
 
 
 def marks_only(was: str | None, now: str | None) -> bool:
@@ -1212,6 +1213,8 @@ def release_reasons(root, base_ref: str, head: str, changes: list, owner: str,
                     continue
             if fm.get("released_from"):
                 released.append((rel, str(fm.get("released_from"))))
+                if fm.get("duplicate_of"):   # landing.py `mark` marks a release where it waits; a sender never does
+                    reasons.append(f"{rel}: a release that carries a duplicate mark")
     if released:
         slug = release_slug(head_ref)
         logins = _sender_logins(rows, slug, known_homes(root, base_ref, rows)) if slug else set()

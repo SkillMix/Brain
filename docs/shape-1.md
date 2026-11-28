@@ -221,6 +221,9 @@ does not match its fingerprint, a release that names no repository the home know
 signer's history does not show it, a malformed release, or one aimed outside the pages; a
 duplicate is dropped with a line in `log.md`. Silent
 landings are listed in `_meta/state/landed.jsonl`; the weekly `sample` item draws from them.
+One record that two rooms released under other ids (or, for a call, as two recordings) is
+paired by `landing.py duplicates` and judged by an agent; the copy that is not the main one is
+marked `duplicate_of`, never deleted, and counts once.
 
 ### Procedure pages
 
